@@ -4,14 +4,24 @@ using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace OpenCodeRouter
 {
     static class Program
     {
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+        private const int SW_RESTORE = 9;
+
         private static Mutex mutex = null;
         private static NotifyIcon notifyIcon = null;
         private static int port = 4010;
@@ -47,10 +57,13 @@ namespace OpenCodeRouter
             };
 
             // Single instance check
+            try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Main entry, rootDir=" + rootDir + "\r\n"); } catch { }
             bool createdNew;
             mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2", out createdNew);
+            try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Mutex createdNew=" + createdNew + "\r\n"); } catch { }
             if (!createdNew)
             {
+                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Not createdNew, opening dashboard and exiting\r\n"); } catch { }
                 EnsureRouterRunning();
                 OpenDashboard();
                 return;
@@ -58,6 +71,7 @@ namespace OpenCodeRouter
 
             EnsureRouterRunning();
             OpenDashboard();
+            try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Before Application.Run()\r\n"); } catch { }
 
             // Setup NotifyIcon
             notifyIcon = new NotifyIcon();
@@ -89,9 +103,14 @@ namespace OpenCodeRouter
 
             menu.Items.Add(new ToolStripSeparator());
 
-            ToolStripMenuItem menuChamber = new ToolStripMenuItem("💻 打开 OpenChamber 工作台 (3000)");
-            menuChamber.Click += (s, e) => Process.Start("http://127.0.0.1:3000");
+            ToolStripMenuItem menuChamber = new ToolStripMenuItem("💻 唤醒 / 启动 OpenChamber 桌面端");
+            menuChamber.Font = new Font(menuChamber.Font, FontStyle.Bold);
+            menuChamber.Click += (s, e) => LaunchOrActivateOpenChamber();
             menu.Items.Add(menuChamber);
+
+            ToolStripMenuItem menuWebChamber = new ToolStripMenuItem("🌐 独立 Web 工作台 (3000 端口)");
+            menuWebChamber.Click += (s, e) => OpenWebChamber();
+            menu.Items.Add(menuWebChamber);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -194,32 +213,239 @@ namespace OpenCodeRouter
             }
         }
 
-        static void OpenDashboard(string hash = "")
+        static string FindBrowserExe(string exeName)
         {
-            EnsureRouterRunning();
-            string edgeApp = "http://127.0.0.1:" + port + "/balancer/ui" + (hash ?? "");
-            string edgeExe = null;
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" + exeName))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" + exeName))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+            }
+            catch { }
+
             string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
             string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
-            string[] possiblePaths = new string[] {
-                Path.Combine(programFiles, @"Microsoft\Edge\Application\msedge.exe"),
-                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\msedge.exe"),
-                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe")
+            string[] candidates = new string[] {
+                Path.Combine(programFiles, @"Microsoft\Edge\Application\" + exeName),
+                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\" + exeName),
+                Path.Combine(localAppData, @"Microsoft\Edge\Application\" + exeName),
+                Path.Combine(programFiles, @"Google\Chrome\Application\" + exeName),
+                Path.Combine(programFilesX86, @"Google\Chrome\Application\" + exeName),
+                Path.Combine(localAppData, @"Google\Chrome\Application\" + exeName)
             };
-            foreach (string p in possiblePaths)
+
+            foreach (string p in candidates)
             {
-                if (File.Exists(p)) { edgeExe = p; break; }
+                if (File.Exists(p)) return p;
             }
 
-            if (edgeExe != null)
+            return null;
+        }
+
+        static void OpenUrl(string url)
+        {
+            EnsureRouterRunning();
+
+            // 方案 1: 优先以 Edge 独立桌面应用模式 (--app=...) 唤出（无地址栏/标签栏纯净 App 体验）
+            try
             {
-                Process.Start(edgeExe, "--app=" + edgeApp);
+                string edgeExe = FindBrowserExe("msedge.exe");
+                if (!string.IsNullOrEmpty(edgeExe) && File.Exists(edgeExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(edgeExe, "--app=" + url);
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    return;
+                }
             }
-            else
+            catch { }
+
+            // 方案 2: 备选以 Chrome 独立桌面应用模式 (--app=...) 唤出
+            try
             {
-                Process.Start(edgeApp);
+                string chromeExe = FindBrowserExe("chrome.exe");
+                if (!string.IsNullOrEmpty(chromeExe) && File.Exists(chromeExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(chromeExe, "--app=" + url);
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    return;
+                }
+            }
+            catch { }
+
+            // 方案 3: 使用 Windows Shell 默认关联浏览器打开 (UseShellExecute = true 核心保障)
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo(url);
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+                return;
+            }
+            catch { }
+
+            // 方案 4: explorer.exe 脱钩打开 URL 兜底
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("explorer.exe", "\"" + url + "\"");
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+                return;
+            }
+            catch { }
+
+            // 方案 5: cmd.exe start 终极无窗口唤醒
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c start \"\" \"" + url + "\"");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+            catch { }
+        }
+
+        static void OpenDashboard(string hash = "")
+        {
+            string url = "http://127.0.0.1:" + port + "/balancer/ui" + (hash ?? "");
+            try
+            {
+                if (notifyIcon != null)
+                {
+                    notifyIcon.ShowBalloonTip(1500, "订阅管理中心", "正在唤起控制面板界面...", ToolTipIcon.Info);
+                }
+            }
+            catch { }
+            OpenUrl(url);
+        }
+
+        static string FindOpenChamberDesktopExe()
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            string[] candidates = new string[] {
+                Path.Combine(localAppData, @"Programs\@openchamberelectron\OpenChamber.exe"),
+                Path.Combine(localAppData, @"Programs\OpenChamber\OpenChamber.exe"),
+                Path.Combine(programFiles, @"OpenChamber\OpenChamber.exe"),
+                Path.Combine(programFilesX86, @"OpenChamber\OpenChamber.exe"),
+                Path.Combine(localAppData, @"OpenChamber\OpenChamber.exe"),
+                Path.Combine(userProfile, @"Desktop\OpenChamber.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), @"Programs\OpenChamber.lnk")
+            };
+
+            foreach (string p in candidates)
+            {
+                if (File.Exists(p)) return p;
+            }
+            return null;
+        }
+
+        static void LaunchOrActivateOpenChamber()
+        {
+            // 1. 优先检测是否已有带窗口的运行中实例，秒级置顶前台
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("OpenChamber");
+                IntPtr activeWindow = IntPtr.Zero;
+                bool hasGhost = false;
+
+                foreach (Process p in procs)
+                {
+                    try
+                    {
+                        if (p.MainWindowHandle != IntPtr.Zero)
+                        {
+                            activeWindow = p.MainWindowHandle;
+                            break;
+                        }
+                        else
+                        {
+                            hasGhost = true;
+                        }
+                    }
+                    catch { }
+                }
+
+                // 分支 1: 已有可见桌面窗口，毫秒级置顶激活并恢复前台
+                if (activeWindow != IntPtr.Zero)
+                {
+                    ShowWindowAsync(activeWindow, SW_RESTORE);
+                    SetForegroundWindow(activeWindow);
+                    if (notifyIcon != null)
+                    {
+                        notifyIcon.ShowBalloonTip(1500, "OpenChamber 桌面端", "已快速激活置顶至当前前台窗口。", ToolTipIcon.Info);
+                    }
+                    return;
+                }
+
+                // 分支 2: 后台存在无窗口僵死进程死锁 SingleInstanceLock，强力自愈释放
+                if (hasGhost)
+                {
+                    foreach (Process p in procs)
+                    {
+                        try { p.Kill(); } catch { }
+                    }
+                    Thread.Sleep(500);
+                }
+            }
+            catch { }
+
+            // 2. 定位并脱钩启动原生桌面客户端
+            string chamberExe = FindOpenChamberDesktopExe();
+            if (!string.IsNullOrEmpty(chamberExe) && File.Exists(chamberExe))
+            {
+                try
+                {
+                    // 严格遵循规则 4: 必须通过 explorer.exe <path> 脱钩启动，严禁挂接在临时终端 Job 树中
+                    ProcessStartInfo psi = new ProcessStartInfo("explorer.exe", "\"" + chamberExe + "\"");
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    if (notifyIcon != null)
+                    {
+                        notifyIcon.ShowBalloonTip(2000, "OpenChamber 桌面端", "正在启动 OpenChamber 桌面原生工作台...", ToolTipIcon.Info);
+                    }
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (notifyIcon != null)
+                    {
+                        notifyIcon.ShowBalloonTip(3000, "启动失败", "启动原生客户端异常: " + ex.Message, ToolTipIcon.Warning);
+                    }
+                }
+            }
+
+            // 3. 若本地未安装客户端，降级为独立 Web 工作台模式并检测服务
+            OpenWebChamber();
+        }
+
+        static void OpenWebChamber()
+        {
+            string url = "http://127.0.0.1:3000";
+            bool isListening = IsPortListening(3000);
+            OpenUrl(url);
+
+            if (!isListening && notifyIcon != null)
+            {
+                notifyIcon.ShowBalloonTip(3000, "OpenChamber 提示", "已唤出工作台界面。检测到 3000 端口服务未就绪，可运行 setup-wizard.ps1 启动服务。", ToolTipIcon.Warning);
             }
         }
 

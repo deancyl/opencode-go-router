@@ -1883,6 +1883,62 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Launch / Activate OpenChamber Desktop Application API
+  if (reqUrl.pathname === '/balancer/api/launch-chamber' && (req.method === 'POST' || req.method === 'GET')) {
+    try {
+      if (process.platform === 'win32') {
+        const localApp = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+        const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+        const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+        const candidates = [
+          path.join(localApp, 'Programs', '@openchamberelectron', 'OpenChamber.exe'),
+          path.join(localApp, 'Programs', 'OpenChamber', 'OpenChamber.exe'),
+          path.join(progFiles, 'OpenChamber', 'OpenChamber.exe'),
+          path.join(progFilesX86, 'OpenChamber', 'OpenChamber.exe'),
+          path.join(os.homedir(), 'Desktop', 'OpenChamber.lnk'),
+          path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'OpenChamber.lnk')
+        ];
+        let foundExe = null;
+        for (const c of candidates) {
+          if (fs.existsSync(c)) { foundExe = c; break; }
+        }
+        if (foundExe) {
+          // Check for ghost processes first and clean them
+          try {
+            const psGhostCheck = `
+$procs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
+$ghost = $false
+if ($procs) {
+  $hasWin = $false
+  foreach ($p in $procs) { if ($p.MainWindowHandle -ne 0) { $hasWin = $true; break } }
+  if (-not $hasWin) { $procs | Stop-Process -Force; $ghost = $true }
+}
+$ghost
+`;
+            execSync(`powershell -NoProfile -NonInteractive -Command "${psGhostCheck.replace(/\\r?\\n/g, ' ')}"`, { timeout: 2000, stdio: 'ignore' });
+          } catch (e) {}
+
+          // Use explorer.exe to launch cleanly decoupled
+          exec(`explorer.exe "${foundExe}"`);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: true, mode: 'desktop', path: foundExe, message: '已安全唤起 OpenChamber 原生桌面客户端' }));
+          return;
+        }
+      } else if (process.platform === 'linux') {
+        try {
+          execSync('systemctl --user start openchamber.service 2>/dev/null || true');
+        } catch (e) {}
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, mode: 'web', url: 'http://127.0.0.1:3000', message: '已就绪 Web 端工作台' }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
   // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS) - Hardened Sandbox
   if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
     let body = [];
@@ -2937,7 +2993,7 @@ const server = http.createServer((req, res) => {
           <div style="margin-bottom:8px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
             <span><strong>OpenCode CLI:</strong> \${doc.opencode.installed ? '<span style="color:var(--success)">✔ ' + doc.opencode.version + '</span>' : '<span style="color:var(--warning)">⚠ 未找到</span>'}</span>
             <span><strong>路由端口:</strong> <span style="color:var(--success)">✔ \${doc.router.port}</span></span>
-            <span><strong>OpenChamber:</strong> \${doc.openchamber.reachable ? '<span style="color:var(--success)">✔ 运行中</span>' : (doc.openchamber.ghost ? '<span style="color:var(--danger)">❌ 僵死死锁</span>' : '<span style="color:var(--muted)">未运行</span>')}</span>
+            <span><strong>OpenChamber:</strong> \${doc.openchamber.reachable ? '<span style="color:var(--success)">✔ 运行中</span>' : (doc.openchamber.ghost ? '<span style="color:var(--danger)">❌ 僵死死锁</span>' : '<span style="color:var(--muted)">未运行</span>')} <button class="btn btn-secondary btn-sm" style="padding:1px 6px; font-size:11px; margin-left:4px;" onclick="launchOpenChamber()">💻 唤醒桌面端</button></span>
             <span><strong>Office 预览:</strong> \${doc.openchamber.officePreview && doc.openchamber.officePreview.installed ? '<span style="color:var(--success)">✔ 已挂载</span>' : '<span style="color:var(--muted)">未挂载</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
           </div>
@@ -2960,6 +3016,23 @@ const server = http.createServer((req, res) => {
         box.innerHTML = html;
       } catch (e) {
         box.innerHTML = '<span style="color:var(--danger)">自检失败: ' + e.message + '</span>';
+      }
+    }
+
+    async function launchOpenChamber() {
+      try {
+        showToast('正在请求唤醒 OpenChamber 桌面客户端...');
+        const res = await fetch('/balancer/api/launch-chamber', { method: 'POST', headers: apiHeaders() });
+        const data = await res.json();
+        if (data.mode === 'desktop') {
+          showToast(data.message || '已成功唤起桌面端！');
+        } else {
+          showToast('已唤出 Web 工作台，建议开启桌面端客户端体验更佳。');
+          window.open(data.url || 'http://127.0.0.1:3000', '_blank');
+        }
+        setTimeout(runDoctorCheck, 1500);
+      } catch (e) {
+        showToast('唤醒失败: ' + e.message, true);
       }
     }
 

@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.1.0](https://img.shields.io/badge/Version-v2.1.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.1.2](https://img.shields.io/badge/Version-v2.1.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -373,6 +373,18 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.1.2
+- **OpenChamber 原厂桌面客户端智能唤醒与前台置顶 (Native Desktop Client Launcher)**：
+  - **彻底终结“盲目打开浏览器网页”的不实用体验**：托盘右键优先展示 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，点击优先激活真正的本地 Electron 客户端，同时保留 **【🌐 独立 Web 工作台 (3000 端口)】** 双轨模式；
+  - **Win32 窗口置顶与无感恢复**：检测到已有 OpenChamber 桌面窗口处于最小化或后台时，直接调用 Win32 `ShowWindowAsync(SW_RESTORE)` 与 `SetForegroundWindow` 毫秒级瞬间激活置顶至最前台；
+  - **单实例互斥锁死锁防御**：检测到后台存在无窗口僵死进程（`MainWindowHandle == 0`）霸占 Electron `SingleInstanceLock` 时，自动强力终止并释放互斥锁后脱钩启动；
+  - **进程脱钩规范**：严格遵循准则，启动桌面客户端通过 `explorer.exe <path>` 安全脱钩启动，严禁挂接临时终端 Job 树；
+  - **多端与后端 API 支持**：网关后端新增 `/balancer/api/launch-chamber` 接口，Web 管理控制台顶栏同步增加 **【💻 唤醒桌面端】** 快捷操作。
+- **托盘多级浏览器探测与 5 级降级容灾引擎 (Multi-Tier Browser Fallbacks)**：
+  - **解决“打开订阅管理面板打不开浏览器”故障**：重构托盘 `OpenUrl` 调用链，通过 Windows 注册表 `App Paths` 精准探测 Edge / Chrome 权威路径；
+  - **5 级无窗口容灾回退**：Edge `--app=` -> Chrome `--app=` -> Windows 默认浏览器 (`UseShellExecute = true`) -> `explorer.exe` 兜底 -> `cmd.exe start` 终极无黑框唤起，确保 100% 能够在桌面弹出管理面板。
+- **自动化测试扩充至 35 项**：新增 Test 35 自动化覆盖桌面端启动契约与多级浏览器探测容灾，全套 35 项测试全绿通过。
 
 ### 🚀 v2.0.0
 - **全套组件一键检测更新与安全升级系统 (One-Click Safe Updater)**：
