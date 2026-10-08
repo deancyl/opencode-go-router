@@ -404,9 +404,9 @@ function Step-SetupOpenChamber {
 
         $recents = @()
         if ($prefObj.fields.recentModels -and $prefObj.fields.recentModels.value) {
-            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and $_.modelID -eq 'kimi-k3') })
+            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and $_.modelID -eq 'deepseek-v4.1-flash') })
         }
-        $newRecent = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }) + $recents
+        $newRecent = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $recents
         if ($prefObj.fields.recentModels) {
             $prefObj.fields.recentModels.value = $newRecent
             $prefObj.fields.recentModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -421,11 +421,11 @@ function Step-SetupOpenChamber {
         if ($prefObj.fields.favoriteModels -and $prefObj.fields.favoriteModels.value) {
             $favs = @($prefObj.fields.favoriteModels.value)
         }
-        if (-not ($favs | Where-Object { $_.providerID -eq 'opencode-go' -and $_.modelID -eq 'kimi-k3' })) {
-            $favs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }) + $favs
+        if (-not ($favs | Where-Object { $_.providerID -eq 'opencode-go' -and $_.modelID -eq 'deepseek-v4.1-flash' })) {
+            $favs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $favs
         }
-        if (-not ($favs | Where-Object { $_.providerID -eq 'opencode-go' -and $_.modelID -eq 'qwen3.7-plus' })) {
-            $favs = $favs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'qwen3.7-plus' })
+        if (-not ($favs | Where-Object { $_.providerID -eq 'opencode-go' -and $_.modelID -eq 'kimi-k3' })) {
+            $favs = $favs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' })
         }
         if ($prefObj.fields.favoriteModels) {
             $prefObj.fields.favoriteModels.value = $favs
@@ -438,7 +438,7 @@ function Step-SetupOpenChamber {
         }
 
         [System.IO.File]::WriteAllText($chamberPrefFile, ($prefObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-        Write-Host "✔ OpenChamber 桌面端首选默认模型已成功锁定为: opencode-go / kimi-k3" -ForegroundColor Green
+        Write-Host "✔ OpenChamber 桌面端首选默认模型已成功锁定为: opencode-go / deepseek-v4.1-flash" -ForegroundColor Green
     } catch {
         Write-Host "⚠ OpenChamber 偏好配置提醒: $_" -ForegroundColor Yellow
     }

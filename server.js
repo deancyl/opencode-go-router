@@ -339,10 +339,10 @@ function bindDesktopConfig() {
         apiKey: 'local-router'
       };
     }
-    cfg.model = 'opencode-go/kimi-k3';
+    cfg.model = 'opencode-go/deepseek-v4.1-flash';
     fs.writeFileSync(opencodeJsonPath, JSON.stringify(cfg, null, 2), 'utf8');
     result.opencode = true;
-    result.messages.push('已将 OpenCode 全局首选模型锁定为 opencode-go/kimi-k3');
+    result.messages.push('已将 OpenCode 全局首选模型锁定为 opencode-go/deepseek-v4.1-flash');
   } catch (err) {
     result.messages.push('OpenCode 配置失败: ' + err.message);
   }
@@ -360,24 +360,24 @@ function bindDesktopConfig() {
     }
     if (!pref.fields) pref.fields = {};
     
-    // Set recentModels[0] to kimi-k3
+    // Set recentModels[0] to deepseek-v4.1-flash
     const recents = pref.fields.recentModels?.value || [];
-    const filteredRecents = recents.filter(m => !(m.providerID === 'opencode-go' && m.modelID === 'kimi-k3'));
+    const filteredRecents = recents.filter(m => !(m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash'));
     pref.fields.recentModels = {
       updatedAt: Date.now(),
       value: [
-        { providerID: 'opencode-go', modelID: 'kimi-k3' },
+        { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
         ...filteredRecents
       ]
     };
 
     // Add to favoriteModels
     const favs = pref.fields.favoriteModels?.value || [];
-    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
-      favs.unshift({ providerID: 'opencode-go', modelID: 'kimi-k3' });
+    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
+      favs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
     }
-    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'qwen3.7-plus')) {
-      favs.push({ providerID: 'opencode-go', modelID: 'qwen3.7-plus' });
+    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
+      favs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
     }
     pref.fields.favoriteModels = {
       updatedAt: Date.now(),
@@ -386,7 +386,7 @@ function bindDesktopConfig() {
 
     fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), 'utf8');
     result.openchamber = true;
-    result.messages.push('已将 OpenChamber 桌面端首选默认模型设为 opencode-go / kimi-k3');
+    result.messages.push('已将 OpenChamber 桌面端首选默认模型设为 opencode-go / deepseek-v4.1-flash');
   } catch (err) {
     result.messages.push('OpenChamber 配置失败: ' + err.message);
   }
