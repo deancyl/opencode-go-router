@@ -56,37 +56,43 @@ function Step-InstallOpenCode {
     switch ($choice) {
         "1" {
             Write-Host "正在通过 npm 安装 @opencode/cli 及 Windows 原生内核..." -ForegroundColor Yellow
-            try {
-                npm install -g @opencode/cli @opencode/cli-windows-x64
-                $installed = $true
-            } catch { Write-Host "npm 安装失败: $_" -ForegroundColor Red }
+            npm install -g @opencode/cli @opencode/cli-windows-x64
+            if ($LASTEXITCODE -eq 0) { $installed = $true } else { Write-Host "npm 安装返回异常状态码: $LASTEXITCODE" -ForegroundColor Red }
         }
         "2" {
             Write-Host "正在通过 bun 安装 @opencode/cli..." -ForegroundColor Yellow
-            try {
-                bun add -g @opencode/cli
-                $installed = $true
-            } catch { Write-Host "bun 安装失败: $_" -ForegroundColor Red }
+            bun add -g @opencode/cli
+            if ($LASTEXITCODE -eq 0) { $installed = $true } else { Write-Host "bun 安装返回异常状态码: $LASTEXITCODE" -ForegroundColor Red }
         }
         "3" {
             Write-Host "正在自动选择包管理器安装..." -ForegroundColor Yellow
             $npmExists = Get-Command npm -ErrorAction SilentlyContinue
             if ($npmExists) {
                 Write-Host " -> 使用 npm 安装完整版 @opencode/cli 及 Windows 架构包..." -ForegroundColor Cyan
-                try {
-                    npm install -g @opencode/cli @opencode/cli-windows-x64
-                    $installed = $true
-                } catch {}
+                npm install -g @opencode/cli @opencode/cli-windows-x64
+                if ($LASTEXITCODE -eq 0) { $installed = $true }
             }
             if (-not $installed) {
                 $bunExists = Get-Command bun -ErrorAction SilentlyContinue
                 if ($bunExists) {
                     Write-Host " -> 使用 Bun 进行安装..." -ForegroundColor Cyan
-                    try { bun add -g @opencode/cli; $installed = $true } catch {}
+                    bun add -g @opencode/cli
+                    if ($LASTEXITCODE -eq 0) { $installed = $true }
                 }
             }
             if (-not $installed) {
-                Write-Host "❌ 未找到 npm 或 bun，请先安装 Node.js (https://nodejs.org) 或 Bun" -ForegroundColor Red
+                Write-Host "❌ 未检测到 npm 或 bun 环境。" -ForegroundColor Red
+                $wingetExists = Get-Command winget -ErrorAction SilentlyContinue
+                if ($wingetExists) {
+                    Write-Host "💡 检测到系统内置 winget，可一键自动安装 Node.js LTS 运行环境" -ForegroundColor Cyan
+                    if (-not $Silent) {
+                        $askNode = Read-Host "是否立即使用 winget 安装 Node.js LTS？(Y/n)"
+                        if ($askNode -eq "" -or $askNode -eq "y" -or $askNode -eq "Y") {
+                            winget install OpenJS.NodeJS.LTS -e --silent
+                            Write-Host "Node.js 环境安装完毕，请重启终端后重新运行步骤 1 安装 @opencode/cli。" -ForegroundColor Green
+                        }
+                    }
+                }
             }
         }
         "0" {
@@ -96,7 +102,28 @@ function Step-InstallOpenCode {
     }
 
     Start-Sleep -Seconds 1
-    $newVer = (opencode --version 2>$null)
+    $newVer = $null
+    try { $newVer = (& opencode --version 2>$null) } catch {}
+    if (-not $newVer) {
+        $candidates = @(
+            "$env:LOCALAPPDATA\Programs\@openchamberelectron\resources\opencode-cli\opencode.exe",
+            "$env:APPDATA\npm\opencode.cmd",
+            "$env:USERPROFILE\.bun\bin\opencode.exe",
+            "$env:ProgramFiles\nodejs\opencode.cmd"
+        )
+        foreach ($cand in $candidates) {
+            if (Test-Path $cand) {
+                try {
+                    $candVer = (& $cand --version 2>$null)
+                    if ($candVer -and ($candVer -match "2\.\d+")) {
+                        $newVer = $candVer
+                        break
+                    }
+                } catch {}
+            }
+        }
+    }
+
     if ($newVer) {
         Write-Host "🎉 OpenCode 安装成功！当前版本: $newVer" -ForegroundColor Green
         return $true
@@ -156,10 +183,61 @@ function Step-SetupRouter {
     Set-Content -Path $cfgPath -Value ($newConfig | ConvertTo-Json -Depth 5) -Encoding UTF8
     Write-Host "✔ 配置文件已稳妥写入: $cfgPath" -ForegroundColor Green
 
-    # 静默启动路由与托盘
+    # 同步绑定 OpenCode 主配置文件 ~/.config/opencode/opencode.jsonc
+    if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
+    try {
+        $ocObj = $null
+        if (Test-Path $opencodeConfigFile) {
+            $ocObj = Get-Content $opencodeConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        } else {
+            $ocObj = [PSCustomObject]@{
+                plugin = @("oh-my-openagent@5.1.22", "opencode-goal-plugin")
+                "`$schema" = "https://opencode.ai/config.json"
+                provider = [PSCustomObject]@{}
+            }
+        }
+        if (-not $ocObj.provider) {
+            $ocObj | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
+        }
+        if ($ocObj.provider.'opencode-go') {
+            $ocObj.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$port/v1"
+            if (-not $ocObj.provider.'opencode-go'.options.apiKey) {
+                $ocObj.provider.'opencode-go'.options.apiKey = "local-router"
+            }
+        } else {
+            $goProv = [PSCustomObject]@{
+                name = "opencode-go"
+                npm = "@ai-sdk/openai-compatible"
+                options = [PSCustomObject]@{
+                    baseURL = "http://127.0.0.1:$port/v1"
+                    apiKey = "local-router"
+                }
+                models = [PSCustomObject]@{
+                    "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
+                    "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
+                    "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
+                    "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
+                    "glm-5.3" = [PSCustomObject]@{ name = "glm-5.3" }
+                    "minimax-m3" = [PSCustomObject]@{ name = "minimax-m3" }
+                }
+            }
+            $ocObj.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
+        }
+        Set-Content -Path $opencodeConfigFile -Value ($ocObj | ConvertTo-Json -Depth 15) -Encoding UTF8
+        Write-Host "✔ opencode.jsonc 已自动绑定本地网关 http://127.0.0.1:$port/v1" -ForegroundColor Green
+    } catch {
+        Write-Host "⚠ opencode.jsonc 网关绑定提醒: $_" -ForegroundColor Yellow
+    }
+
+    # 静默启动原生托盘与路由服务
     Write-Host "正在启动系统托盘常驻进程与后台智能网关..." -ForegroundColor Yellow
+    $trayExe = Join-Path $rootDir "OpenCodeRouterTray.exe"
     $trayScript = Join-Path $rootDir "tray-runner.ps1"
-    Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$trayScript`"") -WindowStyle Hidden
+    if (Test-Path $trayExe) {
+        Start-Process -FilePath $trayExe
+    } else {
+        Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$trayScript`"") -WindowStyle Hidden
+    }
     Start-Sleep -Seconds 2
 
     try {

@@ -21,12 +21,37 @@ $issuesFound = [System.Collections.Generic.List[PSObject]]::new()
 # ----------------- 1. 检测 OpenCode CLI -----------------
 Write-Host "`n[1/6] 检查 OpenCode CLI 环境..." -ForegroundColor Yellow
 $opencodeVer = $null
-try {
-    $opencodeVer = (opencode --version 2>$null)
-} catch {}
+$opencodePath = $null
+
+$opencodeCmd = Get-Command opencode -ErrorAction SilentlyContinue
+if ($opencodeCmd) {
+    try {
+        $opencodeVer = (& opencode --version 2>$null)
+        $opencodePath = $opencodeCmd.Source
+    } catch {}
+} else {
+    $candidates = @(
+        "$env:LOCALAPPDATA\Programs\@openchamberelectron\resources\opencode-cli\opencode.exe",
+        "$env:APPDATA\npm\opencode.cmd",
+        "$env:USERPROFILE\.bun\bin\opencode.exe",
+        "$env:ProgramFiles\nodejs\opencode.cmd"
+    )
+    foreach ($cand in $candidates) {
+        if (Test-Path $cand) {
+            try {
+                $v = (& $cand --version 2>$null)
+                if ($v) {
+                    $opencodeVer = $v
+                    $opencodePath = $cand
+                    break
+                }
+            } catch {}
+        }
+    }
+}
 
 if ($opencodeVer) {
-    Write-Host "  ✔ OpenCode CLI 已就绪: $opencodeVer" -ForegroundColor Green
+    Write-Host "  ✔ OpenCode CLI 已就绪: $opencodeVer ($opencodePath)" -ForegroundColor Green
     if (-not ($opencodeVer -match "2\.\d+")) {
         $issuesFound.Add([PSCustomObject]@{
             Id = "opencode_v1"
@@ -131,7 +156,13 @@ if (Test-Path $omoConfig) {
         Write-Host "  ✔ OMO 调度模型配置健康，包含无限制模型链路" -ForegroundColor Green
     }
 } else {
-    Write-Host "  ℹ ~/.omo/omo.jsonc 配置文件尚未创建" -ForegroundColor DarkGray
+    Write-Host "  ⚠ 未找到 ~/.omo/omo.jsonc 配置文件" -ForegroundColor Yellow
+    $issuesFound.Add([PSCustomObject]@{
+        Id = "missing_omo_config"
+        Title = "未找到 ~/.omo/omo.jsonc 配置文件"
+        Severity = "Low"
+        FixDesc = "自动生成标准多智能体调度映射（内置无限制模型）"
+    })
 }
 
 # ----------------- 5. 检测 Goal 插件与 /boost 指令 -----------------
@@ -171,6 +202,9 @@ Write-Host "`n==========================================================" -Foreg
 if ($issuesFound.Count -eq 0) {
     Write-Host " 🎉 体检完成！全链路运行环境完美无瑕，未发现任何缺陷！" -ForegroundColor Green
     Write-Host "==========================================================" -ForegroundColor Cyan
+    if (-not $CheckOnly -and -not $AutoFix) {
+        Read-Host "`n按回车键退出..."
+    }
     exit 0
 }
 
@@ -212,15 +246,102 @@ foreach ($iss in $issuesFound) {
             Set-Content -Path $opencodeConfig -Value $fixed -Encoding UTF8
             Write-Host "    ✔ 3001 端口已成功重定向至 $routerPort 网关" -ForegroundColor Green
         }
-        "missing_4010_gateway" {
-            Write-Host " -> 正在更新 opencode.jsonc 绑定本地网关..." -ForegroundColor Yellow
-            # Read and replace or repair baseURL
-            $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
-            if ($raw -like "*opencode-go*") {
-                $raw = $raw -replace '("baseURL":\s*")[^"]*(")', "`$1http://127.0.0.1:$routerPort/v1`$2"
-                Set-Content -Path $opencodeConfig -Value $raw -Encoding UTF8
-                Write-Host "    ✔ 已将 opencode-go baseURL 绑定至 127.0.0.1:$routerPort" -ForegroundColor Green
+        "missing_opencode_config" {
+            Write-Host " -> 正在创建标准 opencode.jsonc 配置文件..." -ForegroundColor Yellow
+            $ocDir = Split-Path $opencodeConfig -Parent
+            if (-not (Test-Path $ocDir)) { New-Item -ItemType Directory -Path $ocDir -Force | Out-Null }
+            $defaultConfig = @{
+                plugin = @("oh-my-openagent@5.1.22", "opencode-goal-plugin")
+                "`$schema" = "https://opencode.ai/config.json"
+                provider = @{
+                    "opencode-go" = @{
+                        name = "opencode-go"
+                        npm = "@ai-sdk/openai-compatible"
+                        options = @{
+                            baseURL = "http://127.0.0.1:$routerPort/v1"
+                            apiKey = "local-router"
+                        }
+                        models = @{
+                            "kimi-k3" = @{ name = "kimi-k3" }
+                            "qwen3.7-plus" = @{ name = "qwen3.7-plus" }
+                            "deepseek-v4.1-flash" = @{ name = "deepseek-v4.1-flash" }
+                            "deepseek-v4-pro" = @{ name = "deepseek-v4-pro" }
+                            "glm-5.3" = @{ name = "glm-5.3" }
+                            "minimax-m3" = @{ name = "minimax-m3" }
+                        }
+                    }
+                }
             }
+            Set-Content -Path $opencodeConfig -Value ($defaultConfig | ConvertTo-Json -Depth 10) -Encoding UTF8
+            Write-Host "    ✔ 已生成 opencode.jsonc 并绑定 4010 网关" -ForegroundColor Green
+        }
+        "missing_4010_gateway" {
+            Write-Host " -> 正在更新 opencode.jsonc 绑定本地 4010 网关..." -ForegroundColor Yellow
+            try {
+                $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
+                $json = $raw | ConvertFrom-Json
+                if (-not $json.provider) {
+                    $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
+                }
+                if ($json.provider.'opencode-go') {
+                    $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
+                    if (-not $json.provider.'opencode-go'.options.apiKey) {
+                        $json.provider.'opencode-go'.options.apiKey = "local-router"
+                    }
+                } else {
+                    $goProv = [PSCustomObject]@{
+                        name = "opencode-go"
+                        npm = "@ai-sdk/openai-compatible"
+                        options = [PSCustomObject]@{
+                            baseURL = "http://127.0.0.1:$routerPort/v1"
+                            apiKey = "local-router"
+                        }
+                        models = [PSCustomObject]@{
+                            "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
+                            "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
+                            "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
+                            "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
+                        }
+                    }
+                    $json.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
+                }
+                Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
+                Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 (未影响其他服务商)" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 更新失败: $_" -ForegroundColor Red
+            }
+        }
+        "missing_omo_config" {
+            Write-Host " -> 正在生成标准 OMO 配置文件..." -ForegroundColor Yellow
+            $omoDir = Split-Path $omoConfig -Parent
+            if (-not (Test-Path $omoDir)) { New-Item -ItemType Directory -Path $omoDir -Force | Out-Null }
+            $omoJson = @"
+{
+  "`$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+  "[opencode]": {
+    "agents": {
+      "sisyphus": { "model": "opencode-go/kimi-k3" },
+      "oracle": { "model": "opencode-go/glm-5.2" },
+      "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
+      "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
+      "multimodal-looker": { "model": "opencode-go/kimi-k3" },
+      "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "momus": { "model": "opencode-go/glm-5.2" },
+      "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+      "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
+    },
+    "categories": {
+      "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "ultrabrain": { "model": "opencode/gpt-5-nano" },
+      "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "quick": { "model": "opencode-go/minimax-m3", "variant": "high" }
+    }
+  }
+}
+"@
+            Set-Content -Path $omoConfig -Value $omoJson -Encoding UTF8
+            Write-Host "    ✔ 已生成标准 OMO 调度配置" -ForegroundColor Green
         }
         "accounts_cooling_down" {
             Write-Host " -> 正在重置智能网关限频冷却..." -ForegroundColor Yellow
@@ -233,8 +354,13 @@ foreach ($iss in $issuesFound) {
         }
         "router_stopped" {
             Write-Host " -> 正在静默启动 4010 智能网关..." -ForegroundColor Yellow
-            $vbs = "$PSScriptRoot\silent-start.vbs"
-            if (Test-Path $vbs) {
+            $trayExe = Join-Path $PSScriptRoot "OpenCodeRouterTray.exe"
+            $vbs = Join-Path $PSScriptRoot "silent-start.vbs"
+            if (Test-Path $trayExe) {
+                Start-Process -FilePath $trayExe
+                Start-Sleep -Seconds 1
+                Write-Host "    ✔ 原生托盘与智能网关已无黑框静默启动" -ForegroundColor Green
+            } elseif (Test-Path $vbs) {
                 Start-Process "wscript.exe" -ArgumentList "`"$vbs`"" -WindowStyle Hidden
                 Start-Sleep -Seconds 1
                 Write-Host "    ✔ 智能网关已在后台静默启动" -ForegroundColor Green
@@ -286,3 +412,7 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
 Write-Host "`n🎉 所有可修复项已成功完成修复！" -ForegroundColor Green
 Write-Host "可重新运行该脚本或在面板 http://127.0.0.1:4010/balancer/ui 中验证。" -ForegroundColor White
 Write-Host "==========================================================" -ForegroundColor Cyan
+
+if (-not $CheckOnly -and -not $AutoFix) {
+    Read-Host "`n按回车键退出..."
+}

@@ -248,6 +248,16 @@ function testAccountConnection(upstream, apiKey) {
   });
 }
 
+function getCorsHeaders(upstreamHeaders = {}) {
+  const headers = { ...upstreamHeaders };
+  delete headers['connection'];
+  delete headers['transfer-encoding'];
+  headers['access-control-allow-origin'] = '*';
+  headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
+  headers['access-control-allow-headers'] = '*';
+  return headers;
+}
+
 function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set()) {
   triedAccountIds.add(account.id);
   const stat = accountStats.get(account.id);
@@ -280,6 +290,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   if (reqBody && reqBody.length > 0) {
     proxyHeaders['content-length'] = String(Buffer.byteLength(reqBody));
+  } else if (clientReq.method === 'POST' || clientReq.method === 'PUT' || clientReq.method === 'PATCH') {
+    proxyHeaders['content-length'] = '0';
   } else {
     delete proxyHeaders['content-length'];
   }
@@ -304,6 +316,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   const proxyReq = transport.request(proxyOptions);
   let responded = false;
   let requestFinished = false;
+  let clientAborted = false;
+
   const finishRequest = () => {
     if (!requestFinished) {
       requestFinished = true;
@@ -313,18 +327,28 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
   };
 
-  clientRes.on('close', () => {
-    if (!clientRes.writableEnded && !proxyReq.destroyed) {
-      proxyReq.destroy();
+  const clientCloseHandler = () => {
+    if (!clientRes.writableEnded) {
+      clientAborted = true;
+      if (!proxyReq.destroyed) {
+        proxyReq.destroy();
+      }
     }
     finishRequest();
+  };
+
+  clientRes.once('close', clientCloseHandler);
+
+  proxyReq.on('timeout', () => {
+    console.error(`[Upstream Timeout] Request to ${account.name} timed out after 300s`);
+    proxyReq.destroy(new Error('Gateway Timeout (upstream took longer than 300s)'));
   });
 
   proxyReq.on('response', (upstreamRes) => {
     const statusCode = upstreamRes.statusCode;
 
     // Check if Rate Limited (429) or Service Unavailable (503)
-    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries) {
+    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
       // Dynamic cooldown calculation from Retry-After header
       let cooldownMs = config.defaultCooldownMs;
       const retryAfter = upstreamRes.headers['retry-after'];
@@ -342,10 +366,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
       recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
       finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
 
-      let errorBody = '';
-      upstreamRes.on('data', chunk => errorBody += chunk);
+      const errorChunks = [];
+      upstreamRes.on('data', chunk => errorChunks.push(chunk));
       upstreamRes.on('end', () => {
+        if (clientAborted || clientRes.destroyed) return;
         const nextAccount = selectAccount(sessionId, triedAccountIds);
 
         if (nextAccount) {
@@ -353,7 +379,10 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           console.log(`[Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds);
         } else {
-          clientRes.writeHead(statusCode, upstreamRes.headers);
+          const errorBody = Buffer.concat(errorChunks);
+          const outHeaders = getCorsHeaders(upstreamRes.headers);
+          outHeaders['content-length'] = String(errorBody.length);
+          clientRes.writeHead(statusCode, outHeaders);
           clientRes.end(errorBody);
         }
       });
@@ -361,7 +390,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
 
     responded = true;
-    clientRes.writeHead(statusCode, upstreamRes.headers);
+    clientRes.writeHead(statusCode, getCorsHeaders(upstreamRes.headers));
     upstreamRes.pipe(clientRes);
 
     upstreamRes.on('error', (err) => {
@@ -379,6 +408,14 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   proxyReq.on('error', (err) => {
     finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+
+    // If client was already closed / aborted, do NOT trigger failover or log false alarm
+    if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) {
+      console.log(`[Client Abort] Client disconnected before request completed with account "${account.name}". No failover needed.`);
+      return;
+    }
+
     console.error(`[Upstream Proxy Error] Account "${account.name}":`, err.stack || err.message);
     if (!responded && attemptNumber <= config.maxFailoverRetries) {
       // 仅在有备用账号时尝试故障漂移，不将网络异常账号错误地锁入429限频池
@@ -393,12 +430,18 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
     if (!responded) {
       responded = true;
-      clientRes.writeHead(502, { 'Content-Type': 'application/json' });
+      const isTimeout = err.message && err.message.includes('Gateway Timeout');
+      const errCode = isTimeout ? 504 : 502;
+      clientRes.writeHead(errCode, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*'
+      });
       clientRes.end(JSON.stringify({
         error: {
           message: `Proxy error reaching upstream: ${err.message}`,
-          type: 'router_proxy_error',
-          code: 502
+          type: isTimeout ? 'router_gateway_timeout' : 'router_proxy_error',
+          code: errCode
         }
       }));
     } else {
@@ -415,6 +458,30 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 }
 
 // System Diagnostic Helper (Doctor Engine)
+function findOpenCodeBinary() {
+  try {
+    const v = execSync('opencode --version', { stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
+    return { version: v, path: 'PATH' };
+  } catch (e) {}
+
+  const candidates = [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'resources', 'opencode-cli', 'opencode.exe'),
+    path.join(process.env.APPDATA || '', 'npm', 'opencode.cmd'),
+    path.join(os.homedir(), '.bun', 'bin', 'opencode.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'opencode.cmd')
+  ];
+
+  for (const cand of candidates) {
+    if (fs.existsSync(cand)) {
+      try {
+        const v = execSync(`"${cand}" --version`, { stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
+        return { version: v, path: cand };
+      } catch (e) {}
+    }
+  }
+  return null;
+}
+
 function runSystemDoctor() {
   const report = {
     timestamp: new Date().toISOString(),
@@ -435,7 +502,7 @@ function runSystemDoctor() {
         };
       })
     },
-    opencode: { installed: false, version: null, error: null },
+    opencode: { installed: false, version: null, path: null, error: null },
     openchamber: { reachable: false, error: null },
     opencodeConfig: {
       exists: false,
@@ -462,12 +529,13 @@ function runSystemDoctor() {
   };
 
   // 1. Check opencode CLI
-  try {
-    const v = execSync('opencode --version', { stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
+  const cliInfo = findOpenCodeBinary();
+  if (cliInfo) {
     report.opencode.installed = true;
-    report.opencode.version = v;
-  } catch (e) {
-    report.opencode.error = 'CLI 未在 PATH 中找到或执行超时';
+    report.opencode.version = cliInfo.version;
+    report.opencode.path = cliInfo.path;
+  } else {
+    report.opencode.error = 'CLI 未在 PATH 或常用路径中找到';
     report.issues.push({ id: 'opencode_not_found', severity: 'warning', title: 'OpenCode CLI 未检测到', desc: '请通过安装向导安装 @opencode/cli' });
   }
 
@@ -489,14 +557,28 @@ function runSystemDoctor() {
     report.issues.push({ id: 'missing_opencode_config', severity: 'medium', title: '未找到 opencode.jsonc', desc: '尚未生成用户核心配置文件' });
   }
 
-  // 3. Check boost.md
+  // 3. Check omo.jsonc
+  if (fs.existsSync(report.omoConfig.path)) {
+    report.omoConfig.exists = true;
+    try {
+      const raw = fs.readFileSync(report.omoConfig.path, 'utf8');
+      report.omoConfig.hasOpencodeGo = raw.includes('opencode-go');
+      if (raw.includes('opencode-go/deepseek') && !raw.includes('kimi-k3')) {
+        report.issues.push({ id: 'deepseek_region_risk', severity: 'medium', title: '智能体调度缺少原生无区域限制的备选模型', desc: '建议为主要智能体添加 kimi-k3、qwen3.7-plus 兜底避开 Global regions 限制' });
+      }
+    } catch (e) {}
+  } else {
+    report.issues.push({ id: 'missing_omo_config', severity: 'low', title: '未找到 omo.jsonc', desc: '尚未生成 Oh My OpenAgent 多智能体模型调度配置' });
+  }
+
+  // 4. Check boost.md
   if (fs.existsSync(report.commands.path)) {
     report.commands.boostMdExists = true;
   } else {
     report.issues.push({ id: 'missing_boost_command', severity: 'low', title: '缺少 /boost 快捷指令', desc: 'boost.md 允许快速调用高强度自主推进任务' });
   }
 
-  // 4. Check workspace git
+  // 5. Check workspace git
   if (fs.existsSync(report.workspace.defaultPath)) {
     report.workspace.exists = true;
     report.workspace.gitInitialized = fs.existsSync(path.join(report.workspace.defaultPath, '.git'));
@@ -505,7 +587,7 @@ function runSystemDoctor() {
     }
   }
 
-  // 5. Check cooling down accounts
+  // 6. Check cooling down accounts
   const coolingAccs = report.router.accounts.filter(a => a.status === 'cooling_down');
   if (coolingAccs.length > 0) {
     report.issues.push({ id: 'accounts_cooling_down', severity: 'medium', title: `${coolingAccs.length} 个账号处于限频冷却中`, desc: '可点击一键重置冷却状态即刻恢复流量分配' });
@@ -525,32 +607,125 @@ function executeSystemRepair() {
   }
   results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却状态' });
 
-  // 2. Fix dead port 3001 in opencode.jsonc
-  const ocPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc');
-  if (fs.existsSync(ocPath)) {
-    try {
-      let content = fs.readFileSync(ocPath, 'utf8');
-      let changed = false;
-      if (content.includes('http://127.0.0.1:3001')) {
-        content = content.replace(/http:\/\/127\.0\.0\.1:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
-        changed = true;
-      }
-      if (content.includes('"baseURL": "http://localhost:3001')) {
-        content = content.replace(/http:\/\/localhost:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
-        changed = true;
-      }
-      if (changed) {
-        fs.writeFileSync(ocPath, content, 'utf8');
-        results.push({ item: 'Redirect Port 3001', success: true, message: `已将旧 3001 端口配置自动重定向至 ${config.port} 智能网关` });
-      } else {
-        results.push({ item: 'Redirect Port 3001', success: true, message: '无需修复：无残留 3001 端口' });
-      }
-    } catch (e) {
-      results.push({ item: 'Redirect Port 3001', success: false, message: '修改 opencode.jsonc 失败: ' + e.message });
+  // 2. Safe Repair / Initialization of opencode.jsonc
+  const ocDir = path.join(os.homedir(), '.config', 'opencode');
+  const ocPath = path.join(ocDir, 'opencode.jsonc');
+  try {
+    if (!fs.existsSync(ocDir)) {
+      fs.mkdirSync(ocDir, { recursive: true });
     }
+
+    let ocData = {};
+    let isNew = false;
+    if (fs.existsSync(ocPath)) {
+      const raw = fs.readFileSync(ocPath, 'utf8');
+      try {
+        ocData = JSON.parse(raw);
+      } catch (e) {
+        // If JSON parse fails (e.g. comments exist), do a string backup & replacement
+        fs.copyFileSync(ocPath, ocPath + '.bak');
+        let fixedRaw = raw.replace(/http:\/\/127\.0\.0\.1:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`)
+                          .replace(/http:\/\/localhost:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
+        fs.writeFileSync(ocPath, fixedRaw, 'utf8');
+      }
+    } else {
+      isNew = true;
+      ocData = {
+        plugin: ["oh-my-openagent@5.1.22", "opencode-goal-plugin"],
+        $schema: "https://opencode.ai/config.json",
+        provider: {}
+      };
+    }
+
+    if (typeof ocData === 'object' && ocData !== null) {
+      if (!Array.isArray(ocData.plugin)) ocData.plugin = [];
+      if (!ocData.plugin.some(p => String(p).includes('oh-my-openagent'))) {
+        ocData.plugin.push('oh-my-openagent@5.1.22');
+      }
+      if (!ocData.plugin.some(p => String(p).includes('opencode-goal-plugin'))) {
+        ocData.plugin.push('opencode-goal-plugin');
+      }
+
+      if (!ocData.provider || typeof ocData.provider !== 'object') ocData.provider = {};
+
+      const routerUrl = `http://127.0.0.1:${config.port}/v1`;
+      if (!ocData.provider['opencode-go']) {
+        ocData.provider['opencode-go'] = {
+          name: 'opencode-go',
+          npm: '@ai-sdk/openai-compatible',
+          options: {
+            baseURL: routerUrl,
+            apiKey: 'local-router'
+          },
+          models: {
+            'kimi-k3': { name: 'kimi-k3' },
+            'qwen3.7-plus': { name: 'qwen3.7-plus' },
+            'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' },
+            'deepseek-v4-pro': { name: 'deepseek-v4-pro' },
+            'glm-5.3': { name: 'glm-5.3' },
+            'minimax-m3': { name: 'minimax-m3' }
+          }
+        };
+      } else {
+        if (!ocData.provider['opencode-go'].options) ocData.provider['opencode-go'].options = {};
+        ocData.provider['opencode-go'].options.baseURL = routerUrl;
+        if (!ocData.provider['opencode-go'].options.apiKey) {
+          ocData.provider['opencode-go'].options.apiKey = 'local-router';
+        }
+      }
+
+      fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), 'utf8');
+      results.push({
+        item: 'OpenCode Config',
+        success: true,
+        message: isNew ? '已自动生成 opencode.jsonc 并绑定 4010 智能网关' : `已安全更新 opencode-go 绑定至 127.0.0.1:${config.port}/v1 (保留其他服务商配置)`
+      });
+    }
+  } catch (e) {
+    results.push({ item: 'OpenCode Config', success: false, message: '修复 opencode.jsonc 失败: ' + e.message });
   }
 
-  // 3. Ensure boost.md exists
+  // 3. Ensure omo.jsonc exists
+  const omoDir = path.join(os.homedir(), '.omo');
+  const omoPath = path.join(omoDir, 'omo.jsonc');
+  try {
+    if (!fs.existsSync(omoDir)) {
+      fs.mkdirSync(omoDir, { recursive: true });
+    }
+    if (!fs.existsSync(omoPath)) {
+      const omoTemplate = {
+        "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+        "[opencode]": {
+          "agents": {
+            "sisyphus": { "model": "opencode-go/kimi-k3" },
+            "oracle": { "model": "opencode-go/glm-5.2" },
+            "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
+            "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
+            "multimodal-looker": { "model": "opencode-go/kimi-k3" },
+            "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "momus": { "model": "opencode-go/glm-5.2" },
+            "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
+          },
+          "categories": {
+            "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "ultrabrain": { "model": "opencode/gpt-5-nano" },
+            "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" }
+          }
+        }
+      };
+      fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), 'utf8');
+      results.push({ item: 'OMO Config', success: true, message: '已生成标准 ~/.omo/omo.jsonc（默认使用 kimi-k3/qwen3.7 避开区域限制）' });
+    } else {
+      results.push({ item: 'OMO Config', success: true, message: '已就绪：omo.jsonc 存在' });
+    }
+  } catch (e) {
+    results.push({ item: 'OMO Config', success: false, message: '生成 omo.jsonc 失败: ' + e.message });
+  }
+
+  // 4. Ensure boost.md exists
   const cmdDir = path.join(os.homedir(), '.config', 'opencode', 'commands');
   const boostPath = path.join(cmdDir, 'boost.md');
   try {
@@ -581,7 +756,7 @@ $ARGUMENTS
     results.push({ item: 'Boost Command', success: false, message: '创建 boost.md 失败: ' + e.message });
   }
 
-  // 4. Ensure Workspace Git
+  // 5. Ensure Workspace Git
   const wsPath = 'D:\\opencode\\default';
   if (fs.existsSync(wsPath) && !fs.existsSync(path.join(wsPath, '.git'))) {
     try {

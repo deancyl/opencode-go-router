@@ -54,8 +54,9 @@ function Ensure-RouterRunning {
 function Open-Dashboard {
     Ensure-RouterRunning
     $edgePaths = @(
-        "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe"
     )
     $edgeExe = $edgePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
     if ($edgeExe) {

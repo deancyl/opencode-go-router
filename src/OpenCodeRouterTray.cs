@@ -173,9 +173,14 @@ namespace OpenCodeRouter
             EnsureRouterRunning();
             string edgeApp = "http://127.0.0.1:" + port + "/balancer/ui";
             string edgeExe = null;
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
             string[] possiblePaths = new string[] {
-                @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                @"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+                Path.Combine(programFiles, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe")
             };
             foreach (string p in possiblePaths)
             {
@@ -250,7 +255,7 @@ namespace OpenCodeRouter
             string doctorScript = Path.Combine(rootDir, "doctor-repair.ps1");
             if (File.Exists(doctorScript))
             {
-                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + doctorScript + "\"");
+                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -NoExit -File \"" + doctorScript + "\"");
                 Process.Start(psi);
             }
             else

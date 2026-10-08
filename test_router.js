@@ -57,6 +57,18 @@ async function runTests() {
       return;
     }
 
+    if (req.url === '/v1/slow') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      setTimeout(() => {
+        if (!res.writableEnded) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ from: 'slow' }));
+        }
+      }, 800);
+      return;
+    }
+
     if (auth.includes('key-account-2')) {
       account2Calls++;
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -222,8 +234,53 @@ async function runTests() {
     assert.strictEqual(mockCallCount, preCallCount, 'Router must NOT hit upstream when all accounts are cooling down');
     console.log(`✓ Pool-wide cooldown protection verified: 429 returned with Retry-After=${resPoolCooling.headers['retry-after']}`);
 
+    // Test 10: Client Abort Isolation (No spurious failover on client disconnect)
+    console.log('\n[Test 10] Testing Client Abort Isolation (No spurious failover)...');
+    // First reset cooldown from Test 9
+    await request('/balancer/api/reset-cooldown', { method: 'POST', body: '{}' });
+    const acc1Before = account1Calls;
+    const acc2Before = account2Calls;
+
+    // Start a request that will be slow and abort it after 100ms
+    const abortReq = http.request({
+      hostname: '127.0.0.1',
+      port: routerPort,
+      path: '/v1/slow',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    abortReq.on('error', () => {});
+    abortReq.write('{}');
+    abortReq.end();
+
+    await new Promise(r => setTimeout(r, 100));
+    abortReq.destroy(); // Client cancels query
+
+    // Wait 400ms to allow event loop and verify no extra calls to alternative account
+    await new Promise(r => setTimeout(r, 400));
+    const delta1 = account1Calls - acc1Before;
+    const delta2 = account2Calls - acc2Before;
+    assert.strictEqual(delta2, 0, `Spurious failover detected! Acc2 calls should be 0, got ${delta2}`);
+    console.log(`✓ Client Abort Isolation verified: Acc1=+${delta1}, Acc2=+${delta2} (no failover spam)`);
+
+    // Test 11: Proxied Response CORS Headers
+    console.log('\n[Test 11] Testing CORS headers on proxied response and error responses...');
+    const corsRes = await request('/v1/chat/completions', { method: 'POST', body: '{}' });
+    assert.strictEqual(corsRes.statusCode, 200);
+    assert.strictEqual(corsRes.headers['access-control-allow-origin'], '*', 'Proxied response must have CORS allow origin');
+    console.log('✓ Proxied response CORS headers verified');
+
+    // Test 12: Auto-Repair API (/balancer/api/repair)
+    console.log('\n[Test 12] Testing Auto-Repair API (/balancer/api/repair)...');
+    const repairRes = await request('/balancer/api/repair', { method: 'POST' });
+    assert.strictEqual(repairRes.statusCode, 200);
+    const repairJson = JSON.parse(repairRes.body);
+    assert.strictEqual(repairJson.success, true);
+    assert(Array.isArray(repairJson.results));
+    console.log(`✓ Auto-Repair API verified: executed ${repairJson.results.length} repair actions`);
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 9 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 12 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
