@@ -87,7 +87,9 @@ async function runTests() {
   // Create isolated temporary test config
   const testConfigFile = path.join(__dirname, `config.test-${Date.now()}.json`);
   const testConfigDir = path.join(os.tmpdir(), `test-opencode-${Date.now()}`);
+  const testSnapshotsDir = path.join(os.tmpdir(), `test-snapshots-${Date.now()}`);
   fs.mkdirSync(testConfigDir, { recursive: true });
+  fs.mkdirSync(testSnapshotsDir, { recursive: true });
 
   const testConfig = {
     port: routerPort,
@@ -110,6 +112,7 @@ async function runTests() {
       ...process.env,
       OPENCODE_ROUTER_CONFIG: testConfigFile,
       OPENCODE_CONFIG_DIR: testConfigDir,
+      OPENCODE_SNAPSHOTS_DIR: testSnapshotsDir,
       PORT: String(routerPort)
     }
   });
@@ -399,8 +402,53 @@ async function runTests() {
     assert.strictEqual(goodJson.success, true);
     console.log('✓ Open Local File API verified: 400/404/200 checks all passed');
 
+    // [Test 16] Testing Component Updates Check API
+    console.log('\n[Test 16] Testing Component Updates Check API (/balancer/api/updates/check)...');
+    const resCheck = await request('/balancer/api/updates/check');
+    assert.strictEqual(resCheck.statusCode, 200);
+    const checkJson = JSON.parse(resCheck.body);
+    assert.ok(Array.isArray(checkJson.components), 'components should be an array');
+    assert.strictEqual(checkJson.components.length, 5, 'should have 5 core components');
+    assert.ok(checkJson.compatibility, 'should have compatibility object');
+    assert.ok(['safe', 'warning', 'critical'].includes(checkJson.compatibility.riskLevel), 'valid risk level');
+    assert.strictEqual(checkJson.compatibility.canProceed, true, 'non-blocking guarantee must hold');
+    console.log(`✓ Updates Check API verified: detected ${checkJson.components.length} components, riskLevel=${checkJson.compatibility.riskLevel}`);
+
+    // [Test 17] Testing Component Updates Apply & Snapshot API
+    console.log('\n[Test 17] Testing Component Updates Apply & Snapshot API (/balancer/api/updates/apply & /balancer/api/updates/snapshots)...');
+    const resApply = await request('/balancer/api/updates/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ components: ['opencode-go-router'], timeoutMs: 1500 })
+    });
+    assert.strictEqual(resApply.statusCode, 200);
+    const applyJson = JSON.parse(resApply.body);
+    assert.strictEqual(applyJson.success, true);
+    assert.ok(applyJson.snapshotId, 'snapshotId must be returned');
+
+    const resSnapshots = await request('/balancer/api/updates/snapshots');
+    assert.strictEqual(resSnapshots.statusCode, 200);
+    const snapsJson = JSON.parse(resSnapshots.body);
+    assert.strictEqual(snapsJson.success, true);
+    assert.ok(snapsJson.snapshots.length > 0, 'snapshots must contain at least 1 record');
+    assert.strictEqual(snapsJson.snapshots[0].id, applyJson.snapshotId);
+    console.log(`✓ Updates Apply & Snapshots API verified: created ${applyJson.snapshotId}`);
+
+    // [Test 18] Testing Component Updates Rollback API
+    console.log('\n[Test 18] Testing Component Updates Rollback API (/balancer/api/updates/rollback)...');
+    const resRollback = await request('/balancer/api/updates/rollback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: applyJson.snapshotId, reinstallPackages: false })
+    });
+    assert.strictEqual(resRollback.statusCode, 200);
+    const rbJson = JSON.parse(resRollback.body);
+    assert.strictEqual(rbJson.success, true);
+    assert.strictEqual(rbJson.snapshotId, applyJson.snapshotId);
+    console.log(`✓ Updates Rollback API verified: restored from ${rbJson.snapshotId}`);
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 15 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 18 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
@@ -410,6 +458,9 @@ async function runTests() {
     }
     if (fs.existsSync(testConfigDir)) {
       try { fs.rmSync(testConfigDir, { recursive: true, force: true }); } catch (e) {}
+    }
+    if (fs.existsSync(testSnapshotsDir)) {
+      try { fs.rmSync(testSnapshotsDir, { recursive: true, force: true }); } catch (e) {}
     }
   }
 }

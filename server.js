@@ -1050,6 +1050,21 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     report.issues.push({ id: 'accounts_cooling_down', severity: 'medium', title: `${coolingAccs.length} 个账号处于限频冷却中`, desc: '可点击一键重置冷却状态即刻恢复流量分配' });
   }
 
+  // 7. Check component versions & ecosystem updates
+  try {
+    const updater = require('./updater');
+    const localVers = updater.detectLocalVersions();
+    report.components = localVers;
+    if (localVers['oh-my-openagent'] && updater.compareSemver('5.1.24', localVers['oh-my-openagent']) > 0) {
+      report.issues.push({
+        id: 'omo_update_available',
+        severity: 'low',
+        title: `Oh My OpenAgent 插件存在新版本 (v${localVers['oh-my-openagent']} -> v5.1.24)`,
+        desc: '可在更新管理面板中一键同步升级插件以获得最新多智能体调度特性'
+      });
+    }
+  } catch (e) {}
+
   return report;
 }
 
@@ -1088,7 +1103,7 @@ function executeSystemRepair() {
     } else {
       isNew = true;
       ocData = {
-        plugin: ["oh-my-openagent@5.1.22", "opencode-goal-plugin"],
+        plugin: ["oh-my-openagent@5.1.24", "opencode-goal-plugin"],
         $schema: "https://opencode.ai/config.json",
         provider: {}
       };
@@ -1097,7 +1112,7 @@ function executeSystemRepair() {
     if (typeof ocData === 'object' && ocData !== null) {
       if (!Array.isArray(ocData.plugin)) ocData.plugin = [];
       if (!ocData.plugin.some(p => String(p).includes('oh-my-openagent'))) {
-        ocData.plugin.push('oh-my-openagent@5.1.22');
+        ocData.plugin.push('oh-my-openagent@5.1.24');
       }
       if (!ocData.plugin.some(p => String(p).includes('opencode-goal-plugin'))) {
         ocData.plugin.push('opencode-goal-plugin');
@@ -1922,6 +1937,78 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Updates Check API
+  if (reqUrl.pathname === '/balancer/api/updates/check' && req.method === 'GET') {
+    const updater = require('./updater');
+    updater.checkAllUpdates().then((report) => {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(report, null, 2));
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    });
+    return;
+  }
+
+  // Updates Apply API
+  if (reqUrl.pathname === '/balancer/api/updates/apply' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      const updater = require('./updater');
+      let payload = {};
+      if (body.length > 0) {
+        try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+      }
+      updater.applyUpdates(payload.components || null, payload).then((results) => {
+        loadConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(results, null, 2));
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      });
+    });
+    return;
+  }
+
+  // Updates Rollback API
+  if (reqUrl.pathname === '/balancer/api/updates/rollback' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const updater = require('./updater');
+        let payload = {};
+        if (body.length > 0) {
+          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        }
+        const results = updater.rollbackSnapshot(payload.snapshotId || null, payload);
+        loadConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(results, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Updates Snapshots List API
+  if (reqUrl.pathname === '/balancer/api/updates/snapshots' && req.method === 'GET') {
+    try {
+      const updater = require('./updater');
+      const list = updater.listSnapshots();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, snapshots: list }, null, 2));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
   // Web UI Dashboard & Graphical Config Center
   if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {
     if (config.uiPassword && !isAuthorized(req)) {
@@ -2239,6 +2326,44 @@ const server = http.createServer((req, res) => {
       color: #64748b;
       text-align: right;
     }
+
+    /* Updates and Compatibility Matrix */
+    .update-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 0.85rem;
+    }
+    .update-table th, .update-table td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid #334155;
+    }
+    .update-table th {
+      color: #94a3b8;
+      font-weight: 600;
+      background: #1e293b;
+    }
+    .badge-update {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-ok { background: rgba(52, 211, 153, 0.2); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.4); }
+    .badge-warn { background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); }
+    .badge-danger { background: rgba(248, 113, 113, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.4); }
+    .alert-box {
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-top: 10px;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    .alert-box-warn { background: rgba(251, 191, 36, 0.1); border: 1px solid #fbbf24; color: #fef08a; }
+    .alert-box-danger { background: rgba(248, 113, 113, 0.1); border: 1px solid #f87171; color: #fecaca; }
+    .alert-box-success { background: rgba(52, 211, 153, 0.1); border: 1px solid #34d399; color: #a7f3d0; }
   </style>
 </head>
 <body>
@@ -2253,6 +2378,7 @@ const server = http.createServer((req, res) => {
         <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()">⚡ 全部测速</button>
         <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas()">📊 刷新配额</button>
         <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
+        <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">📦 检查更新</button>
         <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
         <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
         <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="退出管理登录" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出登录</button>
@@ -2279,6 +2405,21 @@ const server = http.createServer((req, res) => {
       </div>
       <div id="doctor-content" class="doctor-box">
         <span style="color:var(--muted)">点击【一键体检】检查 OpenCode CLI、端口重定向、OMO配置与工作区状态...</span>
+      </div>
+    </div>
+
+    <!-- 全组件最新版本监测、兼容性诊断与安全升级区域 -->
+    <div class="card" id="updates-card">
+      <div class="section-title">
+        <span>📦 全组件最新版本监测、兼容性诊断与安全更新 (Updates & Rollback)</span>
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔍 检查最新版本</button>
+          <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="applyUpdatesClick()">🚀 一键安全更新</button>
+          <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="showRollbackModal()">⏪ 灾备一键回滚</button>
+        </div>
+      </div>
+      <div id="updates-content" class="doctor-box">
+        <span style="color:var(--muted)">点击【检查最新版本】自动检测 OpenCode CLI、OMO 调度插件、Goal 插件、OpenChamber 及智能网关套件的最新版本与兼容性状态...</span>
       </div>
     </div>
 
@@ -2819,6 +2960,219 @@ const server = http.createServer((req, res) => {
         }
       } catch (e) {
         showToast('请求异常: ' + e.message, true);
+      }
+    }
+
+    let lastUpdateReport = null;
+
+    async function checkUpdates() {
+      const box = document.getElementById('updates-content');
+      box.innerHTML = '<span style="color:var(--primary)">⏳ 正在联网检索各组件最新发布版本与兼容性状态...</span>';
+      try {
+        const res = await fetch('/balancer/api/updates/check', { headers: apiHeaders() });
+        const report = await res.json();
+        lastUpdateReport = report;
+
+        let compBadgeCls = 'badge-ok';
+        let compBadgeText = '✅ 完全兼容';
+        if (report.compatibility.riskLevel === 'critical') {
+          compBadgeCls = 'badge-danger';
+          compBadgeText = '🛑 存在破坏性跨版本/冲突风险';
+        } else if (report.compatibility.riskLevel === 'warning') {
+          compBadgeCls = 'badge-warn';
+          compBadgeText = '⚠️ 存在版本变动或需同步更新';
+        }
+
+        let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">' +
+          '<span><strong>生态兼容性状态：</strong> <span class="badge-update ' + compBadgeCls + '">' + compBadgeText + '</span></span>' +
+          '<span style="color:var(--muted); font-size:0.8rem;">检测时间: ' + new Date(report.timestamp).toLocaleTimeString() + '</span>' +
+          '</div>' +
+          '<table class="update-table">' +
+            '<thead>' +
+              '<tr>' +
+                '<th>组件名称与定位</th>' +
+                '<th>本地当前版本</th>' +
+                '<th>官方最新版本</th>' +
+                '<th>状态诊断</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>';
+
+        report.components.forEach(function(c) {
+          const stBadge = c.hasUpdate
+            ? '<span class="badge-update badge-warn">待更新 (v' + c.latest + ')</span>'
+            : '<span class="badge-update badge-ok">已是最新 (v' + c.current + ')</span>';
+          html += '<tr>' +
+            '<td><div style="font-weight:600; color:var(--text);">' + c.name + '</div><div style="color:var(--muted); font-size:0.75rem;">' + c.desc + '</div></td>' +
+            '<td style="font-family:monospace; font-weight:600; color:' + (c.current === '未知' ? 'var(--muted)' : 'var(--text)') + ';">' + c.current + '</td>' +
+            '<td style="font-family:monospace; font-weight:600; color:var(--primary);">' + c.latest + '</td>' +
+            '<td>' + stBadge + '</td>' +
+          '</tr>';
+        });
+
+        html += '</tbody></table>';
+
+        if (report.compatibility.warnings && report.compatibility.warnings.length > 0) {
+          const alertCls = report.compatibility.riskLevel === 'critical' ? 'alert-box-danger' : 'alert-box-warn';
+          html += '<div class="alert-box ' + alertCls + '"><strong>⚠️ 兼容性与版本变动重点预警：</strong><ul style="margin:4px 0 0 16px; padding:0;">';
+          report.compatibility.warnings.forEach(function(w) {
+            html += '<li style="margin-bottom:3px;"><strong>' + w.title + '</strong>: ' + w.desc + '</li>';
+          });
+          html += '</ul></div>';
+        }
+
+        if (report.compatibility.recommendations && report.compatibility.recommendations.length > 0) {
+          html += '<div style="margin-top:8px; font-size:0.82rem; color:var(--muted);"><strong>💡 专家建议：</strong> ' + report.compatibility.recommendations.join('；') + '</div>';
+        }
+
+        if (report.snapshots && report.snapshots.length > 0) {
+          html += '<div style="margin-top:12px; padding-top:8px; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; font-size:0.8rem;">' +
+            '<span style="color:var(--muted)">现有可用灾备快照: <strong>' + report.snapshots.length + '</strong> 份（最近备份: ' + new Date(report.snapshots[0].timestamp).toLocaleString() + '）</span>' +
+            '<button class="btn btn-secondary btn-sm" onclick="showRollbackModal()">查看快照历史并秒级回滚</button>' +
+          '</div>';
+        }
+
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = '<span style="color:var(--danger)">检测更新失败: ' + e.message + '</span>';
+      }
+    }
+
+    async function applyUpdatesClick() {
+      if (!lastUpdateReport) {
+        showToast('请先点击【检查最新版本】完成兼容性扫描！', true);
+        await checkUpdates();
+        return;
+      }
+
+      const pendingUpdates = lastUpdateReport.components.filter(function(c) { return c.hasUpdate; });
+      if (pendingUpdates.length === 0) {
+        const proceed = confirm('当前所有组件均为最新版本！是否仍要强制重新校验与刷新所有组件？');
+        if (!proceed) return;
+      } else {
+        let msg = '即将更新以下组件：\n' + pendingUpdates.map(function(c) { return '• ' + c.name + ' (' + c.current + ' -> ' + c.latest + ')'; }).join('\n') + '\n\n';
+        if (lastUpdateReport.compatibility.riskLevel === 'critical') {
+          msg += '🛑 警告：检测到存在跨大版本更新或生态变动风险！\n系统已启用自动快照备份，若更新后出现异常可秒级一键回滚。\n\n是否确认继续一键更新？';
+        } else if (lastUpdateReport.compatibility.riskLevel === 'warning') {
+          msg += '⚠️ 提示：系统将在更新前自动创建全量灾备快照。\n\n是否确认执行一键更新？';
+        } else {
+          msg += '系统将自动创建快照并安全升级。是否确认继续？';
+        }
+        if (!confirm(msg)) return;
+      }
+
+      const box = document.getElementById('updates-content');
+      box.innerHTML = '<span style="color:var(--primary)">🚀 正在执行安全更新流程（自动备份快照 -> 下载升级组件 -> 同步配置 -> 重新挂载 Office 离线预览引擎）... 请稍候...</span>';
+      showToast('正在执行一键安全更新...');
+
+      try {
+        const res = await fetch('/balancer/api/updates/apply', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ skipBackup: false })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('🎉 组件安全更新流程全部完成！');
+          let html = '<div style="color:var(--success); font-weight:600; margin-bottom:8px;">🎉 全组件一键安全升级完成！(已创建快照: ' + (data.snapshotId || '已备份') + ')</div>';
+          html += '<div style="background:#1e293b; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
+          data.logs.forEach(function(l) {
+            html += '<div>' + l + '</div>';
+          });
+          html += '</div>';
+          html += '<button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔄 刷新版本诊断</button>';
+          box.innerHTML = html;
+          setTimeout(checkUpdates, 1500);
+        } else {
+          box.innerHTML = '<div style="color:var(--danger)">更新失败: ' + (data.error || '未知错误') + '</div>';
+          showToast('更新执行失败', true);
+        }
+      } catch (e) {
+        box.innerHTML = '<div style="color:var(--danger)">更新请求异常: ' + e.message + '</div>';
+        showToast('请求超时或失败: ' + e.message, true);
+      }
+    }
+
+    async function showRollbackModal() {
+      const box = document.getElementById('updates-content');
+      box.innerHTML = '<span style="color:var(--primary)">⏳ 正在检索历史灾备快照记录...</span>';
+      try {
+        const res = await fetch('/balancer/api/updates/snapshots', { headers: apiHeaders() });
+        const data = await res.json();
+        if (!data.success || !data.snapshots || data.snapshots.length === 0) {
+          box.innerHTML = '<div style="color:var(--warning); padding:10px 0;">⚠ 暂无可用快照记录。首次执行【一键安全更新】时将自动生成全量快照。</div><button class="btn btn-secondary btn-sm" onclick="checkUpdates()">返回版本诊断</button>';
+          return;
+        }
+
+        let html = '<div style="margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">' +
+          '<strong>⏪ 灾备一键回滚 (选择还原点恢复至稳定状态)：</strong>' +
+          '<button class="btn btn-secondary btn-sm" onclick="checkUpdates()">返回版本矩阵</button>' +
+        '</div>' +
+        '<div style="font-size:0.85rem; color:var(--muted); margin-bottom:8px;">' +
+          '回滚将瞬间复原 <code>opencode.jsonc</code>、<code>omo.jsonc</code>、智能网关配置，并按需还原对应版本的组件与 Office 预览引擎。' +
+        '</div>' +
+        '<table class="update-table">' +
+          '<thead>' +
+            '<tr>' +
+              '<th>快照编号 (Snapshot ID)</th>' +
+              '<th>创建时间</th>' +
+              '<th>备份原因</th>' +
+              '<th>包含版本快照</th>' +
+              '<th>操作</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody>';
+
+        data.snapshots.forEach(function(s) {
+          const vStr = s.versions ? ('opencode: ' + (s.versions.opencode || '-') + ', omo: ' + (s.versions[\'oh-my-openagent\'] || '-')) : '-';
+          html += '<tr>' +
+            '<td style="font-family:monospace; font-weight:600;">' + s.id + '</td>' +
+            '<td style="font-size:0.8rem; color:var(--muted);">' + new Date(s.timestamp).toLocaleString() + '</td>' +
+            '<td>' + (s.reason || '自动快照') + '</td>' +
+            '<td style="font-size:0.75rem; color:var(--muted); font-family:monospace;">' + vStr + '</td>' +
+            '<td><button class="btn btn-danger btn-sm" onclick="executeRollback(\'' + s.id + '\')">恢复此快照</button></td>' +
+          '</tr>';
+        });
+
+        html += '</tbody></table>';
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = '<span style="color:var(--danger)">查询快照失败: ' + e.message + '</span>';
+      }
+    }
+
+    async function executeRollback(snapshotId) {
+      if (!confirm('⚠️ 确认要执行灾备回滚至快照 [' + snapshotId + '] 吗？\n\n系统将秒级复原配置与组件状态。')) return;
+      const box = document.getElementById('updates-content');
+      box.innerHTML = '<span style="color:var(--primary)">⏪ 正在执行一键灾备回滚恢复...</span>';
+      showToast('正在回滚至快照 ' + snapshotId + '...');
+
+      try {
+        const res = await fetch('/balancer/api/updates/rollback', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ snapshotId: snapshotId, reinstallPackages: false })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('🎉 灾备回滚成功！系统已秒级恢复！');
+          let html = '<div style="color:var(--success); font-weight:600; margin-bottom:8px;">🎉 灾备回滚成功！系统配置已恢复至 ' + new Date(data.timestamp).toLocaleString() + ' 状态。</div>' +
+          '<div style="background:#1e293b; padding:10px; border-radius:6px; font-size:0.82rem; margin-bottom:10px;">';
+          data.restoredItems.forEach(function(item) {
+            html += '<div>✔ 已还原: ' + (item.file || item.action) + ' (' + item.status + ')</div>';
+          });
+          html += '</div>' +
+          '<button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔄 刷新版本状态</button>';
+          box.innerHTML = html;
+          fetchConfig();
+          fetchStatus();
+        } else {
+          box.innerHTML = '<div style="color:var(--danger)">回滚失败: ' + (data.error || '未知错误') + '</div>';
+          showToast('回滚执行失败', true);
+        }
+      } catch (e) {
+        box.innerHTML = '<div style="color:var(--danger)">回滚请求异常: ' + e.message + '</div>';
+        showToast('回滚请求异常: ' + e.message, true);
       }
     }
 

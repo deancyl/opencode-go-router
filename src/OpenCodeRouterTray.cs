@@ -111,6 +111,10 @@ namespace OpenCodeRouter
             menuDoctor.Click += (s, e) => RunDoctor();
             menu.Items.Add(menuDoctor);
 
+            ToolStripMenuItem menuUpdates = new ToolStripMenuItem("📦 检查更新与组件版本诊断");
+            menuUpdates.Click += (s, e) => CheckUpdates();
+            menu.Items.Add(menuUpdates);
+
             ToolStripMenuItem menuBind = new ToolStripMenuItem("⚡ 一键应用至 OpenCode / OpenChamber");
             menuBind.Click += (s, e) => BindDesktopClients();
             menu.Items.Add(menuBind);
@@ -284,6 +288,12 @@ namespace OpenCodeRouter
             {
                 OpenDashboard();
             }
+        }
+
+        static void CheckUpdates()
+        {
+            EnsureRouterRunning();
+            OpenDashboard();
         }
 
         static void BindDesktopClients()

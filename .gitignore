@@ -15,6 +15,7 @@ stdout.log
 # Node & Temp
 node_modules/
 config.test*.json
+snapshots/
 
 # OS artifacts
 Thumbs.db

@@ -191,7 +191,7 @@ function Step-SetupRouter {
             $ocObj = Get-Content $opencodeConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
         } else {
             $ocObj = [PSCustomObject]@{
-                plugin = @("oh-my-openagent@5.1.22", "opencode-goal-plugin")
+                plugin = @("oh-my-openagent@5.1.24", "opencode-goal-plugin")
                 "`$schema" = "https://opencode.ai/config.json"
                 provider = [PSCustomObject]@{}
             }
@@ -263,7 +263,7 @@ function Step-SetupOMO {
     # 1. Ensure plugin in opencode.jsonc
     if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
     
-    $pluginName = "oh-my-openagent@5.1.22"
+    $pluginName = "oh-my-openagent@5.1.24"
     if (Test-Path $opencodeConfigFile) {
         $oc = Get-Content $opencodeConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
         $plugins = [System.Collections.Generic.List[string]]::new()
@@ -521,6 +521,118 @@ function Step-SetupOfficePreview {
     }
 }
 
+# ----------------- 步骤 9: 一键检测更新、兼容性诊断与安全升级/回滚 -----------------
+function Step-ManageUpdates {
+    Write-Header "【步骤 9】全组件最新版本监测、兼容性诊断与安全升级/回滚"
+    $updaterJs = Join-Path $rootDir "updater.js"
+    if (-not (Test-Path $updaterJs)) {
+        Write-Host "❌ 未找到 updater.js 模块！" -ForegroundColor Red
+        return
+    }
+
+    Write-Host "正在联网检测各组件最新发布版本与兼容性状态..." -ForegroundColor Yellow
+    $reportRaw = & node $updaterJs check
+    if (-not $reportRaw) {
+        Write-Host "❌ 获取组件更新状态失败！" -ForegroundColor Red
+        return
+    }
+
+    $report = $reportRaw | ConvertFrom-Json
+    
+    Write-Host "`n--- 组件版本诊断矩阵 ---" -ForegroundColor Cyan
+    Write-Host ("{0,-35} {1,-14} {2,-14} {3}" -f "组件名称", "当前本地版本", "官方最新版本", "状态") -ForegroundColor DarkGray
+    Write-Host ("-" * 75) -ForegroundColor DarkGray
+    foreach ($c in $report.components) {
+        $st = if ($c.hasUpdate) { "待更新 (可升级)" } else { "已是最新" }
+        $color = if ($c.hasUpdate) { "Yellow" } else { "Green" }
+        Write-Host ("{0,-35} {1,-14} {2,-14} {3}" -f $c.name, $c.current, $c.latest, $st) -ForegroundColor $color
+    }
+
+    Write-Host "`n--- 生态兼容性诊断 ---" -ForegroundColor Cyan
+    if ($report.compatibility.riskLevel -eq "critical") {
+        Write-Host "🛑 风险评级: 存在重大跨版本破坏性变更预警！" -ForegroundColor Red
+    } elseif ($report.compatibility.riskLevel -eq "warning") {
+        Write-Host "⚠️ 风险评级: 存在次版本更新或插件需同步升级" -ForegroundColor Yellow
+    } else {
+        Write-Host "✅ 风险评级: 全生态高度兼容，环境健康" -ForegroundColor Green
+    }
+    Write-Host "诊断总结: $($report.compatibility.summary)" -ForegroundColor White
+
+    if ($report.compatibility.warnings) {
+        Write-Host "`n重点预警：" -ForegroundColor Yellow
+        foreach ($w in $report.compatibility.warnings) {
+            Write-Host " • $($w.title): $($w.desc)" -ForegroundColor DarkYellow
+        }
+    }
+    if ($report.compatibility.recommendations) {
+        Write-Host "`n优化建议：" -ForegroundColor Cyan
+        foreach ($r in $report.compatibility.recommendations) {
+            Write-Host " • $r" -ForegroundColor Gray
+        }
+    }
+
+    $snapCount = if ($report.snapshots) { $report.snapshots.Count } else { 0 }
+    Write-Host "`n当前已有灾备快照: $snapCount 份" -ForegroundColor DarkGray
+
+    Write-Host "`n请选择操作：" -ForegroundColor Cyan
+    Write-Host "  [1] 🚀 一键安全更新所有待更新组件 (自动创建全量灾备快照)" -ForegroundColor White
+    Write-Host "  [2] 仅更新 OpenCode CLI 核心引擎 (@opencode/cli)" -ForegroundColor White
+    Write-Host "  [3] 仅更新 Oh My OpenAgent 插件与配置" -ForegroundColor White
+    Write-Host "  [4] ⏪ 一键灾备回滚 (从最新快照秒级还原)" -ForegroundColor Yellow
+    Write-Host "  [5] 📋 查看历史备份快照记录" -ForegroundColor White
+    Write-Host "  [0] 返回主菜单" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $upChoice = Read-Host "请输入编号 [默认: 1]"
+    if (-not $upChoice) { $upChoice = "1" }
+
+    switch ($upChoice) {
+        "1" {
+            if ($report.compatibility.riskLevel -eq "critical") {
+                $confirm = Read-Host "⚠️ 检测到破坏性重大更新风险，是否确认继续升级？系统已提供灾备快照秒级回滚 (y/N)"
+                if ($confirm -ne "y" -and $confirm -ne "Y") {
+                    Write-Host "已取消升级。" -ForegroundColor DarkGray
+                    return
+                }
+            }
+            Write-Host "正在执行一键安全更新流程..." -ForegroundColor Yellow
+            & node $updaterJs apply
+            Write-Host "🎉 一键更新完成！" -ForegroundColor Green
+        }
+        "2" {
+            Write-Host "正在单独更新 OpenCode CLI 核心..." -ForegroundColor Yellow
+            & node $updaterJs apply opencode
+            Write-Host "🎉 OpenCode CLI 更新完成！" -ForegroundColor Green
+        }
+        "3" {
+            Write-Host "正在单独更新 Oh My OpenAgent 插件..." -ForegroundColor Yellow
+            & node $updaterJs apply oh-my-openagent
+            Write-Host "🎉 OMO 插件更新完成！" -ForegroundColor Green
+        }
+        "4" {
+            $confirmRb = Read-Host "⚠️ 确认要执行灾备回滚吗？系统将从最新快照复原配置与状态 (y/N)"
+            if ($confirmRb -eq "y" -or $confirmRb -eq "Y") {
+                Write-Host "正在执行灾备回滚..." -ForegroundColor Yellow
+                & node $updaterJs rollback
+                Write-Host "🎉 灾备回滚完成！系统配置已恢复！" -ForegroundColor Green
+            }
+        }
+        "5" {
+            Write-Host "`n--- 历史灾备快照列表 ---" -ForegroundColor Cyan
+            $snaps = & node $updaterJs snapshots | ConvertFrom-Json
+            if ($snaps -and $snaps.Count -gt 0) {
+                foreach ($sn in $snaps) {
+                    Write-Host " • 快照编号: $($sn.id) | 时间: $($sn.timestamp) | 描述: $($sn.reason)" -ForegroundColor White
+                }
+            } else {
+                Write-Host "暂无快照记录。" -ForegroundColor DarkGray
+            }
+        }
+        "0" { return }
+        default { return }
+    }
+}
+
 # ----------------- 主流程分发 -----------------
 if ($All) {
     Step-RunAll
@@ -538,6 +650,7 @@ if ($Step -and $Step.Count -gt 0) {
             6 { Step-RunAll }
             7 { Step-RunDoctor }
             8 { Step-SetupOfficePreview }
+            9 { Step-ManageUpdates }
         }
     }
     exit 0
@@ -556,10 +669,11 @@ while ($true) {
     Write-Host "  [6] 🚀 全栈一键自动配置 (依次完成上述全部 1-5 及 Office 预览步骤)" -ForegroundColor Green
     Write-Host "  [7] 🩺 系统全链路健康体检与异常一键修复 (Doctor & Repair)" -ForegroundColor Yellow
     Write-Host "  [8] 📄 挂载/管理 OpenChamber 全能 Office 离线预览引擎 (.docx/.xlsx/.pptx)" -ForegroundColor Cyan
+    Write-Host "  [9] 📦 一键检测全套组件更新、兼容性诊断与安全升级/回滚" -ForegroundColor White
     Write-Host "  [0] 退出向导" -ForegroundColor DarkGray
     Write-Host ""
 
-    $selected = Read-Host "请输入编号 [0-8]"
+    $selected = Read-Host "请输入编号 [0-9]"
     switch ($selected) {
         "1" { Step-InstallOpenCode }
         "2" { Step-SetupRouter }
@@ -569,6 +683,7 @@ while ($true) {
         "6" { Step-RunAll }
         "7" { Step-RunDoctor }
         "8" { Step-SetupOfficePreview }
+        "9" { Step-ManageUpdates }
         "0" { Write-Host "已退出向导。" -ForegroundColor Gray; break }
         default { Write-Host "无效输入，请重新选择。" -ForegroundColor Red }
     }

@@ -31,9 +31,12 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_SRC="$SCRIPT_DIR/assets/office-preview-engine.js"
+if [[ ! -f "$ENGINE_SRC" ]]; then
+  ENGINE_SRC="$SCRIPT_DIR/office-preview-engine.js"
+fi
 
 if [[ ! -f "$ENGINE_SRC" ]]; then
-  echo "❌ 未在 assets 目录下找到 office-preview-engine.js 引擎包！"
+  echo "❌ 未在 assets 或根目录下找到 office-preview-engine.js 引擎包！"
   exit 1
 fi
 

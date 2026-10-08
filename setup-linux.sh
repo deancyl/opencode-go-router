@@ -707,6 +707,47 @@ if [[ "$OPT_ALL" == true ]]; then
   exit 0
 fi
 
+manage_updates() {
+  echo -e "\n${CYAN}================ 全组件更新监测与安全升级 ================${NC}"
+  local updater_js="$SCRIPT_DIR/updater.js"
+  if [[ ! -f "$updater_js" ]]; then
+    echo -e "${RED}❌ 未找到 updater.js 模块！${NC}"
+    return
+  fi
+
+  echo -e "${YELLOW}正在检测全组件最新版本与兼容性状态...${NC}"
+  node "$updater_js" check
+  echo ""
+  echo "请选择操作："
+  echo " [1] 一键安全更新全部组件 (自动生成灾备快照)"
+  echo " [2] 一键灾备回滚 (从最新快照秒级还原)"
+  echo " [3] 查看历史快照列表"
+  echo " [0] 返回上级"
+  read -rp "请输入 [默认: 1]: " up_opt
+  case "$up_opt" in
+    1)
+      echo -e "${YELLOW}正在执行一键安全更新...${NC}"
+      node "$updater_js" apply
+      echo -e "${GREEN}✔ 更新执行完成！${NC}"
+      ;;
+    2)
+      read -rp "确认执行灾备回滚吗？(y/N): " rb_confirm
+      if [[ "$rb_confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}正在执行灾备回滚...${NC}"
+        node "$updater_js" rollback
+        echo -e "${GREEN}✔ 灾备回滚完成！${NC}"
+      fi
+      ;;
+    3)
+      node "$updater_js" snapshots
+      ;;
+    0) ;;
+    *)
+      node "$updater_js" apply
+      ;;
+  esac
+}
+
 # 交互式菜单模式
 interactive_menu() {
   check_node_env
@@ -721,9 +762,10 @@ interactive_menu() {
     echo " [7] 查看运行状态与官方配额"
     echo " [8] 运行健康体检 (Doctor) 与自动修复"
     echo " [9] 📄 挂载/管理 OpenChamber 全能 Office 离线预览引擎 (.docx/.xlsx/.pptx)"
+    echo " [10] 📦 一键检测全套组件更新、兼容性诊断与安全升级/回滚"
     echo " [0] 退出"
     echo -e "${CYAN}================================================${NC}"
-    read -rp "请输入数字 [0-9]: " choice
+    read -rp "请输入数字 [0-10]: " choice
 
     case "$choice" in
       1)
@@ -782,6 +824,9 @@ interactive_menu() {
         else
           echo -e "${RED}❌ 未找到 patch-openchamber-office.sh${NC}"
         fi
+        ;;
+      10)
+        manage_updates
         ;;
       0)
         echo "退出向导。"

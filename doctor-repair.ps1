@@ -19,7 +19,7 @@ $defaultWorkspace = "D:\opencode\default"
 $issuesFound = [System.Collections.Generic.List[PSObject]]::new()
 
 # ----------------- 1. 检测 OpenCode CLI -----------------
-Write-Host "`n[1/6] 检查 OpenCode CLI 环境..." -ForegroundColor Yellow
+Write-Host "`n[1/7] 检查 OpenCode CLI 环境..." -ForegroundColor Yellow
 $opencodeVer = $null
 $opencodePath = $null
 
@@ -71,7 +71,7 @@ if ($opencodeVer) {
 }
 
 # ----------------- 2. 检测 4010 订阅路由与端到端探针 -----------------
-Write-Host "`n[2/6] 检查 4010 智能网关与端到端推理链路..." -ForegroundColor Yellow
+Write-Host "`n[2/7] 检查 4010 智能网关与端到端推理链路..." -ForegroundColor Yellow
 $routerConn = Get-NetTCPConnection -LocalPort $routerPort -State Listen -ErrorAction SilentlyContinue
 if ($routerConn) {
     Write-Host "  ✔ 4010 智能网关正在运行 (PID: $($routerConn.OwningProcess[0]))" -ForegroundColor Green
@@ -128,7 +128,7 @@ if ($routerConn) {
 }
 
 # ----------------- 3. 检测 OpenCode 配置文件与配置冲突 -----------------
-Write-Host "`n[3/6] 检查 OpenCode 配置文件与冲突隔离..." -ForegroundColor Yellow
+Write-Host "`n[3/7] 检查 OpenCode 配置文件与冲突隔离..." -ForegroundColor Yellow
 if (Test-Path $opencodeConfig) {
     $ocContent = Get-Content $opencodeConfig -Raw -Encoding UTF8
     
@@ -196,7 +196,7 @@ if (Test-Path $opencodeConfig) {
 }
 
 # ----------------- 4. 检测 DeepSeek 区域限制与 OMO Fallback -----------------
-Write-Host "`n[4/6] 检查 Oh My OpenAgent 调度配置与 DeepSeek 区域限制..." -ForegroundColor Yellow
+Write-Host "`n[4/7] 检查 Oh My OpenAgent 调度配置与 DeepSeek 区域限制..." -ForegroundColor Yellow
 if (Test-Path $omoConfig) {
     $omoContent = Get-Content $omoConfig -Raw -Encoding UTF8
     if ($omoContent -like "*opencode-go/deepseek*" -and $omoContent -notlike "*kimi-k3*") {
@@ -221,7 +221,7 @@ if (Test-Path $omoConfig) {
 }
 
 # ----------------- 5. 检测 Goal 插件与 /boost 指令 -----------------
-Write-Host "`n[5/6] 检查 Goal 目标推进体系与 /boost 模式..." -ForegroundColor Yellow
+Write-Host "`n[5/7] 检查 Goal 目标推进体系与 /boost 模式..." -ForegroundColor Yellow
 if (Test-Path $boostCommand) {
     Write-Host "  ✔ /boost 增强指令模版已就绪" -ForegroundColor Green
 } else {
@@ -235,7 +235,7 @@ if (Test-Path $boostCommand) {
 }
 
 # ----------------- 6. 检测 OpenChamber 工作区环境与服务状态 -----------------
-Write-Host "`n[6/6] 检查 OpenChamber 工作区环境与托管服务状态..." -ForegroundColor Yellow
+Write-Host "`n[6/7] 检查 OpenChamber 工作区环境与托管服务状态..." -ForegroundColor Yellow
 if (Test-Path $defaultWorkspace) {
     if (Test-Path (Join-Path $defaultWorkspace ".git")) {
         Write-Host "  ✔ 工作区 $defaultWorkspace 已初始化 Git 版本库" -ForegroundColor Green
@@ -329,6 +329,39 @@ if ($foundDist) {
             Severity = "Low"
             FixDesc = "自动注入纯本地离线引擎，秒级支持 .docx/.xlsx/.pptx 原生内嵌预览与双轨原厂打开"
         })
+    }
+}
+
+# ----------------- 7. 检测组件版本更新与生态兼容性诊断 -----------------
+Write-Host "`n[7/7] 检查套件组件版本更新与生态兼容性诊断..." -ForegroundColor Yellow
+$updaterScript = Join-Path $PSScriptRoot "updater.js"
+if (Test-Path $updaterScript) {
+    try {
+        $updateJson = (& node $updaterScript check 2>$null)
+        if ($updateJson) {
+            $updateReport = $updateJson | ConvertFrom-Json
+            if ($updateReport.compatibility.riskLevel -eq "critical") {
+                Write-Host "  🛑 发现组件版本重大跨越或生态兼容性风险！" -ForegroundColor Red
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "components_critical_risk"
+                    Title = "组件存在破坏性跨版本更新或兼容性脱节"
+                    Severity = "High"
+                    FixDesc = "使用一键更新管理功能，在自动快照保护下执行同步更新或回滚"
+                })
+            } elseif ($updateReport.compatibility.riskLevel -eq "warning") {
+                Write-Host "  ⚠ 检测到组件有更新可用 ($($updateReport.compatibility.summary))" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "components_update_available"
+                    Title = "存在待更新的套件组件 (如 OMO 5.1.24 或核心引擎)"
+                    Severity = "Medium"
+                    FixDesc = "在更新管理面板或向导中一键安全更新，保持最新生态适配"
+                })
+            } else {
+                Write-Host "  ✔ 全套组件版本最新且高度兼容" -ForegroundColor Green
+            }
+        }
+    } catch {
+        Write-Host "  ℹ 版本检测已略过: $_" -ForegroundColor DarkGray
     }
 }
 
@@ -434,7 +467,7 @@ foreach ($iss in $issuesFound) {
             $ocDir = Split-Path $opencodeConfig -Parent
             if (-not (Test-Path $ocDir)) { New-Item -ItemType Directory -Path $ocDir -Force | Out-Null }
             $defaultConfig = @{
-                plugin = @("oh-my-openagent@5.1.22", "opencode-goal-plugin")
+                plugin = @("oh-my-openagent@5.1.24", "opencode-goal-plugin")
                 "`$schema" = "https://opencode.ai/config.json"
                 model = "opencode-go/deepseek-v4.1-flash"
                 provider = @{
@@ -667,6 +700,22 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
         }
         "deepseek_region_risk" {
             Write-Host " -> 提示: OMO 已包含 kimi-k3 与 qwen3.7-plus 路由，若遇区域限制请在界面选用上述模型" -ForegroundColor Cyan
+        }
+        "components_update_available" {
+            Write-Host " -> 正在自动同步更新 opencode.jsonc 插件版本标签..." -ForegroundColor Yellow
+            try {
+                if (Test-Path $opencodeConfig) {
+                    $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
+                    $fixed = $raw -replace "oh-my-openagent(@\d+\.\d+\.\d+)?", "oh-my-openagent@5.1.24"
+                    Set-Content -Path $opencodeConfig -Value $fixed -Encoding UTF8
+                    Write-Host "    ✔ opencode.jsonc 插件标签已同步更新至 oh-my-openagent@5.1.24" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ 插件标签更新提示: $_" -ForegroundColor DarkGray
+            }
+        }
+        "components_critical_risk" {
+            Write-Host " -> 提示: 存在重大破坏性跨版本更新，建议在 Web 面板 (/balancer/ui) 或 setup-wizard.ps1 [9] 中查看兼容性预警并执行一键升级/回滚" -ForegroundColor Yellow
         }
     }
 }

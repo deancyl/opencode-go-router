@@ -15,9 +15,12 @@ Write-Host "==========================================================" -Foregro
 
 $scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 $engineSource = Join-Path $scriptRoot "assets\office-preview-engine.js"
+if (-not (Test-Path $engineSource)) {
+    $engineSource = Join-Path $scriptRoot "office-preview-engine.js"
+}
 
 if (-not (Test-Path $engineSource)) {
-    Write-Host "❌ 未在 assets 目录下找到 office-preview-engine.js 引擎包！" -ForegroundColor Red
+    Write-Host "❌ 未在 assets 或根目录下找到 office-preview-engine.js 引擎包！" -ForegroundColor Red
     exit 1
 }
 

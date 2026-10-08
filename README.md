@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v1.4.0](https://img.shields.io/badge/Version-v1.4.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.0.0](https://img.shields.io/badge/Version-v2.0.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -63,6 +63,15 @@
    - **双轨极速原厂联动**：页面顶部自带【在本地应用中打开】按钮，通过智能网关安全 API 毫秒级调起系统本地原厂 Office 或 WPS 打开源文件；
    - **高性能与虚拟切片保护**：大型 Excel 自动启用 1000 行平滑虚拟分页截断，防卡死防内存膨胀；
    - **跨平台一键挂载与无损还原**：内置 `patch-openchamber-office.ps1`（Windows 原生）与 `patch-openchamber-office.sh`（Linux/NAS），支持 `-Install`、`-Rollback` 与 `-Status`。
+
+8. **全套组件一键检测更新、兼容性诊断与安全回滚系统 (Safe Updater & Rollback Engine - v2.0.0 重磅发布)**：
+   - **5 大核心组件全景监控**：深度监测 `opencode-go-router`、`opencode` CLI、`oh-my-openagent`、`opencode-goal-plugin` 以及 `openchamber` 的本地版本与官方最新版本；
+   - **破坏性变更深度兼容性分析**：智能识别主版本号跨越、破坏性变更（Breaking Changes）、参数废弃、协议不兼容风险，输出三级兼容性评级（`safe` / `warning` / `critical`）与升级建议；
+   - **非阻断式安全预警 (Non-Blocking Warning)**：存在重大不兼容风险时在界面与终端提供醒目告警，但尊重开发者掌控权，支持确认后继续安全升级；
+   - **升级前自动全量快照与灾备**：执行任何组件升级前自动打标备份所有配置文件、命令及状态（保留最多 20 份快照，滚动清理）；
+   - **秒级一键回滚恢复 (One-Click Rollback)**：随时可从历史快照中一键还原全部配置文件，灾备无忧；
+   - **OpenChamber 补丁无缝自愈重挂载**：在升级 OpenChamber 桌面端或 Web 客户端后，自动重新挂载 Office 离线安全预览补丁，杜绝因组件覆盖导致离线预览失效；
+   - **全端协同覆盖**：Web 控制台全新“📦 组件版本与安全更新”面板、Windows `setup-wizard.ps1`、Linux `setup-linux.sh`、`doctor-repair.ps1`（第 7 项更新诊断）、托盘菜单及 `rollback-all.ps1` 全面打通。
 
 ---
 
@@ -271,12 +280,16 @@ powershell -ExecutionPolicy Bypass -File .\stop-all.ps1
 | `/balancer/api/repair` | POST | 需要密码 | 执行一键系统自动修复（端口死链纠正、缺失配置补全、Office 预览引擎挂载） |
 | `/balancer/api/bind-desktop` | POST | 需要密码 | 执行全栈生态客户端（OpenCode / OpenChamber / OMO）一键写入绑定 |
 | `/balancer/api/open-file` | POST | 无/本地校验 | 本地原厂应用程序一键安全唤醒（毫秒级调用系统默认 Office / WPS 打开指定文档） |
+| `/balancer/api/updates/check` | GET | 需要密码 | 一键检测全套 5 大组件最新版本与破坏性变更兼容性诊断 |
+| `/balancer/api/updates/apply` | POST | 需要密码 | 执行组件安全升级，前置自动打标备份全量快照，支持 OpenChamber 补丁重挂载 |
+| `/balancer/api/updates/rollback` | POST | 需要密码 | 指定历史快照秒级一键回退灾备，全量复原配置文件与生态环境 |
+| `/balancer/api/updates/snapshots` | GET | 需要密码 | 获取历史灾备快照列表及快照详情元数据 |
 
 ---
 
 ## 七、测试与质量保证
 
-本项目配备 15 项端到端单元与集成自动化测试套件：
+本项目配备 18 项端到端单元与集成自动化测试套件：
 
 ```bash
 npm test
@@ -300,6 +313,9 @@ node test_router.js
 13. **[Test 13]** `/balancer/api/bind-desktop` 跨平台多生态客户端写入绑定测试
 14. **[Test 14]** UI Password 访问密码安全鉴权门禁拦截与 Bearer Token 访问测试
 15. **[Test 15]** `/balancer/api/open-file` 本地原厂应用程序调用与路径合法性校验测试
+16. **[Test 16]** 5 大核心组件版本检测与破坏性变更兼容性评级诊断测试 (`/balancer/api/updates/check`)
+17. **[Test 17]** 全量组件自动快照创建与安全升级机制测试 (`/balancer/api/updates/apply`)
+18. **[Test 18]** 历史快照秒级灾备回滚与生态数据全量复原测试 (`/balancer/api/updates/rollback`)
 
 ---
 
@@ -316,7 +332,23 @@ npm run build:exe
 
 ## 九、版本历史与更新记录
 
-### 🚀 v1.4.0 (当前版本)
+### 🚀 v2.0.0 (当前大版本发布)
+- **全套组件一键检测更新与安全升级系统 (One-Click Safe Updater)**：
+  - **5 大核心组件全景监控**：一站式检索并比对 `opencode-go-router`、`opencode` CLI、`oh-my-openagent`、`opencode-goal-plugin` 与 `openchamber` 的本地及最新发布版本；
+  - **破坏性变更与生态兼容性诊断引擎**：深入检测 OpenCode CLI 主版本升级潜在的配置格式与命令行参数变更、OMO 智能体插件兼容性（如 5.1.24+ 对齐）、OpenChamber 托管通讯协议兼容性，输出精准的 `safe`、`warning`、`critical` 评级；
+  - **非阻断式人性化告警**：存在高危兼容性变更时给予直观视觉告警提示与前置修复建议，但不硬编码强行拦截，支持开发者自主确认推进；
+  - **升级前自动全量快照与秒级灾备回滚**：升级前自动建立全量配置与数据快照（保留至多 20 份），支持 Web 控制台、Windows 向导与 Linux 终端秒级一键回退还原历史状态；
+  - **Office 离线安全预览补丁自动重挂载**：OpenChamber 组件更新后自动重新应用本地 Office 预览沙箱补丁，防止前端资源覆盖后离线预览失效；
+  - **全新更新管理 API 体系**：暴露 `/balancer/api/updates/check`、`/balancer/api/updates/apply`、`/balancer/api/updates/rollback` 与 `/balancer/api/updates/snapshots`；
+  - **全平台交互体验升级**：
+    - Web UI 管理后台新增专属【📦 组件版本与安全更新】面板，支持一键检测、单选/全选安全更新与历史快照回滚；
+    - Windows 向导 `setup-wizard.ps1` 与 Linux 向导 `setup-linux.sh` 分别新增专属更新与回滚菜单；
+    - `doctor-repair.ps1` 升级为 7 步全链路诊断，新增组件更新体检与 `--AutoFix` 联动支持；
+    - Windows 托盘程序 `OpenCodeRouterTray.exe` 新增一键检查更新入口；
+    - `rollback-all.ps1` 优先联动快照系统执行全量安全还原。
+- **自动化测试套件扩充至 18 项**：新增 Test 16、17、18 严密覆盖更新检测、安全快照升级及全量回滚全生命周期，100% 通过验证。
+
+### 🚀 v1.4.0
 - **OpenChamber 全能 Office 离线安全预览引擎 (Air-Gapped Office Engine)**：
   - **彻底告别“OpenChamber 不解码 DOCX 文件”遗憾**：内置开箱即用的本地预览引擎，覆盖 `.docx`、`.doc`、`.xlsx`、`.xls`、`.pptx`、`.ppt` 等全系列主流办公文档；
   - **本地离线安全红线 (Air-Gapped Safety 红线保障)**：严禁使用微软或谷歌等公网第三方云预览 iframe（如 `view.officeapps.live.com`），确保本地私有代码、敏感合同与财务数据绝不外泄；
