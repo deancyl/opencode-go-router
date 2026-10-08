@@ -16,6 +16,7 @@ namespace OpenCodeRouter
         private static int port = 4010;
         private static string rootDir = "";
         private static string icoPath = "";
+        private static System.Windows.Forms.Timer watchdogTimer = null;
 
         [STAThread]
         static void Main(string[] args)
@@ -116,6 +117,14 @@ namespace OpenCodeRouter
                     OpenDashboard();
                 }
             };
+
+            // 后台常驻自愈看门狗 (Watchdog: 每 5 秒守护检测 4010 端口，异常时静默复活)
+            watchdogTimer = new System.Windows.Forms.Timer();
+            watchdogTimer.Interval = 5000;
+            watchdogTimer.Tick += (s, e) => {
+                try { EnsureRouterRunning(); } catch { }
+            };
+            watchdogTimer.Start();
 
             Application.Run();
         }
@@ -266,6 +275,16 @@ namespace OpenCodeRouter
 
         static void ExitApp()
         {
+            if (watchdogTimer != null)
+            {
+                try
+                {
+                    watchdogTimer.Stop();
+                    watchdogTimer.Dispose();
+                }
+                catch { }
+            }
+
             if (notifyIcon != null)
             {
                 notifyIcon.Visible = false;
