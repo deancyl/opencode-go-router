@@ -1,0 +1,22 @@
+{
+  "port": 4010,
+  "host": "127.0.0.1",
+  "upstream": "https://opencode.ai/zen/go/v1",
+  "defaultCooldownMs": 60000,
+  "maxFailoverRetries": 2,
+  "sessionAffinityEnabled": true,
+  "accounts": [
+    {
+      "id": "account-1",
+      "name": "OpenCode Go (订阅账号 1)",
+      "apiKey": "",
+      "enabled": true
+    },
+    {
+      "id": "account-2",
+      "name": "OpenCode Go (订阅账号 2)",
+      "apiKey": "",
+      "enabled": true
+    }
+  ]
+}

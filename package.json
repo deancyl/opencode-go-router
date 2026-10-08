@@ -1,0 +1,25 @@
+{
+  "name": "opencode-go-router",
+  "version": "1.0.0",
+  "description": "OpenCode Go Multi-Subscription Smart Router, Load Balancer, Tray Daemon & Setup Wizard for Windows",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test_router.js",
+    "doctor": "powershell -ExecutionPolicy Bypass -File ./doctor-repair.ps1",
+    "wizard": "powershell -ExecutionPolicy Bypass -File ./setup-wizard.ps1",
+    "build:exe": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:winexe /win32icon:assets\\router.ico /out:OpenCodeRouterTray.exe src\\OpenCodeRouterTray.cs && C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:exe /win32icon:assets\\router.ico /out:OpenCodeWizard.exe src\\OpenCodeWizard.cs"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-go",
+    "openchamber",
+    "load-balancer",
+    "router",
+    "failover",
+    "tray-daemon",
+    "windows"
+  ],
+  "author": "deancyl",
+  "license": "MIT"
+}

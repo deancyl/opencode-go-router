@@ -1,0 +1,22 @@
+# Security: prevent leaking user API keys
+config.json
+config.json.bak
+*.pre-audit.bak
+*.bak
+
+# Logs
+*.log
+crash.log
+router.log
+service.log
+stderr.log
+stdout.log
+
+# Node & Temp
+node_modules/
+config.test*.json
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store

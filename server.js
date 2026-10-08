@@ -1,0 +1,1536 @@
+/**
+ * OpenCode Go Multi-Subscription Smart Router & Load Balancer
+ * Ultra-low overhead, zero external dependencies (Node.js native).
+ * 
+ * Features:
+ * - Full Graphical Configuration UI (/balancer/ui)
+ * - Safe atomic configuration update & hot-reload without restart
+ * - One-click account connectivity test with latency check
+ * - Seamless round-robin / session-affinity load balancing (KV Cache optimized)
+ * - Zero-downtime 429 / 503 failover with dynamic Retry-After cooldown calculation
+ * - Full SSE streaming passthrough (text/event-stream)
+ * - Preserves x-opencode-session header
+ * - Environment variable fallback (OPENCODE_GO_KEY_1, OPENCODE_GO_KEY_2)
+ * - Integrated Doctor & Auto-Repair diagnostic engine (/balancer/api/doctor & /balancer/api/repair)
+ * - Dynamic cooldown reset API (/balancer/api/reset-cooldown)
+ * - Health check endpoint (/health & /balancer/health)
+ * - Global CORS preflight (OPTIONS) support
+ */
+
+const http = require('node:http');
+const https = require('node:https');
+const url = require('node:url');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { execSync } = require('node:child_process');
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Unhandled Rejection]', reason);
+});
+
+const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
+
+const DEFAULT_CONFIG = {
+  port: 4010,
+  host: '127.0.0.1',
+  upstream: 'https://opencode.ai/zen/go/v1',
+  defaultCooldownMs: 60000,
+  maxFailoverRetries: 2,
+  sessionAffinityEnabled: true,
+  accounts: [
+    {
+      id: 'account-1',
+      name: 'OpenCode Go 主账号',
+      apiKey: '',
+      enabled: true
+    },
+    {
+      id: 'account-2',
+      name: 'OpenCode Go 备用账号',
+      apiKey: '',
+      enabled: true
+    }
+  ]
+};
+
+// Load or initialize config
+let config = { ...DEFAULT_CONFIG };
+function loadConfig() {
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+      config = Object.assign({}, DEFAULT_CONFIG, JSON.parse(raw));
+    } catch (err) {
+      console.error('[Config] Failed to load config.json, using defaults:', err.message);
+    }
+  } else {
+    try {
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    } catch (err) {
+      console.error('[Config] Failed to create default config.json:', err.message);
+    }
+  }
+
+  // Allow PORT environment variable override
+  if (process.env.PORT) {
+    const p = parseInt(process.env.PORT, 10);
+    if (!isNaN(p) && p > 0) config.port = p;
+  }
+
+  // Fallback to environment variables if apiKey is empty
+  if (Array.isArray(config.accounts)) {
+    if (config.accounts[0] && (!config.accounts[0].apiKey || !config.accounts[0].apiKey.trim())) {
+      const envKey1 = process.env.OPENCODE_GO_KEY_1 || process.env.OPENCODE_GO_API_KEY;
+      if (envKey1 && envKey1.trim()) {
+        config.accounts[0].apiKey = envKey1.trim();
+      }
+    }
+    if (config.accounts[1] && (!config.accounts[1].apiKey || !config.accounts[1].apiKey.trim())) {
+      const envKey2 = process.env.OPENCODE_GO_KEY_2;
+      if (envKey2 && envKey2.trim()) {
+        config.accounts[1].apiKey = envKey2.trim();
+      }
+    }
+  }
+}
+loadConfig();
+
+// Runtime account state tracking
+const accountStats = new Map();
+function syncAccountStats() {
+  for (const acc of config.accounts) {
+    if (!accountStats.has(acc.id)) {
+      accountStats.set(acc.id, {
+        id: acc.id,
+        name: acc.name,
+        activeRequests: 0,
+        totalRequests: 0,
+        rateLimitCount: 0,
+        failoverCount: 0,
+        cooldownUntil: 0,
+        lastUsedAt: null,
+        lastError: null
+      });
+    } else {
+      const stat = accountStats.get(acc.id);
+      stat.name = acc.name;
+    }
+  }
+  // Remove deleted accounts from stats
+  const currentIds = new Set(config.accounts.map(a => a.id));
+  for (const id of accountStats.keys()) {
+    if (!currentIds.has(id)) {
+      accountStats.delete(id);
+    }
+  }
+}
+syncAccountStats();
+
+// Session affinity map: sessionId -> accountId
+const sessionMap = new Map();
+const sessionLastSeen = new Map();
+
+// Clean up stale sessions periodically (every 10 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [sess, time] of sessionLastSeen.entries()) {
+    if (now - time > 3600000) { // 1 hour inactivity
+      sessionMap.delete(sess);
+      sessionLastSeen.delete(sess);
+    }
+  }
+}, 600000);
+
+let rrIndex = 0;
+
+function isAccountAvailable(acc) {
+  if (!acc.enabled || !acc.apiKey || acc.apiKey.trim() === '') return false;
+  const stat = accountStats.get(acc.id);
+  if (!stat) return false;
+  if (stat.cooldownUntil > Date.now()) return false;
+  return true;
+}
+
+function selectAccount(sessionId, excludeAccountIds = new Set()) {
+  const now = Date.now();
+  const available = config.accounts.filter(a => isAccountAvailable(a) && !excludeAccountIds.has(a.id));
+
+  if (available.length === 0) {
+    return null;
+  }
+
+  // 1. Session affinity check (if enabled)
+  if (config.sessionAffinityEnabled && sessionId && sessionMap.has(sessionId)) {
+    const pinnedId = sessionMap.get(sessionId);
+    const candidate = available.find(a => a.id === pinnedId);
+    if (candidate) {
+      sessionLastSeen.set(sessionId, now);
+      return candidate;
+    }
+  }
+
+  // 2. Round-Robin selection
+  const chosen = available[rrIndex % available.length];
+  rrIndex = (rrIndex + 1) % available.length;
+
+  if (config.sessionAffinityEnabled && sessionId) {
+    sessionMap.set(sessionId, chosen.id);
+    sessionLastSeen.set(sessionId, now);
+  }
+
+  return chosen;
+}
+
+function recordCooldown(accountId, cooldownMs, reason) {
+  const stat = accountStats.get(accountId);
+  if (stat) {
+    const dur = cooldownMs || config.defaultCooldownMs;
+    stat.cooldownUntil = Date.now() + dur;
+    stat.rateLimitCount += 1;
+    stat.lastError = `Rate limit cooldown for ${Math.round(dur / 1000)}s: ${reason || '429 / 503'}`;
+    console.warn(`[Router Cooldown] Account "${stat.name}" cooling down until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (${reason})`);
+  }
+}
+
+// Connectivity Tester
+function testAccountConnection(upstream, apiKey) {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    try {
+      let endpoint = upstream.replace(/\/+$/, '');
+      if (!endpoint.endsWith('/models') && !endpoint.includes('/v1')) {
+        endpoint += '/v1/models';
+      } else if (!endpoint.endsWith('/models')) {
+        endpoint += '/models';
+      }
+      const parsed = new URL(endpoint);
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const req = mod.request(parsed, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey.trim()}`,
+          'x-opencode-session': 'session-tester-' + Date.now(),
+          'User-Agent': 'OpenCode-Go-Router-Tester/1.0',
+          'Accept': 'application/json'
+        },
+        timeout: 6000
+      }, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          const latencyMs = Date.now() - startTime;
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve({ success: true, statusCode: res.statusCode, latencyMs, message: `连接成功 (延迟 ${latencyMs}ms)` });
+          } else if (res.statusCode === 401 || res.statusCode === 403) {
+            resolve({ success: false, statusCode: res.statusCode, latencyMs, message: `认证失败: 密钥无效或未授权 (HTTP ${res.statusCode})` });
+          } else if (res.statusCode === 429) {
+            resolve({ success: false, statusCode: res.statusCode, latencyMs, message: `账号限频中 (HTTP 429 Too Many Requests)` });
+          } else {
+            resolve({ success: false, statusCode: res.statusCode, latencyMs, message: `上游返回异常 (HTTP ${res.statusCode})` });
+          }
+        });
+      });
+      req.on('error', (err) => {
+        resolve({ success: false, statusCode: 0, latencyMs: Date.now() - startTime, message: `网络连接异常: ${err.message}` });
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ success: false, statusCode: 0, latencyMs: 6000, message: '上游连接超时 (6秒)' });
+      });
+      req.end();
+    } catch (err) {
+      resolve({ success: false, statusCode: 0, latencyMs: 0, message: `端点地址解析失败: ${err.message}` });
+    }
+  });
+}
+
+function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set()) {
+  triedAccountIds.add(account.id);
+  const stat = accountStats.get(account.id);
+  if (stat) {
+    stat.activeRequests += 1;
+    stat.totalRequests += 1;
+    stat.lastUsedAt = Date.now();
+  }
+
+  const upstreamUrl = new URL(config.upstream);
+  const isHttps = upstreamUrl.protocol === 'https:';
+  const transport = isHttps ? https : http;
+
+  let targetPath = clientReq.url;
+  const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
+  // 避免双重 /v1 拼接: 若 upstream 已经以 /v1 结尾且客户端请求带 /v1，剔除多余前缀
+  if (upstreamPathname.endsWith('/v1')) {
+    if (targetPath === '/v1') targetPath = '/';
+    else if (targetPath.startsWith('/v1/')) targetPath = targetPath.slice(3);
+    else if (targetPath.startsWith('/v1?')) targetPath = '/' + targetPath.slice(3);
+  }
+  const upstreamPath = upstreamPathname + (targetPath.startsWith('/') ? targetPath : '/' + targetPath);
+
+  const proxyHeaders = { ...clientReq.headers };
+  delete proxyHeaders['host'];
+  delete proxyHeaders['connection'];
+  delete proxyHeaders['keep-alive'];
+  delete proxyHeaders['transfer-encoding'];
+  delete proxyHeaders['expect'];
+
+  if (reqBody && reqBody.length > 0) {
+    proxyHeaders['content-length'] = String(Buffer.byteLength(reqBody));
+  } else {
+    delete proxyHeaders['content-length'];
+  }
+
+  let sessionId = clientReq.headers['x-opencode-session'];
+  if (!sessionId || !sessionId.trim()) {
+    sessionId = 'session-opencode-go-default';
+  }
+  proxyHeaders['x-opencode-session'] = sessionId;
+  proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
+
+  const proxyOptions = {
+    protocol: upstreamUrl.protocol,
+    hostname: upstreamUrl.hostname,
+    port: upstreamUrl.port || (isHttps ? 443 : 80),
+    path: upstreamPath,
+    method: clientReq.method,
+    headers: proxyHeaders,
+    timeout: 300000 // 5 minutes timeout for long generation
+  };
+
+  const proxyReq = transport.request(proxyOptions);
+  let responded = false;
+  let requestFinished = false;
+  const finishRequest = () => {
+    if (!requestFinished) {
+      requestFinished = true;
+      if (stat && stat.activeRequests > 0) {
+        stat.activeRequests -= 1;
+      }
+    }
+  };
+
+  clientRes.on('close', () => {
+    if (!clientRes.writableEnded && !proxyReq.destroyed) {
+      proxyReq.destroy();
+    }
+    finishRequest();
+  });
+
+  proxyReq.on('response', (upstreamRes) => {
+    const statusCode = upstreamRes.statusCode;
+
+    // Check if Rate Limited (429) or Service Unavailable (503)
+    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries) {
+      // Dynamic cooldown calculation from Retry-After header
+      let cooldownMs = config.defaultCooldownMs;
+      const retryAfter = upstreamRes.headers['retry-after'];
+      if (retryAfter) {
+        const sec = parseInt(retryAfter, 10);
+        if (!isNaN(sec) && sec > 0) {
+          cooldownMs = sec * 1000;
+        } else {
+          const dateMs = new Date(retryAfter).getTime();
+          if (!isNaN(dateMs) && dateMs > Date.now()) {
+            cooldownMs = dateMs - Date.now();
+          }
+        }
+      }
+
+      recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
+      finishRequest();
+
+      let errorBody = '';
+      upstreamRes.on('data', chunk => errorBody += chunk);
+      upstreamRes.on('end', () => {
+        const nextAccount = selectAccount(sessionId, triedAccountIds);
+
+        if (nextAccount) {
+          if (stat) stat.failoverCount += 1;
+          console.log(`[Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        } else {
+          clientRes.writeHead(statusCode, upstreamRes.headers);
+          clientRes.end(errorBody);
+        }
+      });
+      return;
+    }
+
+    responded = true;
+    clientRes.writeHead(statusCode, upstreamRes.headers);
+    upstreamRes.pipe(clientRes);
+
+    upstreamRes.on('error', (err) => {
+      console.error('[Upstream Stream Error]', err.message);
+      finishRequest();
+      if (!clientRes.writableEnded) {
+        clientRes.end();
+      }
+    });
+
+    upstreamRes.on('end', () => {
+      finishRequest();
+    });
+  });
+
+  proxyReq.on('error', (err) => {
+    finishRequest();
+    console.error(`[Upstream Proxy Error] Account "${account.name}":`, err.stack || err.message);
+    if (!responded && attemptNumber <= config.maxFailoverRetries) {
+      // 仅在有备用账号时尝试故障漂移，不将网络异常账号错误地锁入429限频池
+      const nextAccount = selectAccount(sessionId, triedAccountIds);
+      if (nextAccount) {
+        if (stat) stat.failoverCount += 1;
+        console.log(`[Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
+        sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        return;
+      }
+    }
+
+    if (!responded) {
+      responded = true;
+      clientRes.writeHead(502, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({
+        error: {
+          message: `Proxy error reaching upstream: ${err.message}`,
+          type: 'router_proxy_error',
+          code: 502
+        }
+      }));
+    } else {
+      if (!clientRes.writableEnded) {
+        clientRes.end();
+      }
+    }
+  });
+
+  if (reqBody && reqBody.length > 0) {
+    proxyReq.write(reqBody);
+  }
+  proxyReq.end();
+}
+
+// System Diagnostic Helper (Doctor Engine)
+function runSystemDoctor() {
+  const report = {
+    timestamp: new Date().toISOString(),
+    router: {
+      status: 'ok',
+      port: config.port,
+      upstream: config.upstream,
+      accounts: config.accounts.map(a => {
+        const st = accountStats.get(a.id) || {};
+        const isCooling = (st.cooldownUntil || 0) > Date.now();
+        return {
+          id: a.id,
+          name: a.name,
+          enabled: a.enabled,
+          hasKey: Boolean(a.apiKey && a.apiKey.trim()),
+          status: isCooling ? 'cooling_down' : (a.enabled && a.apiKey ? 'healthy' : 'disabled'),
+          remainingCooldownSec: isCooling ? Math.ceil((st.cooldownUntil - Date.now()) / 1000) : 0
+        };
+      })
+    },
+    opencode: { installed: false, version: null, error: null },
+    openchamber: { reachable: false, error: null },
+    opencodeConfig: {
+      exists: false,
+      path: path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc'),
+      hasRouterEndpoint: false,
+      hasDeadPort3001: false,
+      plugins: []
+    },
+    omoConfig: {
+      exists: false,
+      path: path.join(os.homedir(), '.omo', 'omo.jsonc'),
+      hasOpencodeGo: false
+    },
+    commands: {
+      boostMdExists: false,
+      path: path.join(os.homedir(), '.config', 'opencode', 'commands', 'boost.md')
+    },
+    workspace: {
+      defaultPath: 'D:\\opencode\\default',
+      exists: false,
+      gitInitialized: false
+    },
+    issues: []
+  };
+
+  // 1. Check opencode CLI
+  try {
+    const v = execSync('opencode --version', { stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
+    report.opencode.installed = true;
+    report.opencode.version = v;
+  } catch (e) {
+    report.opencode.error = 'CLI 未在 PATH 中找到或执行超时';
+    report.issues.push({ id: 'opencode_not_found', severity: 'warning', title: 'OpenCode CLI 未检测到', desc: '请通过安装向导安装 @opencode/cli' });
+  }
+
+  // 2. Check opencode.jsonc
+  if (fs.existsSync(report.opencodeConfig.path)) {
+    report.opencodeConfig.exists = true;
+    try {
+      const raw = fs.readFileSync(report.opencodeConfig.path, 'utf8');
+      report.opencodeConfig.hasDeadPort3001 = raw.includes(':3001');
+      report.opencodeConfig.hasRouterEndpoint = raw.includes(`127.0.0.1:${config.port}`) || raw.includes(':4010');
+      if (report.opencodeConfig.hasDeadPort3001) {
+        report.issues.push({ id: 'dead_port_3001', severity: 'high', title: '检测到旧残留端口 3001', desc: '配置文件中仍有请求指向 3001 导致 ConnectionRefused，可一键重定向至 4010 网关' });
+      }
+      if (!report.opencodeConfig.hasRouterEndpoint) {
+        report.issues.push({ id: 'missing_router_endpoint', severity: 'medium', title: 'OpenCode 未绑定本地网关', desc: 'opencode-go 的 baseURL 未指向当前 4010 智能网关' });
+      }
+    } catch (e) {}
+  } else {
+    report.issues.push({ id: 'missing_opencode_config', severity: 'medium', title: '未找到 opencode.jsonc', desc: '尚未生成用户核心配置文件' });
+  }
+
+  // 3. Check boost.md
+  if (fs.existsSync(report.commands.path)) {
+    report.commands.boostMdExists = true;
+  } else {
+    report.issues.push({ id: 'missing_boost_command', severity: 'low', title: '缺少 /boost 快捷指令', desc: 'boost.md 允许快速调用高强度自主推进任务' });
+  }
+
+  // 4. Check workspace git
+  if (fs.existsSync(report.workspace.defaultPath)) {
+    report.workspace.exists = true;
+    report.workspace.gitInitialized = fs.existsSync(path.join(report.workspace.defaultPath, '.git'));
+    if (!report.workspace.gitInitialized) {
+      report.issues.push({ id: 'workspace_no_git', severity: 'low', title: '工作区未初始化 Git', desc: 'OpenChamber 建议工作区包含 Git 仓库以便回滚比对变更' });
+    }
+  }
+
+  // 5. Check cooling down accounts
+  const coolingAccs = report.router.accounts.filter(a => a.status === 'cooling_down');
+  if (coolingAccs.length > 0) {
+    report.issues.push({ id: 'accounts_cooling_down', severity: 'medium', title: `${coolingAccs.length} 个账号处于限频冷却中`, desc: '可点击一键重置冷却状态即刻恢复流量分配' });
+  }
+
+  return report;
+}
+
+// Auto-Repair Engine
+function executeSystemRepair() {
+  const results = [];
+
+  // 1. Reset all cooldowns
+  for (const stat of accountStats.values()) {
+    stat.cooldownUntil = 0;
+    stat.lastError = null;
+  }
+  results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却状态' });
+
+  // 2. Fix dead port 3001 in opencode.jsonc
+  const ocPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc');
+  if (fs.existsSync(ocPath)) {
+    try {
+      let content = fs.readFileSync(ocPath, 'utf8');
+      let changed = false;
+      if (content.includes('http://127.0.0.1:3001')) {
+        content = content.replace(/http:\/\/127\.0\.0\.1:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
+        changed = true;
+      }
+      if (content.includes('"baseURL": "http://localhost:3001')) {
+        content = content.replace(/http:\/\/localhost:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
+        changed = true;
+      }
+      if (changed) {
+        fs.writeFileSync(ocPath, content, 'utf8');
+        results.push({ item: 'Redirect Port 3001', success: true, message: `已将旧 3001 端口配置自动重定向至 ${config.port} 智能网关` });
+      } else {
+        results.push({ item: 'Redirect Port 3001', success: true, message: '无需修复：无残留 3001 端口' });
+      }
+    } catch (e) {
+      results.push({ item: 'Redirect Port 3001', success: false, message: '修改 opencode.jsonc 失败: ' + e.message });
+    }
+  }
+
+  // 3. Ensure boost.md exists
+  const cmdDir = path.join(os.homedir(), '.config', 'opencode', 'commands');
+  const boostPath = path.join(cmdDir, 'boost.md');
+  try {
+    if (!fs.existsSync(cmdDir)) {
+      fs.mkdirSync(cmdDir, { recursive: true });
+    }
+    if (!fs.existsSync(boostPath)) {
+      const boostContent = `---
+description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
+---
+# Boost 极速增强模式指示 (Boost & Ultrawork Orchestration)
+
+立即进入高强度自主推进模式。
+推进目标：
+$ARGUMENTS
+
+## 执行规范：
+1. **启动全流程推进**：自动激活深层检索、多任务拆解与高效执行链路。
+2. **端到端交付**：不半途而废，连续执行直至方案完全实现并完成端到端测试。
+3. **保持高可逆性与安全性**：确保关键配置有备份，生产环境安全无损。
+`;
+      fs.writeFileSync(boostPath, boostContent, 'utf8');
+      results.push({ item: 'Boost Command', success: true, message: '已创建 /boost 自主推进快捷指令模版' });
+    } else {
+      results.push({ item: 'Boost Command', success: true, message: '已就绪：/boost 指令模版存在' });
+    }
+  } catch (e) {
+    results.push({ item: 'Boost Command', success: false, message: '创建 boost.md 失败: ' + e.message });
+  }
+
+  // 4. Ensure Workspace Git
+  const wsPath = 'D:\\opencode\\default';
+  if (fs.existsSync(wsPath) && !fs.existsSync(path.join(wsPath, '.git'))) {
+    try {
+      execSync('git init', { cwd: wsPath, stdio: 'ignore' });
+      results.push({ item: 'Workspace Git', success: true, message: `已在 ${wsPath} 初始化 Git 仓库` });
+    } catch (e) {
+      results.push({ item: 'Workspace Git', success: false, message: 'Git 初始化失败: ' + e.message });
+    }
+  }
+
+  return results;
+}
+
+// HTTP Server
+const server = http.createServer((req, res) => {
+  const reqUrl = url.parse(req.url, true);
+
+  // Global CORS preflight (OPTIONS)
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400'
+    });
+    res.end();
+    return;
+  }
+
+  // Health check endpoint
+  if (reqUrl.pathname === '/health' || reqUrl.pathname === '/balancer/health') {
+    const now = Date.now();
+    const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
+    const healthyAccounts = enabledAccounts.filter(a => {
+      const stat = accountStats.get(a.id);
+      return !stat || (stat.cooldownUntil || 0) <= now;
+    });
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      status: 'ok',
+      port: config.port,
+      healthyAccounts: healthyAccounts.length,
+      totalAccounts: config.accounts.length
+    }));
+    return;
+  }
+
+  // Status endpoint (JSON)
+  if (reqUrl.pathname === '/status' || reqUrl.pathname === '/balancer/status') {
+    const now = Date.now();
+    const accountsData = config.accounts.map(acc => {
+      const stat = accountStats.get(acc.id) || {};
+      const isCooling = (stat.cooldownUntil || 0) > now;
+      const remainingCooldown = isCooling ? Math.ceil((stat.cooldownUntil - now) / 1000) : 0;
+      let status = 'healthy';
+      if (!acc.enabled || !acc.apiKey || !acc.apiKey.trim()) status = 'disabled';
+      else if (isCooling) status = 'cooling_down';
+
+      return {
+        id: acc.id,
+        name: acc.name,
+        enabled: acc.enabled,
+        hasKey: Boolean(acc.apiKey && acc.apiKey.trim()),
+        status,
+        remainingCooldownSec: remainingCooldown,
+        activeRequests: stat.activeRequests || 0,
+        totalRequests: stat.totalRequests || 0,
+        rateLimitCount: stat.rateLimitCount || 0,
+        failoverCount: stat.failoverCount || 0,
+        lastUsedAt: stat.lastUsedAt || null,
+        lastError: stat.lastError || null
+      };
+    });
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      status: 'online',
+      port: config.port,
+      upstream: config.upstream,
+      sessionAffinityEnabled: config.sessionAffinityEnabled,
+      defaultCooldownMs: config.defaultCooldownMs,
+      maxFailoverRetries: config.maxFailoverRetries,
+      activeSessions: sessionMap.size,
+      accounts: accountsData
+    }, null, 2));
+    return;
+  }
+
+  // Get full config API (for UI)
+  if (reqUrl.pathname === '/balancer/api/config' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      port: config.port,
+      upstream: config.upstream,
+      defaultCooldownMs: config.defaultCooldownMs,
+      maxFailoverRetries: config.maxFailoverRetries,
+      sessionAffinityEnabled: config.sessionAffinityEnabled,
+      accounts: config.accounts
+    }));
+    return;
+  }
+
+  // Save config API (from UI)
+  if (reqUrl.pathname === '/balancer/api/config' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        if (!Array.isArray(payload.accounts) || payload.accounts.length === 0) {
+          throw new Error('至少需要保留一个账号配置');
+        }
+
+        // Clean & validate accounts
+        const newAccounts = payload.accounts.map((acc, index) => ({
+          id: acc.id || `account-${Date.now()}-${index}`,
+          name: (acc.name || `账号 ${index + 1}`).trim(),
+          apiKey: (acc.apiKey || '').trim(),
+          enabled: Boolean(acc.enabled)
+        }));
+
+        const newConfig = {
+          ...config,
+          upstream: (payload.upstream || config.upstream).trim(),
+          defaultCooldownMs: Number(payload.defaultCooldownMs) || config.defaultCooldownMs,
+          maxFailoverRetries: Number(payload.maxFailoverRetries) || config.maxFailoverRetries,
+          sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
+          accounts: newAccounts
+        };
+
+        // Create atomic backup of existing config.json
+        if (fs.existsSync(CONFIG_FILE)) {
+          fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak');
+        }
+
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
+        config = newConfig;
+        syncAccountStats();
+
+        console.log('[Config] Configuration successfully updated via Graphical UI!');
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, message: '配置已稳妥保存并实时生效！' }));
+      } catch (err) {
+        console.error('[Config Error]', err.message);
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Test account connectivity API
+  if (reqUrl.pathname === '/balancer/api/test-account' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const targetUpstream = (payload.upstream || config.upstream).trim();
+        const apiKey = (payload.apiKey || '').trim();
+
+        if (!apiKey) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, message: 'API Key 为空，请输入后再测试' }));
+          return;
+        }
+
+        const result = await testAccountConnection(targetUpstream, apiKey);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, message: `测试异常: ${err.message}` }));
+      }
+    });
+    return;
+  }
+
+  // Reset Cooldown API
+  if (reqUrl.pathname === '/balancer/api/reset-cooldown' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        let accountId = null;
+        if (body.length > 0) {
+          try {
+            const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+            accountId = payload.id;
+          } catch (e) {}
+        }
+        if (accountId) {
+          const stat = accountStats.get(accountId);
+          if (stat) {
+            stat.cooldownUntil = 0;
+            stat.lastError = null;
+          }
+        } else {
+          for (const stat of accountStats.values()) {
+            stat.cooldownUntil = 0;
+            stat.lastError = null;
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, message: '限频冷却已重置，账号已恢复健康！' }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Doctor API
+  if (reqUrl.pathname === '/balancer/api/doctor' && req.method === 'GET') {
+    const report = runSystemDoctor();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  // Repair API
+  if (reqUrl.pathname === '/balancer/api/repair' && req.method === 'POST') {
+    const results = executeSystemRepair();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, results }, null, 2));
+    return;
+  }
+
+  // Web UI Dashboard & Graphical Config Center
+  if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenCode 订阅管理中心 | 原生高可用路由</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --primary: #38bdf8;
+      --primary-hover: #0284c7;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      line-height: 1.5;
+    }
+    .container { max-width: 1000px; margin: 0 auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.2rem;
+    }
+    .title-group h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .title-group p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+    .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--primary);
+      color: #04101c;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+    .btn:hover { background: var(--primary-hover); color: #fff; }
+    .btn-secondary {
+      background: #334155;
+      color: var(--text);
+    }
+    .btn-secondary:hover { background: #475569; }
+    .btn-success { background: #065f46; color: #34d399; border: 1px solid #059669; }
+    .btn-success:hover { background: #047857; color: #fff; }
+    .btn-danger {
+      background: #7f1d1d;
+      color: #fca5a5;
+    }
+    .btn-danger:hover { background: #991b1b; color: #fff; }
+    .btn-sm { padding: 4px 10px; font-size: 0.8rem; border-radius: 6px; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    .section-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin: 0 0 1rem;
+      color: #e2e8f0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .accounts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+      gap: 1.25rem;
+    }
+    .account-card {
+      background: #151f32;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 1.2rem;
+      position: relative;
+      transition: border-color 0.2s;
+    }
+    .account-card:hover { border-color: var(--primary); }
+    .acc-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .acc-title-input {
+      background: transparent;
+      border: 1px dashed transparent;
+      color: var(--text);
+      font-size: 1.05rem;
+      font-weight: 600;
+      padding: 4px 6px;
+      border-radius: 6px;
+      width: 60%;
+    }
+    .acc-title-input:focus, .acc-title-input:hover {
+      border-color: #475569;
+      background: #0f172a;
+    }
+    .badge {
+      padding: 3px 10px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-healthy { background: #064e3b; color: var(--success); border: 1px solid #059669; }
+    .badge-cooling { background: #7f1d1d; color: var(--danger); border: 1px solid #dc2626; }
+    .badge-disabled { background: #374151; color: var(--muted); border: 1px solid #4b5563; }
+    
+    .form-group { margin-bottom: 0.9rem; }
+    .form-group label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+    .input-wrapper { display: flex; gap: 6px; position: relative; }
+    .form-control {
+      flex: 1;
+      background: #0b1120;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    .form-control:focus { outline: none; border-color: var(--primary); }
+    .toggle-eye {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: var(--muted);
+      padding: 0 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .toggle-eye:hover { color: var(--text); }
+    .acc-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background: #0b1120;
+      padding: 10px;
+      border-radius: 8px;
+      margin: 1rem 0;
+      font-size: 0.8rem;
+    }
+    .metric-item { display: flex; justify-content: space-between; }
+    .metric-label { color: var(--muted); }
+    .metric-val { color: var(--text); font-weight: 600; }
+    
+    .acc-actions { display: flex; justify-content: space-between; align-items: center; }
+    .test-result-box {
+      font-size: 0.8rem;
+      margin-top: 6px;
+      min-height: 18px;
+      font-weight: 500;
+    }
+    .test-success { color: var(--success); }
+    .test-fail { color: var(--danger); }
+
+    .switch-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .switch-label input { cursor: pointer; }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: #065f46;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      display: none;
+      z-index: 1000;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border: 1px solid #34d399;
+    }
+    .banner {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(59, 130, 246, 0.05));
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      padding: 1rem;
+      border-radius: 10px;
+      margin-bottom: 1.5rem;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .doctor-box {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 0.8rem;
+      font-size: 0.88rem;
+    }
+    .issue-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      margin-bottom: 6px;
+      border-radius: 6px;
+      background: #1e293b;
+    }
+    .issue-high { border-left: 4px solid var(--danger); }
+    .issue-medium { border-left: 4px solid var(--warning); }
+    .issue-low { border-left: 4px solid var(--primary); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-group">
+        <h1>🚀 OpenCode 订阅管理中心</h1>
+        <p>原生专用双订阅智能路由与负载均衡 (本地端口: <strong>${config.port}</strong>)</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()">⚡ 全部测速</button>
+        <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
+        <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
+        <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
+      </div>
+    </header>
+
+    <div class="banner">
+      <div>
+        <strong>💡 本地服务运作中：</strong> 支持会话亲和性（锁定会话命中 Prompt Cache）、429 限频秒级自动漂移与重试。
+      </div>
+      <div>
+        <a href="http://127.0.0.1:3000" target="_blank" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
+      </div>
+    </div>
+
+    <!-- 系统自检与修复区域 -->
+    <div class="card" id="doctor-card">
+      <div class="section-title">
+        <span>🩺 系统健康自检与异常修复 (Doctor & Repair)</span>
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🔍 重新检测</button>
+          <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="runRepair()">🔧 一键自动修复</button>
+        </div>
+      </div>
+      <div id="doctor-content" class="doctor-box">
+        <span style="color:var(--muted)">点击【一键体检】检查 OpenCode CLI、端口重定向、OMO配置与工作区状态...</span>
+      </div>
+    </div>
+
+    <!-- 账号配置区域 -->
+    <div class="card">
+      <div class="section-title">
+        <span>📋 OpenCode Go 订阅账号列表</span>
+        <button class="btn btn-secondary btn-sm" onclick="addAccountCard()">+ 添加订阅账号</button>
+      </div>
+      <div id="accounts-container" class="accounts-grid">
+        <!-- 动态渲染账号卡片 -->
+      </div>
+    </div>
+
+    <!-- 高级策略配置 -->
+    <div class="card">
+      <div class="section-title">
+        <span>⚙️ 路由与高可用策略配置</span>
+      </div>
+      <div class="config-grid">
+        <div class="form-group">
+          <label>上游端点地址 (Upstream Endpoint)</label>
+          <input type="text" id="cfg-upstream" class="form-control" value="${config.upstream}">
+        </div>
+        <div class="form-group">
+          <label>429 触发后默认冷却时长 (秒)</label>
+          <input type="number" id="cfg-cooldown" class="form-control" value="${Math.round(config.defaultCooldownMs / 1000)}">
+        </div>
+        <div class="form-group">
+          <label>最大故障转移重试次数 (Retries)</label>
+          <input type="number" id="cfg-retries" class="form-control" value="${config.maxFailoverRetries}">
+        </div>
+        <div class="form-group" style="display:flex; align-items:flex-end;">
+          <label class="switch-label" style="margin-bottom:8px;">
+            <input type="checkbox" id="cfg-affinity" ${config.sessionAffinityEnabled ? 'checked' : ''}>
+            <span>启用会话亲和性 (保持对话在同一账号以命中 KV 缓存)</span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    let currentConfig = null;
+    let liveStats = {};
+
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.style.background = isError ? '#991b1b' : '#065f46';
+      toast.style.borderColor = isError ? '#f87171' : '#34d399';
+      toast.style.display = 'block';
+      setTimeout(() => { toast.style.display = 'none'; }, 3000);
+    }
+
+    async function fetchConfig() {
+      try {
+        const res = await fetch('/balancer/api/config');
+        currentConfig = await res.json();
+        renderAccounts();
+      } catch (e) {
+        showToast('获取配置失败: ' + e.message, true);
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/status');
+        const data = await res.json();
+        for (const acc of data.accounts) {
+          liveStats[acc.id] = acc;
+        }
+        updateMetricsUI();
+      } catch (e) {}
+    }
+
+    function renderAccounts() {
+      const container = document.getElementById('accounts-container');
+      container.innerHTML = '';
+
+      currentConfig.accounts.forEach((acc, index) => {
+        const stat = liveStats[acc.id] || {};
+        let badgeClass = 'badge-disabled';
+        let statusText = '未配置密钥/已禁用';
+        if (acc.enabled && acc.apiKey) {
+          if (stat.status === 'cooling_down') {
+            badgeClass = 'badge-cooling';
+            statusText = '冷却中 (' + stat.remainingCooldownSec + 's)';
+          } else {
+            badgeClass = 'badge-healthy';
+            statusText = '正常可用';
+          }
+        }
+
+        const card = document.createElement('div');
+        card.className = 'account-card';
+        card.id = 'acc-card-' + acc.id;
+        card.innerHTML = \`
+          <div class="acc-header">
+            <input type="text" class="acc-title-input" value="\${acc.name || '账号 ' + (index + 1)}" onchange="updateAccountField('\${acc.id}', 'name', this.value)">
+            <span class="badge \${badgeClass}" id="badge-\${acc.id}">\${statusText}</span>
+          </div>
+
+          <div class="form-group">
+            <label>API Key (密钥)</label>
+            <div class="input-wrapper">
+              <input type="password" id="key-input-\${acc.id}" class="form-control" placeholder="输入订阅密钥..." value="\${acc.apiKey || ''}" onchange="updateAccountField('\${acc.id}', 'apiKey', this.value)">
+              <button type="button" class="toggle-eye" onclick="toggleEye('\${acc.id}')">👁️</button>
+            </div>
+            <div class="test-result-box" id="test-res-\${acc.id}"></div>
+          </div>
+
+          <div class="acc-metrics">
+            <div class="metric-item"><span class="metric-label">活跃请求:</span><span class="metric-val" id="m-act-\${acc.id}">\${stat.activeRequests || 0}</span></div>
+            <div class="metric-item"><span class="metric-label">总请求数:</span><span class="metric-val" id="m-tot-\${acc.id}">\${stat.totalRequests || 0}</span></div>
+            <div class="metric-item"><span class="metric-label">429 限频:</span><span class="metric-val" id="m-429-\${acc.id}">\${stat.rateLimitCount || 0}</span></div>
+            <div class="metric-item"><span class="metric-label">故障转移:</span><span class="metric-val" id="m-flv-\${acc.id}">\${stat.failoverCount || 0}</span></div>
+          </div>
+
+          <div class="acc-actions">
+            <label class="switch-label">
+              <input type="checkbox" \${acc.enabled ? 'checked' : ''} onchange="updateAccountField('\${acc.id}', 'enabled', this.checked)">
+              <span>启用此账号</span>
+            </label>
+            <div>
+              <button class="btn btn-secondary btn-sm" onclick="resetSingleCooldown('\${acc.id}')">🔄 解除冷却</button>
+              <button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="testSingleAccount('\${acc.id}')">⚡ 测速</button>
+              \${currentConfig.accounts.length > 1 ? \`<button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="deleteAccount('\${acc.id}')">🗑️ 删除</button>\` : ''}
+            </div>
+          </div>
+        \`;
+        container.appendChild(card);
+      });
+    }
+
+    function toggleEye(id) {
+      const input = document.getElementById('key-input-' + id);
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+
+    function updateAccountField(id, field, value) {
+      const target = currentConfig.accounts.find(a => a.id === id);
+      if (target) {
+        target[field] = value;
+      }
+    }
+
+    function addAccountCard() {
+      const newId = 'account-' + Date.now();
+      currentConfig.accounts.push({
+        id: newId,
+        name: 'OpenCode Go 账号 ' + (currentConfig.accounts.length + 1),
+        apiKey: '',
+        enabled: true
+      });
+      renderAccounts();
+    }
+
+    function deleteAccount(id) {
+      if (currentConfig.accounts.length <= 1) {
+        alert('至少需要保留一个账号！');
+        return;
+      }
+      currentConfig.accounts = currentConfig.accounts.filter(a => a.id !== id);
+      renderAccounts();
+    }
+
+    async function testSingleAccount(id) {
+      const resBox = document.getElementById('test-res-' + id);
+      const acc = currentConfig.accounts.find(a => a.id === id);
+      const upstream = document.getElementById('cfg-upstream').value;
+      if (!acc || !acc.apiKey.trim()) {
+        resBox.className = 'test-result-box test-fail';
+        resBox.innerText = '❌ 请先输入 API Key 再进行测试';
+        return;
+      }
+      resBox.className = 'test-result-box';
+      resBox.innerText = '⏳ 正在向端点发送测试请求...';
+
+      try {
+        const res = await fetch('/balancer/api/test-account', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ upstream, apiKey: acc.apiKey })
+        });
+        const data = await res.json();
+        if (data.success) {
+          resBox.className = 'test-result-box test-success';
+          resBox.innerText = '✔ ' + data.message;
+        } else {
+          resBox.className = 'test-result-box test-fail';
+          resBox.innerText = '❌ ' + data.message;
+        }
+      } catch (e) {
+        resBox.className = 'test-result-box test-fail';
+        resBox.innerText = '❌ 请求异常: ' + e.message;
+      }
+    }
+
+    async function testAllAccounts() {
+      for (const acc of currentConfig.accounts) {
+        if (acc.apiKey) {
+          await testSingleAccount(acc.id);
+        }
+      }
+    }
+
+    async function resetSingleCooldown(id) {
+      try {
+        const res = await fetch('/balancer/api/reset-cooldown', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        const data = await res.json();
+        showToast(data.message);
+        fetchStatus();
+      } catch (e) {
+        showToast('重置失败: ' + e.message, true);
+      }
+    }
+
+    async function resetAllCooldowns() {
+      try {
+        const res = await fetch('/balancer/api/reset-cooldown', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        const data = await res.json();
+        showToast(data.message);
+        fetchStatus();
+      } catch (e) {
+        showToast('重置失败: ' + e.message, true);
+      }
+    }
+
+    async function runDoctorCheck() {
+      const box = document.getElementById('doctor-content');
+      box.innerHTML = '<span style="color:var(--primary)">⏳ 正在执行系统环境全链路自检...</span>';
+      try {
+        const res = await fetch('/balancer/api/doctor');
+        const doc = await res.json();
+        let html = \`
+          <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+            <span><strong>OpenCode CLI:</strong> \${doc.opencode.installed ? '<span style="color:var(--success)">✔ ' + doc.opencode.version + '</span>' : '<span style="color:var(--warning)">⚠ 未找到</span>'}</span>
+            <span><strong>路由端口:</strong> <span style="color:var(--success)">✔ \${doc.router.port}</span></span>
+            <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
+          </div>
+        \`;
+        if (doc.issues.length === 0) {
+          html += '<div style="color:var(--success); font-weight:600; padding:6px 0;">🎉 全链路状态极佳，未发现任何潜在隐患！</div>';
+        } else {
+          html += '<div style="margin-top:8px;"><strong>发现 ' + doc.issues.length + ' 个可优化/待修复项：</strong></div>';
+          doc.issues.forEach(iss => {
+            const cls = iss.severity === 'high' ? 'issue-high' : (iss.severity === 'medium' ? 'issue-medium' : 'issue-low');
+            html += \`
+              <div class="issue-item \${cls}">
+                <div>
+                  <strong>\${iss.title}</strong>: <span style="color:var(--muted);">\${iss.desc}</span>
+                </div>
+              </div>
+            \`;
+          });
+        }
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = '<span style="color:var(--danger)">自检失败: ' + e.message + '</span>';
+      }
+    }
+
+    async function runRepair() {
+      const box = document.getElementById('doctor-content');
+      box.innerHTML = '<span style="color:var(--primary)">🔧 正在执行一键自动修复...</span>';
+      try {
+        const res = await fetch('/balancer/api/repair', { method: 'POST' });
+        const data = await res.json();
+        let html = '<div style="margin-bottom:6px;"><strong>修复执行结果：</strong></div>';
+        data.results.forEach(r => {
+          const color = r.success ? 'var(--success)' : 'var(--danger)';
+          html += \`<div style="padding:4px 0; color:\${color}">\${r.success ? '✔' : '❌'} [\${r.item}]: \${r.message}</div>\`;
+        });
+        box.innerHTML = html;
+        showToast('修复流程执行完毕！');
+        fetchStatus();
+      } catch (e) {
+        box.innerHTML = '<span style="color:var(--danger)">修复执行异常: ' + e.message + '</span>';
+      }
+    }
+
+    async function saveConfig() {
+      const upstream = document.getElementById('cfg-upstream').value.trim();
+      const cooldownSec = parseInt(document.getElementById('cfg-cooldown').value) || 60;
+      const retries = parseInt(document.getElementById('cfg-retries').value) || 2;
+      const affinity = document.getElementById('cfg-affinity').checked;
+
+      const payload = {
+        upstream,
+        defaultCooldownMs: cooldownSec * 1000,
+        maxFailoverRetries: retries,
+        sessionAffinityEnabled: affinity,
+        accounts: currentConfig.accounts
+      };
+
+      try {
+        const res = await fetch('/balancer/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✔ ' + data.message);
+          fetchConfig();
+          fetchStatus();
+        } else {
+          showToast('保存失败: ' + data.error, true);
+        }
+      } catch (e) {
+        showToast('网络错误: ' + e.message, true);
+      }
+    }
+
+    function updateMetricsUI() {
+      for (const [id, stat] of Object.entries(liveStats)) {
+        const act = document.getElementById('m-act-' + id);
+        const tot = document.getElementById('m-tot-' + id);
+        const r429 = document.getElementById('m-429-' + id);
+        const flv = document.getElementById('m-flv-' + id);
+        const badge = document.getElementById('badge-' + id);
+
+        if (act) act.innerText = stat.activeRequests;
+        if (tot) tot.innerText = stat.totalRequests;
+        if (r429) r429.innerText = stat.rateLimitCount;
+        if (flv) flv.innerText = stat.failoverCount;
+
+        if (badge) {
+          if (!stat.hasKey || !stat.enabled) {
+            badge.className = 'badge badge-disabled';
+            badge.innerText = '未配置密钥/已禁用';
+          } else if (stat.status === 'cooling_down') {
+            badge.className = 'badge badge-cooling';
+            badge.innerText = '冷却中 (' + stat.remainingCooldownSec + 's)';
+          } else {
+            badge.className = 'badge badge-healthy';
+            badge.innerText = '正常可用';
+          }
+        }
+      }
+    }
+
+    // Init
+    fetchConfig();
+    fetchStatus();
+    setInterval(fetchStatus, 2000);
+  </script>
+</body>
+</html>`);
+    return;
+  }
+
+  // All other API calls: Proxy to OpenCode Go upstream
+  const sessionId = req.headers['x-opencode-session'];
+  const account = selectAccount(sessionId);
+
+  if (!account) {
+    const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
+    if (enabledAccounts.length > 0) {
+      const now = Date.now();
+      const cooldowns = enabledAccounts.map(a => Math.max(0, (accountStats.get(a.id)?.cooldownUntil || 0) - now));
+      const minCooldownMs = Math.min(...cooldowns);
+      const minCooldownSec = Math.max(1, Math.ceil(minCooldownMs / 1000));
+      res.writeHead(429, {
+        'Content-Type': 'application/json',
+        'Retry-After': String(minCooldownSec),
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({
+        error: {
+          message: `All OpenCode Go accounts in pool are temporarily cooling down due to rate limits. Nearest account recovers in ${minCooldownSec}s.`,
+          type: 'rate_limit_exceeded',
+          code: 'rate_limit_exceeded',
+          retry_after: minCooldownSec
+        }
+      }));
+      return;
+    }
+
+    res.writeHead(503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({
+      error: {
+        message: 'No healthy OpenCode Go accounts configured in pool. Please visit http://127.0.0.1:' + config.port + '/balancer/ui to set up your subscriptions.',
+        type: 'router_no_available_accounts'
+      }
+    }));
+    return;
+  }
+
+  // Read request body for proxying
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const reqBody = Buffer.concat(chunks);
+    sendProxyRequest(req, res, reqBody, account, 1);
+  });
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[OpenCode Go Router Error] Port ${config.port} is already in use by another process.`);
+  } else {
+    console.error('[OpenCode Go Router Server Error]', err.message);
+  }
+  process.exit(1);
+});
+
+server.listen(config.port, config.host, () => {
+  console.log(`[OpenCode Go Router] Running on http://${config.host}:${config.port}`);
+  console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
+  console.log(`[OpenCode Go Router] Web Dashboard: http://${config.host}:${config.port}/balancer/ui`);
+});
