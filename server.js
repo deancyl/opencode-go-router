@@ -312,6 +312,22 @@ function fetchAccountUsage(upstream, apiKey) {
   });
 }
 
+function stripJsonComments(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/\\"|"(?:[^"\\]|\\.)*"|(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)/g, (m, g) => g ? '' : m);
+}
+
+function parseJsonSafe(filePath, defaultVal = {}) {
+  try {
+    if (!fs.existsSync(filePath)) return defaultVal;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(stripJsonComments(raw));
+  } catch (e) {
+    console.error(`[Config Warning] Failed to parse ${filePath}:`, e.message);
+    return defaultVal;
+  }
+}
+
 function bindDesktopConfig() {
   const result = { opencode: false, openchamber: false, omo: false, boost: false, messages: [] };
   const homeDir = os.homedir();
@@ -325,10 +341,9 @@ function bindDesktopConfig() {
     let cfg = {};
     if (fs.existsSync(opencodeJsonPath)) {
       try {
-        cfg = JSON.parse(fs.readFileSync(opencodeJsonPath, 'utf8'));
-      } catch (e) {
-        cfg = {};
-      }
+        fs.copyFileSync(opencodeJsonPath, opencodeJsonPath + '.bak');
+      } catch (e) {}
+      cfg = parseJsonSafe(opencodeJsonPath, {});
     }
 
     const standardModels = {
@@ -406,10 +421,7 @@ function bindDesktopConfig() {
 
       // Update preferences.json
       const prefPath = path.join(cDir, 'preferences.json');
-      let pref = { version: 1, fields: {} };
-      if (fs.existsSync(prefPath)) {
-        try { pref = JSON.parse(fs.readFileSync(prefPath, 'utf8')); } catch (e) {}
-      }
+      let pref = parseJsonSafe(prefPath, { version: 1, fields: {} });
       if (!pref.fields) pref.fields = {};
 
       const prefRecents = pref.fields.recentModels?.value || [];
@@ -440,7 +452,7 @@ function bindDesktopConfig() {
       const setPath = path.join(cDir, 'settings.json');
       if (fs.existsSync(setPath)) {
         try {
-          const settings = JSON.parse(fs.readFileSync(setPath, 'utf8'));
+          const settings = parseJsonSafe(setPath, {});
           const sRecents = settings.recentModels || [];
           const sFiltered = sRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
           settings.recentModels = [
@@ -504,6 +516,9 @@ function bindDesktopConfig() {
       fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), 'utf8');
       result.omo = true;
       result.messages.push('已生成标准 ~/.omo/omo.jsonc 路由配置');
+    } else {
+      result.omo = true;
+      result.messages.push('已确认 ~/.omo/omo.jsonc 路由配置已就绪');
     }
   } catch (err) {
     result.messages.push('OMO 配置提醒: ' + err.message);
@@ -532,9 +547,20 @@ $ARGUMENTS
       fs.writeFileSync(boostPath, boostContent, 'utf8');
       result.boost = true;
       result.messages.push('已就绪：/boost 指令模版');
+    } else {
+      result.boost = true;
+      result.messages.push('已确认：/boost 指令模版已存在');
     }
   } catch (err) {
     result.messages.push('Boost 指令模版提醒: ' + err.message);
+  }
+
+  // 5. On Linux, notify systemd user services to reload configuration
+  if (process.platform === 'linux') {
+    try {
+      execSync('systemctl --user restart opencode-server.service openchamber.service 2>/dev/null || true');
+      result.messages.push('已通知后台 OpenCode 与 OpenChamber 服务热重载配置');
+    } catch (e) {}
   }
 
   return result;
@@ -853,6 +879,24 @@ function runSystemDoctor() {
     report.issues.push({ id: 'opencode_not_found', severity: 'warning', title: 'OpenCode CLI 未检测到', desc: '请通过安装向导安装 @opencode/cli' });
   }
 
+  // 1.5 Check OpenChamber Workstation
+  try {
+    const chamberCurl = process.platform === 'win32' ? 'curl.exe' : 'curl';
+    const code = execSync(`${chamberCurl} -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://127.0.0.1:3000 || true`, {
+      encoding: 'utf8',
+      timeout: 2500,
+      stdio: ['pipe', 'pipe', 'ignore']
+    }).trim();
+    if (code === '200' || code === '301' || code === '302' || code === '401' || code === '403') {
+      report.openchamber.reachable = true;
+    } else if (process.platform === 'linux') {
+      const isActive = execSync('systemctl --user is-active openchamber.service 2>/dev/null || true', { encoding: 'utf8', timeout: 1000 }).trim();
+      if (isActive === 'active') report.openchamber.reachable = true;
+    }
+  } catch (e) {
+    report.openchamber.error = e.message;
+  }
+
   // 2. Check opencode.jsonc
   if (fs.existsSync(report.opencodeConfig.path)) {
     report.opencodeConfig.exists = true;
@@ -934,9 +978,9 @@ function executeSystemRepair() {
     if (fs.existsSync(ocPath)) {
       const raw = fs.readFileSync(ocPath, 'utf8');
       try {
-        ocData = JSON.parse(raw);
+        ocData = JSON.parse(stripJsonComments(raw));
       } catch (e) {
-        // If JSON parse fails (e.g. comments exist), do a string backup & replacement
+        // If JSON parse fails (e.g. malformed syntax), do a string backup & replacement
         fs.copyFileSync(ocPath, ocPath + '.bak');
         let fixedRaw = raw.replace(/http:\/\/127\.0\.0\.1:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`)
                           .replace(/http:\/\/localhost:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
@@ -1266,7 +1310,7 @@ function renderLoginPage() {
         const data = await res.json();
         if (data.success) {
           localStorage.setItem('opencode_router_token', data.token);
-          document.cookie = 'router_auth=' + encodeURIComponent(pwd) + '; Path=/; Max-Age=2592000; SameSite=Lax';
+          document.cookie = 'router_auth=' + encodeURIComponent(data.token) + '; Path=/; Max-Age=2592000; SameSite=Lax';
           location.reload();
         } else {
           err.innerText = data.error || '密码错误';
@@ -1280,6 +1324,25 @@ function renderLoginPage() {
         btn.disabled = false;
       }
     }
+
+    // Auto-restore session from valid localStorage token if available
+    window.addEventListener('DOMContentLoaded', async () => {
+      const storedToken = localStorage.getItem('opencode_router_token');
+      if (storedToken) {
+        try {
+          const res = await fetch('/balancer/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: storedToken })
+          });
+          const d = await res.json();
+          if (d.success) {
+            document.cookie = 'router_auth=' + encodeURIComponent(d.token) + '; Path=/; Max-Age=2592000; SameSite=Lax';
+            location.reload();
+          }
+        } catch (e) {}
+      }
+    });
   </script>
 </body>
 </html>`;
@@ -1367,6 +1430,14 @@ const server = http.createServer((req, res) => {
   }
 
   // Auth API
+  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'GET') {
+    const hasPwd = Boolean(config.uiPassword && config.uiPassword.trim());
+    const authOk = isAuthorized(req);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, hasUiPassword: hasPwd, authenticated: authOk }));
+    return;
+  }
+
   if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'POST') {
     let body = [];
     req.on('data', chunk => body.push(chunk));
@@ -1374,12 +1445,14 @@ const server = http.createServer((req, res) => {
       try {
         const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
         const inputPwd = (payload.password || '').trim();
+        const inputToken = (payload.token || '').trim();
         const expectedPwd = (config.uiPassword || '').trim();
-        if (!expectedPwd || inputPwd === expectedPwd) {
-          const token = Buffer.from(inputPwd).toString('base64');
+        const expectedB64 = Buffer.from(expectedPwd).toString('base64');
+        const token = Buffer.from(expectedPwd).toString('base64');
+        if (!expectedPwd || inputPwd === expectedPwd || inputToken === expectedPwd || inputToken === expectedB64) {
           res.writeHead(200, {
             'Content-Type': 'application/json; charset=utf-8',
-            'Set-Cookie': `router_auth=${encodeURIComponent(inputPwd)}; Path=/; Max-Age=2592000; SameSite=Lax`,
+            'Set-Cookie': `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`,
             'Access-Control-Allow-Origin': '*'
           });
           res.end(JSON.stringify({ success: true, token, message: '验证通过' }));
@@ -1609,8 +1682,19 @@ const server = http.createServer((req, res) => {
   }
 
   // Web UI Dashboard & Graphical Config Center
-  if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderLoginPage());
+      return;
+    }
+    const parsed = url.parse(req.url, true);
+    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
+    if (config.uiPassword && parsed.query && parsed.query.auth) {
+      const token = Buffer.from(config.uiPassword.trim()).toString('base64');
+      headers['Set-Cookie'] = `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`;
+    }
+    res.writeHead(200, headers);
     res.end(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1930,7 +2014,7 @@ const server = http.createServer((req, res) => {
         <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
         <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
         <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
-        ${config.uiPassword ? '<button class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="退出管理登录">🚪 退出登录</button>' : ''}
+        <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="退出管理登录" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出登录</button>
       </div>
     </header>
 
@@ -1939,7 +2023,7 @@ const server = http.createServer((req, res) => {
         <strong>💡 本地服务运作中：</strong> 支持会话亲和性（锁定会话命中 Prompt Cache）、429 限频秒级自动漂移与重试。
       </div>
       <div>
-        <a href="http://127.0.0.1:3000" target="_blank" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
+        <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
       </div>
     </div>
 
@@ -2113,11 +2197,18 @@ const server = http.createServer((req, res) => {
     async function fetchConfig() {
       try {
         const res = await fetch('/balancer/api/config', { headers: apiHeaders() });
-        if (res.status === 401) { location.reload(); return; }
+        if (res.status === 401) {
+          localStorage.removeItem('opencode_router_token');
+          document.cookie = 'router_auth=; Path=/; Max-Age=0; SameSite=Lax';
+          location.reload();
+          return;
+        }
         currentConfig = await res.json();
         if (document.getElementById('cfg-host')) document.getElementById('cfg-host').value = currentConfig.host || '127.0.0.1';
         if (document.getElementById('cfg-port')) document.getElementById('cfg-port').value = currentConfig.port || 4010;
         if (document.getElementById('cfg-uipassword')) document.getElementById('cfg-uipassword').value = currentConfig.uiPassword || '';
+        const logoutBtn = document.getElementById('btn-logout');
+        if (logoutBtn) logoutBtn.style.display = currentConfig.hasUiPassword ? 'inline-block' : 'none';
         renderAccounts();
         refreshAllQuotas();
       } catch (e) {
@@ -2389,6 +2480,14 @@ const server = http.createServer((req, res) => {
         });
         const data = await res.json();
         if (data.success) {
+          if (uiPassword) {
+            const newToken = btoa(uiPassword);
+            localStorage.setItem('opencode_router_token', newToken);
+            document.cookie = 'router_auth=' + encodeURIComponent(newToken) + '; Path=/; Max-Age=2592000; SameSite=Lax';
+          } else {
+            localStorage.removeItem('opencode_router_token');
+            document.cookie = 'router_auth=; Path=/; Max-Age=0; SameSite=Lax';
+          }
           showToast('✔ ' + data.message);
           fetchConfig();
           fetchStatus();

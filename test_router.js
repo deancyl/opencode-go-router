@@ -306,6 +306,20 @@ async function runTests() {
     assert.strictEqual(unauthRes.statusCode, 401, 'Protected endpoint should return 401 without auth');
     console.log('✓ Security gatekeeper successfully blocked unauthorized admin request (401)');
 
+    // Unauthenticated request to /balancer/ui MUST render login page, NOT dashboard
+    const unauthUiRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(unauthUiRes.statusCode, 200);
+    assert(unauthUiRes.body.includes('身份验证 | OpenCode 智能路由网关'), 'Unauth UI must render login page');
+    assert(!unauthUiRes.body.includes('id="accounts-container"'), 'Unauth UI must NOT render dashboard');
+    console.log('✓ Security gatekeeper successfully served LoginPage on unauthenticated /balancer/ui');
+
+    // Check /balancer/api/auth status
+    const authStatusRes = await request('/balancer/api/auth', { method: 'GET' });
+    assert.strictEqual(authStatusRes.statusCode, 200);
+    const authStatusJson = JSON.parse(authStatusRes.body);
+    assert.strictEqual(authStatusJson.hasUiPassword, true);
+    assert.strictEqual(authStatusJson.authenticated, false);
+
     // Login via /balancer/api/auth with correct password
     const loginRes = await request('/balancer/api/auth', {
       method: 'POST',
@@ -326,6 +340,21 @@ async function runTests() {
     const authCfg = JSON.parse(authRes.body);
     assert.strictEqual(authCfg.hasUiPassword, true);
     console.log('✓ UI Password authentication & Bearer token access verified');
+
+    // Authenticated request to /balancer/ui with Cookie MUST render full dashboard
+    const authUiCookieRes = await request('/balancer/ui', {
+      method: 'GET',
+      headers: { 'Cookie': `router_auth=${encodeURIComponent(loginJson.token)}` }
+    });
+    assert.strictEqual(authUiCookieRes.statusCode, 200);
+    assert(authUiCookieRes.body.includes('OpenCode 订阅管理中心'), 'Auth UI with cookie must render dashboard');
+    console.log('✓ Authenticated request with Cookie successfully loaded Dashboard');
+
+    // Authenticated request to /balancer/ui with query param ?auth= MUST render dashboard
+    const authUiQueryRes = await request('/balancer/ui?auth=SecretTestPassword123!', { method: 'GET' });
+    assert.strictEqual(authUiQueryRes.statusCode, 200);
+    assert(authUiQueryRes.body.includes('OpenCode 订阅管理中心'), 'Auth UI with query param must render dashboard');
+    console.log('✓ Authenticated request with ?auth= query param successfully loaded Dashboard');
 
     // Restore uiPassword to empty
     await request('/balancer/api/config', {

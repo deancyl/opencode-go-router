@@ -8,7 +8,26 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 自动定位或拉取仓库目录（支持直接通过 curl | bash 运行）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/server.js" ]]; then
+  TARGET_DIR="$HOME/.opencode-go-router"
+  if [[ ! -f "$TARGET_DIR/server.js" ]]; then
+    echo -e "\033[1;33m未检测到本地网关代码仓库，正在自动拉取最新版本至 $TARGET_DIR ...\033[0m"
+    mkdir -p "$TARGET_DIR"
+    if command -v git >/dev/null 2>&1; then
+      git clone https://github.com/deancyl/opencode-go-router.git "$TARGET_DIR"
+    elif command -v curl >/dev/null 2>&1; then
+      curl -sSL https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz | tar -xz --strip-components=1 -C "$TARGET_DIR"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO- https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz | tar -xz --strip-components=1 -C "$TARGET_DIR"
+    else
+      echo -e "\033[0;31m❌ 缺少 git / curl / wget，无法自动下载代码库，请先安装 git！\033[0m"
+      exit 1
+    fi
+  fi
+  SCRIPT_DIR="$TARGET_DIR"
+fi
 cd "$SCRIPT_DIR"
 
 RED='\033[0;31m'
@@ -47,6 +66,7 @@ ARG_PORT=""
 ARG_KEY1=""
 ARG_KEY2=""
 ARG_PASSWORD=""
+FLAG_PASSWORD_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,7 +81,7 @@ while [[ $# -gt 0 ]]; do
     --port) ARG_PORT="$2"; shift 2 ;;
     --key1) ARG_KEY1="$2"; shift 2 ;;
     --key2) ARG_KEY2="$2"; shift 2 ;;
-    --password) ARG_PASSWORD="$2"; shift 2 ;;
+    --password) ARG_PASSWORD="$2"; FLAG_PASSWORD_SET=1; shift 2 ;;
     -h|--help)
       echo "用法: ./setup-linux.sh [选项]"
       echo "选项:"
@@ -98,6 +118,52 @@ get_lan_ip() {
 
 LAN_IP=$(get_lan_ip)
 
+# 动态获取配置中的端口
+get_configured_port() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    node -e "try { const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8')); console.log(c.port || 4010); } catch(e) { console.log(4010); }" 2>/dev/null || echo "$DEFAULT_PORT"
+  else
+    echo "${ARG_PORT:-$DEFAULT_PORT}"
+  fi
+}
+
+# 跨平台通用 HTTP 请求工具（优先 curl -> wget -> node 原生）
+http_get() {
+  local target_url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -s -f "$target_url" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- "$target_url" 2>/dev/null
+  else
+    node -e "
+      const http = require('http');
+      const req = http.get(process.argv[1], (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 400) process.exit(1);
+        res.pipe(process.stdout);
+      });
+      req.on('error', () => process.exit(1));
+    " "$target_url" 2>/dev/null
+  fi
+}
+
+# 跨平台端口清理工具（fuser -> lsof -> ss -> netstat）
+kill_port() {
+  local target_port="${1:-4010}"
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${target_port}/tcp" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -t -i :"${target_port}" 2>/dev/null | xargs -r kill 2>/dev/null || true
+  elif command -v ss >/dev/null 2>&1; then
+    local pids
+    pids=$(ss -tlpn "sport = :${target_port}" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2)
+    for p in $pids; do kill "$p" 2>/dev/null || true; done
+  elif command -v netstat >/dev/null 2>&1; then
+    local pids
+    pids=$(netstat -tlpn 2>/dev/null | grep ":${target_port} " | awk '{print $7}' | cut -d/ -f1)
+    for p in $pids; do kill "$p" 2>/dev/null || true; done
+  fi
+}
+
 # 1. 检查 Node.js 环境
 check_node_env() {
   echo -e "${YELLOW}🔍 正在检查 Node.js 运行环境...${NC}"
@@ -120,45 +186,50 @@ check_node_env() {
   echo -e "${GREEN}✔ Node.js 环境正常: v$NODE_VER ($(which node))${NC}"
 }
 
-# 2. 检查或生成 config.json
+# 2. 检查或生成 config.json (使用安全环境变量传递参数，杜绝引号/符号崩溃)
 setup_config() {
   echo -e "\n${YELLOW}⚙️  正在初始化或核验配置文件...${NC}"
   local host="${ARG_HOST:-$DEFAULT_HOST}"
   local port="${ARG_PORT:-$DEFAULT_PORT}"
-  local password="${ARG_PASSWORD:-}"
 
-  node -e "
-    const fs = require('fs');
-    const path = require('path');
-    const cfgPath = '$CONFIG_FILE';
+  CFG_FILE="$CONFIG_FILE" \
+  ARG_H="$host" \
+  ARG_P="$port" \
+  ARG_PASS="$ARG_PASSWORD" \
+  ARG_PASS_SET="$FLAG_PASSWORD_SET" \
+  ARG_K1="$ARG_KEY1" \
+  ARG_K2="$ARG_KEY2" \
+  node -e '
+    const fs = require("fs");
+    const cfgPath = process.env.CFG_FILE;
     let cfg = {
-      port: $port,
-      host: '$host',
-      upstream: 'https://opencode.ai/zen/go/v1',
+      port: parseInt(process.env.ARG_P, 10) || 4010,
+      host: process.env.ARG_H || "0.0.0.0",
+      upstream: "https://opencode.ai/zen/go/v1",
       defaultCooldownMs: 60000,
       maxFailoverRetries: 2,
       sessionAffinityEnabled: true,
-      uiPassword: '$password',
+      uiPassword: process.env.ARG_PASS || "",
       accounts: [
-        { id: 'account-1', name: 'OpenCode Go 主账号', apiKey: '', enabled: true },
-        { id: 'account-2', name: 'OpenCode Go 备用账号', apiKey: '', enabled: true }
+        { id: "account-1", name: "OpenCode Go 主账号", apiKey: "", enabled: true },
+        { id: "account-2", name: "OpenCode Go 备用账号", apiKey: "", enabled: true }
       ]
     };
     if (fs.existsSync(cfgPath)) {
       try {
-        const existing = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const existing = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
         cfg = Object.assign({}, cfg, existing);
-        if ('$ARG_HOST') cfg.host = '$ARG_HOST';
-        if ('$ARG_PORT') cfg.port = parseInt('$ARG_PORT', 10);
-        if ('$ARG_PASSWORD') cfg.uiPassword = '$ARG_PASSWORD';
+        if (process.env.ARG_H) cfg.host = process.env.ARG_H;
+        if (process.env.ARG_P) cfg.port = parseInt(process.env.ARG_P, 10);
+        if (process.env.ARG_PASS_SET === "1") cfg.uiPassword = process.env.ARG_PASS || "";
       } catch (e) {}
     }
-    if ('$ARG_KEY1') cfg.accounts[0].apiKey = '$ARG_KEY1';
-    if ('$ARG_KEY2' && cfg.accounts[1]) cfg.accounts[1].apiKey = '$ARG_KEY2';
+    if (process.env.ARG_K1) cfg.accounts[0].apiKey = process.env.ARG_K1;
+    if (process.env.ARG_K2 && cfg.accounts[1]) cfg.accounts[1].apiKey = process.env.ARG_K2;
 
-    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
-    console.log('✔ 配置文件已就绪:', cfgPath);
-  "
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), "utf8");
+    console.log("✔ 配置文件已就绪:", cfgPath);
+  '
 }
 
 # 3. 检查 systemd 支持情况
@@ -204,7 +275,10 @@ EOF
   
   # 开启持久化驻留 (Linger)，使用户注销后守护进程仍可常驻
   if command -v loginctl >/dev/null 2>&1; then
-    loginctl enable-linger "$USER" 2>/dev/null || true
+    local current_user="${USER:-$(id -un 2>/dev/null || whoami 2>/dev/null)}"
+    if [[ -n "$current_user" ]]; then
+      loginctl enable-linger "$current_user" 2>/dev/null || true
+    fi
   fi
 
   echo -e "${GREEN}✔ systemd 用户服务已注册并启动: $SERVICE_NAME${NC}"
@@ -248,6 +322,9 @@ service_start() {
 # 7. 统一停止函数
 service_stop() {
   echo -e "${YELLOW}正在停止 OpenCode 智能网关服务...${NC}"
+  local configured_port
+  configured_port=$(get_configured_port)
+
   if has_systemd_user; then
     systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
   fi
@@ -259,13 +336,16 @@ service_stop() {
       rm -f "$PID_FILE"
     fi
   fi
-  # 检查端口并杀死残留
-  fuser -k 4010/tcp 2>/dev/null || true
-  echo -e "${GREEN}✔ 网关服务已停止${NC}"
+  # 跨平台清理端口占用
+  kill_port "$configured_port"
+  echo -e "${GREEN}✔ 网关服务已停止 (端口: $configured_port)${NC}"
 }
 
 # 8. 统一状态函数
 service_status() {
+  local configured_port
+  configured_port=$(get_configured_port)
+
   echo -e "${CYAN}=== OpenCode 智能路由网关运行状态 ===${NC}"
   if has_systemd_user; then
     systemctl --user status "$SERVICE_NAME" --no-pager || true
@@ -280,28 +360,30 @@ service_status() {
   fi
 
   echo -e "\n${YELLOW}正在向本地端点发起健康探测...${NC}"
-  if curl -s -f http://127.0.0.1:4010/health >/dev/null 2>&1; then
-    local h
-    h=$(curl -s http://127.0.0.1:4010/health)
+  local h
+  h=$(http_get "http://127.0.0.1:${configured_port}/health" || true)
+  if [[ -n "$h" ]]; then
     echo -e "${GREEN}✔ 网关健康检查通过: $h${NC}"
-    echo -e "${CYAN}💡 网页控制面板访问地址: http://${LAN_IP}:4010/balancer/ui${NC}"
+    echo -e "${CYAN}💡 网页控制面板访问地址: http://${LAN_IP}:${configured_port}/balancer/ui${NC}"
   else
-    echo -e "${RED}❌ 本地 4010 端口未响应${NC}"
+    echo -e "${RED}❌ 本地 ${configured_port} 端口未响应${NC}"
   fi
 }
 
 # 9. 验证端点健康
 verify_health() {
+  local configured_port
+  configured_port=$(get_configured_port)
   local max_retries=5
   local count=0
   echo -e "${YELLOW}正在等待网关服务就绪...${NC}"
   while [[ $count -lt $max_retries ]]; do
-    if curl -s -f http://127.0.0.1:4010/health >/dev/null 2>&1; then
-      local h
-      h=$(curl -s http://127.0.0.1:4010/health)
+    local h
+    h=$(http_get "http://127.0.0.1:${configured_port}/health" || true)
+    if [[ -n "$h" ]]; then
       echo -e "${GREEN}🎉 智能网关服务已成功启动！${NC}"
-      echo -e "   - 本地端点:   ${BOLD}http://127.0.0.1:4010/v1${NC}"
-      echo -e "   - 局域网管理: ${BOLD}http://${LAN_IP}:4010/balancer/ui${NC}"
+      echo -e "   - 本地端点:   ${BOLD}http://127.0.0.1:${configured_port}/v1${NC}"
+      echo -e "   - 局域网管理: ${BOLD}http://${LAN_IP}:${configured_port}/balancer/ui${NC}"
       echo -e "   - 健康状态:   $h"
       return 0
     fi
@@ -314,166 +396,181 @@ verify_health() {
 # 10. 绑定 OpenCode, OpenChamber, OMO, Goal
 bind_ecosystem() {
   echo -e "\n${YELLOW}🔗 正在一键绑定 OpenCode、OpenChamber、OMO 与 Goal...${NC}"
-  node -e "
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
+  local configured_port
+  configured_port=$(get_configured_port)
+
+  CFG_PORT="$configured_port" node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const os = require("os");
     const homeDir = os.homedir();
-    const routerUrl = 'http://127.0.0.1:4010/v1';
+    const routerPort = process.env.CFG_PORT || 4010;
+    const routerUrl = `http://127.0.0.1:${routerPort}/v1`;
+
+    function stripJsonComments(str) {
+      if (typeof str !== "string") return "";
+      return str.replace(/\\"|"(?:[^"\\]|\\.)*"|(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)/g, (m, g) => g ? "" : m);
+    }
+    function parseJsonSafe(filePath, defaultVal = {}) {
+      try {
+        if (!fs.existsSync(filePath)) return defaultVal;
+        return JSON.parse(stripJsonComments(fs.readFileSync(filePath, "utf8")));
+      } catch (e) {
+        return defaultVal;
+      }
+    }
 
     // 1. OpenCode (~/.config/opencode/opencode.jsonc)
-    const ocDir = path.join(homeDir, '.config', 'opencode');
+    const ocDir = path.join(homeDir, ".config", "opencode");
     if (!fs.existsSync(ocDir)) fs.mkdirSync(ocDir, { recursive: true });
-    const ocPath = path.join(ocDir, 'opencode.jsonc');
+    const ocPath = path.join(ocDir, "opencode.jsonc");
     let ocData = {};
     if (fs.existsSync(ocPath)) {
-      try { ocData = JSON.parse(fs.readFileSync(ocPath, 'utf8')); } catch (e) {}
+      try { fs.copyFileSync(ocPath, ocPath + ".bak"); } catch (e) {}
+      ocData = parseJsonSafe(ocPath, {});
     }
     if (!ocData.providers) ocData.providers = {};
     if (!ocData.provider) ocData.provider = {};
 
     const stdModels = {
-      'deepseek-v4.1-flash': { modelID: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' },
-      'deepseek-v4-pro': { modelID: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
-      'kimi-k3': { modelID: 'kimi-k3', name: 'kimi-k3' },
-      'qwen3.7-plus': { modelID: 'qwen3.7-plus', name: 'qwen3.7-plus' },
-      'glm-5.3': { modelID: 'glm-5.3', name: 'glm-5.3' },
-      'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
+      "deepseek-v4.1-flash": { modelID: "deepseek-v4.1-flash", name: "deepseek-v4.1-flash" },
+      "deepseek-v4-pro": { modelID: "deepseek-v4-pro", name: "deepseek-v4-pro" },
+      "kimi-k3": { modelID: "kimi-k3", name: "kimi-k3" },
+      "qwen3.7-plus": { modelID: "qwen3.7-plus", name: "qwen3.7-plus" },
+      "glm-5.3": { modelID: "glm-5.3", name: "glm-5.3" },
+      "minimax-m3": { modelID: "minimax-m3", name: "minimax-m3" }
     };
 
-    ocData.providers['opencode-go'] = {
-      name: 'opencode-go',
-      package: 'aisdk:@ai-sdk/openai-compatible',
+    ocData.providers["opencode-go"] = {
+      name: "opencode-go",
+      package: "aisdk:@ai-sdk/openai-compatible",
       settings: { baseURL: routerUrl },
       models: stdModels
     };
 
-    ocData.provider['opencode-go'] = {
-      name: 'opencode-go',
-      npm: '@ai-sdk/openai-compatible',
-      options: { baseURL: routerUrl, apiKey: 'local-router' },
+    ocData.provider["opencode-go"] = {
+      name: "opencode-go",
+      npm: "@ai-sdk/openai-compatible",
+      options: { baseURL: routerUrl, apiKey: "local-router" },
       models: {
-        'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' },
-        'deepseek-v4-pro': { name: 'deepseek-v4-pro' },
-        'kimi-k3': { name: 'kimi-k3' },
-        'qwen3.7-plus': { name: 'qwen3.7-plus' },
-        'glm-5.3': { name: 'glm-5.3' },
-        'minimax-m3': { name: 'minimax-m3' }
+        "deepseek-v4.1-flash": { name: "deepseek-v4.1-flash" },
+        "deepseek-v4-pro": { name: "deepseek-v4-pro" },
+        "kimi-k3": { name: "kimi-k3" },
+        "qwen3.7-plus": { name: "qwen3.7-plus" },
+        "glm-5.3": { name: "glm-5.3" },
+        "minimax-m3": { name: "minimax-m3" }
       }
     };
-    ocData.model = 'opencode-go/deepseek-v4.1-flash';
+    ocData.model = "opencode-go/deepseek-v4.1-flash";
 
-    fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), 'utf8');
-    console.log('✔ 已在 opencode.jsonc 注册 opencode-go 提供商，并将默认模型锁定为 opencode-go/deepseek-v4.1-flash');
+    fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), "utf8");
+    console.log("✔ 已在 opencode.jsonc 注册 opencode-go 提供商，并将默认模型锁定为 opencode-go/deepseek-v4.1-flash");
 
     // 2. OpenChamber
     const chamberDirs = [];
     if (process.env.OPENCHAMBER_DATA_DIR && fs.existsSync(process.env.OPENCHAMBER_DATA_DIR)) chamberDirs.push(process.env.OPENCHAMBER_DATA_DIR);
-    const defaultDataDir = '/vol3/1000/docker/opencode/openchamber/data';
+    const defaultDataDir = "/vol3/1000/docker/opencode/openchamber/data";
     if (fs.existsSync(defaultDataDir) && !chamberDirs.includes(defaultDataDir)) chamberDirs.push(defaultDataDir);
-    const standardChamberDir = path.join(homeDir, '.config', 'openchamber');
+    const standardChamberDir = path.join(homeDir, ".config", "openchamber");
     if (!chamberDirs.includes(standardChamberDir)) chamberDirs.push(standardChamberDir);
 
     for (const cDir of chamberDirs) {
       if (!fs.existsSync(cDir)) try { fs.mkdirSync(cDir, { recursive: true }); } catch (e) {}
 
-      const prefPath = path.join(cDir, 'preferences.json');
-      let pref = { version: 1, fields: {} };
-      if (fs.existsSync(prefPath)) {
-        try { pref = JSON.parse(fs.readFileSync(prefPath, 'utf8')); } catch (e) {}
-      }
+      const prefPath = path.join(cDir, "preferences.json");
+      let pref = parseJsonSafe(prefPath, { version: 1, fields: {} });
       if (!pref.fields) pref.fields = {};
 
       const recents = (pref.fields.recentModels && pref.fields.recentModels.value) || [];
-      const filteredRecents = recents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
+      const filteredRecents = recents.filter(m => !(m.providerID === "opencode-go" && (m.modelID === "deepseek-v4.1-flash" || m.modelID === "kimi-k3")));
       pref.fields.recentModels = {
         updatedAt: Date.now(),
         value: [
-          { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
-          { providerID: 'opencode-go', modelID: 'kimi-k3' },
+          { providerID: "opencode-go", modelID: "deepseek-v4.1-flash" },
+          { providerID: "opencode-go", modelID: "kimi-k3" },
           ...filteredRecents
         ]
       };
 
       const favs = (pref.fields.favoriteModels && pref.fields.favoriteModels.value) || [];
-      if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
-        favs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
+      if (!favs.some(m => m.providerID === "opencode-go" && m.modelID === "deepseek-v4.1-flash")) {
+        favs.unshift({ providerID: "opencode-go", modelID: "deepseek-v4.1-flash" });
       }
-      if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
-        favs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
+      if (!favs.some(m => m.providerID === "opencode-go" && m.modelID === "kimi-k3")) {
+        favs.push({ providerID: "opencode-go", modelID: "kimi-k3" });
       }
       pref.fields.favoriteModels = { updatedAt: Date.now(), value: favs };
-      fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), 'utf8');
+      fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), "utf8");
 
       // settings.json
-      const setPath = path.join(cDir, 'settings.json');
+      const setPath = path.join(cDir, "settings.json");
       if (fs.existsSync(setPath)) {
         try {
-          const settings = JSON.parse(fs.readFileSync(setPath, 'utf8'));
+          const settings = parseJsonSafe(setPath, {});
           const sRecents = settings.recentModels || [];
-          const sFiltered = sRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
+          const sFiltered = sRecents.filter(m => !(m.providerID === "opencode-go" && (m.modelID === "deepseek-v4.1-flash" || m.modelID === "kimi-k3")));
           settings.recentModels = [
-            { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
-            { providerID: 'opencode-go', modelID: 'kimi-k3' },
+            { providerID: "opencode-go", modelID: "deepseek-v4.1-flash" },
+            { providerID: "opencode-go", modelID: "kimi-k3" },
             ...sFiltered
           ];
           const sFavs = settings.favoriteModels || [];
-          if (!sFavs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
-            sFavs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
+          if (!sFavs.some(m => m.providerID === "opencode-go" && m.modelID === "deepseek-v4.1-flash")) {
+            sFavs.unshift({ providerID: "opencode-go", modelID: "deepseek-v4.1-flash" });
           }
-          if (!sFavs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
-            sFavs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
+          if (!sFavs.some(m => m.providerID === "opencode-go" && m.modelID === "kimi-k3")) {
+            sFavs.push({ providerID: "opencode-go", modelID: "kimi-k3" });
           }
           settings.favoriteModels = sFavs;
-          fs.writeFileSync(setPath, JSON.stringify(settings, null, 2), 'utf8');
+          fs.writeFileSync(setPath, JSON.stringify(settings, null, 2), "utf8");
         } catch (e) {}
       }
-      console.log('✔ 已在 OpenChamber (' + cDir + ') 设置常用模型与首选模型为 opencode-go');
+      console.log("✔ 已在 OpenChamber (" + cDir + ") 设置常用模型与首选模型为 opencode-go");
     }
 
     // 3. OMO (~/.omo/omo.jsonc)
-    const omoDir = path.join(homeDir, '.omo');
+    const omoDir = path.join(homeDir, ".omo");
     if (!fs.existsSync(omoDir)) fs.mkdirSync(omoDir, { recursive: true });
-    const omoPath = path.join(omoDir, 'omo.jsonc');
+    const omoPath = path.join(omoDir, "omo.jsonc");
     if (!fs.existsSync(omoPath)) {
       const omoTemplate = {
-        \"\$schema\": \"https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json\",
-        \"[opencode]\": {
-          \"agents\": {
-            \"sisyphus\": { \"model\": \"opencode-go/kimi-k3\" },
-            \"oracle\": { \"model\": \"opencode-go/glm-5.3\" },
-            \"librarian\": { \"model\": \"opencode-go/qwen3.7-plus\", \"fallback_models\": [{ \"model\": \"opencode-go/minimax-m3\" }] },
-            \"explore\": { \"model\": \"opencode-go/qwen3.7-plus\", \"fallback_models\": [{ \"model\": \"opencode-go/minimax-m3\" }] },
-            \"multimodal-looker\": { \"model\": \"opencode-go/kimi-k3\" },
-            \"prometheus\": { \"model\": \"opencode-go/kimi-k3\", \"variant\": \"high\" },
-            \"metis\": { \"model\": \"opencode-go/kimi-k3\", \"variant\": \"high\" },
-            \"momus\": { \"model\": \"opencode-go/glm-5.3\" },
-            \"atlas\": { \"model\": \"opencode-go/kimi-k3\", \"fallback_models\": [{ \"model\": \"opencode-go/minimax-m3\" }] },
-            \"sisyphus-junior\": { \"model\": \"opencode-go/kimi-k3\", \"fallback_models\": [{ \"model\": \"opencode-go/minimax-m3\" }] }
+        "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+        "[opencode]": {
+          "agents": {
+            "sisyphus": { "model": "opencode-go/kimi-k3" },
+            "oracle": { "model": "opencode-go/glm-5.3" },
+            "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "multimodal-looker": { "model": "opencode-go/kimi-k3" },
+            "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "momus": { "model": "opencode-go/glm-5.3" },
+            "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
           },
-          \"categories\": {
-            \"visual-engineering\": { \"model\": \"opencode-go/kimi-k3\", \"variant\": \"high\" },
-            \"ultrabrain\": { \"model\": \"opencode-go/deepseek-v4.1-flash\" },
-            \"deep-low\": { \"model\": \"opencode-go/deepseek-v4.1-flash\" },
-            \"deep-high\": { \"model\": \"opencode-go/deepseek-v4-pro\" },
-            \"artistry\": { \"model\": \"opencode-go/kimi-k3\", \"variant\": \"high\" },
-            \"quick\": { \"model\": \"opencode-go/minimax-m3\", \"variant\": \"high\" }
+          "categories": {
+            "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "ultrabrain": { "model": "opencode-go/deepseek-v4.1-flash" },
+            "deep-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+            "deep-high": { "model": "opencode-go/deepseek-v4-pro" },
+            "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" }
           }
         }
       };
-      fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), 'utf8');
-      console.log('✔ 已生成 ~/.omo/omo.jsonc 核心多智能体调度配置 (默认使用 kimi-k3/qwen3.7 避开区域限制)');
+      fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), "utf8");
+      console.log("✔ 已生成 ~/.omo/omo.jsonc 核心多智能体调度配置");
     } else {
-      console.log('✔ ~/.omo/omo.jsonc 已存在');
+      console.log("✔ 已确认 ~/.omo/omo.jsonc 调度配置就绪");
     }
 
     // 4. Goal boost.md
-    const cmdDir = path.join(homeDir, '.config', 'opencode', 'commands');
+    const cmdDir = path.join(homeDir, ".config", "opencode", "commands");
     if (!fs.existsSync(cmdDir)) fs.mkdirSync(cmdDir, { recursive: true });
-    const boostPath = path.join(cmdDir, 'boost.md');
+    const boostPath = path.join(cmdDir, "boost.md");
     if (!fs.existsSync(boostPath)) {
-      const boostContent = \`---
-description: \"极速自主推进增强模式 (Boost / Ultrawork Mode)\"
+      const boostContent = `---
+description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
 ---
 # Boost 极速增强模式指示 (Boost & Ultrawork Orchestration)
 
@@ -485,13 +582,15 @@ description: \"极速自主推进增强模式 (Boost / Ultrawork Mode)\"
 1. **启动全流程推进**：自动激活深层检索、多任务拆解与高效执行链路。
 2. **端到端交付**：不半途而废，连续执行直至方案完全实现并完成端到端测试。
 3. **保持高可逆性与安全性**：确保关键配置有备份，生产环境安全无损。
-\`;
-      fs.writeFileSync(boostPath, boostContent, 'utf8');
-      console.log('✔ 已生成 /boost 目标自主推进快捷指令模版');
+`;
+      fs.writeFileSync(boostPath, boostContent, "utf8");
+      console.log("✔ 已生成 /boost 目标自主推进快捷指令模版");
+    } else {
+      console.log("✔ 已确认 /boost 快捷指令模版就绪");
     }
-  "
+  '
 
-  # 重启运行中的 OpenCode 和 OpenChamber 服务以应用新配置
+  # 热重启运行中的 OpenCode 和 OpenChamber 服务以应用新配置
   if has_systemd_user; then
     echo -e "${YELLOW}正在热重启 OpenCode 与 OpenChamber 服务使配置生效...${NC}"
     systemctl --user restart opencode-server.service 2>/dev/null && echo -e "${GREEN}✔ opencode-server.service 已重启${NC}" || true
@@ -503,34 +602,58 @@ description: \"极速自主推进增强模式 (Boost / Ultrawork Mode)\"
 
 # 11. 执行体检与修复
 run_doctor() {
+  local configured_port
+  configured_port=$(get_configured_port)
+
   echo -e "\n${YELLOW}🩺 正在运行系统环境诊断与修复引擎...${NC}"
-  node -e "
-    const http = require('http');
-    const req = http.request('http://127.0.0.1:4010/balancer/api/doctor', (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
+  CFG_PORT="$configured_port" CFG_PATH="$CONFIG_FILE" node -e '
+    const http = require("http");
+    const fs = require("fs");
+    const port = process.env.CFG_PORT || 4010;
+    const cfgPath = process.env.CFG_PATH;
+    let pwd = "";
+    if (fs.existsSync(cfgPath)) {
+      try {
+        const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (c.uiPassword) pwd = c.uiPassword;
+      } catch (e) {}
+    }
+    const headers = {};
+    if (pwd) {
+      headers["Authorization"] = "Bearer " + Buffer.from(pwd).toString("base64");
+    }
+    const req = http.request({
+      hostname: "127.0.0.1",
+      port: port,
+      path: "/balancer/api/doctor",
+      method: "GET",
+      headers: headers
+    }, (res) => {
+      let data = "";
+      res.on("data", c => data += c);
+      res.on("end", () => {
         try {
           const report = JSON.parse(data);
-          console.log('✔ 体检结果: 端口 ' + report.router.port + ' 状态正常');
-          console.log('  - OpenCode CLI: ' + (report.opencode.installed ? report.opencode.version : '未检测到'));
-          console.log('  - 账号数量: ' + report.router.accounts.length);
+          console.log("✔ 体检结果: 端口 " + report.router.port + " 状态正常");
+          console.log("  - OpenCode CLI: " + (report.opencode.installed ? report.opencode.version : "未检测到"));
+          console.log("  - OpenChamber 工作台: " + (report.openchamber.reachable ? "在线 (Port 3000)" : "未运行/不可达"));
+          console.log("  - 账号数量: " + report.router.accounts.length);
           if (report.issues.length === 0) {
-            console.log('🎉 未发现任何异常！');
+            console.log("🎉 未发现任何异常！");
           } else {
-            console.log('⚠ 发现 ' + report.issues.length + ' 个可优化项目:');
-            report.issues.forEach(i => console.log('   [' + i.severity + '] ' + i.title + ': ' + i.desc));
+            console.log("⚠ 发现 " + report.issues.length + " 个可优化项目:");
+            report.issues.forEach(i => console.log("   [" + i.severity + "] " + i.title + ": " + i.desc));
           }
         } catch (e) {
-          console.log('响应解析异常:', data);
+          console.log("响应解析异常:", data);
         }
       });
     });
-    req.on('error', (e) => {
-      console.log('无法连接网关 API (4010):', e.message);
+    req.on("error", (e) => {
+      console.log(`无法连接网关 API (${port}):`, e.message);
     });
     req.end();
-  "
+  '
 }
 
 # 执行命令行参数逻辑
@@ -621,10 +744,11 @@ interactive_menu() {
       3)
         read -rp "请输入主账号 API Key (留空保持原样): " k1
         read -rp "请输入备用账号 API Key (留空保持原样): " k2
-        read -rp "请输入 Web 管理员访问密码 (留空无保护): " pwd
+        read -rp "请输入 Web 管理员访问密码 (留空清空保护): " pwd
         ARG_KEY1="$k1"
         ARG_KEY2="$k2"
         ARG_PASSWORD="$pwd"
+        FLAG_PASSWORD_SET=1
         setup_config
         if has_systemd_user; then systemctl --user restart "$SERVICE_NAME"; else service_start; fi
         echo -e "${GREEN}✔ 账号密钥与安全密码已更新！${NC}"

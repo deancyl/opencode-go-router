@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v1.3.0](https://img.shields.io/badge/Version-v1.3.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v1.3.1](https://img.shields.io/badge/Version-v1.3.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -96,6 +96,16 @@
 
 适用于 Debian、Ubuntu、fnOS (飞牛)、群晖 Synology (DSM 7+)、TrueNAS、Unraid 等服务器环境：
 
+#### 方式 1：远程极速一键安装（无需预先 clone，全自动搞定）
+```bash
+# 启动交互式向导：
+curl -fsSL https://raw.githubusercontent.com/deancyl/opencode-go-router/master/install.sh | bash
+
+# 或非交互式一键静默全套配置：
+curl -fsSL https://raw.githubusercontent.com/deancyl/opencode-go-router/master/install.sh | bash -s -- --all --host 0.0.0.0 --port 4010 --password "你的密码"
+```
+
+#### 方式 2：克隆仓库本地部署
 ```bash
 # 1. 克隆代码至本地
 git clone https://github.com/deancyl/opencode-go-router.git ~/.opencode-go-router
