@@ -335,7 +335,7 @@ function bindDesktopConfig() {
 
   // 1. OpenCode (~/.config/opencode/opencode.jsonc)
   try {
-    const opencodeDir = path.join(homeDir, '.config', 'opencode');
+    const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(homeDir, '.config', 'opencode');
     if (!fs.existsSync(opencodeDir)) fs.mkdirSync(opencodeDir, { recursive: true });
     const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
     let cfg = {};
@@ -846,7 +846,7 @@ function runSystemDoctor() {
     openchamber: { reachable: false, error: null },
     opencodeConfig: {
       exists: false,
-      path: path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc'),
+      path: path.join(process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode'), 'opencode.jsonc'),
       hasRouterEndpoint: false,
       hasDeadPort3001: false,
       plugins: []
@@ -966,7 +966,7 @@ function executeSystemRepair() {
   results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却状态' });
 
   // 2. Safe Repair / Initialization of opencode.jsonc
-  const ocDir = path.join(os.homedir(), '.config', 'opencode');
+  const ocDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
   const ocPath = path.join(ocDir, 'opencode.jsonc');
   try {
     if (!fs.existsSync(ocDir)) {

@@ -3,6 +3,7 @@ const net = require('node:net');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { fork } = require('node:child_process');
 
 function getFreePort() {
@@ -85,6 +86,9 @@ async function runTests() {
 
   // Create isolated temporary test config
   const testConfigFile = path.join(__dirname, `config.test-${Date.now()}.json`);
+  const testConfigDir = path.join(os.tmpdir(), `test-opencode-${Date.now()}`);
+  fs.mkdirSync(testConfigDir, { recursive: true });
+
   const testConfig = {
     port: routerPort,
     host: '127.0.0.1',
@@ -102,7 +106,12 @@ async function runTests() {
   // Spawn router process with isolated config
   const routerProc = fork(path.join(__dirname, 'server.js'), [], {
     stdio: 'pipe',
-    env: { ...process.env, OPENCODE_ROUTER_CONFIG: testConfigFile, PORT: String(routerPort) }
+    env: {
+      ...process.env,
+      OPENCODE_ROUTER_CONFIG: testConfigFile,
+      OPENCODE_CONFIG_DIR: testConfigDir,
+      PORT: String(routerPort)
+    }
   });
 
   await new Promise(resolve => setTimeout(resolve, 1500));
@@ -371,6 +380,9 @@ async function runTests() {
     mockUpstream.close();
     if (fs.existsSync(testConfigFile)) {
       try { fs.unlinkSync(testConfigFile); } catch (e) {}
+    }
+    if (fs.existsSync(testConfigDir)) {
+      try { fs.rmSync(testConfigDir, { recursive: true, force: true }); } catch (e) {}
     }
   }
 }
