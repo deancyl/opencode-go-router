@@ -26,8 +26,9 @@ if ($routerConn) {
 }
 
 $chamberConn = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+$chamberDesktopConn = Get-NetTCPConnection -LocalPort 57123 -State Listen -ErrorAction SilentlyContinue
 if ($chamberConn) {
-    Write-Host " OpenChamber [3000]: 运行中 (PID: $($chamberConn.OwningProcess[0]))" -ForegroundColor Green
+    Write-Host " OpenChamber Web [3000]: 运行中 (PID: $($chamberConn.OwningProcess[0]))" -ForegroundColor Green
     try {
         $chHealth = Invoke-RestMethod -Uri "http://127.0.0.1:3000/health" -TimeoutSec 3 -ErrorAction SilentlyContinue
         if ($chHealth) {
@@ -35,8 +36,17 @@ if ($chamberConn) {
             Write-Host "    - 状态: $($chHealth.status), 引擎桥接: $ocInfo" -ForegroundColor White
         }
     } catch {}
+} elseif ($chamberDesktopConn) {
+    Write-Host " OpenChamber 桌面端 [57123]: 运行中 (PID: $($chamberDesktopConn.OwningProcess[0]))" -ForegroundColor Green
+    try {
+        $chHealth = Invoke-RestMethod -Uri "http://127.0.0.1:57123/health" -TimeoutSec 3 -ErrorAction SilentlyContinue
+        if ($chHealth) {
+            $ocInfo = if ($chHealth.openCodeRunning) { "已连接 OpenCode v2 (端口 $($chHealth.openCodePort))" } else { "OpenCode 未就绪" }
+            Write-Host "    - 状态: $($chHealth.status), 引擎桥接: $ocInfo" -ForegroundColor White
+        }
+    } catch {}
 } else {
-    Write-Host " OpenChamber [3000]: 未运行" -ForegroundColor Red
+    Write-Host " OpenChamber: 未运行" -ForegroundColor Red
 }
 
 # 3. 检查智能网关账号详细健康度

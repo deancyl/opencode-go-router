@@ -180,8 +180,8 @@ function Step-SetupRouter {
         )
     }
 
-    Set-Content -Path $cfgPath -Value ($newConfig | ConvertTo-Json -Depth 5) -Encoding UTF8
-    Write-Host "✔ 配置文件已稳妥写入: $cfgPath" -ForegroundColor Green
+    [System.IO.File]::WriteAllText($cfgPath, ($newConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    Write-Host "✔ 配置文件已稳妥写入 (UTF-8 No-BOM): $cfgPath" -ForegroundColor Green
 
     # 同步绑定 OpenCode 主配置文件 ~/.config/opencode/opencode.jsonc
     if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
@@ -394,6 +394,18 @@ function Step-SetupOpenChamber {
         $raw = Get-Content $opencodeConfigFile -Raw -Encoding UTF8
         if ($raw -like "*127.0.0.1:4010*") {
             Write-Host "✔ OpenCode 配置已正确绑定 4010 智能网关" -ForegroundColor Green
+        }
+    }
+
+    # 4. 自动扫描并同步 OpenCode 进行中的全部历史项目与会话
+    $importScript = Join-Path $rootDir "import_projects.py"
+    if (Test-Path $importScript) {
+        Write-Host "正在扫描并同步 OpenCode 进行中的全部项目与历史会话到 OpenChamber..." -ForegroundColor Yellow
+        try {
+            $pyOut = python "$importScript" 2>&1
+            Write-Host "✔ 已成功将历史进行中的项目（包括 RootMyGalaxy、工作交接 等）同步至 OpenChamber 工作台" -ForegroundColor Green
+        } catch {
+            Write-Host "⚠ 项目同步提醒: $_" -ForegroundColor Yellow
         }
     }
 }

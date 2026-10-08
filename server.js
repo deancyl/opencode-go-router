@@ -62,7 +62,7 @@ let config = { ...DEFAULT_CONFIG };
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
     try {
-      const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+      const raw = fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^\uFEFF/, '');
       config = Object.assign({}, DEFAULT_CONFIG, JSON.parse(raw));
     } catch (err) {
       console.error('[Config] Failed to load config.json, using defaults:', err.message);
