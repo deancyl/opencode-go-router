@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenCode Go Smart Router Gateway (Port 4010)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.opencode-go-router
+Environment="NODE_ENV=production"
+Environment="PATH=%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

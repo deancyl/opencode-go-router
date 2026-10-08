@@ -41,6 +41,7 @@ const DEFAULT_CONFIG = {
   defaultCooldownMs: 60000,
   maxFailoverRetries: 2,
   sessionAffinityEnabled: true,
+  uiPassword: '',
   accounts: [
     {
       id: 'account-1',
@@ -79,6 +80,16 @@ function loadConfig() {
   if (process.env.PORT) {
     const p = parseInt(process.env.PORT, 10);
     if (!isNaN(p) && p > 0) config.port = p;
+  }
+
+  // Allow HOST / OPENCODE_ROUTER_HOST override
+  if (process.env.OPENCODE_ROUTER_HOST || process.env.HOST) {
+    config.host = (process.env.OPENCODE_ROUTER_HOST || process.env.HOST).trim();
+  }
+
+  // Allow OPENCODE_ROUTER_PASSWORD override
+  if (process.env.OPENCODE_ROUTER_PASSWORD) {
+    config.uiPassword = process.env.OPENCODE_ROUTER_PASSWORD.trim();
   }
 
   // Fallback to environment variables if apiKey is empty
@@ -302,12 +313,13 @@ function fetchAccountUsage(upstream, apiKey) {
 }
 
 function bindDesktopConfig() {
-  const result = { opencode: false, openchamber: false, messages: [] };
-  const userProfile = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\deanc';
+  const result = { opencode: false, openchamber: false, omo: false, boost: false, messages: [] };
+  const homeDir = os.homedir();
+  const routerUrl = `http://127.0.0.1:${config.port}/v1`;
 
   // 1. OpenCode (~/.config/opencode/opencode.jsonc)
   try {
-    const opencodeDir = path.join(userProfile, '.config', 'opencode');
+    const opencodeDir = path.join(homeDir, '.config', 'opencode');
     if (!fs.existsSync(opencodeDir)) fs.mkdirSync(opencodeDir, { recursive: true });
     const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
     let cfg = {};
@@ -318,24 +330,48 @@ function bindDesktopConfig() {
         cfg = {};
       }
     }
+
+    const standardModels = {
+      'deepseek-v4.1-flash': { modelID: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' },
+      'deepseek-v4-pro': { modelID: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
+      'kimi-k3': { modelID: 'kimi-k3', name: 'kimi-k3' },
+      'qwen3.7-plus': { modelID: 'qwen3.7-plus', name: 'qwen3.7-plus' },
+      'glm-5.3': { modelID: 'glm-5.3', name: 'glm-5.3' },
+      'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
+    };
+
+    // OpenCode v2 standard plural 'providers'
+    if (!cfg.providers) cfg.providers = {};
+    cfg.providers['opencode-go'] = {
+      name: 'opencode-go',
+      package: 'aisdk:@ai-sdk/openai-compatible',
+      settings: {
+        baseURL: routerUrl
+      },
+      models: standardModels
+    };
+
+    // Backwards compatible singular 'provider'
     if (!cfg.provider) cfg.provider = {};
     cfg.provider['opencode-go'] = {
       name: 'opencode-go',
       npm: '@ai-sdk/openai-compatible',
       options: {
-        baseURL: 'http://127.0.0.1:4010/v1',
+        baseURL: routerUrl,
         apiKey: 'local-router'
       },
       models: {
+        'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' },
+        'deepseek-v4-pro': { name: 'deepseek-v4-pro' },
         'kimi-k3': { name: 'kimi-k3' },
         'qwen3.7-plus': { name: 'qwen3.7-plus' },
-        'glm-5.3-flash': { name: 'glm-5.3-flash' },
-        'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' }
+        'glm-5.3': { name: 'glm-5.3' },
+        'minimax-m3': { name: 'minimax-m3' }
       }
     };
     if (cfg.provider['one-api']) {
       cfg.provider['one-api'].options = {
-        baseURL: 'http://127.0.0.1:4010/v1',
+        baseURL: routerUrl,
         apiKey: 'local-router'
       };
     }
@@ -347,48 +383,158 @@ function bindDesktopConfig() {
     result.messages.push('OpenCode 配置失败: ' + err.message);
   }
 
-  // 2. OpenChamber (~/.config/openchamber/preferences.json)
+  // 2. OpenChamber (~/.config/openchamber and OPENCHAMBER_DATA_DIR)
   try {
-    const chamberDir = path.join(userProfile, '.config', 'openchamber');
-    if (!fs.existsSync(chamberDir)) fs.mkdirSync(chamberDir, { recursive: true });
-    const prefPath = path.join(chamberDir, 'preferences.json');
-    let pref = { version: 1, fields: {} };
-    if (fs.existsSync(prefPath)) {
-      try {
-        pref = JSON.parse(fs.readFileSync(prefPath, 'utf8'));
-      } catch (e) {}
+    const chamberDirs = [];
+    if (process.env.OPENCHAMBER_DATA_DIR && fs.existsSync(process.env.OPENCHAMBER_DATA_DIR)) {
+      chamberDirs.push(process.env.OPENCHAMBER_DATA_DIR);
     }
-    if (!pref.fields) pref.fields = {};
-    
-    // Set recentModels[0] to deepseek-v4.1-flash
-    const recents = pref.fields.recentModels?.value || [];
-    const filteredRecents = recents.filter(m => !(m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash'));
-    pref.fields.recentModels = {
-      updatedAt: Date.now(),
-      value: [
-        { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
-        ...filteredRecents
-      ]
-    };
+    const defaultDataDir = '/vol3/1000/docker/opencode/openchamber/data';
+    if (fs.existsSync(defaultDataDir) && !chamberDirs.includes(defaultDataDir)) {
+      chamberDirs.push(defaultDataDir);
+    }
+    const standardChamberDir = path.join(homeDir, '.config', 'openchamber');
+    if (!chamberDirs.includes(standardChamberDir)) {
+      chamberDirs.push(standardChamberDir);
+    }
 
-    // Add to favoriteModels
-    const favs = pref.fields.favoriteModels?.value || [];
-    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
-      favs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
-    }
-    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
-      favs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
-    }
-    pref.fields.favoriteModels = {
-      updatedAt: Date.now(),
-      value: favs
-    };
+    let chamberUpdated = false;
+    for (const cDir of chamberDirs) {
+      if (!fs.existsSync(cDir)) {
+        try { fs.mkdirSync(cDir, { recursive: true }); } catch (e) {}
+      }
 
-    fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), 'utf8');
-    result.openchamber = true;
-    result.messages.push('已将 OpenChamber 桌面端首选默认模型设为 opencode-go / deepseek-v4.1-flash');
+      // Update preferences.json
+      const prefPath = path.join(cDir, 'preferences.json');
+      let pref = { version: 1, fields: {} };
+      if (fs.existsSync(prefPath)) {
+        try { pref = JSON.parse(fs.readFileSync(prefPath, 'utf8')); } catch (e) {}
+      }
+      if (!pref.fields) pref.fields = {};
+
+      const prefRecents = pref.fields.recentModels?.value || [];
+      const filteredRecents = prefRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
+      pref.fields.recentModels = {
+        updatedAt: Date.now(),
+        value: [
+          { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
+          { providerID: 'opencode-go', modelID: 'kimi-k3' },
+          ...filteredRecents
+        ]
+      };
+
+      const favs = pref.fields.favoriteModels?.value || [];
+      if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
+        favs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
+      }
+      if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
+        favs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
+      }
+      pref.fields.favoriteModels = {
+        updatedAt: Date.now(),
+        value: favs
+      };
+      fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), 'utf8');
+
+      // Update settings.json if exists
+      const setPath = path.join(cDir, 'settings.json');
+      if (fs.existsSync(setPath)) {
+        try {
+          const settings = JSON.parse(fs.readFileSync(setPath, 'utf8'));
+          const sRecents = settings.recentModels || [];
+          const sFiltered = sRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
+          settings.recentModels = [
+            { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
+            { providerID: 'opencode-go', modelID: 'kimi-k3' },
+            ...sFiltered
+          ];
+          const sFavs = settings.favoriteModels || [];
+          if (!sFavs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
+            sFavs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
+          }
+          if (!sFavs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
+            sFavs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
+          }
+          settings.favoriteModels = sFavs;
+          fs.writeFileSync(setPath, JSON.stringify(settings, null, 2), 'utf8');
+        } catch (e) {}
+      }
+      chamberUpdated = true;
+    }
+
+    result.openchamber = chamberUpdated;
+    result.messages.push('已将 OpenChamber 桌面/Web 端首选默认模型设为 opencode-go / deepseek-v4.1-flash');
   } catch (err) {
     result.messages.push('OpenChamber 配置失败: ' + err.message);
+  }
+
+  // 3. OMO (~/.omo/omo.jsonc)
+  try {
+    const omoDir = path.join(homeDir, '.omo');
+    if (!fs.existsSync(omoDir)) fs.mkdirSync(omoDir, { recursive: true });
+    const omoPath = path.join(omoDir, 'omo.jsonc');
+    if (!fs.existsSync(omoPath)) {
+      const omoTemplate = {
+        "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+        "[opencode]": {
+          "agents": {
+            "sisyphus": { "model": "opencode-go/kimi-k3" },
+            "oracle": { "model": "opencode-go/glm-5.3" },
+            "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "multimodal-looker": { "model": "opencode-go/kimi-k3" },
+            "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "momus": { "model": "opencode-go/glm-5.3" },
+            "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+            "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
+          },
+          "categories": {
+            "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "ultrabrain": { "model": "opencode-go/deepseek-v4.1-flash" },
+            "deep-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+            "deep-high": { "model": "opencode-go/deepseek-v4-pro" },
+            "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
+            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" },
+            "unspecified-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+            "unspecified-high": { "model": "opencode-go/deepseek-v4-pro" }
+          }
+        }
+      };
+      fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), 'utf8');
+      result.omo = true;
+      result.messages.push('已生成标准 ~/.omo/omo.jsonc 路由配置');
+    }
+  } catch (err) {
+    result.messages.push('OMO 配置提醒: ' + err.message);
+  }
+
+  // 4. Goal boost.md
+  try {
+    const cmdDir = path.join(homeDir, '.config', 'opencode', 'commands');
+    if (!fs.existsSync(cmdDir)) fs.mkdirSync(cmdDir, { recursive: true });
+    const boostPath = path.join(cmdDir, 'boost.md');
+    if (!fs.existsSync(boostPath)) {
+      const boostContent = `---
+description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
+---
+# Boost 极速增强模式指示 (Boost & Ultrawork Orchestration)
+
+立即进入高强度自主推进模式。
+推进目标：
+$ARGUMENTS
+
+## 执行规范：
+1. **启动全流程推进**：自动激活深层检索、多任务拆解与高效执行链路。
+2. **端到端交付**：不半途而废，连续执行直至方案完全实现并完成端到端测试。
+3. **保持高可逆性与安全性**：确保关键配置有备份，生产环境安全无损。
+`;
+      fs.writeFileSync(boostPath, boostContent, 'utf8');
+      result.boost = true;
+      result.messages.push('已就绪：/boost 指令模版');
+    }
+  } catch (err) {
+    result.messages.push('Boost 指令模版提醒: ' + err.message);
   }
 
   return result;
@@ -611,6 +757,11 @@ function findOpenCodeBinary() {
   } catch (e) {}
 
   const candidates = [
+    path.join(os.homedir(), '.opencode', 'bin', 'opencode'),
+    path.join(os.homedir(), '.local', 'bin', 'opencode'),
+    '/usr/local/bin/opencode',
+    '/usr/bin/opencode',
+    path.join(os.homedir(), '.bun', 'bin', 'opencode'),
     path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'resources', 'opencode-cli', 'opencode.exe'),
     path.join(process.env.APPDATA || '', 'npm', 'opencode.cmd'),
     path.join(os.homedir(), '.bun', 'bin', 'opencode.exe'),
@@ -629,6 +780,23 @@ function findOpenCodeBinary() {
 }
 
 function runSystemDoctor() {
+  let defaultWs = 'D:\\opencode\\default';
+  if (process.platform === 'linux') {
+    const linuxWsList = [
+      '/vol3/1000/docker/opencode2/default',
+      '/vol3/1000/docker/opencode2/ra2',
+      '/vol3/1000/docker/opencode/workspace',
+      path.join(os.homedir(), 'workspace'),
+      path.join(os.homedir(), 'projects')
+    ];
+    for (const ws of linuxWsList) {
+      if (fs.existsSync(ws)) {
+        defaultWs = ws;
+        break;
+      }
+    }
+  }
+
   const report = {
     timestamp: new Date().toISOString(),
     router: {
@@ -667,7 +835,7 @@ function runSystemDoctor() {
       path: path.join(os.homedir(), '.config', 'opencode', 'commands', 'boost.md')
     },
     workspace: {
-      defaultPath: 'D:\\opencode\\default',
+      defaultPath: defaultWs,
       exists: false,
       gitInitialized: false
     },
@@ -793,8 +961,27 @@ function executeSystemRepair() {
       }
 
       if (!ocData.provider || typeof ocData.provider !== 'object') ocData.provider = {};
+      if (!ocData.providers || typeof ocData.providers !== 'object') ocData.providers = {};
 
       const routerUrl = `http://127.0.0.1:${config.port}/v1`;
+      const standardModels = {
+        'deepseek-v4.1-flash': { modelID: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' },
+        'deepseek-v4-pro': { modelID: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
+        'kimi-k3': { modelID: 'kimi-k3', name: 'kimi-k3' },
+        'qwen3.7-plus': { modelID: 'qwen3.7-plus', name: 'qwen3.7-plus' },
+        'glm-5.3': { modelID: 'glm-5.3', name: 'glm-5.3' },
+        'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
+      };
+
+      ocData.providers['opencode-go'] = {
+        name: 'opencode-go',
+        package: 'aisdk:@ai-sdk/openai-compatible',
+        settings: {
+          baseURL: routerUrl
+        },
+        models: standardModels
+      };
+
       if (!ocData.provider['opencode-go']) {
         ocData.provider['opencode-go'] = {
           name: 'opencode-go',
@@ -819,6 +1006,8 @@ function executeSystemRepair() {
           ocData.provider['opencode-go'].options.apiKey = 'local-router';
         }
       }
+
+      ocData.model = 'opencode-go/deepseek-v4.1-flash';
 
       fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), 'utf8');
       results.push({
@@ -903,7 +1092,22 @@ $ARGUMENTS
   }
 
   // 5. Ensure Workspace Git
-  const wsPath = 'D:\\opencode\\default';
+  let wsPath = 'D:\\opencode\\default';
+  if (process.platform === 'linux') {
+    const linuxWsList = [
+      '/vol3/1000/docker/opencode2/default',
+      '/vol3/1000/docker/opencode2/ra2',
+      '/vol3/1000/docker/opencode/workspace',
+      path.join(os.homedir(), 'workspace'),
+      path.join(os.homedir(), 'projects')
+    ];
+    for (const cand of linuxWsList) {
+      if (fs.existsSync(cand)) {
+        wsPath = cand;
+        break;
+      }
+    }
+  }
   if (fs.existsSync(wsPath) && !fs.existsSync(path.join(wsPath, '.git'))) {
     try {
       execSync('git init', { cwd: wsPath, stdio: 'ignore' });
@@ -914,6 +1118,171 @@ $ARGUMENTS
   }
 
   return results;
+}
+
+function isAuthorized(req) {
+  if (!config.uiPassword || !config.uiPassword.trim()) return true;
+  const expected = config.uiPassword.trim();
+  const expectedB64 = Buffer.from(expected).toString('base64');
+
+  // 1. Authorization header: Bearer <pwd_or_b64>
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (token === expected || token === expectedB64) return true;
+  }
+
+  // 2. Custom header: x-ui-password or x-router-auth
+  const customHeader = (req.headers['x-ui-password'] || req.headers['x-router-auth'] || '').trim();
+  if (customHeader === expected || customHeader === expectedB64) return true;
+
+  // 3. Cookie: router_auth=<pwd_or_b64>
+  const cookieHeader = req.headers['cookie'] || '';
+  const match = cookieHeader.match(/router_auth=([^;]+)/);
+  if (match) {
+    const val = decodeURIComponent(match[1]).trim();
+    if (val === expected || val === expectedB64) return true;
+  }
+
+  // 4. Query param: ?auth=<pwd_or_b64>
+  const parsed = url.parse(req.url, true);
+  if (parsed.query && parsed.query.auth) {
+    const val = String(parsed.query.auth).trim();
+    if (val === expected || val === expectedB64) return true;
+  }
+
+  return false;
+}
+
+function renderLoginPage() {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>身份验证 | OpenCode 智能路由网关</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --primary: #38bdf8;
+      --primary-hover: #0284c7;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .login-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 2.5rem 2rem;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 16px 36px rgba(0,0,0,0.45);
+      text-align: center;
+    }
+    .icon { font-size: 2.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.45rem; color: var(--primary); margin-bottom: 0.5rem; }
+    p { font-size: 0.88rem; color: var(--muted); margin-bottom: 1.6rem; line-height: 1.5; }
+    .input-group { margin-bottom: 1.2rem; }
+    .form-control {
+      width: 100%;
+      background: #0b1120;
+      border: 1px solid #334155;
+      color: #fff;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 1rem;
+      text-align: center;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-control:focus { border-color: var(--primary); }
+    .btn {
+      width: 100%;
+      background: var(--primary);
+      color: #04101c;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover { background: var(--primary-hover); color: #fff; }
+    .err-msg {
+      color: var(--danger);
+      font-size: 0.85rem;
+      margin-top: 1rem;
+      display: none;
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      padding: 8px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="icon">🔐</div>
+    <h2>OpenCode 智能路由网关</h2>
+    <p>当前网关已开启安全访问认证，请输入管理员控制台访问密码</p>
+    <form onsubmit="handleLogin(event)">
+      <div class="input-group">
+        <input type="password" id="pwd" class="form-control" placeholder="输入访问密码..." autofocus required>
+      </div>
+      <button type="submit" class="btn" id="subBtn">登录控制台</button>
+      <div id="errMsg" class="err-msg"></div>
+    </form>
+  </div>
+  <script>
+    async function handleLogin(e) {
+      e.preventDefault();
+      const pwd = document.getElementById('pwd').value;
+      const err = document.getElementById('errMsg');
+      const btn = document.getElementById('subBtn');
+      err.style.display = 'none';
+      btn.innerText = '正在验证...';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/balancer/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pwd })
+        });
+        const data = await res.json();
+        if (data.success) {
+          localStorage.setItem('opencode_router_token', data.token);
+          document.cookie = 'router_auth=' + encodeURIComponent(pwd) + '; Path=/; Max-Age=2592000; SameSite=Lax';
+          location.reload();
+        } else {
+          err.innerText = data.error || '密码错误';
+          err.style.display = 'block';
+        }
+      } catch (ex) {
+        err.innerText = '网络异常: ' + ex.message;
+        err.style.display = 'block';
+      } finally {
+        btn.innerText = '登录控制台';
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>`;
 }
 
 // HTTP Server
@@ -997,6 +1366,44 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Auth API
+  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const inputPwd = (payload.password || '').trim();
+        const expectedPwd = (config.uiPassword || '').trim();
+        if (!expectedPwd || inputPwd === expectedPwd) {
+          const token = Buffer.from(inputPwd).toString('base64');
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Set-Cookie': `router_auth=${encodeURIComponent(inputPwd)}; Path=/; Max-Age=2592000; SameSite=Lax`,
+            'Access-Control-Allow-Origin': '*'
+          });
+          res.end(JSON.stringify({ success: true, token, message: '验证通过' }));
+        } else {
+          res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: '管理员密码错误，请重新输入' }));
+        }
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Auth gatekeeper for all /balancer/api/* endpoints
+  if (reqUrl.pathname.startsWith('/balancer/api/')) {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
+      return;
+    }
+  }
+
   // Get full config API (for UI)
   if (reqUrl.pathname === '/balancer/api/config' && req.method === 'GET') {
     res.writeHead(200, {
@@ -1005,10 +1412,13 @@ const server = http.createServer((req, res) => {
     });
     res.end(JSON.stringify({
       port: config.port,
+      host: config.host || '127.0.0.1',
       upstream: config.upstream,
       defaultCooldownMs: config.defaultCooldownMs,
       maxFailoverRetries: config.maxFailoverRetries,
       sessionAffinityEnabled: config.sessionAffinityEnabled,
+      hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
+      uiPassword: config.uiPassword || '',
       accounts: config.accounts
     }));
     return;
@@ -1041,6 +1451,15 @@ const server = http.createServer((req, res) => {
           sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
           accounts: newAccounts
         };
+        if (payload.host !== undefined && String(payload.host).trim()) {
+          newConfig.host = String(payload.host).trim();
+        }
+        if (payload.port !== undefined && Number(payload.port) > 0) {
+          newConfig.port = Number(payload.port);
+        }
+        if (payload.uiPassword !== undefined) {
+          newConfig.uiPassword = String(payload.uiPassword).trim();
+        }
 
         // Create atomic backup of existing config.json
         if (fs.existsSync(CONFIG_FILE)) {
@@ -1053,7 +1472,7 @@ const server = http.createServer((req, res) => {
 
         console.log('[Config] Configuration successfully updated via Graphical UI!');
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, message: '配置已稳妥保存并实时生效！' }));
+        res.end(JSON.stringify({ success: true, message: '配置已稳妥保存并实时生效！(若修改了端口或监听地址，将在服务重启后生效)' }));
       } catch (err) {
         console.error('[Config Error]', err.message);
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -1511,6 +1930,7 @@ const server = http.createServer((req, res) => {
         <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
         <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
         <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
+        ${config.uiPassword ? '<button class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="退出管理登录">🚪 退出登录</button>' : ''}
       </div>
     </header>
 
@@ -1548,15 +1968,30 @@ const server = http.createServer((req, res) => {
       </div>
     </div>
 
-    <!-- 高级策略配置 -->
+    <!-- 高级策略与网络安全配置 -->
     <div class="card">
       <div class="section-title">
-        <span>⚙️ 路由与高可用策略配置</span>
+        <span>⚙️ 路由、网络绑定与安全策略配置</span>
       </div>
       <div class="config-grid">
         <div class="form-group">
           <label>上游端点地址 (Upstream Endpoint)</label>
           <input type="text" id="cfg-upstream" class="form-control" value="${config.upstream}">
+        </div>
+        <div class="form-group">
+          <label>监听绑定地址 (Host IP - 0.0.0.0 允许局域网/NAS访问)</label>
+          <input type="text" id="cfg-host" class="form-control" value="${config.host || '127.0.0.1'}">
+        </div>
+        <div class="form-group">
+          <label>服务端口 (Port)</label>
+          <input type="number" id="cfg-port" class="form-control" value="${config.port}">
+        </div>
+        <div class="form-group">
+          <label>Web 管理访问密码 (UI Password - 留空无限制)</label>
+          <div class="input-wrapper">
+            <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，局域网共享建议设置" value="${config.uiPassword || ''}">
+            <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')">👁️</button>
+          </div>
         </div>
         <div class="form-group">
           <label>429 触发后默认冷却时长 (秒)</label>
@@ -1653,6 +2088,19 @@ const server = http.createServer((req, res) => {
       '</div>';
     }
 
+    function apiHeaders(extra = {}) {
+      const headers = { ...extra };
+      const token = localStorage.getItem('opencode_router_token');
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return headers;
+    }
+
+    function logoutAdmin() {
+      document.cookie = 'router_auth=; Path=/; Max-Age=0; SameSite=Lax';
+      localStorage.removeItem('opencode_router_token');
+      location.reload();
+    }
+
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
       toast.innerText = msg;
@@ -1664,8 +2112,12 @@ const server = http.createServer((req, res) => {
 
     async function fetchConfig() {
       try {
-        const res = await fetch('/balancer/api/config');
+        const res = await fetch('/balancer/api/config', { headers: apiHeaders() });
+        if (res.status === 401) { location.reload(); return; }
         currentConfig = await res.json();
+        if (document.getElementById('cfg-host')) document.getElementById('cfg-host').value = currentConfig.host || '127.0.0.1';
+        if (document.getElementById('cfg-port')) document.getElementById('cfg-port').value = currentConfig.port || 4010;
+        if (document.getElementById('cfg-uipassword')) document.getElementById('cfg-uipassword').value = currentConfig.uiPassword || '';
         renderAccounts();
         refreshAllQuotas();
       } catch (e) {
@@ -1754,8 +2206,8 @@ const server = http.createServer((req, res) => {
     }
 
     function toggleEye(id) {
-      const input = document.getElementById('key-input-' + id);
-      input.type = input.type === 'password' ? 'text' : 'password';
+      const input = document.getElementById(id.startsWith('cfg-') ? id : 'key-input-' + id);
+      if (input) input.type = input.type === 'password' ? 'text' : 'password';
     }
 
     function updateAccountField(id, field, value) {
@@ -1800,7 +2252,7 @@ const server = http.createServer((req, res) => {
       try {
         const res = await fetch('/balancer/api/test-account', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ upstream, apiKey: acc.apiKey })
         });
         const data = await res.json();
@@ -1830,7 +2282,7 @@ const server = http.createServer((req, res) => {
       try {
         const res = await fetch('/balancer/api/reset-cooldown', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ id })
         });
         const data = await res.json();
@@ -1845,7 +2297,7 @@ const server = http.createServer((req, res) => {
       try {
         const res = await fetch('/balancer/api/reset-cooldown', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: '{}'
         });
         const data = await res.json();
@@ -1860,7 +2312,7 @@ const server = http.createServer((req, res) => {
       const box = document.getElementById('doctor-content');
       box.innerHTML = '<span style="color:var(--primary)">⏳ 正在执行系统环境全链路自检...</span>';
       try {
-        const res = await fetch('/balancer/api/doctor');
+        const res = await fetch('/balancer/api/doctor', { headers: apiHeaders() });
         const doc = await res.json();
         let html = \`
           <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
@@ -1894,7 +2346,7 @@ const server = http.createServer((req, res) => {
       const box = document.getElementById('doctor-content');
       box.innerHTML = '<span style="color:var(--primary)">🔧 正在执行一键自动修复...</span>';
       try {
-        const res = await fetch('/balancer/api/repair', { method: 'POST' });
+        const res = await fetch('/balancer/api/repair', { method: 'POST', headers: apiHeaders() });
         const data = await res.json();
         let html = '<div style="margin-bottom:6px;"><strong>修复执行结果：</strong></div>';
         data.results.forEach(r => {
@@ -1911,12 +2363,18 @@ const server = http.createServer((req, res) => {
 
     async function saveConfig() {
       const upstream = document.getElementById('cfg-upstream').value.trim();
+      const host = document.getElementById('cfg-host').value.trim();
+      const port = parseInt(document.getElementById('cfg-port').value, 10) || 4010;
+      const uiPassword = document.getElementById('cfg-uipassword').value.trim();
       const cooldownSec = parseInt(document.getElementById('cfg-cooldown').value) || 60;
       const retries = parseInt(document.getElementById('cfg-retries').value) || 2;
       const affinity = document.getElementById('cfg-affinity').checked;
 
       const payload = {
         upstream,
+        host,
+        port,
+        uiPassword,
         defaultCooldownMs: cooldownSec * 1000,
         maxFailoverRetries: retries,
         sessionAffinityEnabled: affinity,
@@ -1926,7 +2384,7 @@ const server = http.createServer((req, res) => {
       try {
         const res = await fetch('/balancer/api/config', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload)
         });
         const data = await res.json();
@@ -1983,7 +2441,7 @@ const server = http.createServer((req, res) => {
       try {
         const res = await fetch('/balancer/api/account-quota', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ upstream, apiKey: acc.apiKey, id })
         });
         const data = await res.json();
@@ -2010,7 +2468,7 @@ const server = http.createServer((req, res) => {
     async function bindDesktopClients() {
       try {
         showToast('正在应用本地网关配置至桌面端...');
-        const res = await fetch('/balancer/api/bind-desktop', { method: 'POST' });
+        const res = await fetch('/balancer/api/bind-desktop', { method: 'POST', headers: apiHeaders() });
         const data = await res.json();
         if (data.success) {
           showToast('✔ ' + (data.message || '已成功绑定至 OpenCode 与 OpenChamber！'));

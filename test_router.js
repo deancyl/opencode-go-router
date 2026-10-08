@@ -279,8 +279,63 @@ async function runTests() {
     assert(Array.isArray(repairJson.results));
     console.log(`✓ Auto-Repair API verified: executed ${repairJson.results.length} repair actions`);
 
+    // Test 13: Bind Desktop API (/balancer/api/bind-desktop)
+    console.log('\n[Test 13] Testing Bind Desktop API (/balancer/api/bind-desktop)...');
+    const bindRes = await request('/balancer/api/bind-desktop', { method: 'POST' });
+    assert.strictEqual(bindRes.statusCode, 200);
+    const bindJson = JSON.parse(bindRes.body);
+    assert.strictEqual(typeof bindJson.success, 'boolean');
+    assert(bindJson.result && typeof bindJson.result === 'object');
+    console.log(`✓ Bind Desktop API verified: opencode=${bindJson.result.opencode}, openchamber=${bindJson.result.openchamber}`);
+
+    // Test 14: Save Config with UI Password & Auth Gatekeeper (/balancer/api/auth)
+    console.log('\n[Test 14] Testing UI Password Auth & Security Gatekeeper...');
+    // Enable uiPassword
+    const saveCfgRes = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...testConfig,
+        uiPassword: 'SecretTestPassword123!'
+      })
+    });
+    assert.strictEqual(saveCfgRes.statusCode, 200);
+
+    // Unauthenticated request to /balancer/api/config should now return 401
+    const unauthRes = await request('/balancer/api/config', { method: 'GET' });
+    assert.strictEqual(unauthRes.statusCode, 401, 'Protected endpoint should return 401 without auth');
+    console.log('✓ Security gatekeeper successfully blocked unauthorized admin request (401)');
+
+    // Login via /balancer/api/auth with correct password
+    const loginRes = await request('/balancer/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'SecretTestPassword123!' })
+    });
+    assert.strictEqual(loginRes.statusCode, 200);
+    const loginJson = JSON.parse(loginRes.body);
+    assert.strictEqual(loginJson.success, true);
+    assert(loginJson.token, 'Auth should return token');
+
+    // Authenticated request with Bearer token
+    const authRes = await request('/balancer/api/config', {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${loginJson.token}` }
+    });
+    assert.strictEqual(authRes.statusCode, 200);
+    const authCfg = JSON.parse(authRes.body);
+    assert.strictEqual(authCfg.hasUiPassword, true);
+    console.log('✓ UI Password authentication & Bearer token access verified');
+
+    // Restore uiPassword to empty
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${loginJson.token}` },
+      body: JSON.stringify({ ...testConfig, uiPassword: '' })
+    });
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 12 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 14 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
