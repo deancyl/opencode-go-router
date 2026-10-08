@@ -48,7 +48,7 @@ namespace OpenCodeRouter
 
             // Single instance check
             bool createdNew;
-            mutex = new Mutex(true, @"Global\OpenCodeRouterTrayMutex", out createdNew);
+            mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2", out createdNew);
             if (!createdNew)
             {
                 EnsureRouterRunning();
