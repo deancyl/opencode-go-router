@@ -248,6 +248,152 @@ function testAccountConnection(upstream, apiKey) {
   });
 }
 
+// Account Usage & Quota Fetcher (Rolling 5h, Weekly, Monthly limits)
+function fetchAccountUsage(upstream, apiKey) {
+  return new Promise((resolve) => {
+    try {
+      let endpoint = upstream.replace(/\/+$/, '');
+      if (endpoint.endsWith('/models')) {
+        endpoint = endpoint.replace(/\/models$/, '/usage');
+      } else if (endpoint.endsWith('/v1')) {
+        endpoint += '/usage';
+      } else if (!endpoint.includes('/usage')) {
+        endpoint += '/v1/usage';
+      }
+      const parsed = new URL(endpoint);
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const req = mod.request(parsed, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey.trim()}`,
+          'x-opencode-session': 'session-quota-' + Date.now(),
+          'User-Agent': 'OpenCode-Go-Router-Quota/1.0',
+          'Accept': 'application/json'
+        },
+        timeout: 8000
+      }, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            try {
+              const data = JSON.parse(body);
+              resolve({ success: true, statusCode: 200, usage: data.usage || null });
+            } catch (e) {
+              resolve({ success: false, statusCode: 200, error: '解析配额数据失败: ' + e.message });
+            }
+          } else {
+            resolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}` });
+          }
+        });
+      });
+      req.on('error', (err) => {
+        resolve({ success: false, statusCode: 0, error: `网络异常: ${err.message}` });
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ success: false, statusCode: 0, error: '请求配额超时 (8秒)' });
+      });
+      req.end();
+    } catch (err) {
+      resolve({ success: false, statusCode: 0, error: `端点解析失败: ${err.message}` });
+    }
+  });
+}
+
+function bindDesktopConfig() {
+  const result = { opencode: false, openchamber: false, messages: [] };
+  const userProfile = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\deanc';
+
+  // 1. OpenCode (~/.config/opencode/opencode.jsonc)
+  try {
+    const opencodeDir = path.join(userProfile, '.config', 'opencode');
+    if (!fs.existsSync(opencodeDir)) fs.mkdirSync(opencodeDir, { recursive: true });
+    const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
+    let cfg = {};
+    if (fs.existsSync(opencodeJsonPath)) {
+      try {
+        cfg = JSON.parse(fs.readFileSync(opencodeJsonPath, 'utf8'));
+      } catch (e) {
+        cfg = {};
+      }
+    }
+    if (!cfg.provider) cfg.provider = {};
+    cfg.provider['opencode-go'] = {
+      name: 'opencode-go',
+      npm: '@ai-sdk/openai-compatible',
+      options: {
+        baseURL: 'http://127.0.0.1:4010/v1',
+        apiKey: 'local-router'
+      },
+      models: {
+        'kimi-k3': { name: 'kimi-k3' },
+        'qwen3.7-plus': { name: 'qwen3.7-plus' },
+        'glm-5.3-flash': { name: 'glm-5.3-flash' },
+        'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' }
+      }
+    };
+    if (cfg.provider['one-api']) {
+      cfg.provider['one-api'].options = {
+        baseURL: 'http://127.0.0.1:4010/v1',
+        apiKey: 'local-router'
+      };
+    }
+    cfg.model = 'opencode-go/kimi-k3';
+    fs.writeFileSync(opencodeJsonPath, JSON.stringify(cfg, null, 2), 'utf8');
+    result.opencode = true;
+    result.messages.push('已将 OpenCode 全局首选模型锁定为 opencode-go/kimi-k3');
+  } catch (err) {
+    result.messages.push('OpenCode 配置失败: ' + err.message);
+  }
+
+  // 2. OpenChamber (~/.config/openchamber/preferences.json)
+  try {
+    const chamberDir = path.join(userProfile, '.config', 'openchamber');
+    if (!fs.existsSync(chamberDir)) fs.mkdirSync(chamberDir, { recursive: true });
+    const prefPath = path.join(chamberDir, 'preferences.json');
+    let pref = { version: 1, fields: {} };
+    if (fs.existsSync(prefPath)) {
+      try {
+        pref = JSON.parse(fs.readFileSync(prefPath, 'utf8'));
+      } catch (e) {}
+    }
+    if (!pref.fields) pref.fields = {};
+    
+    // Set recentModels[0] to kimi-k3
+    const recents = pref.fields.recentModels?.value || [];
+    const filteredRecents = recents.filter(m => !(m.providerID === 'opencode-go' && m.modelID === 'kimi-k3'));
+    pref.fields.recentModels = {
+      updatedAt: Date.now(),
+      value: [
+        { providerID: 'opencode-go', modelID: 'kimi-k3' },
+        ...filteredRecents
+      ]
+    };
+
+    // Add to favoriteModels
+    const favs = pref.fields.favoriteModels?.value || [];
+    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
+      favs.unshift({ providerID: 'opencode-go', modelID: 'kimi-k3' });
+    }
+    if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'qwen3.7-plus')) {
+      favs.push({ providerID: 'opencode-go', modelID: 'qwen3.7-plus' });
+    }
+    pref.fields.favoriteModels = {
+      updatedAt: Date.now(),
+      value: favs
+    };
+
+    fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), 'utf8');
+    result.openchamber = true;
+    result.messages.push('已将 OpenChamber 桌面端首选默认模型设为 opencode-go / kimi-k3');
+  } catch (err) {
+    result.messages.push('OpenChamber 配置失败: ' + err.message);
+  }
+
+  return result;
+}
+
 function getCorsHeaders(upstreamHeaders = {}) {
   const headers = { ...upstreamHeaders };
   delete headers['connection'];
@@ -944,6 +1090,54 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Account Quota & Usage API
+  if (reqUrl.pathname === '/balancer/api/account-quota' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const targetUpstream = (payload.upstream || config.upstream).trim();
+        let apiKey = (payload.apiKey || '').trim();
+        if (!apiKey && payload.id) {
+          const acc = config.accounts.find(a => a.id === payload.id);
+          if (acc) apiKey = acc.apiKey.trim();
+        }
+
+        if (!apiKey) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, message: '未配置 API Key' }));
+          return;
+        }
+
+        const result = await fetchAccountUsage(targetUpstream, apiKey);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Bind to OpenCode & OpenChamber Desktop API
+  if (reqUrl.pathname === '/balancer/api/bind-desktop' && req.method === 'POST') {
+    try {
+      const result = bindDesktopConfig();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({
+        success: result.opencode || result.openchamber,
+        result,
+        message: result.messages.join('；')
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
   // Reset Cooldown API
   if (reqUrl.pathname === '/balancer/api/reset-cooldown' && req.method === 'POST') {
     let body = [];
@@ -1249,6 +1443,58 @@ const server = http.createServer((req, res) => {
     .issue-high { border-left: 4px solid var(--danger); }
     .issue-medium { border-left: 4px solid var(--warning); }
     .issue-low { border-left: 4px solid var(--primary); }
+
+    /* Quota Usage Box */
+    .quota-box {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 12px 0 10px;
+      font-size: 0.8rem;
+    }
+    .quota-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid #1e293b;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+    .quota-row { margin-bottom: 7px; }
+    .quota-row:last-child { margin-bottom: 0; }
+    .quota-row-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.78rem;
+      margin-bottom: 3px;
+    }
+    .quota-label { color: #94a3b8; display: flex; align-items: center; gap: 4px; }
+    .quota-value { font-weight: 700; }
+    .quota-bar-track {
+      width: 100%;
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 2px;
+    }
+    .quota-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .quota-bar-ok { background: linear-gradient(90deg, #10b981, #34d399); }
+    .quota-bar-warn { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .quota-bar-danger { background: linear-gradient(90deg, #ef4444, #f87171); }
+    .quota-reset-text {
+      font-size: 0.72rem;
+      color: #64748b;
+      text-align: right;
+    }
   </style>
 </head>
 <body>
@@ -1259,7 +1505,9 @@ const server = http.createServer((req, res) => {
         <p>原生专用双订阅智能路由与负载均衡 (本地端口: <strong>${config.port}</strong>)</p>
       </div>
       <div class="header-actions">
+        <button class="btn btn-primary btn-sm" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
         <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()">⚡ 全部测速</button>
+        <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas()">📊 刷新配额</button>
         <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
         <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
         <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
@@ -1333,6 +1581,77 @@ const server = http.createServer((req, res) => {
   <script>
     let currentConfig = null;
     let liveStats = {};
+    let accountQuotas = {};
+
+    function formatResetTime(isoStr) {
+      if (!isoStr) return '';
+      try {
+        const date = new Date(isoStr);
+        const now = new Date();
+        const diffMs = date - now;
+        let relative = '';
+        if (diffMs > 0) {
+          const diffMins = Math.round(diffMs / 60000);
+          if (diffMins < 60) relative = ' (剩 ' + diffMins + ' 分钟)';
+          else {
+            const hours = (diffMs / 3600000).toFixed(1);
+            relative = ' (剩 ' + hours + ' 小时)';
+          }
+        }
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const h = String(date.getHours()).padStart(2, '0');
+        const min = String(date.getMinutes()).padStart(2, '0');
+        return m + '-' + d + ' ' + h + ':' + min + relative;
+      } catch (e) {
+        return isoStr;
+      }
+    }
+
+    function getBarClass(percent) {
+      if (percent >= 90) return 'quota-bar-danger';
+      if (percent >= 70) return 'quota-bar-warn';
+      return 'quota-bar-ok';
+    }
+
+    function buildQuotaContent(usage) {
+      if (!usage) return '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding: 4px 0;">点击【测速】或【刷新】查询官方 5h、周、月配额</div>';
+
+      const rollingPct = Math.min(100, Math.max(0, (usage.rolling && usage.rolling.percent !== undefined) ? usage.rolling.percent : 0));
+      const weeklyPct = Math.min(100, Math.max(0, (usage.weekly && usage.weekly.percent !== undefined) ? usage.weekly.percent : 0));
+      const monthlyPct = Math.min(100, Math.max(0, (usage.monthly && usage.monthly.percent !== undefined) ? usage.monthly.percent : 0));
+
+      return '<div class="quota-row">' +
+        '<div class="quota-row-top">' +
+          '<span class="quota-label">⏱️ 5小时滑动限额 (5h Rolling)</span>' +
+          '<span class="quota-value" style="color: ' + (rollingPct > 80 ? 'var(--danger)' : 'var(--text)') + ';">' + rollingPct + '%</span>' +
+        '</div>' +
+        '<div class="quota-bar-track">' +
+          '<div class="quota-bar-fill ' + getBarClass(rollingPct) + '" style="width: ' + rollingPct + '%;"></div>' +
+        '</div>' +
+        '<div class="quota-reset-text">恢复时间: ' + formatResetTime(usage.rolling && usage.rolling.resetsAt) + '</div>' +
+      '</div>' +
+      '<div class="quota-row">' +
+        '<div class="quota-row-top">' +
+          '<span class="quota-label">📅 本周累计额度 (Weekly)</span>' +
+          '<span class="quota-value" style="color: ' + (weeklyPct > 80 ? 'var(--danger)' : 'var(--text)') + ';">' + weeklyPct + '%</span>' +
+        '</div>' +
+        '<div class="quota-bar-track">' +
+          '<div class="quota-bar-fill ' + getBarClass(weeklyPct) + '" style="width: ' + weeklyPct + '%;"></div>' +
+        '</div>' +
+        '<div class="quota-reset-text">周重置: ' + formatResetTime(usage.weekly && usage.weekly.resetsAt) + '</div>' +
+      '</div>' +
+      '<div class="quota-row">' +
+        '<div class="quota-row-top">' +
+          '<span class="quota-label">🗓️ 本月累计额度 (Monthly)</span>' +
+          '<span class="quota-value" style="color: ' + (monthlyPct > 80 ? 'var(--danger)' : 'var(--text)') + ';">' + monthlyPct + '%</span>' +
+        '</div>' +
+        '<div class="quota-bar-track">' +
+          '<div class="quota-bar-fill ' + getBarClass(monthlyPct) + '" style="width: ' + monthlyPct + '%;"></div>' +
+        '</div>' +
+        '<div class="quota-reset-text">月重置: ' + formatResetTime(usage.monthly && usage.monthly.resetsAt) + '</div>' +
+      '</div>';
+    }
 
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
@@ -1348,6 +1667,7 @@ const server = http.createServer((req, res) => {
         const res = await fetch('/balancer/api/config');
         currentConfig = await res.json();
         renderAccounts();
+        refreshAllQuotas();
       } catch (e) {
         showToast('获取配置失败: ' + e.message, true);
       }
@@ -1398,6 +1718,16 @@ const server = http.createServer((req, res) => {
               <button type="button" class="toggle-eye" onclick="toggleEye('\${acc.id}')">👁️</button>
             </div>
             <div class="test-result-box" id="test-res-\${acc.id}"></div>
+          </div>
+
+          <div class="quota-box" id="quota-box-\${acc.id}">
+            <div class="quota-header">
+              <span>📊 官方限额 (Usage Quota)</span>
+              <button type="button" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="fetchSingleQuota('\${acc.id}')">🔄 刷新</button>
+            </div>
+            <div id="quota-content-\${acc.id}">
+              \${accountQuotas[acc.id] ? buildQuotaContent(accountQuotas[acc.id]) : '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding: 4px 0;">点击【测速】或【刷新】查询官方 5h、周、月配额</div>'}
+            </div>
           </div>
 
           <div class="acc-metrics">
@@ -1485,6 +1815,7 @@ const server = http.createServer((req, res) => {
         resBox.className = 'test-result-box test-fail';
         resBox.innerText = '❌ 请求异常: ' + e.message;
       }
+      fetchSingleQuota(id);
     }
 
     async function testAllAccounts() {
@@ -1636,6 +1967,58 @@ const server = http.createServer((req, res) => {
             badge.innerText = '正常可用';
           }
         }
+      }
+    }
+
+    async function fetchSingleQuota(id) {
+      const qBox = document.getElementById('quota-content-' + id);
+      const acc = currentConfig ? currentConfig.accounts.find(a => a.id === id) : null;
+      const upstream = document.getElementById('cfg-upstream').value;
+      if (!acc || !acc.apiKey.trim()) {
+        if (qBox) qBox.innerHTML = '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding:4px 0;">请先输入 API Key 密钥</div>';
+        return;
+      }
+      if (qBox) qBox.innerHTML = '<div style="color:var(--primary); font-size:0.75rem; text-align:center; padding:4px 0;">⏳ 正在查询官方配额限制...</div>';
+
+      try {
+        const res = await fetch('/balancer/api/account-quota', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ upstream, apiKey: acc.apiKey, id })
+        });
+        const data = await res.json();
+        if (data.success && data.usage) {
+          accountQuotas[id] = data.usage;
+          if (qBox) qBox.innerHTML = buildQuotaContent(data.usage);
+        } else {
+          if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0;">查询失败: ' + (data.error || '未返回配额数据') + '</div>';
+        }
+      } catch (e) {
+        if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0;">网络异常: ' + e.message + '</div>';
+      }
+    }
+
+    async function refreshAllQuotas() {
+      if (!currentConfig || !currentConfig.accounts) return;
+      for (const acc of currentConfig.accounts) {
+        if (acc.apiKey && acc.apiKey.trim()) {
+          fetchSingleQuota(acc.id);
+        }
+      }
+    }
+
+    async function bindDesktopClients() {
+      try {
+        showToast('正在应用本地网关配置至桌面端...');
+        const res = await fetch('/balancer/api/bind-desktop', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✔ ' + (data.message || '已成功绑定至 OpenCode 与 OpenChamber！'));
+        } else {
+          showToast('绑定失败: ' + (data.error || data.message), true);
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, true);
       }
     }
 

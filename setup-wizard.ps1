@@ -389,7 +389,61 @@ function Step-SetupOpenChamber {
         Write-Host "ℹ 提示: 可通过 bun add -g @openchamber/web 或桌面客户端安装 OpenChamber" -ForegroundColor Yellow
     }
 
-    # 3. 验证 opencode.jsonc 中 4010 映射
+    # 3. 验证并配置 OpenChamber 偏好首选模型 (preferences.json)
+    $chamberPrefDir = "$env:USERPROFILE\.config\openchamber"
+    $chamberPrefFile = Join-Path $chamberPrefDir "preferences.json"
+    try {
+        if (-not (Test-Path $chamberPrefDir)) { New-Item -ItemType Directory -Path $chamberPrefDir -Force | Out-Null }
+        $prefObj = $null
+        if (Test-Path $chamberPrefFile) {
+            $prefObj = Get-Content $chamberPrefFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        } else {
+            $prefObj = [PSCustomObject]@{ version = 1; fields = [PSCustomObject]@{} }
+        }
+        if (-not $prefObj.fields) { $prefObj | Add-Member -NotePropertyName "fields" -NotePropertyValue (New-Object PSObject) }
+
+        $recents = @()
+        if ($prefObj.fields.recentModels -and $prefObj.fields.recentModels.value) {
+            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and $_.modelID -eq 'kimi-k3') })
+        }
+        $newRecent = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }) + $recents
+        if ($prefObj.fields.recentModels) {
+            $prefObj.fields.recentModels.value = $newRecent
+            $prefObj.fields.recentModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        } else {
+            $prefObj.fields | Add-Member -NotePropertyName "recentModels" -NotePropertyValue ([PSCustomObject]@{
+                updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                value = $newRecent
+            })
+        }
+
+        $favs = @()
+        if ($prefObj.fields.favoriteModels -and $prefObj.fields.favoriteModels.value) {
+            $favs = @($prefObj.fields.favoriteModels.value)
+        }
+        if (-not ($favs | Where-Object { $_.providerID -eq 'opencode-go' -and $_.modelID -eq 'kimi-k3' })) {
+            $favs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }) + $favs
+        }
+        if (-not ($favs | Where-Object { $_.providerID -eq 'opencode-go' -and $_.modelID -eq 'qwen3.7-plus' })) {
+            $favs = $favs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'qwen3.7-plus' })
+        }
+        if ($prefObj.fields.favoriteModels) {
+            $prefObj.fields.favoriteModels.value = $favs
+            $prefObj.fields.favoriteModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        } else {
+            $prefObj.fields | Add-Member -NotePropertyName "favoriteModels" -NotePropertyValue ([PSCustomObject]@{
+                updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                value = $favs
+            })
+        }
+
+        [System.IO.File]::WriteAllText($chamberPrefFile, ($prefObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+        Write-Host "✔ OpenChamber 桌面端首选默认模型已成功锁定为: opencode-go / kimi-k3" -ForegroundColor Green
+    } catch {
+        Write-Host "⚠ OpenChamber 偏好配置提醒: $_" -ForegroundColor Yellow
+    }
+
+    # 4. 验证 opencode.jsonc 中 4010 映射
     if (Test-Path $opencodeConfigFile) {
         $raw = Get-Content $opencodeConfigFile -Raw -Encoding UTF8
         if ($raw -like "*127.0.0.1:4010*") {

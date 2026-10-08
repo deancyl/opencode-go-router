@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -101,6 +102,10 @@ namespace OpenCodeRouter
             ToolStripMenuItem menuDoctor = new ToolStripMenuItem("🩺 系统环境自检与修复");
             menuDoctor.Click += (s, e) => RunDoctor();
             menu.Items.Add(menuDoctor);
+
+            ToolStripMenuItem menuBind = new ToolStripMenuItem("⚡ 一键应用至 OpenCode / OpenChamber");
+            menuBind.Click += (s, e) => BindDesktopClients();
+            menu.Items.Add(menuBind);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -271,6 +276,34 @@ namespace OpenCodeRouter
             {
                 OpenDashboard();
             }
+        }
+
+        static void BindDesktopClients()
+        {
+            new Thread(() =>
+            {
+                try
+                {
+                    HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + "/balancer/api/bind-desktop");
+                    req.Method = "POST";
+                    req.ContentType = "application/json";
+                    req.Timeout = 6000;
+                    byte[] data = Encoding.UTF8.GetBytes("{}");
+                    req.ContentLength = data.Length;
+                    using (Stream s = req.GetRequestStream())
+                    {
+                        s.Write(data, 0, data.Length);
+                    }
+                    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                    {
+                        notifyIcon.ShowBalloonTip(4000, "OpenCode 智能路由", "✔ 本地网关已成功锁定为 OpenCode 与 OpenChamber 默认配置！", ToolTipIcon.Info);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    notifyIcon.ShowBalloonTip(4000, "配置失败", ex.Message, ToolTipIcon.Warning);
+                }
+            }).Start();
         }
 
         static void ExitApp()
