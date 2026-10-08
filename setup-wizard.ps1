@@ -474,12 +474,13 @@ function Step-SetupOpenChamber {
 # ----------------- 步骤 6: 全栈一键自动配置 -----------------
 function Step-RunAll {
     Write-Header "【全栈一键自动配置】"
-    Write-Host "将依次执行：OpenCode v2 检测 -> 4010 网关部署 -> OMO 配置 -> Goal 插件配置 -> OpenChamber 配置..." -ForegroundColor Cyan
+    Write-Host "将依次执行：OpenCode v2 检测 -> 4010 网关部署 -> OMO 配置 -> Goal 插件配置 -> OpenChamber 配置 -> Office 离线预览挂载..." -ForegroundColor Cyan
     Step-InstallOpenCode
     Step-SetupRouter
     Step-SetupOMO
     Step-SetupGoal
     Step-SetupOpenChamber
+    Step-SetupOfficePreview
     Write-Header "🎉 全套体系已全部配置就绪！"
     Write-Host " 🌐 OpenChamber 工作台:    http://127.0.0.1:3000" -ForegroundColor White
     Write-Host " 📊 智能路由流量与监控面板: http://127.0.0.1:$port/balancer/ui" -ForegroundColor White
@@ -491,6 +492,32 @@ function Step-RunDoctor {
     $doctorScript = Join-Path $rootDir "doctor-repair.ps1"
     if (Test-Path $doctorScript) {
         powershell -NoProfile -ExecutionPolicy Bypass -File "`"$doctorScript`""
+    }
+}
+
+# ----------------- 步骤 8: 挂载/卸载 OpenChamber Office 全格式离线预览引擎 -----------------
+function Step-SetupOfficePreview {
+    Write-Header "【步骤 8】OpenChamber Office 全格式离线安全预览引擎"
+    $patchScript = Join-Path $rootDir "patch-openchamber-office.ps1"
+    if (-not (Test-Path $patchScript)) {
+        Write-Host "❌ 未找到 patch-openchamber-office.ps1 脚本" -ForegroundColor Red
+        return
+    }
+    Write-Host "离线安全红线保障：纯本地沙箱执行，严禁公网第三方云预览，支持双轨本地应用秒开。" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  [1] 一键挂载离线预览引擎 (支持 .docx / .xlsx / .pptx 原生渲染与原厂秒开)" -ForegroundColor White
+    Write-Host "  [2] 还原/卸载离线预览引擎 (无损还原官方原始 dist 备份)" -ForegroundColor White
+    Write-Host "  [3] 查看当前挂载状态" -ForegroundColor White
+    Write-Host "  [0] 返回上级" -ForegroundColor DarkGray
+    Write-Host ""
+    $opt = Read-Host "请输入编号 [默认: 1]"
+    if (-not $opt) { $opt = "1" }
+    switch ($opt) {
+        "1" { & $patchScript -Install }
+        "2" { & $patchScript -Rollback }
+        "3" { & $patchScript -Status }
+        "0" { return }
+        default { & $patchScript -Install }
     }
 }
 
@@ -510,6 +537,7 @@ if ($Step -and $Step.Count -gt 0) {
             5 { Step-SetupOpenChamber }
             6 { Step-RunAll }
             7 { Step-RunDoctor }
+            8 { Step-SetupOfficePreview }
         }
     }
     exit 0
@@ -525,12 +553,13 @@ while ($true) {
     Write-Host "  [3] 配置 Oh My OpenAgent (OMO 多智能体调度与模型映射)" -ForegroundColor White
     Write-Host "  [4] 配置 Goal 目标推进能力插件 (opencode-goal-plugin + /goal + /boost)" -ForegroundColor White
     Write-Host "  [5] 配置 OpenChamber 桌面工作台 (绑定工作区与 4010 本地网关)" -ForegroundColor White
-    Write-Host "  [6] 🚀 全栈一键自动配置 (依次完成上述全部 1-5 步骤)" -ForegroundColor Green
+    Write-Host "  [6] 🚀 全栈一键自动配置 (依次完成上述全部 1-5 及 Office 预览步骤)" -ForegroundColor Green
     Write-Host "  [7] 🩺 系统全链路健康体检与异常一键修复 (Doctor & Repair)" -ForegroundColor Yellow
+    Write-Host "  [8] 📄 挂载/管理 OpenChamber 全能 Office 离线预览引擎 (.docx/.xlsx/.pptx)" -ForegroundColor Cyan
     Write-Host "  [0] 退出向导" -ForegroundColor DarkGray
     Write-Host ""
 
-    $selected = Read-Host "请输入编号 [0-7]"
+    $selected = Read-Host "请输入编号 [0-8]"
     switch ($selected) {
         "1" { Step-InstallOpenCode }
         "2" { Step-SetupRouter }
@@ -539,6 +568,7 @@ while ($true) {
         "5" { Step-SetupOpenChamber }
         "6" { Step-RunAll }
         "7" { Step-RunDoctor }
+        "8" { Step-SetupOfficePreview }
         "0" { Write-Host "已退出向导。" -ForegroundColor Gray; break }
         default { Write-Host "无效输入，请重新选择。" -ForegroundColor Red }
     }

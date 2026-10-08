@@ -372,8 +372,35 @@ async function runTests() {
       body: JSON.stringify({ ...testConfig, uiPassword: '' })
     });
 
+    // Test 15: Open Local File in Native Application API (/balancer/api/open-file)
+    console.log('\n[Test 15] Testing Open Local File API (/balancer/api/open-file)...');
+    const resNoPath = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    assert.strictEqual(resNoPath.statusCode, 400);
+
+    const resBadPath = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'C:\\non_existent_doc_file_12345.docx' })
+    });
+    assert.strictEqual(resBadPath.statusCode, 404);
+
+    const existingFile = path.resolve(__dirname, 'README.md');
+    const resGoodFile = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: existingFile })
+    });
+    assert.strictEqual(resGoodFile.statusCode, 200);
+    const goodJson = JSON.parse(resGoodFile.body);
+    assert.strictEqual(goodJson.success, true);
+    console.log('✓ Open Local File API verified: 400/404/200 checks all passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 14 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 15 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

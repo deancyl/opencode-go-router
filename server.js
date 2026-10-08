@@ -23,7 +23,7 @@ const url = require('node:url');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execSync } = require('node:child_process');
+const { execSync, exec } = require('node:child_process');
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
@@ -936,6 +936,44 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     } catch (e) {}
   }
 
+  // 1.7 Check OpenChamber Office Preview Engine
+  let chamberDist = null;
+  const candDists = process.platform === 'win32' ? [
+    path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', '@openchamberelectron', 'resources', 'web-dist'),
+    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
+  ] : [
+    '/vol3/1000/docker/openchamber/web/dist',
+    '/vol3/1000/docker/openchamber/dist',
+    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
+  ];
+  for (const d of candDists) {
+    if (fs.existsSync(path.join(d, 'index.html'))) {
+      chamberDist = d;
+      break;
+    }
+  }
+
+  report.openchamber.officePreview = {
+    distPath: chamberDist,
+    installed: false
+  };
+
+  if (chamberDist) {
+    try {
+      const idxHtml = fs.readFileSync(path.join(chamberDist, 'index.html'), 'utf8');
+      if (idxHtml.includes('office-preview-engine.js')) {
+        report.openchamber.officePreview.installed = true;
+      } else {
+        report.issues.push({
+          id: 'openchamber_office_preview',
+          severity: 'low',
+          title: 'OpenChamber 尚未挂载 Office 离线全格式安全预览引擎',
+          desc: '当前遇 .docx/.xlsx/.pptx 将提示不解码，可一键挂载纯本地沙箱解析与原生原厂应用双轨打开'
+        });
+      }
+    } catch (e) {}
+  }
+
   // 2. Check opencode.jsonc
   if (fs.existsSync(report.opencodeConfig.path)) {
     report.opencodeConfig.exists = true;
@@ -945,8 +983,16 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
       report.opencodeConfig.hasRouterEndpoint = raw.includes(`127.0.0.1:${config.port}`) || raw.includes(':4010');
       
       // 检测 provider 与 providers 冲突 (OpenCode normalization conflict)
-      const hasPlural = /"providers"\s*:\s*\{[^}]*"opencode-go"/s.test(raw) || (raw.includes('"providers"') && raw.includes('"opencode-go"'));
-      const hasSingular = /"provider"\s*:\s*\{[^}]*"opencode-go"/s.test(raw) || (raw.includes('"provider"') && raw.includes('"opencode-go"'));
+      let hasPlural = false;
+      let hasSingular = false;
+      try {
+        const parsed = JSON.parse(stripJsonComments(raw));
+        hasPlural = Boolean(parsed.providers && parsed.providers['opencode-go']);
+        hasSingular = Boolean(parsed.provider && parsed.provider['opencode-go']);
+      } catch (e) {
+        hasPlural = /"providers"\s*:\s*\{[^}]*"opencode-go"/s.test(raw);
+        hasSingular = /"provider"\s*:\s*\{[^}]*"opencode-go"/s.test(raw);
+      }
       report.opencodeConfig.hasConflict = hasPlural && hasSingular;
 
       if (report.opencodeConfig.hasConflict) {
@@ -1070,9 +1116,11 @@ function executeSystemRepair() {
         'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
       };
 
-      // 关键自愈：彻底清理复数 providers 中的冲突项，防止 OpenCode 触发 conflict 导致丢弃本地网关
-      if (ocData.providers && ocData.providers['opencode-go']) {
-        delete ocData.providers['opencode-go'];
+      // 关键自愈：彻底清理复数 providers 中的冲突项与残留空对象，防止 OpenCode 触发 conflict 导致丢弃本地网关
+      if (ocData.providers) {
+        if (ocData.providers['opencode-go']) {
+          delete ocData.providers['opencode-go'];
+        }
         if (Object.keys(ocData.providers).length === 0) {
           delete ocData.providers;
         }
@@ -1259,6 +1307,60 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
     } catch (e) {
       results.push({ item: 'OpenChamber SingleInstanceLock', success: false, message: '清理进程异常: ' + e.message });
     }
+  }
+
+  // 7. Auto-Patch OpenChamber Office Preview Engine
+  try {
+    const patchScriptWin = path.join(__dirname, 'patch-openchamber-office.ps1');
+    const patchScriptLinux = path.join(__dirname, 'patch-openchamber-office.sh');
+    if (process.platform === 'win32' && fs.existsSync(patchScriptWin)) {
+      let needsPatch = false;
+      const candDists = [
+        path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', '@openchamberelectron', 'resources', 'web-dist'),
+        path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
+      ];
+      for (const d of candDists) {
+        const idx = path.join(d, 'index.html');
+        if (fs.existsSync(idx)) {
+          const content = fs.readFileSync(idx, 'utf8');
+          if (!content.includes('office-preview-engine.js')) {
+            needsPatch = true;
+          }
+          break;
+        }
+      }
+      if (needsPatch) {
+        execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${patchScriptWin}" -Install`, { timeout: 10000, stdio: 'ignore' });
+        results.push({ item: 'Office Preview Engine', success: true, message: '已自动挂载 OpenChamber 全能 Office 离线预览引擎' });
+      } else {
+        results.push({ item: 'Office Preview Engine', success: true, message: '已就绪：Office 离线安全预览引擎已处于挂载状态' });
+      }
+    } else if (process.platform === 'linux' && fs.existsSync(patchScriptLinux)) {
+      let needsPatch = false;
+      const candDists = [
+        '/vol3/1000/docker/openchamber/web/dist',
+        '/vol3/1000/docker/openchamber/dist',
+        path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
+      ];
+      for (const d of candDists) {
+        const idx = path.join(d, 'index.html');
+        if (fs.existsSync(idx)) {
+          const content = fs.readFileSync(idx, 'utf8');
+          if (!content.includes('office-preview-engine.js')) {
+            needsPatch = true;
+          }
+          break;
+        }
+      }
+      if (needsPatch) {
+        execSync(`bash "${patchScriptLinux}" install`, { timeout: 10000, stdio: 'ignore' });
+        results.push({ item: 'Office Preview Engine', success: true, message: '已自动挂载 OpenChamber 全能 Office 离线预览引擎' });
+      } else {
+        results.push({ item: 'Office Preview Engine', success: true, message: '已就绪：Office 离线安全预览引擎已处于挂载状态' });
+      }
+    }
+  } catch (e) {
+    results.push({ item: 'Office Preview Engine', success: false, message: '挂载 Office 预览引擎异常: ' + e.message });
   }
 
   return results;
@@ -1727,6 +1829,45 @@ const server = http.createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ success: false, error: err.message }));
     }
+    return;
+  }
+
+  // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS)
+  if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const filePath = (payload.path || '').trim();
+        if (!filePath) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: 'Path is required' }));
+          return;
+        }
+        if (!fs.existsSync(filePath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: 'File not found on local filesystem' }));
+          return;
+        }
+
+        if (process.platform === 'win32') {
+          exec(`start "" "${filePath.replace(/"/g, '\\"')}"`, { shell: 'cmd.exe' }, err => {
+            if (err) console.error('[Open File Error]', err.message);
+          });
+        } else if (process.platform === 'darwin') {
+          exec(`open "${filePath.replace(/"/g, '\\"')}"`);
+        } else {
+          exec(`xdg-open "${filePath.replace(/"/g, '\\"')}"`);
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, message: '已调用系统默认应用打开该文档！' }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
     return;
   }
 
@@ -2510,6 +2651,7 @@ const server = http.createServer((req, res) => {
             <span><strong>OpenCode CLI:</strong> \${doc.opencode.installed ? '<span style="color:var(--success)">✔ ' + doc.opencode.version + '</span>' : '<span style="color:var(--warning)">⚠ 未找到</span>'}</span>
             <span><strong>路由端口:</strong> <span style="color:var(--success)">✔ \${doc.router.port}</span></span>
             <span><strong>OpenChamber:</strong> \${doc.openchamber.reachable ? '<span style="color:var(--success)">✔ 运行中</span>' : (doc.openchamber.ghost ? '<span style="color:var(--danger)">❌ 僵死死锁</span>' : '<span style="color:var(--muted)">未运行</span>')}</span>
+            <span><strong>Office 预览:</strong> \${doc.openchamber.officePreview && doc.openchamber.officePreview.installed ? '<span style="color:var(--success)">✔ 已挂载</span>' : '<span style="color:var(--muted)">未挂载</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
           </div>
         \`;

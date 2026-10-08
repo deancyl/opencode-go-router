@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v1.3.3](https://img.shields.io/badge/Version-v1.3.3-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v1.4.0](https://img.shields.io/badge/Version-v1.4.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -43,7 +43,7 @@
 
 5. **全栈生态一键深度绑定 (Multi-Client Integration)**：
    - 控制台顶栏与 CLI 均支持 **【⚡ 一键应用至 OpenCode / OpenChamber】**。
-   - **OpenCode CLI v2**：双向写入 `providers` 与 `provider`，配置 `@ai-sdk/openai-compatible` 协议驱动，默认首选模型锁定为 `opencode-go/deepseek-v4.1-flash`。
+   - **OpenCode CLI v2**：写入统一标准提供商映射，配置 `@ai-sdk/openai-compatible` 协议驱动，默认首选模型锁定为 `opencode-go/deepseek-v4.1-flash`。
    - **OpenChamber**：自动识别本地用户目录与 Docker 映射目录（如 `OPENCHAMBER_DATA_DIR`），锁定常用模型与首选收藏模型为 4010 智能网关。
    - **Oh My OpenAgent (OMO)**：自动生成 `~/.omo/omo.jsonc` 核心智能体路由配置，使用 `kimi-k3`、`qwen3.7-plus` 与 `glm-5.3` 智能避开部分区域限制。
    - **Goal 目标推进体系**：自动生成 `/boost` 极速增强模式与长程任务推进指令。
@@ -51,8 +51,18 @@
 6. **全自动健康体检与故障自愈 (Doctor Engine)**：
    - 运行 `./setup-linux.sh --doctor`、`doctor-repair.ps1` 或在 Web 面板点击【一键体检】：
      - 自动排查 3001 等历史端口死链并重定向。
+     - 自动检测并清除 provider 与 providers 单复数配置冲突。
+     - 自动检测并解除 OpenChamber 僵死进程与单实例互斥锁（SingleInstanceLock）。
      - 自动检测并一键重置限频冷却状态（All accounts cooling down）。
      - 自动检测 OMO / Goal 模版完整性与工作区 Git 仓库。
+
+7. **OpenChamber Office 全格式离线安全预览引擎 (Air-Gapped Office Engine - v1.4.0 新增)**：
+   - **告别“不解码 DOCX”遗憾**：彻底终结 OpenChamber 无法直接查看办公文档的痛点，内嵌开箱即用；
+   - **本地离线安全红线 (Air-Gapped Safety)**：100% 纯本地离线解析沙箱，严禁使用微软/谷歌等公网第三方云预览 iframe，彻底杜绝本地代码、商业合同与财务报表外泄；
+   - **全格式支持与高保真渲染**：完整支持 `.docx`、`.xlsx` / `.xls`、`.pptx` / `.ppt`；
+   - **双轨极速原厂联动**：页面顶部自带【在本地应用中打开】按钮，通过智能网关安全 API 毫秒级调起系统本地原厂 Office 或 WPS 打开源文件；
+   - **高性能与虚拟切片保护**：大型 Excel 自动启用 1000 行平滑虚拟分页截断，防卡死防内存膨胀；
+   - **跨平台一键挂载与无损还原**：内置 `patch-openchamber-office.ps1`（Windows 原生）与 `patch-openchamber-office.sh`（Linux/NAS），支持 `-Install`、`-Rollback` 与 `-Status`。
 
 ---
 
@@ -258,14 +268,15 @@ powershell -ExecutionPolicy Bypass -File .\stop-all.ps1
 | `/balancer/api/account-quota` | GET | 需要密码 | 直连官方拉取 5h 滑动、周累计、月累计真实配额信息 |
 | `/balancer/api/reset-cooldown` | POST | 需要密码 | 手动解除指定账号的限频冷却状态（恢复健康可用） |
 | `/balancer/api/doctor` | GET | 需要密码 | 执行全链路系统体检，返回配置诊断与异常发现项 |
-| `/balancer/api/repair` | POST | 需要密码 | 执行一键系统自动修复（端口死链纠正、缺失配置补全） |
+| `/balancer/api/repair` | POST | 需要密码 | 执行一键系统自动修复（端口死链纠正、缺失配置补全、Office 预览引擎挂载） |
 | `/balancer/api/bind-desktop` | POST | 需要密码 | 执行全栈生态客户端（OpenCode / OpenChamber / OMO）一键写入绑定 |
+| `/balancer/api/open-file` | POST | 无/本地校验 | 本地原厂应用程序一键安全唤醒（毫秒级调用系统默认 Office / WPS 打开指定文档） |
 
 ---
 
 ## 七、测试与质量保证
 
-本项目配备 14 项端到端单元与集成自动化测试套件：
+本项目配备 15 项端到端单元与集成自动化测试套件：
 
 ```bash
 npm test
@@ -288,6 +299,7 @@ node test_router.js
 12. **[Test 12]** `/balancer/api/repair` 自动修复 API 测试
 13. **[Test 13]** `/balancer/api/bind-desktop` 跨平台多生态客户端写入绑定测试
 14. **[Test 14]** UI Password 访问密码安全鉴权门禁拦截与 Bearer Token 访问测试
+15. **[Test 15]** `/balancer/api/open-file` 本地原厂应用程序调用与路径合法性校验测试
 
 ---
 
@@ -304,7 +316,23 @@ npm run build:exe
 
 ## 九、版本历史与更新记录
 
-### 🚀 v1.3.3 (当前版本)
+### 🚀 v1.4.0 (当前版本)
+- **OpenChamber 全能 Office 离线安全预览引擎 (Air-Gapped Office Engine)**：
+  - **彻底告别“OpenChamber 不解码 DOCX 文件”遗憾**：内置开箱即用的本地预览引擎，覆盖 `.docx`、`.doc`、`.xlsx`、`.xls`、`.pptx`、`.ppt` 等全系列主流办公文档；
+  - **本地离线安全红线 (Air-Gapped Safety 红线保障)**：严禁使用微软或谷歌等公网第三方云预览 iframe（如 `view.officeapps.live.com`），确保本地私有代码、敏感合同与财务数据绝不外泄；
+  - **双轨联动机制 (Dual-Track Native Launch)**：预览界面内嵌【在本地应用中打开】按钮，通过网关 `/balancer/api/open-file` 接口安全唤醒本地 Office 或 WPS 原生软件；
+  - **大文件性能防御**：针对大型表格（Excel）自动启用 1000 行平滑虚拟分页截断机制，杜绝渲染阻塞与内存溢出；
+  - **跨平台一键部署与无损还原**：
+    - Windows 原生脚本：`patch-openchamber-office.ps1`（支持 `-Install`、`-Rollback`、`-Status`）；
+    - Linux / NAS 原生脚本：`patch-openchamber-office.sh`（支持 `install`、`rollback`、`status`）；
+    - 无缝深度集成至 `setup-wizard.ps1`（步骤 8 / 一键全配）与 `setup-linux.sh`（步骤 9 / 一键全配）。
+- **全链路健康自愈系统全面纳管 Office 预览引擎**：
+  - `doctor-repair.ps1` 与 `server.js` 的 `/balancer/api/doctor` 同步检测 OpenChamber Office 引擎挂载状态；
+  - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
+  - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
+- **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
+
+### 🚀 v1.3.3
 - **深度根治 OpenChamber 桌面端打不开 / 无法启动 / 秒退痛点**：
   - **定位 Electron SingleInstanceLock 死锁机理**：OpenChamber 底层依赖 Electron `app.requestSingleInstanceLock()` 机制防多开；当后台残留隐藏/无界面的僵死 OpenChamber 进程（`MainWindowHandle == 0`）时，新启动的桌面端实例检测到互斥锁已被占，会静默退出（ExitCode 0），导致双击图标无任何响应；
   - **进程健康状态与僵死检测纳入 Doctor 体系**：在 `doctor-repair.ps1` 与 `server.js` 的 `/balancer/api/doctor` 接口中全面增加 `openchamber_ghost_process` 检测。遍历 Windows 进程表，当发现所有 OpenChamber 实例均为无窗口僵死状态时，自动标红告警并提供释放方案；

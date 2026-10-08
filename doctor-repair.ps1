@@ -146,8 +146,20 @@ if (Test-Path $opencodeConfig) {
     }
 
     # 检测 provider 与 providers 单复数配置冲突 (retained native value 隐患)
-    $hasPlural = ($ocContent -match '"providers"\s*:\s*\{[^}]*"opencode-go"') -or ($ocContent.Contains('"providers"') -and $ocContent.Contains('"opencode-go"'))
-    $hasSingular = ($ocContent -match '"provider"\s*:\s*\{[^}]*"opencode-go"') -or ($ocContent.Contains('"provider"') -and $ocContent.Contains('"opencode-go"'))
+    $hasPlural = $false
+    $hasSingular = $false
+    try {
+        $parsedJson = $ocContent | ConvertFrom-Json
+        if ($parsedJson.PSObject.Properties['providers'] -and $parsedJson.providers.PSObject.Properties['opencode-go']) {
+            $hasPlural = $true
+        }
+        if ($parsedJson.PSObject.Properties['provider'] -and $parsedJson.provider.PSObject.Properties['opencode-go']) {
+            $hasSingular = $true
+        }
+    } catch {
+        $hasPlural = [bool]($ocContent -match '"providers"\s*:\s*\{[^}]*"opencode-go"')
+        $hasSingular = [bool]($ocContent -match '"provider"\s*:\s*\{[^}]*"opencode-go"')
+    }
     if ($hasPlural -and $hasSingular) {
         Write-Host "  ❌ 发现 provider 与 providers 单复数同名配置冲突！" -ForegroundColor Red
         Write-Host "     (OpenCode 启动将触发 conflict 并自动丢弃 4010 本地网关，回退到直连并导致 ConnectionRefused)" -ForegroundColor Yellow
@@ -298,6 +310,28 @@ if ($chamberProcs) {
     }
 }
 
+# 检查 OpenChamber Office 全格式离线预览引擎挂载状态
+$patchScript = Join-Path $PSScriptRoot "patch-openchamber-office.ps1"
+$chamberDistCandidates = @(
+    "$env:LOCALAPPDATA\Programs\@openchamberelectron\resources\web-dist",
+    "$env:USERPROFILE\.bun\install\global\node_modules\@openchamber\web\dist"
+)
+$foundDist = $chamberDistCandidates | Where-Object { Test-Path (Join-Path $_ "index.html") } | Select-Object -First 1
+if ($foundDist) {
+    $hasOfficePatch = (Get-Content (Join-Path $foundDist "index.html") -Raw -ErrorAction SilentlyContinue) -like "*office-preview-engine.js*"
+    if ($hasOfficePatch) {
+        Write-Host "  ✔ OpenChamber 全能 Office 离线预览引擎已就绪 (.docx/.xlsx/.pptx)" -ForegroundColor Green
+    } else {
+        Write-Host "  ℹ OpenChamber 尚未挂载 Office 离线预览引擎 (遇办公文档将提示不解码)" -ForegroundColor DarkGray
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "openchamber_office_preview"
+            Title = "OpenChamber 未挂载 Office 离线安全预览引擎"
+            Severity = "Low"
+            FixDesc = "自动注入纯本地离线引擎，秒级支持 .docx/.xlsx/.pptx 原生内嵌预览与双轨原厂打开"
+        })
+    }
+}
+
 # ----------------- 结果汇总与修复决策 -----------------
 Write-Host "`n==========================================================" -ForegroundColor Cyan
 if ($issuesFound.Count -eq 0) {
@@ -352,8 +386,10 @@ foreach ($iss in $issuesFound) {
             try {
                 $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
                 $json = $raw | ConvertFrom-Json
-                if ($json.PSObject.Properties['providers'] -and $json.providers.PSObject.Properties['opencode-go']) {
-                    $json.providers.PSObject.Properties.Remove('opencode-go')
+                if ($json.PSObject.Properties['providers']) {
+                    if ($json.providers.PSObject.Properties['opencode-go']) {
+                        $json.providers.PSObject.Properties.Remove('opencode-go')
+                    }
                     if ($json.providers.PSObject.Properties.Count -eq 0) {
                         $json.PSObject.Properties.Remove('providers')
                     }
@@ -580,6 +616,16 @@ foreach ($iss in $issuesFound) {
                 Start-Process "wscript.exe" -ArgumentList "`"$vbs`"" -WindowStyle Hidden
                 Start-Sleep -Seconds 1
                 Write-Host "    ✔ 智能网关已在后台静默启动" -ForegroundColor Green
+            }
+        }
+        "openchamber_office_preview" {
+            Write-Host " -> 正在自动挂载 OpenChamber 全能 Office 离线预览引擎..." -ForegroundColor Yellow
+            $patchScript = Join-Path $PSScriptRoot "patch-openchamber-office.ps1"
+            if (Test-Path $patchScript) {
+                & $patchScript -Install
+                Write-Host "    ✔ OpenChamber 全能 Office 离线预览引擎挂载完成" -ForegroundColor Green
+            } else {
+                Write-Host "    ⚠ 未找到 patch-openchamber-office.ps1 脚本" -ForegroundColor Red
             }
         }
         "missing_boost_command" {

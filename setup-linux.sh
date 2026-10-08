@@ -580,6 +580,12 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
     }
   '
 
+  # 自动挂载 OpenChamber Office 离线预览引擎
+  if [[ -f "$SCRIPT_DIR/patch-openchamber-office.sh" ]]; then
+    echo -e "${YELLOW}正在检测并挂载 OpenChamber Office 离线全格式预览引擎...${NC}"
+    bash "$SCRIPT_DIR/patch-openchamber-office.sh" install 2>/dev/null || true
+  fi
+
   # 热重启运行中的 OpenCode 和 OpenChamber 服务以应用新配置
   if has_systemd_user; then
     echo -e "${YELLOW}正在热重启 OpenCode 与 OpenChamber 服务使配置生效...${NC}"
@@ -714,9 +720,10 @@ interactive_menu() {
     echo " [6] 停止网关服务"
     echo " [7] 查看运行状态与官方配额"
     echo " [8] 运行健康体检 (Doctor) 与自动修复"
+    echo " [9] 📄 挂载/管理 OpenChamber 全能 Office 离线预览引擎 (.docx/.xlsx/.pptx)"
     echo " [0] 退出"
     echo -e "${CYAN}================================================${NC}"
-    read -rp "请输入数字 [0-8]: " choice
+    read -rp "请输入数字 [0-9]: " choice
 
     case "$choice" in
       1)
@@ -757,6 +764,24 @@ interactive_menu() {
         ;;
       8)
         run_doctor
+        ;;
+      9)
+        if [[ -f "$SCRIPT_DIR/patch-openchamber-office.sh" ]]; then
+          echo -e "\n${CYAN}OpenChamber Office 预览引擎管理：${NC}"
+          echo " [1] 一键挂载离线预览引擎"
+          echo " [2] 卸载并恢复官方原始备份"
+          echo " [3] 查看当前挂载状态"
+          echo " [0] 返回上级"
+          read -rp "请输入 [默认: 1]: " oc_opt
+          case "$oc_opt" in
+            2) bash "$SCRIPT_DIR/patch-openchamber-office.sh" rollback ;;
+            3) bash "$SCRIPT_DIR/patch-openchamber-office.sh" status ;;
+            0) ;;
+            *) bash "$SCRIPT_DIR/patch-openchamber-office.sh" install ;;
+          esac
+        else
+          echo -e "${RED}❌ 未找到 patch-openchamber-office.sh${NC}"
+        fi
         ;;
       0)
         echo "退出向导。"
