@@ -15,7 +15,10 @@ if ($routerConn) {
     Write-Host "[1/3] ✔ opencode-go-router 已在运行 (PID: $($routerConn.OwningProcess[0]), 端口: 4010)" -ForegroundColor Green
 } else {
     Write-Host "[1/3] 正在静默启动 opencode-go-router 智能路由 (端口: 4010)..." -ForegroundColor Yellow
-    if (Test-Path $silentVbs) {
+    $trayExe = Join-Path $routerDir "OpenCodeRouterTray.exe"
+    if (Test-Path $trayExe) {
+        Start-Process -FilePath $trayExe
+    } elseif (Test-Path $silentVbs) {
         Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
     } else {
         Start-Process -FilePath "node.exe" -ArgumentList "`"$serverJs`"" -WorkingDirectory $routerDir -WindowStyle Hidden

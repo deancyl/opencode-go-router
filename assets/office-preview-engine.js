@@ -333,8 +333,11 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
 
   // 调用系统原生应用打开
   async function openNativeApp(filePath) {
+    const isHttps = typeof window !== 'undefined' && window.location && window.location.protocol === 'https:';
     try {
-      const res = await fetch('http://127.0.0.1:4010/balancer/api/open-file', {
+      const host = (typeof window !== 'undefined' && window.location && window.location.hostname) ? window.location.hostname : '127.0.0.1';
+      const targetUrl = (isHttps ? 'https://' : 'http://') + host + ':4010/balancer/api/open-file';
+      const res = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: filePath })
@@ -346,7 +349,11 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
         alert('唤起本地应用失败: ' + (data.error || '未知错误'));
       }
     } catch (e) {
-      alert('无法连接本地网关 (4010)，请确保网关服务正在运行。');
+      if (isHttps) {
+        alert('无法连接本地网关 (4010)。当前页面为 HTTPS 环境，浏览器可能阻止跨协议访问 HTTP 网关端口，请通过 HTTP 访问或将网关配置为反向代理。');
+      } else {
+        alert('无法连接本地网关 (4010)，请确保网关服务正在运行。');
+      }
     }
   }
 
@@ -441,11 +448,13 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
             <div class="oc-legacy-card" style="border-color: rgba(248,113,113,0.4);">
               <div style="color: #f87171; font-weight: 600; margin-bottom: 8px;">⚠ 离线解析异常</div>
               <div style="font-size: 13px; color: var(--muted-foreground); margin-bottom: 16px;">${err.message}</div>
-              <button class="oc-btn oc-btn-primary" onclick="window.OpenChamberOfficeViewer.openNativeApp('${path}')">
+              <button class="oc-btn oc-btn-primary" id="oc-err-open-native">
                 💻 改用系统本地 Office / WPS 打开
               </button>
             </div>
           `;
+          const errBtn = viewport.querySelector('#oc-err-open-native');
+          if (errBtn) errBtn.onclick = () => openNativeApp(path);
         });
     },
 
@@ -628,7 +637,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
               当前文件为 Office 97-2003 历史格式，已在本地安全为您提取正文内容。如需原样复杂排版，请点击右侧按钮直接在本地原厂软件中打开。
             </p>
           </div>
-          <button class="oc-btn oc-btn-primary" onclick="window.OpenChamberOfficeViewer.openNativeApp('${path}')">
+          <button class="oc-btn oc-btn-primary" id="oc-legacy-open-native">
             💻 用系统 Office/WPS 打开
           </button>
         </div>
@@ -636,6 +645,8 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
           ${extracted.length > 0 ? extracted.map(t => '<p style="margin:0 0 10px 0;">' + t + '</p>').join('') : '<p style="color:var(--muted-foreground);">未提取到连续可读文本，建议直接用系统本地应用打开。</p>'}
         </div>
       `;
+      const legacyBtn = card.querySelector('#oc-legacy-open-native');
+      if (legacyBtn) legacyBtn.onclick = () => openNativeApp(path);
       viewport.appendChild(card);
     },
 

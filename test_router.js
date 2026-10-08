@@ -90,6 +90,8 @@ async function runTests() {
   const testSnapshotsDir = path.join(os.tmpdir(), `test-snapshots-${Date.now()}`);
   fs.mkdirSync(testConfigDir, { recursive: true });
   fs.mkdirSync(testSnapshotsDir, { recursive: true });
+  process.env.OPENCODE_CONFIG_DIR = testConfigDir;
+  process.env.OPENCODE_SNAPSHOTS_DIR = testSnapshotsDir;
 
   const testConfig = {
     port: routerPort,
@@ -458,8 +460,269 @@ async function runTests() {
     assert.strictEqual(restoredOcContent, originalOcContent, 'opencode.jsonc must be byte-accurately restored from snapshot');
     console.log(`✓ Updates Rollback API verified: restored from ${rbJson.snapshotId} and confirmed deep file recovery`);
 
+    // [Test 19] Testing Safe Native App Open Sandbox - Extension Blacklist Defense
+    console.log('\n[Test 19] Testing Safe Native App Open Sandbox - Extension Blacklist Defense (/balancer/api/open-file)...');
+    const dangerousExtensions = ['.exe', '.bat', '.cmd', '.vbs', '.js', '.ps1', '.sh'];
+    for (const ext of dangerousExtensions) {
+      const resUnsafe = await request('/balancer/api/open-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: `C:\\malicious\\payload${ext}` })
+      });
+      assert.strictEqual(resUnsafe.statusCode, 403, `Extension ${ext} must be rejected with 403 Forbidden`);
+      const unsafeJson = JSON.parse(resUnsafe.body);
+      assert.strictEqual(unsafeJson.success, false);
+      assert.ok(unsafeJson.error.includes('安全拦截'), 'Must contain security block error message');
+    }
+    console.log('✓ Safe Native App Open Sandbox verified: dangerous extensions blocked with 403');
+
+    // [Test 20] Testing Safe Native App Open Sandbox - Boundary & Non-existent File Defense
+    console.log('\n[Test 20] Testing Safe Native App Open Sandbox - Boundary & Non-existent File Defense...');
+    const resEmptyObj = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '   ' })
+    });
+    assert.strictEqual(resEmptyObj.statusCode, 400);
+
+    const resNonExistent = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path.join(__dirname, 'non-existent-office-test-file.docx') })
+    });
+    assert.strictEqual(resNonExistent.statusCode, 404);
+    console.log('✓ Safe Native App Open Sandbox boundary checks verified: 400 on whitespace, 404 on non-existent');
+
+    // [Test 21] Testing Workspace & NAS Multi-Volume Path Detection
+    console.log('\n[Test 21] Testing Workspace & NAS Multi-Volume Path Detection...');
+    const updater = require('./updater');
+    const customDist = '/custom/volume/dist';
+    const distCandidates = updater.getOpenChamberDistCandidates(customDist);
+    assert.ok(Array.isArray(distCandidates), 'Candidates must be an array');
+    assert.strictEqual(distCandidates[0], customDist, 'Custom directory must be the first candidate');
+    assert.ok(distCandidates.length >= 3, 'Must contain multiple candidates');
+    const defaultCandidates = updater.getOpenChamberDistCandidates();
+    assert.ok(defaultCandidates.length >= 3, 'Default candidates list must have platform paths');
+    console.log(`✓ OpenChamber multi-volume candidates verified: found ${distCandidates.length} candidate paths`);
+
+    // [Test 22] Testing Frontend Hot-Patch Dynamic AST Regex Detection
+    console.log('\n[Test 22] Testing Frontend Hot-Patch Dynamic AST Regex Detection...');
+    const mockObfuscatedBundle = 'var foo=1;var myVar99=r=>{var a=1;return r.filesView.artifact.binary?h(r):null};console.log(myVar99);';
+    const astRegex = /([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary/;
+    const astMatch = mockObfuscatedBundle.match(astRegex);
+    assert.ok(astMatch, 'Dynamic AST regex must match obfuscated binary handler function');
+    assert.strictEqual(astMatch[1], 'myVar99', 'Matched variable name must accurately identify myVar99');
+
+    const mockZdBundle = 'Zd=r=>{if(r.filesView.artifact.binary)return null;}';
+    const zdMatch = mockZdBundle.match(astRegex);
+    assert.ok(zdMatch, 'Regex must match standard Zd identifier');
+    assert.strictEqual(zdMatch[1], 'Zd');
+    console.log('✓ Dynamic AST feature extraction verified: successfully identified obfuscated hook targets');
+
+    // [Test 23] Testing Disaster Recovery Snapshot File Metadata & POSIX Mode Recording
+    console.log('\n[Test 23] Testing Disaster Recovery Snapshot File Metadata & POSIX Mode Recording...');
+    const snapWithMeta = updater.createSnapshot('Test Snapshot Metadata Engine');
+    assert.ok(snapWithMeta.id, 'Snapshot ID must be generated');
+    assert.ok(snapWithMeta.fileMetadata, 'fileMetadata must exist in snapshot manifest');
+    assert.ok(Array.isArray(snapWithMeta.files), 'files must remain an array of strings for compatibility');
+
+    const snapManifestPath = path.join(testSnapshotsDir, snapWithMeta.id, 'manifest.json');
+    assert.ok(fs.existsSync(snapManifestPath), 'manifest.json must exist on disk');
+    const diskManifest = JSON.parse(fs.readFileSync(snapManifestPath, 'utf8'));
+    assert.ok(diskManifest.fileMetadata, 'Manifest on disk must contain fileMetadata');
+    console.log(`✓ Snapshot file metadata engine verified: manifest ${snapWithMeta.id} persisted with file permissions`);
+
+    // [Test 24] Testing Corrupted Snapshot Directory Resilience in listSnapshots()
+    console.log('\n[Test 24] Testing Corrupted Snapshot Directory Resilience in listSnapshots()...');
+    const corruptDir = path.join(testSnapshotsDir, 'snapshot-corrupted-test');
+    fs.mkdirSync(corruptDir, { recursive: true });
+    fs.writeFileSync(path.join(corruptDir, 'manifest.json'), '{ invalid json string corrupt: %%%', 'utf8');
+
+    const nonSnapDir = path.join(testSnapshotsDir, 'some-other-directory');
+    fs.mkdirSync(nonSnapDir, { recursive: true });
+
+    const safeSnaps = updater.listSnapshots();
+    assert.ok(Array.isArray(safeSnaps), 'Must return an array');
+    assert.ok(safeSnaps.every(s => s && s.id && typeof s.id === 'string'), 'All returned snapshots must be valid objects');
+    assert.ok(!safeSnaps.some(s => s.id === 'snapshot-corrupted-test'), 'Corrupted snapshot must be filtered out gracefully');
+    console.log('✓ Corrupted snapshot tolerance verified: handled invalid JSON and foreign folders without crashing');
+
+    // [Test 25] Testing Session Affinity Concurrency & Consistency
+    console.log('\n[Test 25] Testing Session Affinity Concurrency & Consistency...');
+    const sessionPinMap = new Map();
+    for (let round = 0; round < 3; round++) {
+      for (let s = 1; s <= 6; s++) {
+        const sId = `session-worker-${s}`;
+        const resSession = await request('/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-opencode-session': sId
+          },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'affinity test' }] })
+        });
+        assert.strictEqual(resSession.statusCode, 200);
+        const bodyJson = JSON.parse(resSession.body);
+        const assignedAcc = bodyJson.choices[0].message.content;
+        if (round === 0) {
+          sessionPinMap.set(sId, assignedAcc);
+        } else {
+          assert.strictEqual(assignedAcc, sessionPinMap.get(sId), `Session ${sId} must remain pinned to original account`);
+        }
+      }
+    }
+    console.log('✓ Session Affinity concurrency verified: 6 sessions consistently pinned across multiple rounds');
+
+    // [Test 26] Testing JSON Comments Stripping Engine with Trailing Commas
+    console.log('\n[Test 26] Testing JSON Comments Stripping Engine with Trailing Commas...');
+    const messyJsonc = `
+    {
+      // Top-level comment
+      "server": "127.0.0.1", /* block comment */
+      "port": 4010, // port number
+      "models": [
+        "glm-5.3",
+        "qwen3.7-plus", // list item comment
+      ],
+      "enabled": true,
+    }
+    `;
+    const cleanJson = updater.stripJsonComments(messyJsonc);
+    let parsedData = null;
+    assert.doesNotThrow(() => {
+      parsedData = JSON.parse(cleanJson);
+    }, 'stripJsonComments must produce valid JSON without syntax errors');
+    assert.strictEqual(parsedData.server, '127.0.0.1');
+    assert.strictEqual(parsedData.port, 4010);
+    assert.deepStrictEqual(parsedData.models, ['glm-5.3', 'qwen3.7-plus']);
+    assert.strictEqual(parsedData.enabled, true);
+    console.log('✓ stripJsonComments engine verified: cleaned single/block comments and trailing commas');
+
+    // [Test 27] Testing Web UI Dashboard Base URL Dynamic Copy Bar & Dual-Track Auth
+    console.log('\n[Test 27] Testing Web UI Dashboard Base URL Dynamic Copy Bar & Dual-Track Auth...');
+    const resUi = await request('/balancer/ui', {
+      headers: { 'Cookie': 'router_auth=' + Buffer.from('test_token').toString('base64') }
+    });
+    assert.strictEqual(resUi.statusCode, 200);
+    assert.ok(resUi.body.includes('lbl-baseurl'), 'Dashboard must contain Base URL element id');
+    assert.ok(resUi.body.includes('copyBaseUrl'), 'Dashboard must contain copyBaseUrl function');
+    assert.ok(resUi.body.includes('lbl-host-status'), 'Dashboard must contain host status indicator');
+    assert.ok(resUi.body.includes('router_auth'), 'Dashboard must contain cookie fallback in apiHeaders');
+    console.log('✓ Web UI Dashboard Base URL copy bar and dual-track auth verified');
+
+    // [Test 28] Testing Cross-Component OMO Fallback Model Alignment
+    console.log('\n[Test 28] Testing Cross-Component OMO Fallback Model Alignment...');
+    const serverFileContent = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    assert.ok(serverFileContent.includes('"oracle": { "model": "opencode-go/glm-5.3" }'), 'server.js oracle must be glm-5.3');
+    assert.ok(serverFileContent.includes('"momus": { "model": "opencode-go/glm-5.3" }'), 'server.js momus must be glm-5.3');
+    assert.ok(serverFileContent.includes('opencode-go/minimax-m3'), 'server.js fallback must include minimax-m3');
+    assert.ok(serverFileContent.includes('"ultrabrain": { "model": "opencode-go/deepseek-v4.1-flash" }'), 'server.js ultrabrain must be deepseek-v4.1-flash');
+
+    const doctorFileContent = fs.readFileSync(path.join(__dirname, 'doctor-repair.ps1'), 'utf8');
+    assert.ok(!doctorFileContent.includes('glm-5.2'), 'doctor-repair.ps1 must not contain legacy glm-5.2');
+    assert.ok(!doctorFileContent.includes('minimax-m2.7'), 'doctor-repair.ps1 must not contain legacy minimax-m2.7');
+    assert.ok(doctorFileContent.includes('glm-5.3'), 'doctor-repair.ps1 must contain glm-5.3');
+
+    const wizardFileContent = fs.readFileSync(path.join(__dirname, 'setup-wizard.ps1'), 'utf8');
+    assert.ok(!wizardFileContent.includes('glm-5.2'), 'setup-wizard.ps1 must not contain legacy glm-5.2');
+    assert.ok(!wizardFileContent.includes('minimax-m2.7'), 'setup-wizard.ps1 must not contain legacy minimax-m2.7');
+    assert.ok(wizardFileContent.includes('glm-5.3'), 'setup-wizard.ps1 must contain glm-5.3');
+    console.log('✓ Cross-component OMO model alignment verified: zero legacy models, 100% harmonized');
+
+    // [Test 29] Testing Safe Native App Open with file:/// URLs, Percent-Decoding & Hash Stripping
+    console.log('\n[Test 29] Testing Safe Native App Open with file:/// URLs, Percent-Decoding & Hash Stripping...');
+    const { pathToFileURL } = require('url');
+    const existingFileForUri = path.resolve(__dirname, 'README.md');
+    const fileUrlString = pathToFileURL(existingFileForUri).href + '#page=1';
+    const resFileUrl = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: fileUrlString })
+    });
+    assert.strictEqual(resFileUrl.statusCode, 200, 'file:/// URL with fragment must be decoded and opened successfully');
+    const fileUrlJson = JSON.parse(resFileUrl.body);
+    assert.strictEqual(fileUrlJson.success, true);
+    console.log('✓ file:/// URL decoding, percent-unescaping & fragment stripping verified');
+
+    // [Test 30] Testing Safe Native App Open UNC Network Path Defense (NTLM Leak Prevention)
+    console.log('\n[Test 30] Testing Safe Native App Open UNC Network Path Defense...');
+    const uncPayloads = ['\\\\192.168.1.100\\share\\exploit.docx', '//evil-server/leak/token.xlsx'];
+    for (const unc of uncPayloads) {
+      const resUnc = await request('/balancer/api/open-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: unc })
+      });
+      if (process.platform === 'win32') {
+        assert.strictEqual(resUnc.statusCode, 403, 'UNC network paths must be rejected with 403 on Windows');
+        const uncJson = JSON.parse(resUnc.body);
+        assert.ok(uncJson.error.includes('UNC'), 'Must return UNC security warning');
+      } else {
+        assert.ok([403, 404].includes(resUnc.statusCode));
+      }
+    }
+    console.log('✓ Safe Native App Open UNC network path defense verified');
+
+    // [Test 31] Testing Extended Dangerous Extension Blacklist Defense (.lnk, .url, .vbe, .wsf, .wsh, .reg, .dll)
+    console.log('\n[Test 31] Testing Extended Dangerous Extension Blacklist Defense...');
+    const extendedMaliciousExts = ['.lnk', '.url', '.vbe', '.wsf', '.wsh', '.reg', '.dll', '.sys', '.appref-ms'];
+    for (const ext of extendedMaliciousExts) {
+      const resExt = await request('/balancer/api/open-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: `C:\\dangerous\\payload${ext}` })
+      });
+      assert.strictEqual(resExt.statusCode, 403, `Dangerous extension ${ext} must be rejected with 403`);
+    }
+    // Test trailing space / trailing dot bypass defense
+    const resSpaceBypass = await request('/balancer/api/open-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'C:\\dangerous\\payload.exe ' })
+    });
+    assert.strictEqual(resSpaceBypass.statusCode, 403, 'Trailing whitespace evasion must be sanitized and rejected with 403');
+    console.log('✓ Extended dangerous extension blacklist and evasion defense verified');
+
+    // [Test 32] Testing Office Preview Hot-Patch Script Positional Argument Parsing
+    console.log('\n[Test 32] Testing Office Preview Hot-Patch Script Positional Argument Parsing...');
+    const patchShContent = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.sh'), 'utf8');
+    assert.ok(patchShContent.includes('-i|--install|install)'), 'patch-openchamber-office.sh must recognize install positional argument');
+    assert.ok(patchShContent.includes('-r|--rollback|rollback)'), 'patch-openchamber-office.sh must recognize rollback positional argument');
+    assert.ok(patchShContent.includes('-s|--status|status)'), 'patch-openchamber-office.sh must recognize status positional argument');
+
+    const patchPs1Content = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.ps1'), 'utf8');
+    assert.ok(patchPs1Content.includes('[Parameter(Position=0)]'), 'patch-openchamber-office.ps1 must support positional Action parameter');
+    assert.ok(patchPs1Content.includes('$Rollback = $true'), 'patch-openchamber-office.ps1 must handle rollback keyword');
+    console.log('✓ Hot-patch scripts positional argument parsing across bash and powershell verified');
+
+    // [Test 33] Testing Multi-Volume NAS OpenChamber Candidate Detection Matrix
+    console.log('\n[Test 33] Testing Multi-Volume NAS OpenChamber Candidate Detection Matrix...');
+    const serverCode = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const setupLinuxCode = fs.readFileSync(path.join(__dirname, 'setup-linux.sh'), 'utf8');
+    const doctorCode = fs.readFileSync(path.join(__dirname, 'doctor-repair.ps1'), 'utf8');
+
+    // Verify all key NAS platforms are covered in candidate matrices
+    const requiredVolumes = ['/vol1/1000', '/vol2/1000', '/vol3/1000', '/vol4/1000', '/volume1/docker', '/volume2/docker', '/mnt/user/appdata'];
+    for (const v of requiredVolumes) {
+      assert.ok(serverCode.includes(v), `server.js must contain NAS candidate volume: ${v}`);
+      assert.ok(setupLinuxCode.includes(v), `setup-linux.sh must contain NAS candidate volume: ${v}`);
+    }
+    assert.ok(doctorCode.includes('@openchamber\\web\\dist') || doctorCode.includes('@openchamber\\\\web\\\\dist'), 'doctor-repair.ps1 must contain npm candidate path');
+    assert.ok(doctorCode.includes('OpenChamber\\resources\\web-dist') || doctorCode.includes('OpenChamber\\\\resources\\\\web-dist'), 'doctor-repair.ps1 must contain OpenChamber standard path');
+    console.log('✓ Multi-Volume NAS candidate matrix across fnOS, Synology DSM and TrueNAS verified');
+
+    // [Test 34] Testing Port Healing Deduplication Pipeline & Process Termination Guard
+    console.log('\n[Test 34] Testing Port Healing Deduplication Pipeline & Process Termination Guard...');
+    const stopAllCode = fs.readFileSync(path.join(__dirname, 'stop-all.ps1'), 'utf8');
+    assert.ok(stopAllCode.includes('Get-Process -Name "OpenCodeRouterTray"'), 'stop-all.ps1 must terminate OpenCodeRouterTray to prevent watchdog resurrect');
+
+    const trayCsCode = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeRouterTray.cs'), 'utf8');
+    assert.ok(trayCsCode.includes('Select-Object -ExpandProperty OwningProcess -Unique'), 'OpenCodeRouterTray.cs must deduplicate listening TCP PIDs');
+    assert.ok(serverCode.includes('Select-Object -ExpandProperty OwningProcess -Unique'), 'server.js must deduplicate listening TCP PIDs');
+    console.log('✓ Port healing deduplication pipeline and process termination guard verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 18 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 34 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

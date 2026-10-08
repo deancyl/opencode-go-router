@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.0.0](https://img.shields.io/badge/Version-v2.0.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.1.0](https://img.shields.io/badge/Version-v2.1.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -332,7 +332,49 @@ npm run build:exe
 
 ## 九、版本历史与更新记录
 
-### 🚀 v2.0.0 (当前大版本发布)
+### 🚀 v2.1.0 (全链路健壮性增强与生态深度对齐里程碑发布)
+经过 10 个 0.1 级别的微小渐进式敏捷迭代与严密自动化回归验证，全面升级系统跨平台通用性、原生沙箱安全防御与灾备恢复能力：
+- **v2.0.1 安全加固与原生文件执行沙箱防御 (Sandbox Security Hardening)**：
+  - 彻底封堵 `/balancer/api/open-file` 接口的命令注入漏洞，抛弃拼接外壳字符串的 `exec`，改用参数数组隔离的 `spawn`；
+  - 建立严格后缀黑名单防护机制（覆盖 `.exe`, `.bat`, `.cmd`, `.com`, `.vbs`, `.vbe`, `.js`, `.jse`, `.wsf`, `.wsh`, `.msi`, `.ps1`, `.sh`, `.reg`, `.dll`, `.sys`, `.lnk`, `.url`, `.appref-ms` 等），优先拦截并返回 `403 Forbidden`；
+  - 增加 Windows 网络 UNC 共享路径安全阻断（拦截 `\\host\share` 与 `//host`，彻底杜绝 NTLM 凭据外泄攻击）；
+  - 全面支持 `file:///` 本地文件 URL 解析与百分号转义清洗；
+  - 修复 `office-preview-engine.js` 内联字符串拼接在 Windows 反斜杠转义下损坏语法的隐患，全面改用 DOM 原生事件闭包，并动态适配当前局域网访问主机名与 HTTPS 环境跨协议检测。
+- **v2.0.2 跨平台工作区与 NAS / Docker 多卷动态探测 (Multi-Volume Workspace Engine)**：
+  - 消除 Windows 盘符硬编码，引入多驱动器动态探测（`D:\`, `E:\`, `C:\`, 用户目录等）；
+  - 全面支持 Linux / NAS 多卷动态挂载探测（群晖 Synology DSM `/volume1`, `/volume2`, fnOS 飞牛 `/vol1..vol4`, TrueNAS `/mnt/user/appdata` 及 Docker 容器卷）；
+  - `bindDesktopConfig` 与 `setup-linux.sh` 同步覆盖全系列 NAS 卷路径，确保 OpenChamber 配置一键绑定百分之百命中。
+- **v2.0.3 前端热补丁 AST 特征动态匹配与双端容错 (AST Dynamic Patching & Positional CLI)**：
+  - 前端热补丁脚本升级为 AST 正则特征动态提取（`([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary`），从容应对 OpenChamber Web 打包混淆变量名变动；
+  - 修复 Linux / NAS 脚本 `patch-openchamber-office.sh` 位置参数匹配缺陷，支持 `install`、`rollback`、`status` 原生动词与选项双重调用，彻底杜绝还原时错误重复安装的隐患；
+  - `patch-openchamber-office.ps1` 同步支持位置动词参数并对齐全平台候选路径。
+- **v2.0.4 端口冲突自愈与守护看门狗容灾增强 (Port Self-Healing & Daemon Watchdog)**：
+  - 针对 `EADDRINUSE` 错误引入智能端口释放自愈机制，自动发现并清理陈旧孤立残留进程，1 秒内平滑重连；
+  - PowerShell 与 C# 托盘统一使用去重管道（`Select-Object -ExpandProperty OwningProcess -Unique`），消除双栈 IPv4/IPv6 监听下的多进程判定异常；
+  - `stop-all.ps1` 增加对 `OpenCodeRouterTray` 原生进程的强力终止保护，防止托盘看门狗在停止服务后误复活。
+- **v2.0.5 负载均衡器会话亲和与滑动窗口配额监控健全化 (Affinity & Quota Robustness)**：
+  - 引入 LRU 会话淘汰机制（上限 5000 会话），根除长期高频调用可能引发的内存泄露；
+  - 修复全局限频冷却时 `Math.min(...[])` 产生 `Infinity` / `NaN` 的数学边界风险；
+  - 冷却时间输入全链路校验与防越界保护。
+- **v2.0.6 深度配置语法规范化与单复数冲突清洗引擎 (JSON Normalization & Conflict Cleaner)**：
+  - 强化 `stripJsonComments` 引擎，支持智能清除尾部多余逗号 `,(\s*[}\]])` 与复杂多行块级注释；
+  - 清理 `providers['opencode-go']` 冲突时严密保留第三方服务商配置。
+- **v2.0.7 OMO 智能体调度无限制模型 Fallback 路由全链路对齐 (OMO Harmonization)**：
+  - 统一全平台 OMO 默认调度模型模版（`glm-5.3`、`minimax-m3`、`qwen3.7-plus`、`kimi-k3`、`deepseek-v4.1-flash`、`deepseek-v4-pro`）；
+  - 全面清理 `doctor-repair.ps1` 与 `setup-wizard.ps1` 中陈旧残留的 `glm-5.2` 与 `minimax-m2.7`。
+- **v2.0.8 灾备快照文件元数据/权限持久化与损坏快照容错 (Snapshot Metadata & Corruption Tolerance)**：
+  - `createSnapshot` 记录 POSIX mode 权限与文件元数据，`rollbackSnapshot` 在 Linux/macOS 上高保真还原文件权限；
+  - `listSnapshots` 与 `rollbackSnapshot` 增加防御性容错，损坏的快照目录或损坏的 manifest JSON 不会导致服务或面板崩溃。
+- **v2.0.9 Web 控制台 UI 双语优化、端点一键复制、局域网访问 IP 显示与触控适配 (UI Polish & Dual-Track Auth)**：
+  - Web UI 顶栏增加 Base URL 动态展示、一键复制按钮与网络主机指示器（本地监听 vs 局域网/NAS访问）；
+  - 强化前端 fetch 请求中的 Token 与 Cookie 双轨回退机制；
+  - 增加移动端与触控设备自适应媒体查询（响应式断点）。
+- **v2.1.0 自动化测试套件扩充至 34 项全绿验证与二进制编译发布 (v2.1.0 Milestones & 34 Test Suite)**：
+  - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
+  - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
+  - 全量发布说明与文档对齐。
+
+### 🚀 v2.0.0
 - **全套组件一键检测更新与安全升级系统 (One-Click Safe Updater)**：
   - **5 大核心组件全景监控**：一站式检索并比对 `opencode-go-router`、`opencode` CLI、`oh-my-openagent`、`opencode-goal-plugin` 与 `openchamber` 的本地及最新发布版本；
   - **破坏性变更与生态兼容性诊断引擎**：深入检测 OpenCode CLI 主版本升级潜在的配置格式与命令行参数变更、OMO 智能体插件兼容性（如 5.1.24+ 对齐）、OpenChamber 托管通讯协议兼容性，输出精准的 `safe`、`warning`、`critical` 评级；

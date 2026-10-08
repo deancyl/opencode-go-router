@@ -1,11 +1,17 @@
 # patch-openchamber-office.ps1: OpenChamber 办公全格式 (Word/Excel/PPT) 离线安全预览一键挂载与还原脚本
 [CmdletBinding()]
 param(
+    [Parameter(Position=0)]
+    [string]$Action = "",
     [switch]$Install,
     [switch]$Rollback,
     [switch]$Status,
     [string]$TargetDir = ""
 )
+
+if ($Action -match "^-?r(ollback)?$") { $Rollback = $true }
+elseif ($Action -match "^-?s(tatus)?$") { $Status = $true }
+elseif ($Action -match "^-?i(nstall)?$") { $Install = $true }
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -30,8 +36,10 @@ if ($TargetDir -and (Test-Path $TargetDir)) {
     $candidates += $TargetDir
 }
 $candidates += "$env:LOCALAPPDATA\Programs\@openchamberelectron\resources\web-dist"
+$candidates += "$env:LOCALAPPDATA\Programs\OpenChamber\resources\web-dist"
 $candidates += "$env:USERPROFILE\.bun\install\global\node_modules\@openchamber\web\dist"
 $candidates += "$env:USERPROFILE\.bun\install\global\node_modules\@openchamber\web\public"
+$candidates += "$env:APPDATA\npm\node_modules\@openchamber\web\dist"
 
 $webDist = $null
 foreach ($c in $candidates) {
@@ -153,14 +161,26 @@ if ($htmlContent -notlike "*office-preview-engine.js*") {
 $jsContent = Get-Content $filesViewJs.FullName -Raw
 if ($jsContent -notlike "*OpenChamberOfficeViewer*") {
     $targetPattern = "Zd=r=>{"
+    $matchedPattern = $null
     if ($jsContent.Contains($targetPattern)) {
+        $matchedPattern = $targetPattern
+    } else {
+        # 动态正则匹配分发组件特征模式
+        $regexMatch = [regex]::Match($jsContent, '([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary')
+        if ($regexMatch.Success) {
+            $compVar = $regexMatch.Groups[1].Value
+            $matchedPattern = "$compVar=r=>{"
+        }
+    }
+
+    if ($matchedPattern -and $jsContent.Contains($matchedPattern)) {
         $hook = 'if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return s.jsx("div",{className:"h-full w-full min-h-0",ref:node=>{if(node&&!node.dataset.mounted){node.dataset.mounted="true";window.OpenChamberOfficeViewer.mount(node,r)}}});}'
-        $insertIdx = $jsContent.IndexOf($targetPattern) + $targetPattern.Length
+        $insertIdx = $jsContent.IndexOf($matchedPattern) + $matchedPattern.Length
         $jsContent = $jsContent.Insert($insertIdx, $hook)
         [System.IO.File]::WriteAllText($filesViewJs.FullName, $jsContent, [System.Text.Encoding]::UTF8)
-        Write-Host "  ✔ 已成功在 FilesView 视图分发层挂载全能 Office 渲染拦截器！" -ForegroundColor Green
+        Write-Host "  ✔ 已成功在 FilesView 视图分发层挂载全能 Office 渲染拦截器 (特征模式: $matchedPattern)！" -ForegroundColor Green
     } else {
-        Write-Host "  ❌ 未能在 $($filesViewJs.Name) 中匹配到 Zd 组件特征！" -ForegroundColor Red
+        Write-Host "  ❌ 未能在 $($filesViewJs.Name) 中匹配到 FilesView 视图分发组件特征！" -ForegroundColor Red
         exit 1
     }
 } else {

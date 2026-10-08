@@ -23,7 +23,7 @@ const url = require('node:url');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execSync, exec } = require('node:child_process');
+const { execSync, exec, spawn } = require('node:child_process');
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
@@ -56,6 +56,34 @@ const DEFAULT_CONFIG = {
       enabled: true
     }
   ]
+};
+
+const DEFAULT_OMO_CONFIG = {
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+  "[opencode]": {
+    "agents": {
+      "sisyphus": { "model": "opencode-go/kimi-k3" },
+      "oracle": { "model": "opencode-go/glm-5.3" },
+      "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+      "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+      "multimodal-looker": { "model": "opencode-go/kimi-k3" },
+      "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "momus": { "model": "opencode-go/glm-5.3" },
+      "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+      "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
+    },
+    "categories": {
+      "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "ultrabrain": { "model": "opencode-go/deepseek-v4.1-flash" },
+      "deep-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+      "deep-high": { "model": "opencode-go/deepseek-v4-pro" },
+      "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
+      "quick": { "model": "opencode-go/minimax-m3", "variant": "high" },
+      "unspecified-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+      "unspecified-high": { "model": "opencode-go/deepseek-v4-pro" }
+    }
+  }
 };
 
 // Load or initialize config
@@ -189,6 +217,14 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
   rrIndex = (rrIndex + 1) % available.length;
 
   if (config.sessionAffinityEnabled && sessionId) {
+    if (sessionMap.size > 5000) {
+      const entries = Array.from(sessionLastSeen.entries()).sort((a, b) => a[1] - b[1]);
+      const pruneCount = Math.floor(entries.length * 0.2) || 1;
+      for (let i = 0; i < pruneCount; i++) {
+        sessionMap.delete(entries[i][0]);
+        sessionLastSeen.delete(entries[i][0]);
+      }
+    }
     sessionMap.set(sessionId, chosen.id);
     sessionLastSeen.set(sessionId, now);
   }
@@ -199,7 +235,10 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
 function recordCooldown(accountId, cooldownMs, reason) {
   const stat = accountStats.get(accountId);
   if (stat) {
-    const dur = cooldownMs || config.defaultCooldownMs;
+    let dur = Number(cooldownMs);
+    if (isNaN(dur) || dur <= 0 || !isFinite(dur)) {
+      dur = config.defaultCooldownMs;
+    }
     stat.cooldownUntil = Date.now() + dur;
     stat.rateLimitCount += 1;
     stat.lastError = `Rate limit cooldown for ${Math.round(dur / 1000)}s: ${reason || '429 / 503'}`;
@@ -314,7 +353,8 @@ function fetchAccountUsage(upstream, apiKey) {
 
 function stripJsonComments(str) {
   if (typeof str !== 'string') return '';
-  return str.replace(/\\"|"(?:[^"\\]|\\.)*"|(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)/g, (m, g) => g ? '' : m);
+  const noComments = str.replace(/\\"|"(?:[^"\\]|\\.)*"|(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)/g, (m, g) => (g ? '' : m));
+  return noComments.replace(/,(\s*[}\]])/g, '$1');
 }
 
 function parseJsonSafe(filePath, defaultVal = {}) {
@@ -391,9 +431,22 @@ function bindDesktopConfig() {
     if (process.env.OPENCHAMBER_DATA_DIR && fs.existsSync(process.env.OPENCHAMBER_DATA_DIR)) {
       chamberDirs.push(process.env.OPENCHAMBER_DATA_DIR);
     }
-    const defaultDataDir = '/vol3/1000/docker/opencode/openchamber/data';
-    if (fs.existsSync(defaultDataDir) && !chamberDirs.includes(defaultDataDir)) {
-      chamberDirs.push(defaultDataDir);
+    const nasChamberCandidates = [
+      '/vol3/1000/docker/opencode/openchamber/data',
+      '/vol1/1000/docker/opencode/openchamber/data',
+      '/vol2/1000/docker/opencode/openchamber/data',
+      '/vol4/1000/docker/opencode/openchamber/data',
+      '/volume1/docker/openchamber/data',
+      '/volume1/docker/opencode/openchamber/data',
+      '/volume2/docker/openchamber/data',
+      '/volume2/docker/opencode/openchamber/data',
+      '/mnt/user/appdata/openchamber/data',
+      '/var/lib/openchamber/data'
+    ];
+    for (const cand of nasChamberCandidates) {
+      if (fs.existsSync(cand) && !chamberDirs.includes(cand)) {
+        chamberDirs.push(cand);
+      }
     }
     const standardChamberDir = path.join(homeDir, '.config', 'openchamber');
     if (!chamberDirs.includes(standardChamberDir)) {
@@ -473,34 +526,7 @@ function bindDesktopConfig() {
     if (!fs.existsSync(omoDir)) fs.mkdirSync(omoDir, { recursive: true });
     const omoPath = path.join(omoDir, 'omo.jsonc');
     if (!fs.existsSync(omoPath)) {
-      const omoTemplate = {
-        "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
-        "[opencode]": {
-          "agents": {
-            "sisyphus": { "model": "opencode-go/kimi-k3" },
-            "oracle": { "model": "opencode-go/glm-5.3" },
-            "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
-            "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
-            "multimodal-looker": { "model": "opencode-go/kimi-k3" },
-            "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "momus": { "model": "opencode-go/glm-5.3" },
-            "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
-            "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
-          },
-          "categories": {
-            "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "ultrabrain": { "model": "opencode-go/deepseek-v4.1-flash" },
-            "deep-low": { "model": "opencode-go/deepseek-v4.1-flash" },
-            "deep-high": { "model": "opencode-go/deepseek-v4-pro" },
-            "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" },
-            "unspecified-low": { "model": "opencode-go/deepseek-v4.1-flash" },
-            "unspecified-high": { "model": "opencode-go/deepseek-v4-pro" }
-          }
-        }
-      };
-      fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), 'utf8');
+      fs.writeFileSync(omoPath, JSON.stringify(DEFAULT_OMO_CONFIG, null, 2), 'utf8');
       result.omo = true;
       result.messages.push('已生成标准 ~/.omo/omo.jsonc 路由配置');
     } else {
@@ -763,6 +789,80 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 }
 
 // System Diagnostic Helper (Doctor Engine)
+function findDefaultWorkspace() {
+  if (process.platform === 'win32') {
+    const winWsList = [
+      'D:\\opencode\\default',
+      'C:\\opencode\\default',
+      'E:\\opencode\\default',
+      path.join(os.homedir(), 'opencode', 'default'),
+      path.join(os.homedir(), 'workspace'),
+      path.join(os.homedir(), 'projects')
+    ];
+    for (const ws of winWsList) {
+      if (fs.existsSync(ws)) return ws;
+    }
+    return fs.existsSync('D:\\') ? 'D:\\opencode\\default' : path.join(os.homedir(), 'opencode', 'default');
+  } else {
+    const linuxWsList = [
+      '/vol3/1000/docker/opencode2/default',
+      '/vol3/1000/docker/opencode2/ra2',
+      '/vol3/1000/docker/opencode/workspace',
+      '/vol1/1000/docker/opencode/workspace',
+      '/vol2/1000/docker/opencode/workspace',
+      '/volume1/docker/opencode/workspace',
+      '/volume2/docker/opencode/workspace',
+      '/mnt/user/appdata/opencode/workspace',
+      '/workspace',
+      '/projects',
+      path.join(os.homedir(), 'workspace'),
+      path.join(os.homedir(), 'projects'),
+      path.join(os.homedir(), 'opencode', 'default')
+    ];
+    for (const ws of linuxWsList) {
+      if (fs.existsSync(ws)) return ws;
+    }
+    return path.join(os.homedir(), 'workspace');
+  }
+}
+
+function getOpenChamberDistCandidates(customDir = null) {
+  const candidates = [];
+  if (customDir) candidates.push(customDir);
+  if (process.platform === 'win32') {
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', '@openchamberelectron', 'resources', 'web-dist'));
+      candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'OpenChamber', 'resources', 'web-dist'));
+    }
+    candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Programs', '@openchamberelectron', 'resources', 'web-dist'));
+    candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'OpenChamber', 'resources', 'web-dist'));
+    candidates.push(path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'));
+    candidates.push(path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'public'));
+    if (process.env.APPDATA) {
+      candidates.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@openchamber', 'web', 'dist'));
+    }
+  } else {
+    candidates.push(
+      '/vol3/1000/docker/openchamber/web/dist',
+      '/vol3/1000/docker/openchamber/dist',
+      '/vol1/1000/docker/openchamber/web/dist',
+      '/vol1/1000/docker/openchamber/dist',
+      '/vol2/1000/docker/openchamber/web/dist',
+      '/vol4/1000/docker/openchamber/web/dist',
+      '/volume1/docker/openchamber/web/dist',
+      '/volume1/docker/openchamber/dist',
+      '/volume2/docker/openchamber/web/dist',
+      '/mnt/user/appdata/openchamber/web/dist',
+      '/var/lib/openchamber/web/dist',
+      '/var/lib/openchamber/dist',
+      '/usr/local/lib/node_modules/@openchamber/web/dist',
+      path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'),
+      path.join(os.homedir(), '.openchamber', 'web-dist')
+    );
+  }
+  return candidates;
+}
+
 function findOpenCodeBinary() {
   try {
     const v = execSync('opencode --version', { stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
@@ -793,22 +893,7 @@ function findOpenCodeBinary() {
 }
 
 function runSystemDoctor() {
-  let defaultWs = 'D:\\opencode\\default';
-  if (process.platform === 'linux') {
-    const linuxWsList = [
-      '/vol3/1000/docker/opencode2/default',
-      '/vol3/1000/docker/opencode2/ra2',
-      '/vol3/1000/docker/opencode/workspace',
-      path.join(os.homedir(), 'workspace'),
-      path.join(os.homedir(), 'projects')
-    ];
-    for (const ws of linuxWsList) {
-      if (fs.existsSync(ws)) {
-        defaultWs = ws;
-        break;
-      }
-    }
-  }
+  let defaultWs = findDefaultWorkspace();
 
   const report = {
     timestamp: new Date().toISOString(),
@@ -938,14 +1023,7 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
 
   // 1.7 Check OpenChamber Office Preview Engine
   let chamberDist = null;
-  const candDists = process.platform === 'win32' ? [
-    path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', '@openchamberelectron', 'resources', 'web-dist'),
-    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-  ] : [
-    '/vol3/1000/docker/openchamber/web/dist',
-    '/vol3/1000/docker/openchamber/dist',
-    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-  ];
+  const candDists = getOpenChamberDistCandidates();
   for (const d of candDists) {
     if (fs.existsSync(path.join(d, 'index.html'))) {
       chamberDist = d;
@@ -1190,30 +1268,7 @@ function executeSystemRepair() {
       fs.mkdirSync(omoDir, { recursive: true });
     }
     if (!fs.existsSync(omoPath)) {
-      const omoTemplate = {
-        "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
-        "[opencode]": {
-          "agents": {
-            "sisyphus": { "model": "opencode-go/kimi-k3" },
-            "oracle": { "model": "opencode-go/glm-5.2" },
-            "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
-            "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
-            "multimodal-looker": { "model": "opencode-go/kimi-k3" },
-            "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "momus": { "model": "opencode-go/glm-5.2" },
-            "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
-            "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
-          },
-          "categories": {
-            "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "ultrabrain": { "model": "opencode/gpt-5-nano" },
-            "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" }
-          }
-        }
-      };
-      fs.writeFileSync(omoPath, JSON.stringify(omoTemplate, null, 2), 'utf8');
+      fs.writeFileSync(omoPath, JSON.stringify(DEFAULT_OMO_CONFIG, null, 2), 'utf8');
       results.push({ item: 'OMO Config', success: true, message: '已生成标准 ~/.omo/omo.jsonc（默认使用 kimi-k3/qwen3.7 避开区域限制）' });
     } else {
       results.push({ item: 'OMO Config', success: true, message: '已就绪：omo.jsonc 存在' });
@@ -1254,22 +1309,7 @@ $ARGUMENTS
   }
 
   // 5. Ensure Workspace Git
-  let wsPath = 'D:\\opencode\\default';
-  if (process.platform === 'linux') {
-    const linuxWsList = [
-      '/vol3/1000/docker/opencode2/default',
-      '/vol3/1000/docker/opencode2/ra2',
-      '/vol3/1000/docker/opencode/workspace',
-      path.join(os.homedir(), 'workspace'),
-      path.join(os.homedir(), 'projects')
-    ];
-    for (const cand of linuxWsList) {
-      if (fs.existsSync(cand)) {
-        wsPath = cand;
-        break;
-      }
-    }
-  }
+  let wsPath = findDefaultWorkspace();
   if (fs.existsSync(wsPath) && !fs.existsSync(path.join(wsPath, '.git'))) {
     try {
       execSync('git init', { cwd: wsPath, stdio: 'ignore' });
@@ -1333,10 +1373,7 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
     const patchScriptLinux = path.join(__dirname, 'patch-openchamber-office.sh');
     if (process.platform === 'win32' && fs.existsSync(patchScriptWin)) {
       let needsPatch = false;
-      const candDists = [
-        path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', '@openchamberelectron', 'resources', 'web-dist'),
-        path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-      ];
+      const candDists = getOpenChamberDistCandidates();
       for (const d of candDists) {
         const idx = path.join(d, 'index.html');
         if (fs.existsSync(idx)) {
@@ -1355,11 +1392,7 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
       }
     } else if (process.platform === 'linux' && fs.existsSync(patchScriptLinux)) {
       let needsPatch = false;
-      const candDists = [
-        '/vol3/1000/docker/openchamber/web/dist',
-        '/vol3/1000/docker/openchamber/dist',
-        path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-      ];
+      const candDists = getOpenChamberDistCandidates();
       for (const d of candDists) {
         const idx = path.join(d, 'index.html');
         if (fs.existsSync(idx)) {
@@ -1850,19 +1883,61 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS)
+  // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS) - Hardened Sandbox
   if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
     let body = [];
     req.on('data', chunk => body.push(chunk));
     req.on('end', () => {
       try {
         const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-        const filePath = (payload.path || '').trim();
+        let filePath = (payload.path || '').trim();
         if (!filePath) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
           res.end(JSON.stringify({ success: false, error: 'Path is required' }));
           return;
         }
+
+        // Support file:/// URIs and percent-encoded paths
+        if (filePath.startsWith('file://')) {
+          try {
+            const { fileURLToPath } = require('url');
+            filePath = fileURLToPath(filePath);
+          } catch (e) {
+            filePath = decodeURIComponent(filePath.replace(/^file:\/\/\/?/, process.platform === 'win32' ? '' : '/'));
+          }
+        } else if (/%[0-9A-Fa-f]{2}/.test(filePath)) {
+          try {
+            filePath = decodeURIComponent(filePath);
+          } catch (e) {}
+        }
+
+        // Strip URL fragment/query if present
+        filePath = filePath.replace(/[?#].*$/, '');
+        filePath = path.normalize(filePath);
+
+        // Security Check: Block remote UNC network paths on Windows to prevent NTLM credential theft
+        if (process.platform === 'win32') {
+          if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ success: false, error: '安全拦截：禁止通过网络 UNC 共享路径打开文件以防凭据泄露' }));
+            return;
+          }
+        }
+
+        // Security Sandbox Check: Block dangerous executable, script, and shortcut extensions
+        const sanitizedForExt = filePath.replace(/[.\s]+$/, '');
+        const ext = path.extname(sanitizedForExt).toLowerCase();
+        const DANGEROUS_EXTS = new Set([
+          '.exe', '.bat', '.cmd', '.com', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
+          '.msi', '.ps1', '.psm1', '.psd1', '.sh', '.bash', '.bin', '.pif', '.scr',
+          '.hta', '.cpl', '.jar', '.reg', '.dll', '.sys', '.lnk', '.url', '.appref-ms'
+        ]);
+        if (DANGEROUS_EXTS.has(ext)) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: '安全拦截：禁止通过 open-file API 启动可执行程序或脚本文件' }));
+          return;
+        }
+
         if (!fs.existsSync(filePath)) {
           res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
           res.end(JSON.stringify({ success: false, error: 'File not found on local filesystem' }));
@@ -1870,13 +1945,28 @@ const server = http.createServer((req, res) => {
         }
 
         if (process.platform === 'win32') {
-          exec(`start "" "${filePath.replace(/"/g, '\\"')}"`, { shell: 'cmd.exe' }, err => {
-            if (err) console.error('[Open File Error]', err.message);
+          const child = spawn('cmd.exe', ['/c', 'start', '', filePath], {
+            windowsHide: true,
+            detached: true,
+            stdio: 'ignore'
           });
+          child.on('error', (err) => {
+            console.error('[Open File Win32 Error]', err.message);
+          });
+          child.unref();
         } else if (process.platform === 'darwin') {
-          exec(`open "${filePath.replace(/"/g, '\\"')}"`);
+          const child = spawn('open', [filePath], { detached: true, stdio: 'ignore' });
+          child.unref();
         } else {
-          exec(`xdg-open "${filePath.replace(/"/g, '\\"')}"`);
+          const isHeadless = !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+          if (isHeadless) {
+            console.warn(`[Open File] Headless Linux/NAS environment: xdg-open invoked for ${filePath}`);
+          }
+          const child = spawn('xdg-open', [filePath], { detached: true, stdio: 'ignore' });
+          child.on('error', (err) => {
+            console.error('[Open File Error]', err.message);
+          });
+          child.unref();
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -2369,6 +2459,13 @@ const server = http.createServer((req, res) => {
     .alert-box-warn { background: rgba(251, 191, 36, 0.1); border: 1px solid #fbbf24; color: #fef08a; }
     .alert-box-danger { background: rgba(248, 113, 113, 0.1); border: 1px solid #f87171; color: #fecaca; }
     .alert-box-success { background: rgba(52, 211, 153, 0.1); border: 1px solid #34d399; color: #a7f3d0; }
+    @media (max-width: 768px) {
+      body { padding: 0.75rem; }
+      .accounts-grid { grid-template-columns: 1fr; }
+      .header-actions { width: 100%; margin-top: 10px; }
+      header { flex-direction: column; align-items: flex-start; }
+      .acc-title-input { width: 85%; }
+    }
   </style>
 </head>
 <body>
@@ -2391,8 +2488,15 @@ const server = http.createServer((req, res) => {
     </header>
 
     <div class="banner">
-      <div>
-        <strong>💡 本地服务运作中：</strong> 支持会话亲和性（锁定会话命中 Prompt Cache）、429 限频秒级自动漂移与重试。
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <div>
+          <strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。
+        </div>
+        <div style="font-size:0.83rem; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span>🌐 智能网关端点 (Base URL): <code id="lbl-baseurl" style="color:var(--primary); font-family:monospace; background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;">http://127.0.0.1:${config.port}</code></span>
+          <button class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="copyBaseUrl()">📋 复制端点 (Copy)</button>
+          <span id="lbl-host-status" class="badge badge-healthy" style="font-size:0.7rem;">本地监听 (127.0.0.1)</span>
+        </div>
       </div>
       <div>
         <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
@@ -2561,9 +2665,46 @@ const server = http.createServer((req, res) => {
 
     function apiHeaders(extra = {}) {
       const headers = { ...extra };
-      const token = localStorage.getItem('opencode_router_token');
+      let token = localStorage.getItem('opencode_router_token');
+      if (!token) {
+        const match = document.cookie.match(/(?:^|;\s*)router_auth=([^;]+)/);
+        if (match) {
+          try {
+            token = decodeURIComponent(match[1]);
+          } catch (e) {}
+        }
+      }
       if (token) headers['Authorization'] = 'Bearer ' + token;
       return headers;
+    }
+
+    function copyBaseUrl() {
+      const url = 'http://' + (window.location.hostname || '127.0.0.1') + ':${config.port}';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => {
+          showToast('✔ 已复制 Base URL: ' + url);
+        }).catch(() => {
+          fallbackCopyText(url);
+        });
+      } else {
+        fallbackCopyText(url);
+      }
+    }
+
+    function fallbackCopyText(text) {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        showToast('✔ 已复制 Base URL: ' + text);
+      } catch (err) {
+        showToast('复制失败，请手动复制: ' + text, true);
+      }
+      document.body.removeChild(textArea);
     }
 
     function logoutAdmin() {
@@ -3231,6 +3372,19 @@ const server = http.createServer((req, res) => {
     }
 
     // Init
+    const currentHost = window.location.hostname || '127.0.0.1';
+    const baseUrlElem = document.getElementById('lbl-baseurl');
+    if (baseUrlElem) baseUrlElem.innerText = 'http://' + currentHost + ':${config.port}';
+    const hostStatusElem = document.getElementById('lbl-host-status');
+    if (hostStatusElem) {
+      if (currentHost === '127.0.0.1' || currentHost === 'localhost') {
+        hostStatusElem.innerText = '本地监听 (127.0.0.1)';
+        hostStatusElem.className = 'badge badge-healthy';
+      } else {
+        hostStatusElem.innerText = '局域网/NAS访问 (' + currentHost + ')';
+        hostStatusElem.className = 'badge badge-healthy';
+      }
+    }
     fetchConfig();
     fetchStatus();
     setInterval(fetchStatus, 2000);
@@ -3256,7 +3410,8 @@ const server = http.createServer((req, res) => {
     if (enabledAccounts.length > 0) {
       const now = Date.now();
       const cooldowns = enabledAccounts.map(a => Math.max(0, (accountStats.get(a.id)?.cooldownUntil || 0) - now));
-      const minCooldownMs = Math.min(...cooldowns);
+      const finiteCooldowns = cooldowns.filter(c => isFinite(c) && c > 0);
+      const minCooldownMs = finiteCooldowns.length > 0 ? Math.min(...finiteCooldowns) : config.defaultCooldownMs;
       const minCooldownSec = Math.max(1, Math.ceil(minCooldownMs / 1000));
       res.writeHead(429, {
         'Content-Type': 'application/json',
@@ -3296,6 +3451,35 @@ const server = http.createServer((req, res) => {
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`[OpenCode Go Router Error] Port ${config.port} is already in use by another process.`);
+    const autoHeal = process.env.OPENCODE_ROUTER_AUTO_HEAL !== '0';
+    if (autoHeal && !server._hasRetriedHeal) {
+      server._hasRetriedHeal = true;
+      console.log(`[Port Self-Healing] 正在尝试自动清理 ${config.port} 端口的残留冲突进程...`);
+      try {
+        if (process.platform === 'win32') {
+          execSync(`powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"`, { timeout: 4000, stdio: 'ignore' });
+        } else {
+          execSync(`fuser -k ${config.port}/tcp 2>/dev/null || (lsof -t -i :${config.port} 2>/dev/null | xargs -r kill 2>/dev/null) || (ss -tlpn 'sport = :${config.port}' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | xargs -r kill 2>/dev/null) || true`, { timeout: 3000, stdio: 'ignore' });
+        }
+        setTimeout(() => {
+          console.log(`[Port Self-Healing] 端口已释放，正在重新启动监听 ${config.host}:${config.port}...`);
+          try {
+            server.listen(config.port, config.host, () => {
+              console.log(`[OpenCode Go Router] Successfully self-healed and running on http://${config.host}:${config.port}`);
+              console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
+              console.log(`[OpenCode Go Router] Web Dashboard: http://${config.host}:${config.port}/balancer/ui`);
+            });
+            return;
+          } catch (listenErr) {
+            console.error('[Port Self-Healing Listen Error]', listenErr.message);
+            process.exit(1);
+          }
+        }, 1000);
+        return;
+      } catch (healErr) {
+        console.error('[Port Self-Healing Failed]', healErr.message);
+      }
+    }
   } else {
     console.error('[OpenCode Go Router Server Error]', err.message);
   }

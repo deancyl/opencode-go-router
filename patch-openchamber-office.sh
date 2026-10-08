@@ -7,15 +7,15 @@ TARGET_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    -i|--install)
+    -i|--install|install)
       ACTION="install"
       shift
       ;;
-    -r|--rollback)
+    -r|--rollback|rollback)
       ACTION="rollback"
       shift
       ;;
-    -s|--status)
+    -s|--status|status)
       ACTION="status"
       shift
       ;;
@@ -43,9 +43,20 @@ fi
 # 自动探测 OpenChamber web-dist / dist 目录
 CANDIDATES=(
   "$TARGET_DIR"
+  "/vol3/1000/docker/openchamber/web/dist"
+  "/vol3/1000/docker/openchamber/dist"
+  "/vol1/1000/docker/openchamber/web/dist"
+  "/vol1/1000/docker/openchamber/dist"
+  "/vol2/1000/docker/openchamber/web/dist"
+  "/vol4/1000/docker/openchamber/web/dist"
+  "/volume1/docker/openchamber/web/dist"
+  "/volume1/docker/openchamber/dist"
+  "/volume2/docker/openchamber/web/dist"
+  "/mnt/user/appdata/openchamber/web/dist"
+  "/var/lib/openchamber/web/dist"
+  "/var/lib/openchamber/dist"
   "$HOME/.bun/install/global/node_modules/@openchamber/web/dist"
   "/usr/local/lib/node_modules/@openchamber/web/dist"
-  "/vol3/1000/docker/openchamber/dist"
   "$HOME/.openchamber/web-dist"
 )
 
@@ -140,9 +151,34 @@ fi
 
 # 4. 挂载 Hook 到 FilesView JS
 if ! grep -q "OpenChamberOfficeViewer" "$FILES_VIEW_JS"; then
-  HOOK='if(window.OpenChamberOfficeViewer\&\&window.OpenChamberOfficeViewer.isOfficeFile(r.path\|\|r.name)){return s.jsx("div",{className:"h-full w-full min-h-0",ref:node=>{if(node\&\&!node.dataset.mounted){node.dataset.mounted="true";window.OpenChamberOfficeViewer.mount(node,r)}}});}'
-  sed -i "s|Zd=r=>{|Zd=r=>{$HOOK|g" "$FILES_VIEW_JS"
-  echo "  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器！"
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+      const fs = require("fs");
+      const targetFile = process.argv[1];
+      let content = fs.readFileSync(targetFile, "utf8");
+      const hook = "if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return s.jsx(\"div\",{className:\"h-full w-full min-h-0\",ref:node=>{if(node&&!node.dataset.mounted){node.dataset.mounted=\"true\";window.OpenChamberOfficeViewer.mount(node,r)}}});}";
+      if (content.includes("Zd=r=>{")) {
+        content = content.replace("Zd=r=>{", "Zd=r=>{" + hook);
+        fs.writeFileSync(targetFile, content, "utf8");
+        console.log("  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器 (特征模式: Zd=r=>{)！");
+      } else {
+        const match = content.match(/([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary/);
+        if (match) {
+          const comp = match[1];
+          content = content.replace(comp + "=r=>{", comp + "=r=>{" + hook);
+          fs.writeFileSync(targetFile, content, "utf8");
+          console.log("  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器 (特征模式: " + comp + "=r=>{)！");
+        } else {
+          console.error("  ❌ 未能在 FilesView 中匹配到视图组件特征！");
+          process.exit(1);
+        }
+      }
+    ' "$FILES_VIEW_JS"
+  else
+    HOOK='if(window.OpenChamberOfficeViewer\&\&window.OpenChamberOfficeViewer.isOfficeFile(r.path\|\|r.name)){return s.jsx("div",{className:"h-full w-full min-h-0",ref:node=>{if(node\&\&!node.dataset.mounted){node.dataset.mounted="true";window.OpenChamberOfficeViewer.mount(node,r)}}});}'
+    sed -i "s|Zd=r=>{|Zd=r=>{$HOOK|g" "$FILES_VIEW_JS"
+    echo "  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器！"
+  fi
 fi
 
 echo "=========================================================="

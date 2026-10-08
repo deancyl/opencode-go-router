@@ -83,6 +83,43 @@ function getRouterConfigPath() {
   return process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 }
 
+function getOpenChamberDistCandidates(customDir = null) {
+  const candidates = [];
+  if (customDir) candidates.push(customDir);
+  if (process.platform === 'win32') {
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', '@openchamberelectron', 'resources', 'web-dist'));
+      candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'OpenChamber', 'resources', 'web-dist'));
+    }
+    candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Programs', '@openchamberelectron', 'resources', 'web-dist'));
+    candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'OpenChamber', 'resources', 'web-dist'));
+    candidates.push(path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'));
+    candidates.push(path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'public'));
+    if (process.env.APPDATA) {
+      candidates.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@openchamber', 'web', 'dist'));
+    }
+  } else {
+    candidates.push(
+      '/vol3/1000/docker/openchamber/web/dist',
+      '/vol3/1000/docker/openchamber/dist',
+      '/vol1/1000/docker/openchamber/web/dist',
+      '/vol1/1000/docker/openchamber/dist',
+      '/vol2/1000/docker/openchamber/web/dist',
+      '/vol4/1000/docker/openchamber/web/dist',
+      '/volume1/docker/openchamber/web/dist',
+      '/volume1/docker/openchamber/dist',
+      '/volume2/docker/openchamber/web/dist',
+      '/mnt/user/appdata/openchamber/web/dist',
+      '/var/lib/openchamber/web/dist',
+      '/var/lib/openchamber/dist',
+      '/usr/local/lib/node_modules/@openchamber/web/dist',
+      path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'),
+      path.join(os.homedir(), '.openchamber', 'web-dist')
+    );
+  }
+  return candidates;
+}
+
 /**
  * Execute command with output capture and error details
  */
@@ -572,13 +609,7 @@ function analyzeCompatibility(local, remote, options = {}) {
 
   // Office preview engine state check
   let officePatched = false;
-  const candDists = process.platform === 'win32' ? [
-    path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', '@openchamberelectron', 'resources', 'web-dist'),
-    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-  ] : [
-    '/vol3/1000/docker/openchamber/web/dist',
-    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-  ];
+  const candDists = getOpenChamberDistCandidates();
   for (const d of candDists) {
     const idx = path.join(d, 'index.html');
     if (fs.existsSync(idx)) {
@@ -728,35 +759,35 @@ function createSnapshot(reason = '安全更新前自动灾备快照', options = 
   const ocConfigPath = getOpencodeConfigPath();
   if (fs.existsSync(ocConfigPath)) {
     const dest = path.join(configsDir, 'opencode.jsonc');
+    let mode = null;
+    try { mode = fs.statSync(ocConfigPath).mode; } catch (e) {}
     fs.copyFileSync(ocConfigPath, dest);
-    backedUpFiles.push({ name: 'opencode.jsonc', src: ocConfigPath, dest });
+    backedUpFiles.push({ name: 'opencode.jsonc', src: ocConfigPath, dest, mode });
   }
 
   // 2. Backup omo.jsonc
   const omoConfigPath = getOmoConfigPath();
   if (fs.existsSync(omoConfigPath)) {
     const dest = path.join(configsDir, 'omo.jsonc');
+    let mode = null;
+    try { mode = fs.statSync(omoConfigPath).mode; } catch (e) {}
     fs.copyFileSync(omoConfigPath, dest);
-    backedUpFiles.push({ name: 'omo.jsonc', src: omoConfigPath, dest });
+    backedUpFiles.push({ name: 'omo.jsonc', src: omoConfigPath, dest, mode });
   }
 
   // 3. Backup router config.json
   const routerCfgPath = getRouterConfigPath();
   if (fs.existsSync(routerCfgPath)) {
     const dest = path.join(configsDir, 'config.json');
+    let mode = null;
+    try { mode = fs.statSync(routerCfgPath).mode; } catch (e) {}
     fs.copyFileSync(routerCfgPath, dest);
-    backedUpFiles.push({ name: 'config.json', src: routerCfgPath, dest });
+    backedUpFiles.push({ name: 'config.json', src: routerCfgPath, dest, mode });
   }
 
   // 4. Record Office Preview Patch State
   let officePreviewActive = false;
-  const candDists = process.platform === 'win32' ? [
-    path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', '@openchamberelectron', 'resources', 'web-dist'),
-    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-  ] : [
-    '/vol3/1000/docker/openchamber/web/dist',
-    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist')
-  ];
+  const candDists = getOpenChamberDistCandidates();
   for (const d of candDists) {
     if (fs.existsSync(path.join(d, 'index.html'))) {
       try {
@@ -769,6 +800,11 @@ function createSnapshot(reason = '安全更新前自动灾备快照', options = 
     }
   }
 
+  const fileMetadata = {};
+  for (const f of backedUpFiles) {
+    fileMetadata[f.name] = { mode: f.mode || null };
+  }
+
   const manifest = {
     id: snapshotId,
     timestamp: new Date().toISOString(),
@@ -776,7 +812,8 @@ function createSnapshot(reason = '安全更新前自动灾备快照', options = 
     packageManager: detectPackageManager(),
     versions: localVersions,
     officePreviewActive,
-    files: backedUpFiles.map((f) => f.name)
+    files: backedUpFiles.map((f) => f.name),
+    fileMetadata
   };
 
   fs.writeFileSync(path.join(targetDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
@@ -796,7 +833,7 @@ function createSnapshot(reason = '安全更新前自动灾备快照', options = 
 }
 
 /**
- * List all saved snapshots sorted by newest first
+ * List all saved snapshots sorted by newest first with corruption tolerance
  */
 function listSnapshots() {
   const snapshotsDir = getSnapshotsDir();
@@ -810,15 +847,26 @@ function listSnapshots() {
         const manPath = path.join(snapshotsDir, ent.name, 'manifest.json');
         if (fs.existsSync(manPath)) {
           try {
-            const data = JSON.parse(fs.readFileSync(manPath, 'utf8'));
-            list.push(data);
-          } catch (e) {}
+            const raw = fs.readFileSync(manPath, 'utf8');
+            const data = JSON.parse(raw);
+            if (data && typeof data === 'object' && data.id) {
+              list.push(data);
+            }
+          } catch (e) {
+            // Gracefully ignore corrupt manifest file
+          }
         }
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    // Gracefully handle directory read errors
+  }
 
-  return list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  return list.sort((a, b) => {
+    const tA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return (isNaN(tB) ? 0 : tB) - (isNaN(tA) ? 0 : tA);
+  });
 }
 
 /**
@@ -837,8 +885,20 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
   }
 
   const snapDir = path.join(snapshotsDir, targetSnapshot.id);
+  if (!fs.existsSync(snapDir)) {
+    throw new Error(`快照目录不存在或已损坏: ${targetSnapshot.id}`);
+  }
   const configsDir = path.join(snapDir, 'configs');
   const restoredItems = [];
+
+  // Helper to safely restore POSIX mode
+  function tryRestoreMode(filePath, fileName) {
+    try {
+      if (process.platform !== 'win32' && targetSnapshot.fileMetadata && targetSnapshot.fileMetadata[fileName] && targetSnapshot.fileMetadata[fileName].mode) {
+        fs.chmodSync(filePath, targetSnapshot.fileMetadata[fileName].mode);
+      }
+    } catch (e) {}
+  }
 
   // 1. Restore opencode.jsonc
   const snapOc = path.join(configsDir, 'opencode.jsonc');
@@ -847,6 +907,7 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
     const parent = path.dirname(targetOc);
     if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
     fs.copyFileSync(snapOc, targetOc);
+    tryRestoreMode(targetOc, 'opencode.jsonc');
     restoredItems.push({ file: 'opencode.jsonc', status: 'restored', path: targetOc });
   }
 
@@ -857,6 +918,7 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
     const parent = path.dirname(targetOmo);
     if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
     fs.copyFileSync(snapOmo, targetOmo);
+    tryRestoreMode(targetOmo, 'omo.jsonc');
     restoredItems.push({ file: 'omo.jsonc', status: 'restored', path: targetOmo });
   }
 
@@ -865,6 +927,7 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
   const targetCfg = getRouterConfigPath();
   if (fs.existsSync(snapCfg)) {
     fs.copyFileSync(snapCfg, targetCfg);
+    tryRestoreMode(targetCfg, 'config.json');
     restoredItems.push({ file: 'config.json', status: 'restored', path: targetCfg });
   }
 
@@ -1096,7 +1159,8 @@ module.exports = {
   getOpencodeConfigPath,
   getOmoConfigPath,
   getRouterConfigPath,
-  getSnapshotsDir
+  getSnapshotsDir,
+  getOpenChamberDistCandidates
 };
 
 // CLI entry point

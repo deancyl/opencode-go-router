@@ -262,7 +262,7 @@ namespace OpenCodeRouter
         {
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"$c = Get-NetTCPConnection -LocalPort " + port + " -State Listen -ErrorAction SilentlyContinue; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue } }\"");
+                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"Get-NetTCPConnection -LocalPort " + port + " -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }\"");
                 psi.CreateNoWindow = true;
                 psi.UseShellExecute = false;
                 psi.WindowStyle = ProcessWindowStyle.Hidden;
@@ -348,7 +348,7 @@ namespace OpenCodeRouter
 
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"$c = Get-NetTCPConnection -LocalPort " + port + " -State Listen -ErrorAction SilentlyContinue; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue } }\"");
+                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"Get-NetTCPConnection -LocalPort " + port + " -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }\"");
                 psi.CreateNoWindow = true;
                 psi.UseShellExecute = false;
                 psi.WindowStyle = ProcessWindowStyle.Hidden;

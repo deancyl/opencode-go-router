@@ -314,7 +314,10 @@ if ($chamberProcs) {
 $patchScript = Join-Path $PSScriptRoot "patch-openchamber-office.ps1"
 $chamberDistCandidates = @(
     "$env:LOCALAPPDATA\Programs\@openchamberelectron\resources\web-dist",
-    "$env:USERPROFILE\.bun\install\global\node_modules\@openchamber\web\dist"
+    "$env:LOCALAPPDATA\Programs\OpenChamber\resources\web-dist",
+    "$env:USERPROFILE\.bun\install\global\node_modules\@openchamber\web\dist",
+    "$env:USERPROFILE\.bun\install\global\node_modules\@openchamber\web\public",
+    "$env:APPDATA\npm\node_modules\@openchamber\web\dist"
 )
 $foundDist = $chamberDistCandidates | Where-Object { Test-Path (Join-Path $_ "index.html") } | Select-Object -First 1
 if ($foundDist) {
@@ -606,21 +609,25 @@ foreach ($iss in $issuesFound) {
   "[opencode]": {
     "agents": {
       "sisyphus": { "model": "opencode-go/kimi-k3" },
-      "oracle": { "model": "opencode-go/glm-5.2" },
-      "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
-      "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m2.7" }] },
+      "oracle": { "model": "opencode-go/glm-5.3" },
+      "librarian": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
+      "explore": { "model": "opencode-go/qwen3.7-plus", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
       "multimodal-looker": { "model": "opencode-go/kimi-k3" },
       "prometheus": { "model": "opencode-go/kimi-k3", "variant": "high" },
       "metis": { "model": "opencode-go/kimi-k3", "variant": "high" },
-      "momus": { "model": "opencode-go/glm-5.2" },
+      "momus": { "model": "opencode-go/glm-5.3" },
       "atlas": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] },
       "sisyphus-junior": { "model": "opencode-go/kimi-k3", "fallback_models": [{ "model": "opencode-go/minimax-m3" }] }
     },
     "categories": {
       "visual-engineering": { "model": "opencode-go/kimi-k3", "variant": "high" },
-      "ultrabrain": { "model": "opencode/gpt-5-nano" },
+      "ultrabrain": { "model": "opencode-go/deepseek-v4.1-flash" },
+      "deep-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+      "deep-high": { "model": "opencode-go/deepseek-v4-pro" },
       "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
-      "quick": { "model": "opencode-go/minimax-m3", "variant": "high" }
+      "quick": { "model": "opencode-go/minimax-m3", "variant": "high" },
+      "unspecified-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+      "unspecified-high": { "model": "opencode-go/deepseek-v4-pro" }
     }
   }
 }

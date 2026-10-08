@@ -459,8 +459,21 @@ bind_ecosystem() {
     // 2. OpenChamber
     const chamberDirs = [];
     if (process.env.OPENCHAMBER_DATA_DIR && fs.existsSync(process.env.OPENCHAMBER_DATA_DIR)) chamberDirs.push(process.env.OPENCHAMBER_DATA_DIR);
-    const defaultDataDir = "/vol3/1000/docker/opencode/openchamber/data";
-    if (fs.existsSync(defaultDataDir) && !chamberDirs.includes(defaultDataDir)) chamberDirs.push(defaultDataDir);
+    const nasChamberCandidates = [
+      "/vol3/1000/docker/opencode/openchamber/data",
+      "/vol1/1000/docker/opencode/openchamber/data",
+      "/vol2/1000/docker/opencode/openchamber/data",
+      "/vol4/1000/docker/opencode/openchamber/data",
+      "/volume1/docker/openchamber/data",
+      "/volume1/docker/opencode/openchamber/data",
+      "/volume2/docker/openchamber/data",
+      "/volume2/docker/opencode/openchamber/data",
+      "/mnt/user/appdata/openchamber/data",
+      "/var/lib/openchamber/data"
+    ];
+    for (const cand of nasChamberCandidates) {
+      if (fs.existsSync(cand) && !chamberDirs.includes(cand)) chamberDirs.push(cand);
+    }
     const standardChamberDir = path.join(homeDir, ".config", "openchamber");
     if (!chamberDirs.includes(standardChamberDir)) chamberDirs.push(standardChamberDir);
 
@@ -544,7 +557,9 @@ bind_ecosystem() {
             "deep-low": { "model": "opencode-go/deepseek-v4.1-flash" },
             "deep-high": { "model": "opencode-go/deepseek-v4-pro" },
             "artistry": { "model": "opencode-go/kimi-k3", "variant": "high" },
-            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" }
+            "quick": { "model": "opencode-go/minimax-m3", "variant": "high" },
+            "unspecified-low": { "model": "opencode-go/deepseek-v4.1-flash" },
+            "unspecified-high": { "model": "opencode-go/deepseek-v4-pro" }
           }
         }
       };
