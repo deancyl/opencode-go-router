@@ -429,24 +429,14 @@ bind_ecosystem() {
       try { fs.copyFileSync(ocPath, ocPath + ".bak"); } catch (e) {}
       ocData = parseJsonSafe(ocPath, {});
     }
-    if (!ocData.providers) ocData.providers = {};
+    // 规范单一 provider 配置并彻底清除 providers 冲突，防止 OpenCode normalization conflict
+    if (ocData.providers && ocData.providers["opencode-go"]) {
+      delete ocData.providers["opencode-go"];
+      if (Object.keys(ocData.providers).length === 0) {
+        delete ocData.providers;
+      }
+    }
     if (!ocData.provider) ocData.provider = {};
-
-    const stdModels = {
-      "deepseek-v4.1-flash": { modelID: "deepseek-v4.1-flash", name: "deepseek-v4.1-flash" },
-      "deepseek-v4-pro": { modelID: "deepseek-v4-pro", name: "deepseek-v4-pro" },
-      "kimi-k3": { modelID: "kimi-k3", name: "kimi-k3" },
-      "qwen3.7-plus": { modelID: "qwen3.7-plus", name: "qwen3.7-plus" },
-      "glm-5.3": { modelID: "glm-5.3", name: "glm-5.3" },
-      "minimax-m3": { modelID: "minimax-m3", name: "minimax-m3" }
-    };
-
-    ocData.providers["opencode-go"] = {
-      name: "opencode-go",
-      package: "aisdk:@ai-sdk/openai-compatible",
-      settings: { baseURL: routerUrl },
-      models: stdModels
-    };
 
     ocData.provider["opencode-go"] = {
       name: "opencode-go",

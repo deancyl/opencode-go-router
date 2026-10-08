@@ -70,8 +70,8 @@ if ($opencodeVer) {
     })
 }
 
-# ----------------- 2. 检测 4010 订阅路由 -----------------
-Write-Host "`n[2/6] 检查 4010 智能网关与账号健康度..." -ForegroundColor Yellow
+# ----------------- 2. 检测 4010 订阅路由与端到端探针 -----------------
+Write-Host "`n[2/6] 检查 4010 智能网关与端到端推理链路..." -ForegroundColor Yellow
 $routerConn = Get-NetTCPConnection -LocalPort $routerPort -State Listen -ErrorAction SilentlyContinue
 if ($routerConn) {
     Write-Host "  ✔ 4010 智能网关正在运行 (PID: $($routerConn.OwningProcess[0]))" -ForegroundColor Green
@@ -90,6 +90,30 @@ if ($routerConn) {
                 FixDesc = "重置网关冷却计时器，立即恢复流量轮询"
             })
         }
+
+        # 端到端推理链路轻量探针 (E2E Completion Probe)
+        Write-Host "    - 正在执行端到端轻量推理握手测试..." -ForegroundColor DarkGray
+        try {
+            $probeBody = @{
+                model = "deepseek-v4.1-flash"
+                messages = @(@{ role = "user"; content = "probe" })
+                max_tokens = 2
+            } | ConvertTo-Json
+            $probeResp = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/v1/chat/completions" -Method Post -Body $probeBody -ContentType "application/json" -Headers @{ Authorization = "Bearer local-router" } -TimeoutSec 5
+            if ($probeResp.choices) {
+                Write-Host "    ✔ 端到端推理握手通过！上游模型极速响应" -ForegroundColor Green
+            } else {
+                Write-Host "    ⚠ 上游响应格式异常" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "    ❌ 端到端推理探针失败: $_" -ForegroundColor Red
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "router_probe_failed"
+                Title = "4010 智能网关上游推理通道不可达或受阻"
+                Severity = "High"
+                FixDesc = "重置账号限频冷却并刷新网关通道"
+            })
+        }
     } catch {
         Write-Host "    ⚠ 网关响应异常: $_" -ForegroundColor Yellow
     }
@@ -103,10 +127,12 @@ if ($routerConn) {
     })
 }
 
-# ----------------- 3. 检测 ConnectionRefused 残留端口 3001 -----------------
-Write-Host "`n[3/6] 检查 OpenCode 配置文件与旧端口残留..." -ForegroundColor Yellow
+# ----------------- 3. 检测 OpenCode 配置文件与配置冲突 -----------------
+Write-Host "`n[3/6] 检查 OpenCode 配置文件与冲突隔离..." -ForegroundColor Yellow
 if (Test-Path $opencodeConfig) {
     $ocContent = Get-Content $opencodeConfig -Raw -Encoding UTF8
+    
+    # 检测 3001 旧端口残留
     if ($ocContent -like "*:3001*") {
         Write-Host "  ❌ 发现旧端口 3001 残留配置 (可能引发 ConnectionRefused)" -ForegroundColor Red
         $issuesFound.Add([PSCustomObject]@{
@@ -119,13 +145,30 @@ if (Test-Path $opencodeConfig) {
         Write-Host "  ✔ 未发现 3001 旧端口冲突残留" -ForegroundColor Green
     }
 
+    # 检测 provider 与 providers 单复数配置冲突 (retained native value 隐患)
+    $hasPlural = ($ocContent -match '"providers"\s*:\s*\{[^}]*"opencode-go"') -or ($ocContent.Contains('"providers"') -and $ocContent.Contains('"opencode-go"'))
+    $hasSingular = ($ocContent -match '"provider"\s*:\s*\{[^}]*"opencode-go"') -or ($ocContent.Contains('"provider"') -and $ocContent.Contains('"opencode-go"'))
+    if ($hasPlural -and $hasSingular) {
+        Write-Host "  ❌ 发现 provider 与 providers 单复数同名配置冲突！" -ForegroundColor Red
+        Write-Host "     (OpenCode 启动将触发 conflict 并自动丢弃 4010 本地网关，回退到直连并导致 ConnectionRefused)" -ForegroundColor Yellow
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "config_conflict"
+            Title = "opencode.jsonc 存在提供商单复数配置冲突"
+            Severity = "High"
+            FixDesc = "自动清洗冲突项，规范化为单一标准 provider 配置"
+        })
+    } else {
+        Write-Host "  ✔ 未发现单复数配置冲突 (规范无歧义)" -ForegroundColor Green
+    }
+
+    # 检测 4010 网关绑定
     if ($ocContent -notlike "*127.0.0.1:4010*") {
         Write-Host "  ⚠ opencode-go 未指向 4010 智能网关" -ForegroundColor Yellow
         $issuesFound.Add([PSCustomObject]@{
             Id = "missing_4010_gateway"
             Title = "opencode.jsonc 中 opencode-go 提供商未绑定本地 4010 网关"
             Severity = "Medium"
-            FixDesc = "添加或修正 opencode-go baseURL 为 http://127.0.0.1:4010/v1"
+            FixDesc = "添加或修正 opencode-go baseURL 为 http://127.0.0.1:4010/v1 并注入 local-router key"
         })
     } else {
         Write-Host "  ✔ opencode-go 已成功绑定 4010 智能网关" -ForegroundColor Green
@@ -179,8 +222,8 @@ if (Test-Path $boostCommand) {
     })
 }
 
-# ----------------- 6. 检测 OpenChamber 工作区 Git 状态 -----------------
-Write-Host "`n[6/6] 检查 OpenChamber 工作区环境..." -ForegroundColor Yellow
+# ----------------- 6. 检测 OpenChamber 工作区环境与服务状态 -----------------
+Write-Host "`n[6/6] 检查 OpenChamber 工作区环境与托管服务状态..." -ForegroundColor Yellow
 if (Test-Path $defaultWorkspace) {
     if (Test-Path (Join-Path $defaultWorkspace ".git")) {
         Write-Host "  ✔ 工作区 $defaultWorkspace 已初始化 Git 版本库" -ForegroundColor Green
@@ -195,6 +238,30 @@ if (Test-Path $defaultWorkspace) {
     }
 } else {
     Write-Host "  ℹ 默认工作区目录尚未创建: $defaultWorkspace" -ForegroundColor DarkGray
+}
+
+# 检查 OpenChamber 及其托管的 opencode.exe 是否加载了陈旧配置
+$chamberProcs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
+$managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+    try {
+        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine
+        $cmd -like "*serve*--hostname*127.0.0.1*"
+    } catch { $false }
+}
+if ($chamberProcs -and $managedOpencode) {
+    Write-Host "  ✔ OpenChamber 桌面端正在运行 (托管 OpenCode PID: $($managedOpencode.Id))" -ForegroundColor Green
+    if (Test-Path $opencodeConfig) {
+        $cfgMtime = (Get-Item $opencodeConfig).LastWriteTime
+        if ($cfgMtime -gt $managedOpencode[0].StartTime) {
+            Write-Host "  ⚠ opencode.jsonc 在服务启动后被修改，托管实例可能加载了陈旧配置" -ForegroundColor Yellow
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "stale_opencode_process"
+                Title = "OpenChamber 托管的 OpenCode 运行中但配置未重载"
+                Severity = "Medium"
+                FixDesc = "平滑重启托管服务或 OpenChamber 桌面端以加载最新配置"
+            })
+        }
+    }
 }
 
 # ----------------- 结果汇总与修复决策 -----------------
@@ -246,6 +313,52 @@ foreach ($iss in $issuesFound) {
             Set-Content -Path $opencodeConfig -Value $fixed -Encoding UTF8
             Write-Host "    ✔ 3001 端口已成功重定向至 $routerPort 网关" -ForegroundColor Green
         }
+        "config_conflict" {
+            Write-Host " -> 正在清洗 opencode.jsonc 中的单复数冲突项..." -ForegroundColor Yellow
+            try {
+                $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
+                $json = $raw | ConvertFrom-Json
+                if ($json.PSObject.Properties['providers'] -and $json.providers.PSObject.Properties['opencode-go']) {
+                    $json.providers.PSObject.Properties.Remove('opencode-go')
+                    if ($json.providers.PSObject.Properties.Count -eq 0) {
+                        $json.PSObject.Properties.Remove('providers')
+                    }
+                }
+                if (-not $json.provider) {
+                    $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
+                }
+                if (-not $json.provider.'opencode-go') {
+                    $goProv = [PSCustomObject]@{
+                        name = "opencode-go"
+                        npm = "@ai-sdk/openai-compatible"
+                        options = [PSCustomObject]@{
+                            baseURL = "http://127.0.0.1:$routerPort/v1"
+                            apiKey = "local-router"
+                        }
+                        models = [PSCustomObject]@{
+                            "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
+                            "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
+                            "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
+                            "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
+                            "glm-5.3" = [PSCustomObject]@{ name = "glm-5.3" }
+                            "minimax-m3" = [PSCustomObject]@{ name = "minimax-m3" }
+                        }
+                    }
+                    $json.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
+                } else {
+                    if (-not $json.provider.'opencode-go'.options) {
+                        $json.provider.'opencode-go' | Add-Member -NotePropertyName "options" -NotePropertyValue (New-Object PSObject)
+                    }
+                    $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
+                    $json.provider.'opencode-go'.options.apiKey = "local-router"
+                }
+                $json.model = "opencode-go/deepseek-v4.1-flash"
+                Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
+                Write-Host "    ✔ 冲突项已彻底清除，已规范为统一标准 provider 链路" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 清洗失败: $_" -ForegroundColor Red
+            }
+        }
         "missing_opencode_config" {
             Write-Host " -> 正在创建标准 opencode.jsonc 配置文件..." -ForegroundColor Yellow
             $ocDir = Split-Path $opencodeConfig -Parent
@@ -253,6 +366,7 @@ foreach ($iss in $issuesFound) {
             $defaultConfig = @{
                 plugin = @("oh-my-openagent@5.1.22", "opencode-goal-plugin")
                 "`$schema" = "https://opencode.ai/config.json"
+                model = "opencode-go/deepseek-v4.1-flash"
                 provider = @{
                     "opencode-go" = @{
                         name = "opencode-go"
@@ -262,10 +376,10 @@ foreach ($iss in $issuesFound) {
                             apiKey = "local-router"
                         }
                         models = @{
-                            "kimi-k3" = @{ name = "kimi-k3" }
-                            "qwen3.7-plus" = @{ name = "qwen3.7-plus" }
                             "deepseek-v4.1-flash" = @{ name = "deepseek-v4.1-flash" }
                             "deepseek-v4-pro" = @{ name = "deepseek-v4-pro" }
+                            "kimi-k3" = @{ name = "kimi-k3" }
+                            "qwen3.7-plus" = @{ name = "qwen3.7-plus" }
                             "glm-5.3" = @{ name = "glm-5.3" }
                             "minimax-m3" = @{ name = "minimax-m3" }
                         }
@@ -280,14 +394,22 @@ foreach ($iss in $issuesFound) {
             try {
                 $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
                 $json = $raw | ConvertFrom-Json
+                # 清洗冲突项
+                if ($json.PSObject.Properties['providers'] -and $json.providers.PSObject.Properties['opencode-go']) {
+                    $json.providers.PSObject.Properties.Remove('opencode-go')
+                    if ($json.providers.PSObject.Properties.Count -eq 0) {
+                        $json.PSObject.Properties.Remove('providers')
+                    }
+                }
                 if (-not $json.provider) {
                     $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
                 }
                 if ($json.provider.'opencode-go') {
-                    $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
-                    if (-not $json.provider.'opencode-go'.options.apiKey) {
-                        $json.provider.'opencode-go'.options.apiKey = "local-router"
+                    if (-not $json.provider.'opencode-go'.options) {
+                        $json.provider.'opencode-go' | Add-Member -NotePropertyName "options" -NotePropertyValue (New-Object PSObject)
                     }
+                    $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
+                    $json.provider.'opencode-go'.options.apiKey = "local-router"
                 } else {
                     $goProv = [PSCustomObject]@{
                         name = "opencode-go"
@@ -297,19 +419,47 @@ foreach ($iss in $issuesFound) {
                             apiKey = "local-router"
                         }
                         models = [PSCustomObject]@{
-                            "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
-                            "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
                             "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
                             "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
+                            "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
+                            "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
+                            "glm-5.3" = [PSCustomObject]@{ name = "glm-5.3" }
+                            "minimax-m3" = [PSCustomObject]@{ name = "minimax-m3" }
                         }
                     }
                     $json.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
                 }
+                $json.model = "opencode-go/deepseek-v4.1-flash"
                 Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
-                Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 (未影响其他服务商)" -ForegroundColor Green
+                Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 (无冲突纯净配置)" -ForegroundColor Green
             } catch {
                 Write-Host "    ⚠ 更新失败: $_" -ForegroundColor Red
             }
+        }
+        "stale_opencode_process" {
+            Write-Host " -> 正在平滑重启 OpenChamber 托管进程以加载最新配置..." -ForegroundColor Yellow
+            try {
+                $managedProcs = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+                    try {
+                        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine
+                        $cmd -like "*serve*--hostname*127.0.0.1*"
+                    } catch { $false }
+                }
+                if ($managedProcs) {
+                    $managedProcs | Stop-Process -Force
+                    Start-Sleep -Seconds 2
+                    Write-Host "    ✔ 托管进程已安全终止，OpenChamber 将自动重载全新配置" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ 平滑重载失败: $_" -ForegroundColor Yellow
+            }
+        }
+        "router_probe_failed" {
+            Write-Host " -> 正在尝试恢复 4010 智能网关..." -ForegroundColor Yellow
+            try {
+                Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/balancer/api/reset-cooldown" -Method Post -TimeoutSec 2 | Out-Null
+                Write-Host "    ✔ 已重置限频冷却" -ForegroundColor Green
+            } catch {}
         }
         "missing_omo_config" {
             Write-Host " -> 正在生成标准 OMO 配置文件..." -ForegroundColor Yellow

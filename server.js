@@ -346,27 +346,14 @@ function bindDesktopConfig() {
       cfg = parseJsonSafe(opencodeJsonPath, {});
     }
 
-    const standardModels = {
-      'deepseek-v4.1-flash': { modelID: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' },
-      'deepseek-v4-pro': { modelID: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
-      'kimi-k3': { modelID: 'kimi-k3', name: 'kimi-k3' },
-      'qwen3.7-plus': { modelID: 'qwen3.7-plus', name: 'qwen3.7-plus' },
-      'glm-5.3': { modelID: 'glm-5.3', name: 'glm-5.3' },
-      'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
-    };
+    // 确保规范单一的 provider 配置，彻底清除 providers 冲突，防止 OpenCode 报错 retained native value
+    if (cfg.providers && cfg.providers['opencode-go']) {
+      delete cfg.providers['opencode-go'];
+      if (Object.keys(cfg.providers).length === 0) {
+        delete cfg.providers;
+      }
+    }
 
-    // OpenCode v2 standard plural 'providers'
-    if (!cfg.providers) cfg.providers = {};
-    cfg.providers['opencode-go'] = {
-      name: 'opencode-go',
-      package: 'aisdk:@ai-sdk/openai-compatible',
-      settings: {
-        baseURL: routerUrl
-      },
-      models: standardModels
-    };
-
-    // Backwards compatible singular 'provider'
     if (!cfg.provider) cfg.provider = {};
     cfg.provider['opencode-go'] = {
       name: 'opencode-go',
@@ -904,6 +891,20 @@ function runSystemDoctor() {
       const raw = fs.readFileSync(report.opencodeConfig.path, 'utf8');
       report.opencodeConfig.hasDeadPort3001 = raw.includes(':3001');
       report.opencodeConfig.hasRouterEndpoint = raw.includes(`127.0.0.1:${config.port}`) || raw.includes(':4010');
+      
+      // 检测 provider 与 providers 冲突 (OpenCode normalization conflict)
+      const hasPlural = /"providers"\s*:\s*\{[^}]*"opencode-go"/s.test(raw) || (raw.includes('"providers"') && raw.includes('"opencode-go"'));
+      const hasSingular = /"provider"\s*:\s*\{[^}]*"opencode-go"/s.test(raw) || (raw.includes('"provider"') && raw.includes('"opencode-go"'));
+      report.opencodeConfig.hasConflict = hasPlural && hasSingular;
+
+      if (report.opencodeConfig.hasConflict) {
+        report.issues.push({
+          id: 'config_conflict',
+          severity: 'high',
+          title: 'opencode.jsonc 存在单复数提供商配置冲突',
+          desc: '同时存在 provider 与 providers 会触发 OpenCode 冲突诊断并丢弃网关设置，可一键自动清除冲突'
+        });
+      }
       if (report.opencodeConfig.hasDeadPort3001) {
         report.issues.push({ id: 'dead_port_3001', severity: 'high', title: '检测到旧残留端口 3001', desc: '配置文件中仍有请求指向 3001 导致 ConnectionRefused，可一键重定向至 4010 网关' });
       }
@@ -1017,14 +1018,13 @@ function executeSystemRepair() {
         'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
       };
 
-      ocData.providers['opencode-go'] = {
-        name: 'opencode-go',
-        package: 'aisdk:@ai-sdk/openai-compatible',
-        settings: {
-          baseURL: routerUrl
-        },
-        models: standardModels
-      };
+      // 关键自愈：彻底清理复数 providers 中的冲突项，防止 OpenCode 触发 conflict 导致丢弃本地网关
+      if (ocData.providers && ocData.providers['opencode-go']) {
+        delete ocData.providers['opencode-go'];
+        if (Object.keys(ocData.providers).length === 0) {
+          delete ocData.providers;
+        }
+      }
 
       if (!ocData.provider['opencode-go']) {
         ocData.provider['opencode-go'] = {
@@ -1035,10 +1035,10 @@ function executeSystemRepair() {
             apiKey: 'local-router'
           },
           models: {
-            'kimi-k3': { name: 'kimi-k3' },
-            'qwen3.7-plus': { name: 'qwen3.7-plus' },
             'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' },
             'deepseek-v4-pro': { name: 'deepseek-v4-pro' },
+            'kimi-k3': { name: 'kimi-k3' },
+            'qwen3.7-plus': { name: 'qwen3.7-plus' },
             'glm-5.3': { name: 'glm-5.3' },
             'minimax-m3': { name: 'minimax-m3' }
           }

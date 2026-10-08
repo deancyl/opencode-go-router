@@ -196,6 +196,13 @@ function Step-SetupRouter {
                 provider = [PSCustomObject]@{}
             }
         }
+        # 关键自愈：彻底清理复数 providers 中的冲突项，防止 OpenCode 触发 conflict 导致丢弃本地网关
+        if ($ocObj.PSObject.Properties['providers'] -and $ocObj.providers.PSObject.Properties['opencode-go']) {
+            $ocObj.providers.PSObject.Properties.Remove('opencode-go')
+            if ($ocObj.providers.PSObject.Properties.Count -eq 0) {
+                $ocObj.PSObject.Properties.Remove('providers')
+            }
+        }
         if (-not $ocObj.provider) {
             $ocObj | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
         }

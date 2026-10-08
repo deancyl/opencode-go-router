@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v1.3.1](https://img.shields.io/badge/Version-v1.3.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v1.3.2](https://img.shields.io/badge/Version-v1.3.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -302,6 +302,20 @@ npm run build:exe
 
 ---
 
-## 九、开源许可
+## 九、版本历史与更新记录
+
+### 🚀 v1.3.2 (当前版本)
+- **彻底解决 OpenCode 配置冲突与 ConnectionRefused 致命隐患**：
+  - 深入排查并清除了 `provider`（单数）与 `providers`（复数）同时存在时触发的 `configuration normalization diagnostic: path=$.providers.opencode-go kind=conflict action="retained native value over legacy value"` 冲突；
+  - 规范统一采用标准单一 `provider` 结构，消除因配置冲突导致 OpenCode 回退直连官方、遭系统代理阻断并报 `ConnectionRefused` 的根因。
+- **全链路体检与自愈系统 (Doctor Engine) 重大升级**：
+  - **冲突检测与一键自愈**：自动检测 `opencode.jsonc` 中的单复数配置冲突，一键清理冗余冲突键，恢复纯净配置；
+  - **端到端轻量推理探针 (E2E Completion Probe)**：不仅检测网关端口，更直接模拟真实请求校验上游通道（如 `deepseek-v4.1-flash`），确保毫秒级链路通畅；
+  - **OpenChamber 托管实例陈旧状态检测与热重载**：检测 OpenChamber 内嵌的 `opencode serve` 进程是否与最新配置脱节，支持平滑重启托管服务或桌面端，彻底终结“修改配置后前端界面卡死在 Retrying in 9s (attempt 10)”的困局。
+- **全端同步**：`doctor-repair.ps1`、`setup-wizard.ps1`、`server.js`、`setup-linux.sh` 全面对齐自愈逻辑。
+
+---
+
+## 十、开源许可
 
 本项目基于 [MIT License](LICENSE) 许可协议开源。
