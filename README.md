@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v1.3.2](https://img.shields.io/badge/Version-v1.3.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v1.3.3](https://img.shields.io/badge/Version-v1.3.3-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -304,7 +304,15 @@ npm run build:exe
 
 ## 九、版本历史与更新记录
 
-### 🚀 v1.3.2 (当前版本)
+### 🚀 v1.3.3 (当前版本)
+- **深度根治 OpenChamber 桌面端打不开 / 无法启动 / 秒退痛点**：
+  - **定位 Electron SingleInstanceLock 死锁机理**：OpenChamber 底层依赖 Electron `app.requestSingleInstanceLock()` 机制防多开；当后台残留隐藏/无界面的僵死 OpenChamber 进程（`MainWindowHandle == 0`）时，新启动的桌面端实例检测到互斥锁已被占，会静默退出（ExitCode 0），导致双击图标无任何响应；
+  - **进程健康状态与僵死检测纳入 Doctor 体系**：在 `doctor-repair.ps1` 与 `server.js` 的 `/balancer/api/doctor` 接口中全面增加 `openchamber_ghost_process` 检测。遍历 Windows 进程表，当发现所有 OpenChamber 实例均为无窗口僵死状态时，自动标红告警并提供释放方案；
+  - **孤立内嵌服务残留清理**：检测 OpenChamber 退出后滞留在后台的孤立 `opencode serve --hostname 127.0.0.1` 进程并提供释放方案，防止端口争用与陈旧配置混淆；
+  - **一键极速自愈与单实例锁释放**：在 `doctor-repair.ps1 -AutoFix` 及 Web 控制台【一键自动修复】（`/balancer/api/repair`）中，自动强力终止后台僵死进程并清理孤立进程，瞬间释放单实例互斥锁，彻底恢复桌面端双击秒开体验；
+  - **Web 管理面板实时联动**：在诊断面板顶栏实时呈现 OpenChamber 的桌面运行状态（`✔ 运行中`、`❌ 僵死死锁`、`未运行`）。
+
+### 🚀 v1.3.2
 - **彻底解决 OpenCode 配置冲突与 ConnectionRefused 致命隐患**：
   - 深入排查并清除了 `provider`（单数）与 `providers`（复数）同时存在时触发的 `configuration normalization diagnostic: path=$.providers.opencode-go kind=conflict action="retained native value over legacy value"` 冲突；
   - 规范统一采用标准单一 `provider` 结构，消除因配置冲突导致 OpenCode 回退直连官方、遭系统代理阻断并报 `ConnectionRefused` 的根因。

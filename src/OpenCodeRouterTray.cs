@@ -37,6 +37,14 @@ namespace OpenCodeRouter
             }
 
             icoPath = Path.Combine(rootDir, "assets", "router.ico");
+            string logPath = Path.Combine(rootDir, "tray.log");
+
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => {
+                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] UnhandledException: " + e.ExceptionObject + "\r\n"); } catch { }
+            };
+            Application.ThreadException += (s, e) => {
+                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] ThreadException: " + e.Exception + "\r\n"); } catch { }
+            };
 
             // Single instance check
             bool createdNew;

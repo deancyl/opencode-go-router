@@ -240,7 +240,7 @@ if (Test-Path $defaultWorkspace) {
     Write-Host "  ℹ 默认工作区目录尚未创建: $defaultWorkspace" -ForegroundColor DarkGray
 }
 
-# 检查 OpenChamber 及其托管的 opencode.exe 是否加载了陈旧配置
+# 检查 OpenChamber 进程状态、无界面僵死死锁与托管实例
 $chamberProcs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
 $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
     try {
@@ -248,19 +248,53 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
         $cmd -like "*serve*--hostname*127.0.0.1*"
     } catch { $false }
 }
-if ($chamberProcs -and $managedOpencode) {
-    Write-Host "  ✔ OpenChamber 桌面端正在运行 (托管 OpenCode PID: $($managedOpencode.Id))" -ForegroundColor Green
-    if (Test-Path $opencodeConfig) {
-        $cfgMtime = (Get-Item $opencodeConfig).LastWriteTime
-        if ($cfgMtime -gt $managedOpencode[0].StartTime) {
-            Write-Host "  ⚠ opencode.jsonc 在服务启动后被修改，托管实例可能加载了陈旧配置" -ForegroundColor Yellow
-            $issuesFound.Add([PSCustomObject]@{
-                Id = "stale_opencode_process"
-                Title = "OpenChamber 托管的 OpenCode 运行中但配置未重载"
-                Severity = "Medium"
-                FixDesc = "平滑重启托管服务或 OpenChamber 桌面端以加载最新配置"
-            })
+
+if ($chamberProcs) {
+    $hasWindow = $false
+    foreach ($p in $chamberProcs) {
+        if ($p.MainWindowHandle -ne 0) {
+            $hasWindow = $true
+            break
         }
+    }
+    if (-not $hasWindow) {
+        Write-Host "  ❌ 发现 OpenChamber 后台无界面僵死进程 ($($chamberProcs.Count) 个实例)" -ForegroundColor Red
+        Write-Host "     (正死锁 Electron SingleInstanceLock 单实例互斥锁，导致桌面双击图标无法打开或闪退)" -ForegroundColor Yellow
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "openchamber_ghost_process"
+            Title = "OpenChamber 后台无窗口僵死进程死锁单实例锁（导致桌面打不开）"
+            Severity = "High"
+            FixDesc = "彻底清理所有后台残留僵死进程并释放单实例锁，恢复桌面正常秒开"
+        })
+    } else {
+        Write-Host "  ✔ OpenChamber 桌面客户端主窗口正常呈现" -ForegroundColor Green
+    }
+
+    if ($managedOpencode) {
+        Write-Host "  ✔ OpenChamber 托管 OpenCode 实例正常运行 (PID: $($managedOpencode.Id))" -ForegroundColor Green
+        if (Test-Path $opencodeConfig) {
+            $cfgMtime = (Get-Item $opencodeConfig).LastWriteTime
+            if ($cfgMtime -gt $managedOpencode[0].StartTime) {
+                Write-Host "  ⚠ opencode.jsonc 在服务启动后被修改，托管实例可能加载了陈旧配置" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "stale_opencode_process"
+                    Title = "OpenChamber 托管的 OpenCode 运行中但配置未重载"
+                    Severity = "Medium"
+                    FixDesc = "平滑重启托管服务或 OpenChamber 桌面端以加载最新配置"
+                })
+            }
+        }
+    }
+} else {
+    Write-Host "  ℹ OpenChamber 桌面端未运行 (无单实例锁占用，可直接在桌面双击启动)" -ForegroundColor DarkGray
+    if ($managedOpencode) {
+        Write-Host "  ⚠ 发现 OpenChamber 已退出但残留孤立 opencode 托管进程 (PID: $($managedOpencode.Id))" -ForegroundColor Yellow
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "orphan_opencode_process"
+            Title = "OpenCode 孤立后台托管进程残留占用端口"
+            Severity = "Medium"
+            FixDesc = "清理孤立残留进程，防止后续端口争用"
+        })
     }
 }
 
@@ -434,6 +468,38 @@ foreach ($iss in $issuesFound) {
                 Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 (无冲突纯净配置)" -ForegroundColor Green
             } catch {
                 Write-Host "    ⚠ 更新失败: $_" -ForegroundColor Red
+            }
+        }
+        "openchamber_ghost_process" {
+            Write-Host " -> 正在清理后台僵死 OpenChamber 进程并释放单实例互斥锁..." -ForegroundColor Yellow
+            try {
+                Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue | Stop-Process -Force
+                # 同步清理悬挂的托管 opencode 进程
+                Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+                    try {
+                        (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine -like "*serve*--hostname*127.0.0.1*"
+                    } catch { $false }
+                } | Stop-Process -Force
+                Start-Sleep -Seconds 1
+                Write-Host "    ✔ 后台僵死进程已全部清除，单实例锁已释放，现在可在桌面正常双击启动" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 清理失败: $_" -ForegroundColor Red
+            }
+        }
+        "orphan_opencode_process" {
+            Write-Host " -> 正在清理残留的孤立 OpenCode 托管进程..." -ForegroundColor Yellow
+            try {
+                $managedProcs = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+                    try {
+                        (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine -like "*serve*--hostname*127.0.0.1*"
+                    } catch { $false }
+                }
+                if ($managedProcs) {
+                    $managedProcs | Stop-Process -Force
+                    Write-Host "    ✔ 孤立进程已成功终止，端口已释放" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ 清理失败: $_" -ForegroundColor Red
             }
         }
         "stale_opencode_process" {

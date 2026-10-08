@@ -830,7 +830,7 @@ function runSystemDoctor() {
       })
     },
     opencode: { installed: false, version: null, path: null, error: null },
-    openchamber: { reachable: false, error: null },
+    openchamber: { reachable: false, ghost: false, error: null },
     opencodeConfig: {
       exists: false,
       path: path.join(process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode'), 'opencode.jsonc'),
@@ -882,6 +882,58 @@ function runSystemDoctor() {
     }
   } catch (e) {
     report.openchamber.error = e.message;
+  }
+
+  // 1.6 Check OpenChamber Windows Ghost Process & SingleInstanceLock Deadlock
+  if (process.platform === 'win32') {
+    try {
+      const psCheck = `
+$chamberProcs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
+$hasChamber = [bool]$chamberProcs
+$hasWindow = $false
+if ($chamberProcs) {
+  foreach ($p in $chamberProcs) {
+    if ($p.MainWindowHandle -ne 0) { $hasWindow = $true; break }
+  }
+}
+$managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+  try {
+    (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine -like "*serve*--hostname*127.0.0.1*"
+  } catch { $false }
+}
+[PSCustomObject]@{
+  HasChamber = $hasChamber
+  HasWindow = $hasWindow
+  ChamberCount = if ($chamberProcs) { $chamberProcs.Count } else { 0 }
+  HasManagedOpencode = [bool]$managedOpencode
+} | ConvertTo-Json -Compress
+`;
+      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCheck.replace(/\\r?\\n/g, ' ')}"`, {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      }).trim();
+      if (out) {
+        const procState = JSON.parse(out);
+        if (procState.HasChamber && !procState.HasWindow) {
+          report.openchamber.ghost = true;
+          report.issues.push({
+            id: 'openchamber_ghost_process',
+            severity: 'high',
+            title: 'OpenChamber 后台无窗口僵死进程死锁单实例锁（导致桌面打不开）',
+            desc: `检测到 ${procState.ChamberCount} 个后台无界面进程霸占 Electron SingleInstanceLock，导致桌面双击图标无法打开或闪退，可一键自动清理释放互斥锁`
+          });
+        }
+        if (!procState.HasChamber && procState.HasManagedOpencode) {
+          report.issues.push({
+            id: 'orphan_opencode_process',
+            severity: 'medium',
+            title: 'OpenCode 孤立后台托管进程残留占用端口',
+            desc: 'OpenChamber 退出后残留孤立 opencode serve 进程占用端口，可一键清理'
+          });
+        }
+      }
+    } catch (e) {}
   }
 
   // 2. Check opencode.jsonc
@@ -1158,6 +1210,54 @@ $ARGUMENTS
       results.push({ item: 'Workspace Git', success: true, message: `已在 ${wsPath} 初始化 Git 仓库` });
     } catch (e) {
       results.push({ item: 'Workspace Git', success: false, message: 'Git 初始化失败: ' + e.message });
+    }
+  }
+
+  // 6. Windows: Clean OpenChamber ghost processes & orphan OpenCode instances
+  if (process.platform === 'win32') {
+    try {
+      const psCleanup = `
+$ghostFound = $false
+$chamberProcs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
+if ($chamberProcs) {
+  $hasWindow = $false
+  foreach ($p in $chamberProcs) {
+    if ($p.MainWindowHandle -ne 0) { $hasWindow = $true; break }
+  }
+  if (-not $hasWindow) {
+    $chamberProcs | Stop-Process -Force
+    $ghostFound = $true
+  }
+}
+$orphanProcs = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+  try {
+    (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine -like "*serve*--hostname*127.0.0.1*"
+  } catch { $false }
+}
+$orphanFound = [bool]$orphanProcs
+if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
+  if ($orphanProcs) { $orphanProcs | Stop-Process -Force }
+}
+[PSCustomObject]@{ GhostKilled = $ghostFound; OrphanKilled = $orphanFound } | ConvertTo-Json -Compress
+`;
+      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCleanup.replace(/\\r?\\n/g, ' ')}"`, {
+        encoding: 'utf8',
+        timeout: 4000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      }).trim();
+      if (out) {
+        const res = JSON.parse(out);
+        if (res.GhostKilled) {
+          results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已彻底终止后台僵死进程并释放单实例互斥锁，恢复桌面秒开' });
+        } else {
+          results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已校验单实例互斥锁状态健康（无僵死锁死）' });
+        }
+        if (res.OrphanKilled) {
+          results.push({ item: 'Orphan OpenCode Cleanup', success: true, message: '已清理孤立残留的 OpenCode 托管后台进程' });
+        }
+      }
+    } catch (e) {
+      results.push({ item: 'OpenChamber SingleInstanceLock', success: false, message: '清理进程异常: ' + e.message });
     }
   }
 
@@ -2406,9 +2506,10 @@ const server = http.createServer((req, res) => {
         const res = await fetch('/balancer/api/doctor', { headers: apiHeaders() });
         const doc = await res.json();
         let html = \`
-          <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+          <div style="margin-bottom:8px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
             <span><strong>OpenCode CLI:</strong> \${doc.opencode.installed ? '<span style="color:var(--success)">✔ ' + doc.opencode.version + '</span>' : '<span style="color:var(--warning)">⚠ 未找到</span>'}</span>
             <span><strong>路由端口:</strong> <span style="color:var(--success)">✔ \${doc.router.port}</span></span>
+            <span><strong>OpenChamber:</strong> \${doc.openchamber.reachable ? '<span style="color:var(--success)">✔ 运行中</span>' : (doc.openchamber.ghost ? '<span style="color:var(--danger)">❌ 僵死死锁</span>' : '<span style="color:var(--muted)">未运行</span>')}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
           </div>
         \`;

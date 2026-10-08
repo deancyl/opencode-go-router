@@ -1,6 +1,6 @@
 {
   "name": "opencode-go-router",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "OpenCode Go Multi-Subscription Smart Router, Load Balancer, Tray Daemon & Setup Wizard for Windows, Linux & NAS",
   "main": "server.js",
   "scripts": {
