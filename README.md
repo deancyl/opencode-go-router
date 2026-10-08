@@ -31,7 +31,18 @@
    - 采用 Edge `--app=...` 独立无边框应用模式唤出 Web 监控后台 (`http://127.0.0.1:4010/balancer/ui`)。
    - 具备单实例互斥锁 (`Global\OpenCodeRouterTrayMutex`)，重复双击直接激活已有界面。
 
-4. **模块化分步向导 (`OpenCodeWizard.exe` / `setup-wizard.ps1`)**：
+4. **官方配额三维立体可视化 (Quota Limits)**：
+   - 直连 OpenCode 官方配额 API (`/zen/go/v1/usage`)，在管理后台每个账号卡片中直接呈现。
+   - **5小时滑动限制 (5h Rolling)**、**周累计限额 (Weekly)** 与 **月累计限额 (Monthly)** 实时百分比进度条。
+   - 智能预警色（<70% 翠绿健康、70%-90% 警示橙、>90% 高危红），并精确计算各窗口额度恢复与重置倒计时。
+   - 测速时联动自动刷新，支持一键独立刷新各账号配额。
+
+5. **一键桌面客户端应用绑定 (Desktop Auto-Binding)**：
+   - 控制台顶栏与系统托盘右键菜单均支持 **【⚡ 一键应用至 OpenCode / OpenChamber】**。
+   - 自动写入 `~/.config/opencode/opencode.jsonc` 与 `~/.config/openchamber/preferences.json`。
+   - 全局首选模型自动锁定为本地 4010 智能网关下的 `opencode-go/deepseek-v4.1-flash`，常用模型备选 `kimi-k3`，彻底消除手动配置繁琐。
+
+6. **模块化分步向导 (`OpenCodeWizard.exe` / `setup-wizard.ps1`)**：
    - 允许用户**自由选择**配置到哪一步，支持单步执行或全自动执行：
      - **[1]** 协助下载并安装 OpenCode v2 核心 CLI
      - **[2]** 配置并部署 4010 订阅管理工具 (双账号轮询与托盘守护)
@@ -41,7 +52,7 @@
      - **[6]** 🚀 全栈一键自动配置 (依次完成上述所有步骤)
      - **[7]** 🩺 系统全链路健康体检与异常一键修复 (Doctor & Auto-Repair)
 
-5. **全自动健康体检与已知故障自愈 (`doctor-repair.ps1`)**：
+7. **全自动健康体检与已知故障自愈 (`doctor-repair.ps1`)**：
    - 内置针对历史典型疑难杂症的诊断与一键修复引擎：
      - **`ConnectionRefused`**：自动识别 `opencode.jsonc` 中旧残留端口（如 3001），重定向至 4010 本地网关。
      - **`Proxy error reaching upstream: socket hang up`**：校验并注入必选的 `x-opencode-session` 请求头，修正连接关闭生命周期监听。
