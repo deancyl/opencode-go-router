@@ -1055,12 +1055,15 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     const updater = require('./updater');
     const localVers = updater.detectLocalVersions();
     report.components = localVers;
-    if (localVers['oh-my-openagent'] && updater.compareSemver('5.1.24', localVers['oh-my-openagent']) > 0) {
-      report.issues.push({
-        id: 'omo_update_available',
-        severity: 'low',
-        title: `Oh My OpenAgent 插件存在新版本 (v${localVers['oh-my-openagent']} -> v5.1.24)`,
-        desc: '可在更新管理面板中一键同步升级插件以获得最新多智能体调度特性'
+    const compat = updater.analyzeCompatibility(localVers, null);
+    if (compat.warnings && compat.warnings.length > 0) {
+      compat.warnings.forEach(w => {
+        report.issues.push({
+          id: `compat_${w.component}_${w.level}`,
+          severity: w.level === 'critical' ? 'high' : (w.level === 'warning' ? 'medium' : 'low'),
+          title: w.title,
+          desc: w.desc
+        });
       });
     }
   } catch (e) {}
@@ -1962,6 +1965,7 @@ const server = http.createServer((req, res) => {
       }
       updater.applyUpdates(payload.components || null, payload).then((results) => {
         loadConfig();
+        syncAccountStats();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(results, null, 2));
       }).catch((err) => {
@@ -1985,6 +1989,7 @@ const server = http.createServer((req, res) => {
         }
         const results = updater.rollbackSnapshot(payload.snapshotId || null, payload);
         loadConfig();
+        syncAccountStats();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(results, null, 2));
       } catch (err) {
@@ -2990,23 +2995,34 @@ const server = http.createServer((req, res) => {
           '<table class="update-table">' +
             '<thead>' +
               '<tr>' +
+                '<th style="width:36px; text-align:center;"><input type="checkbox" id="update-select-all" title="全选/全不选" onchange="toggleAllUpdateCheckboxes(this.checked)"></th>' +
                 '<th>组件名称与定位</th>' +
                 '<th>本地当前版本</th>' +
                 '<th>官方最新版本</th>' +
                 '<th>状态诊断</th>' +
+                '<th style="width:110px; text-align:center;">操作</th>' +
               '</tr>' +
             '</thead>' +
             '<tbody>';
 
         report.components.forEach(function(c) {
-          const stBadge = c.hasUpdate
-            ? '<span class="badge-update badge-warn">待更新 (v' + c.latest + ')</span>'
-            : '<span class="badge-update badge-ok">已是最新 (v' + c.current + ')</span>';
+          let stBadge = '';
+          if (c.status === 'offline_or_error') {
+            stBadge = '<span class="badge-update badge-danger" title="' + (c.error || '') + '">网络受限/失败</span>';
+          } else if (c.hasUpdate) {
+            stBadge = '<span class="badge-update badge-warn">待更新 (v' + c.latest + ')</span>';
+          } else {
+            stBadge = '<span class="badge-update badge-ok">已是最新 (v' + c.current + ')</span>';
+          }
+
+          const checkedAttr = c.hasUpdate ? 'checked' : '';
           html += '<tr>' +
+            '<td style="text-align:center;"><input type="checkbox" class="update-comp-cb" value="' + c.id + '" ' + checkedAttr + '></td>' +
             '<td><div style="font-weight:600; color:var(--text);">' + c.name + '</div><div style="color:var(--muted); font-size:0.75rem;">' + c.desc + '</div></td>' +
             '<td style="font-family:monospace; font-weight:600; color:' + (c.current === '未知' ? 'var(--muted)' : 'var(--text)') + ';">' + c.current + '</td>' +
-            '<td style="font-family:monospace; font-weight:600; color:var(--primary);">' + c.latest + '</td>' +
+            '<td style="font-family:monospace; font-weight:600; color:' + (c.hasUpdate ? 'var(--primary)' : 'var(--muted)') + ';">' + c.latest + '</td>' +
             '<td>' + stBadge + '</td>' +
+            '<td style="text-align:center;"><button class="btn btn-secondary btn-sm" onclick="applySingleUpdate(\'' + c.id + '\')">单独升级</button></td>' +
           '</tr>';
         });
 
@@ -3038,6 +3054,18 @@ const server = http.createServer((req, res) => {
       }
     }
 
+    function toggleAllUpdateCheckboxes(checked) {
+      const cbs = document.querySelectorAll('.update-comp-cb');
+      cbs.forEach(function(cb) { cb.checked = checked; });
+    }
+
+    async function applySingleUpdate(compId) {
+      const comp = lastUpdateReport && lastUpdateReport.components.find(function(c) { return c.id === compId; });
+      const name = comp ? comp.name : compId;
+      if (!confirm('⚠️ 确认要单独升级【' + name + '】吗？\n\n系统将在升级前自动创建灾备快照。')) return;
+      await executeApplyUpdates([compId]);
+    }
+
     async function applyUpdatesClick() {
       if (!lastUpdateReport) {
         showToast('请先点击【检查最新版本】完成兼容性扫描！', true);
@@ -3045,36 +3073,52 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const pendingUpdates = lastUpdateReport.components.filter(function(c) { return c.hasUpdate; });
-      if (pendingUpdates.length === 0) {
-        const proceed = confirm('当前所有组件均为最新版本！是否仍要强制重新校验与刷新所有组件？');
-        if (!proceed) return;
-      } else {
-        let msg = '即将更新以下组件：\n' + pendingUpdates.map(function(c) { return '• ' + c.name + ' (' + c.current + ' -> ' + c.latest + ')'; }).join('\n') + '\n\n';
-        if (lastUpdateReport.compatibility.riskLevel === 'critical') {
-          msg += '🛑 警告：检测到存在跨大版本更新或生态变动风险！\n系统已启用自动快照备份，若更新后出现异常可秒级一键回滚。\n\n是否确认继续一键更新？';
-        } else if (lastUpdateReport.compatibility.riskLevel === 'warning') {
-          msg += '⚠️ 提示：系统将在更新前自动创建全量灾备快照。\n\n是否确认执行一键更新？';
+      const cbs = Array.from(document.querySelectorAll('.update-comp-cb:checked')).map(function(cb) { return cb.value; });
+      let targets = cbs;
+      if (targets.length === 0) {
+        const pending = lastUpdateReport.components.filter(function(c) { return c.hasUpdate; }).map(function(c) { return c.id; });
+        if (pending.length === 0) {
+          const proceed = confirm('当前勾选列表为空，且所有组件均为最新版本！是否强制更新全部组件？');
+          if (!proceed) return;
+          targets = ['opencode', 'oh-my-openagent', 'opencode-goal-plugin', 'openchamber', 'opencode-go-router'];
         } else {
-          msg += '系统将自动创建快照并安全升级。是否确认继续？';
+          targets = pending;
         }
-        if (!confirm(msg)) return;
       }
 
+      const targetNames = targets.map(function(id) {
+        const found = lastUpdateReport.components.find(function(c) { return c.id === id; });
+        return found ? found.name : id;
+      });
+
+      let msg = '即将安全升级以下组件：\n' + targetNames.map(function(n) { return '• ' + n; }).join('\n') + '\n\n';
+      if (lastUpdateReport.compatibility.riskLevel === 'critical') {
+        msg += '🛑 警告：检测到存在破坏性大版本更新或生态冲突风险！\n系统已启用自动快照备份，若更新后出现异常可秒级一键回滚。\n\n是否确认继续一键升级？';
+      } else if (lastUpdateReport.compatibility.riskLevel === 'warning') {
+        msg += '⚠️ 提示：系统将在更新前自动创建全量灾备快照。\n\n是否确认执行安全升级？';
+      } else {
+        msg += '系统将自动创建灾备快照并安全升级。是否确认继续？';
+      }
+      if (!confirm(msg)) return;
+
+      await executeApplyUpdates(targets);
+    }
+
+    async function executeApplyUpdates(targets) {
       const box = document.getElementById('updates-content');
       box.innerHTML = '<span style="color:var(--primary)">🚀 正在执行安全更新流程（自动备份快照 -> 下载升级组件 -> 同步配置 -> 重新挂载 Office 离线预览引擎）... 请稍候...</span>';
-      showToast('正在执行一键安全更新...');
+      showToast('正在执行组件安全更新...');
 
       try {
         const res = await fetch('/balancer/api/updates/apply', {
           method: 'POST',
           headers: apiHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ skipBackup: false })
+          body: JSON.stringify({ components: targets, skipBackup: false })
         });
         const data = await res.json();
         if (data.success) {
           showToast('🎉 组件安全更新流程全部完成！');
-          let html = '<div style="color:var(--success); font-weight:600; margin-bottom:8px;">🎉 全组件一键安全升级完成！(已创建快照: ' + (data.snapshotId || '已备份') + ')</div>';
+          let html = '<div style="color:var(--success); font-weight:600; margin-bottom:8px;">🎉 组件安全升级成功！(已创建快照: ' + (data.snapshotId || '已备份') + ')</div>';
           html += '<div style="background:#1e293b; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
           data.logs.forEach(function(l) {
             html += '<div>' + l + '</div>';
@@ -3084,8 +3128,18 @@ const server = http.createServer((req, res) => {
           box.innerHTML = html;
           setTimeout(checkUpdates, 1500);
         } else {
-          box.innerHTML = '<div style="color:var(--danger)">更新失败: ' + (data.error || '未知错误') + '</div>';
-          showToast('更新执行失败', true);
+          let html = '<div style="color:var(--danger); font-weight:600; margin-bottom:8px;">❌ 部分组件更新未完全成功 (已创建快照: ' + (data.snapshotId || '已备份') + ')</div>';
+          if (data.logs && data.logs.length) {
+            html += '<div style="background:#1e293b; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
+            data.logs.forEach(function(l) {
+              html += '<div>' + l + '</div>';
+            });
+            html += '</div>';
+          }
+          html += '<button class="btn btn-danger btn-sm" onclick="showRollbackModal()">⏪ 灾备一键回滚</button> ';
+          html += '<button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔄 刷新版本状态</button>';
+          box.innerHTML = html;
+          showToast('更新执行未完全成功', true);
         }
       } catch (e) {
         box.innerHTML = '<div style="color:var(--danger)">更新请求异常: ' + e.message + '</div>';
@@ -3180,6 +3234,13 @@ const server = http.createServer((req, res) => {
     fetchConfig();
     fetchStatus();
     setInterval(fetchStatus, 2000);
+    if (window.location.hash === '#updates') {
+      setTimeout(function() {
+        checkUpdates();
+        const card = document.getElementById('updates-card');
+        if (card) card.scrollIntoView({ behavior: 'smooth' });
+      }, 300);
+    }
   </script>
 </body>
 </html>`);

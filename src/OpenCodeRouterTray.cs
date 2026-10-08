@@ -194,10 +194,10 @@ namespace OpenCodeRouter
             }
         }
 
-        static void OpenDashboard()
+        static void OpenDashboard(string hash = "")
         {
             EnsureRouterRunning();
-            string edgeApp = "http://127.0.0.1:" + port + "/balancer/ui";
+            string edgeApp = "http://127.0.0.1:" + port + "/balancer/ui" + (hash ?? "");
             string edgeExe = null;
             string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
             string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
@@ -293,7 +293,7 @@ namespace OpenCodeRouter
         static void CheckUpdates()
         {
             EnsureRouterRunning();
-            OpenDashboard();
+            OpenDashboard("#updates");
         }
 
         static void BindDesktopClients()

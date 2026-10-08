@@ -597,24 +597,40 @@ function Step-ManageUpdates {
             }
             Write-Host "正在执行一键安全更新流程..." -ForegroundColor Yellow
             & node $updaterJs apply
-            Write-Host "🎉 一键更新完成！" -ForegroundColor Green
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "🎉 一键更新完成！" -ForegroundColor Green
+            } else {
+                Write-Host "❌ 更新执行未完全成功，建议执行 [4] 灾备回滚！" -ForegroundColor Red
+            }
         }
         "2" {
             Write-Host "正在单独更新 OpenCode CLI 核心..." -ForegroundColor Yellow
             & node $updaterJs apply opencode
-            Write-Host "🎉 OpenCode CLI 更新完成！" -ForegroundColor Green
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "🎉 OpenCode CLI 更新完成！" -ForegroundColor Green
+            } else {
+                Write-Host "❌ OpenCode CLI 更新未完全成功！" -ForegroundColor Red
+            }
         }
         "3" {
             Write-Host "正在单独更新 Oh My OpenAgent 插件..." -ForegroundColor Yellow
             & node $updaterJs apply oh-my-openagent
-            Write-Host "🎉 OMO 插件更新完成！" -ForegroundColor Green
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "🎉 OMO 插件更新完成！" -ForegroundColor Green
+            } else {
+                Write-Host "❌ OMO 插件更新未完全成功！" -ForegroundColor Red
+            }
         }
         "4" {
             $confirmRb = Read-Host "⚠️ 确认要执行灾备回滚吗？系统将从最新快照复原配置与状态 (y/N)"
             if ($confirmRb -eq "y" -or $confirmRb -eq "Y") {
                 Write-Host "正在执行灾备回滚..." -ForegroundColor Yellow
                 & node $updaterJs rollback
-                Write-Host "🎉 灾备回滚完成！系统配置已恢复！" -ForegroundColor Green
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "🎉 灾备回滚完成！系统配置已恢复！" -ForegroundColor Green
+                } else {
+                    Write-Host "❌ 灾备回滚失败，请检查快照状态！" -ForegroundColor Red
+                }
             }
         }
         "5" {

@@ -726,16 +726,22 @@ manage_updates() {
   read -rp "请输入 [默认: 1]: " up_opt
   case "$up_opt" in
     1)
-      echo -e "${YELLOW}正在执行一键安全更新...${NC}"
-      node "$updater_js" apply
-      echo -e "${GREEN}✔ 更新执行完成！${NC}"
+      echo -e "${YELLOW}正在执行一键安全更新 (自动灾备快照)...${NC}"
+      if node "$updater_js" apply; then
+        echo -e "${GREEN}✔ 全套组件安全更新完成！${NC}"
+      else
+        echo -e "${RED}❌ 更新执行出现异常，建议使用 [2] 执行灾备秒级回滚！${NC}"
+      fi
       ;;
     2)
       read -rp "确认执行灾备回滚吗？(y/N): " rb_confirm
       if [[ "$rb_confirm" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}正在执行灾备回滚...${NC}"
-        node "$updater_js" rollback
-        echo -e "${GREEN}✔ 灾备回滚完成！${NC}"
+        if node "$updater_js" rollback; then
+          echo -e "${GREEN}✔ 灾备回滚完成！系统配置已恢复！${NC}"
+        else
+          echo -e "${RED}❌ 灾备回滚失败，请检查快照目录！${NC}"
+        fi
       fi
       ;;
     3)
@@ -743,7 +749,11 @@ manage_updates() {
       ;;
     0) ;;
     *)
-      node "$updater_js" apply
+      if node "$updater_js" apply; then
+        echo -e "${GREEN}✔ 全套组件安全更新完成！${NC}"
+      else
+        echo -e "${RED}❌ 更新执行出现异常！${NC}"
+      fi
       ;;
   esac
 }

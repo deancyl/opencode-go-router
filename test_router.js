@@ -436,6 +436,12 @@ async function runTests() {
 
     // [Test 18] Testing Component Updates Rollback API
     console.log('\n[Test 18] Testing Component Updates Rollback API (/balancer/api/updates/rollback)...');
+    // Mutate opencode.jsonc and router config before rollback to test actual deep file restoration
+    const testOcJsonc = path.join(testConfigDir, 'opencode.jsonc');
+    const originalOcContent = fs.existsSync(testOcJsonc) ? fs.readFileSync(testOcJsonc, 'utf8') : '';
+    const mutatedOcContent = JSON.stringify({ model: 'mutated-test-model-to-be-restored', mutated: true });
+    fs.writeFileSync(testOcJsonc, mutatedOcContent, 'utf8');
+
     const resRollback = await request('/balancer/api/updates/rollback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -445,7 +451,12 @@ async function runTests() {
     const rbJson = JSON.parse(resRollback.body);
     assert.strictEqual(rbJson.success, true);
     assert.strictEqual(rbJson.snapshotId, applyJson.snapshotId);
-    console.log(`✓ Updates Rollback API verified: restored from ${rbJson.snapshotId}`);
+    assert.ok(Array.isArray(rbJson.restoredItems), 'restoredItems should be an array');
+
+    // Deep verification: assert opencode.jsonc was restored back to original content
+    const restoredOcContent = fs.readFileSync(testOcJsonc, 'utf8');
+    assert.strictEqual(restoredOcContent, originalOcContent, 'opencode.jsonc must be byte-accurately restored from snapshot');
+    console.log(`✓ Updates Rollback API verified: restored from ${rbJson.snapshotId} and confirmed deep file recovery`);
 
     console.log('\n======================================================');
     console.log('🎉 ALL 18 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
