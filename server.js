@@ -1947,6 +1947,8 @@ function renderLoginPage() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>身份验证 | OpenCode 智能路由网关</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
   <style>
     :root {
       --bg: #0b1120;
@@ -2023,7 +2025,7 @@ function renderLoginPage() {
 </head>
 <body>
   <div class="login-card">
-    <div class="icon">🔐</div>
+    <img src="/assets/logo.png" alt="OpenCode Gateway Logo" style="width: 72px; height: 72px; border-radius: 16px; box-shadow: 0 0 24px rgba(16,185,129,0.35); margin-bottom: 1.2rem;">
     <h2>OpenCode 智能路由网关</h2>
     <p>当前网关已开启安全访问认证，请输入管理员控制台访问密码</p>
     <form onsubmit="handleLogin(event)">
@@ -2491,6 +2493,25 @@ $ghost
     return;
   }
 
+  // Static Assets (Favicon & High-Def Logo)
+  if (reqUrl.pathname === '/favicon.ico' || reqUrl.pathname === '/assets/router.ico') {
+    const icoPath = path.join(__dirname, 'assets', 'router.ico');
+    if (fs.existsSync(icoPath)) {
+      res.writeHead(200, { 'Content-Type': 'image/x-icon', 'Cache-Control': 'public, max-age=86400' });
+      fs.createReadStream(icoPath).pipe(res);
+      return;
+    }
+  }
+
+  if (reqUrl.pathname === '/assets/logo.png') {
+    const pngPath = path.join(__dirname, 'assets', 'logo.png');
+    if (fs.existsSync(pngPath)) {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
+      fs.createReadStream(pngPath).pipe(res);
+      return;
+    }
+  }
+
   // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS) - Hardened Sandbox
   if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
     let body = [];
@@ -2732,6 +2753,8 @@ $ghost
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenCode 订阅管理中心 | 原生高可用路由</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
   <style>
     :root {
       --bg: #0b1120;
@@ -3079,9 +3102,12 @@ $ghost
 <body>
   <div class="container">
     <header>
-      <div class="title-group">
-        <h1>🚀 OpenCode 订阅管理中心</h1>
-        <p>原生专用双订阅智能路由与负载均衡 (本地端口: <strong>${config.port}</strong>)</p>
+      <div class="title-group" style="display:flex; align-items:center; gap:14px;">
+        <img src="/assets/logo.png" alt="OpenCode Gateway Logo" style="width:48px; height:48px; border-radius:10px; box-shadow:0 0 18px rgba(16,185,129,0.35); flex-shrink:0;">
+        <div>
+          <h1 style="margin:0; font-size:1.45rem;">OpenCode 智能路由网关与调度中心</h1>
+          <p style="margin:3px 0 0 0;">原生专用双订阅智能路由与负载均衡 (本地端口: <strong>${config.port}</strong>)</p>
+        </div>
       </div>
       <div class="header-actions">
         <button class="btn btn-primary btn-sm" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>

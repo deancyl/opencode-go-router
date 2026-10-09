@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="128" height="128" alt="OpenCode Router Logo" style="border-radius: 24px; box-shadow: 0 0 25px rgba(16,185,129,0.35);">
+</p>
+
 # OpenCode Go Router & Full-Stack Toolkit
 ### OpenCode v2 + OpenChamber + Oh My OpenAgent + Goal 目标推进 + 双订阅高可用网关一体化套件 (Windows / Linux / NAS)
 
@@ -6,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.2.2](https://img.shields.io/badge/Version-v2.2.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.2.3](https://img.shields.io/badge/Version-v2.2.3-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -373,6 +377,14 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.2.3
+- **原创品牌视觉升级与全尺寸高清 Logo 矩阵 (High-Def Brand Logo & Multi-Res Assets)**：
+  - **彻底告别 Codex 螺旋旧标**：为 OpenCode 智能路由网关量身打造原创科技感品牌视觉，采用深黑曜石微弧背景、量子发光棱镜枢纽、互联拓扑路由网络与霓虹青翠发光光效，突显高可用网关与调度枢纽定位；
+  - **全尺寸 Windows 原生图标矩阵 (`assets/router.ico`)**：涵盖 16x16、32x32、48x48、64x64、128x128、256x256 完整六阶多分辨率，在 4K/2K 高分屏、Windows 资源管理器大图标预览与系统托盘下均保持像素级细腻清晰；
+  - **C# 原生可执行文件深度嵌入**：将最新原生图标重新编译嵌入 `OpenCodeRouterTray.exe` 与 `OpenCodeWizard.exe` 的 PE 资源中，桌面快捷方式与任务栏无缝显示全新图标；
+  - **Web 控制台与登录门面焕新**：网关内置静态资源直出管线（`/favicon.ico` 与 `/assets/logo.png`），在安全验证登录卡片与仪表盘顶栏优雅呈现发光品牌微标，并绑定浏览器 Tab 标签 Favicon；
+  - **自动化测试 47 项持续全绿**：全链路回归验证通过。
 
 ### 🚀 v2.2.2
 - **组件更新引擎双轨容灾与原生二进制智能同步 (Dual-Engine Updater & Binary Sync)**：

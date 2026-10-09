@@ -58,64 +58,45 @@ namespace OpenCodeRouter
 
             try
             {
-                // Auto-clean stale OpenCodeRouterTray instances to ensure new version takes effect
-                Process curProcess = Process.GetCurrentProcess();
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 1: Main started, pid=" + Process.GetCurrentProcess().Id + "\r\n");
+
+                bool createdNew = false;
                 try
                 {
-                    foreach (Process p in Process.GetProcessesByName("OpenCodeRouterTray"))
-                    {
-                        if (p.Id != curProcess.Id)
-                        {
-                            try
-                            {
-                                p.Kill();
-                                p.WaitForExit(1000);
-                            }
-                            catch { }
-                        }
-                    }
+                    mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2", out createdNew);
                 }
-                catch { }
-
-                // Single instance check: only bail out if another instance is actively alive
-                bool otherRunning = false;
-                foreach (Process p in Process.GetProcessesByName("OpenCodeRouterTray"))
+                catch (Exception mex)
                 {
-                    if (p.Id != curProcess.Id)
-                    {
-                        try
-                        {
-                            if (!p.HasExited)
-                            {
-                                otherRunning = true;
-                                break;
-                            }
-                        }
-                        catch { }
-                    }
+                    File.AppendAllText(logPath, "Mutex ex: " + mex.Message + "\r\n");
+                    createdNew = true;
                 }
 
-                if (otherRunning)
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 2: createdNew=" + createdNew + "\r\n");
+                if (!createdNew)
                 {
+                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Another instance is running, activating dashboard and exiting.\r\n");
                     EnsureRouterRunning();
                     OpenDashboard();
                     return;
                 }
 
-                try
-                {
-                    mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2");
-                }
-                catch { }
-
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 3: EnsureRouterRunning\r\n");
                 EnsureRouterRunning();
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 4: OpenDashboard\r\n");
                 OpenDashboard();
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 5: Setting up NotifyIcon\r\n");
 
             // Setup NotifyIcon
             notifyIcon = new NotifyIcon();
             if (File.Exists(icoPath))
             {
-                try { notifyIcon.Icon = new Icon(icoPath); } catch { notifyIcon.Icon = SystemIcons.Application; }
+                try {
+                    notifyIcon.Icon = new Icon(icoPath);
+                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Icon loaded successfully\r\n");
+                } catch (Exception iex) {
+                    File.AppendAllText(logPath, "Icon load failed: " + iex.Message + "\r\n");
+                    notifyIcon.Icon = SystemIcons.Application;
+                }
             }
             else
             {
@@ -196,16 +177,9 @@ namespace OpenCodeRouter
             };
             watchdogTimer.Start();
 
-            Form hiddenForm = new Form();
-            hiddenForm.FormBorderStyle = FormBorderStyle.None;
-            hiddenForm.ShowInTaskbar = false;
-            hiddenForm.Size = new Size(0, 0);
-            hiddenForm.WindowState = FormWindowState.Minimized;
-            hiddenForm.Load += (s, e) => {
-                hiddenForm.Hide();
-            };
-
-            Application.Run(hiddenForm);
+            File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 7: Entering Application.Run...\r\n");
+            Application.Run();
+            File.AppendAllText(logPath, "[" + DateTime.Now + "] Application.Run EXITED!\r\n");
             }
             catch (Exception ex)
             {
