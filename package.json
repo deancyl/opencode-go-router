@@ -1,7 +1,7 @@
 {
   "name": "opencode-go-router",
-  "version": "2.2.3",
-  "description": "OpenCode Go Multi-Subscription Smart Router, Load Balancer, Tray Daemon, Air-Gapped Office Engine, One-Click Safe Updater & Rollback Engine for Windows, Linux & NAS",
+  "version": "2.3.0",
+  "description": "OpenCode Go Multi-Subscription Smart Router, Load Balancer, Tray Daemon, Air-Gapped Office Engine, Platform-Aware Auto-Repair & Safe Updater for Windows, Linux & NAS",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

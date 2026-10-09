@@ -41,8 +41,12 @@ NC='\033[0m'
 echo -e "${CYAN}${BOLD}"
 echo "================================================================================"
 echo "    🚀 OpenCode Go Router - Linux / NAS 高可用智能网关与全栈配置套件"
-echo "================================================================================"
 echo -e "${NC}"
+
+if [[ -f "$SCRIPT_DIR/updater.js" ]] && command -v node >/dev/null 2>&1; then
+  PLATFORM_DESC=$(node -e "try { const u = require('./updater'); console.log(u.detectPlatformEnvironment().description); } catch (_) { console.log('Linux 环境'); }" 2>/dev/null || echo "Linux 环境")
+  echo -e "  💻 检测到运行平台: ${BOLD}${GREEN}${PLATFORM_DESC}${NC}\n"
+fi
 
 # 默认配置
 DEFAULT_PORT=4010
@@ -57,6 +61,7 @@ SERVICE_NAME="opencode-router.service"
 OPT_ALL=false
 OPT_BIND=false
 OPT_DOCTOR=false
+OPT_REPAIR=false
 OPT_START=false
 OPT_STOP=false
 OPT_STATUS=false
@@ -73,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     -a|--all) OPT_ALL=true; shift ;;
     -b|--bind) OPT_BIND=true; shift ;;
     -d|--doctor) OPT_DOCTOR=true; shift ;;
+    -r|--repair) OPT_REPAIR=true; shift ;;
     --start) OPT_START=true; shift ;;
     --stop) OPT_STOP=true; shift ;;
     --status) OPT_STATUS=true; shift ;;
@@ -87,7 +93,8 @@ while [[ $# -gt 0 ]]; do
       echo "选项:"
       echo "  -a, --all        全自动非交互式部署 (安装守护进程、配置、绑定 OpenCode 与 OpenChamber)"
       echo "  -b, --bind       单独执行 OpenCode + OpenChamber + OMO + Goal 客户端绑定"
-      echo "  -d, --doctor     运行全链路系统体检与自动修复"
+      echo "  -d, --doctor     运行全链路系统体检"
+      echo "  -r, --repair     运行一键自愈修复 (清洗 providers 冲突、补全 38 款模型、挂载 Office 预览)"
       echo "  --start          启动网关服务"
       echo "  --stop           停止网关服务"
       echo "  --restart        重启网关服务"
@@ -424,37 +431,29 @@ bind_ecosystem() {
     const ocDir = path.join(homeDir, ".config", "opencode");
     if (!fs.existsSync(ocDir)) fs.mkdirSync(ocDir, { recursive: true });
     const ocPath = path.join(ocDir, "opencode.jsonc");
-    let ocData = {};
-    if (fs.existsSync(ocPath)) {
-      try { fs.copyFileSync(ocPath, ocPath + ".bak"); } catch (e) {}
-      ocData = parseJsonSafe(ocPath, {});
-    }
-    // 规范单一 provider 配置并彻底清除 providers 冲突，防止 OpenCode normalization conflict
-    if (ocData.providers && ocData.providers["opencode-go"]) {
-      delete ocData.providers["opencode-go"];
-      if (Object.keys(ocData.providers).length === 0) {
+    try {
+      const updater = require("./updater");
+      const harmRes = updater.harmonizeOpencodeConfig(ocPath, routerPort);
+      console.log(`✔ 已完成 opencode.jsonc 规范化 (清除 providers 冲突，合流第三方提供商，覆盖 38 款全量模型，保留首选: ${harmRes.currentModel})`);
+    } catch (_) {
+      let ocData = parseJsonSafe(ocPath, {});
+      if (!ocData.provider) ocData.provider = {};
+      if (ocData.providers && typeof ocData.providers === "object") {
+        for (const [k, v] of Object.entries(ocData.providers)) {
+          if (k !== "opencode-go" && !ocData.provider[k]) ocData.provider[k] = v;
+        }
         delete ocData.providers;
       }
+      ocData.provider["opencode-go"] = {
+        name: "opencode-go",
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: routerUrl, apiKey: "local-router" },
+        models: { "deepseek-v4.1-flash": { name: "deepseek-v4.1-flash" }, "glm-5.3-flash": { name: "glm-5.3-flash" } }
+      };
+      if (!ocData.model) ocData.model = "opencode-go/deepseek-v4.1-flash";
+      fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), "utf8");
+      console.log("✔ 已在 opencode.jsonc 注册 opencode-go 提供商");
     }
-    if (!ocData.provider) ocData.provider = {};
-
-    ocData.provider["opencode-go"] = {
-      name: "opencode-go",
-      npm: "@ai-sdk/openai-compatible",
-      options: { baseURL: routerUrl, apiKey: "local-router" },
-      models: {
-        "deepseek-v4.1-flash": { name: "deepseek-v4.1-flash" },
-        "deepseek-v4-pro": { name: "deepseek-v4-pro" },
-        "kimi-k3": { name: "kimi-k3" },
-        "qwen3.7-plus": { name: "qwen3.7-plus" },
-        "glm-5.3": { name: "glm-5.3" },
-        "minimax-m3": { name: "minimax-m3" }
-      }
-    };
-    ocData.model = "opencode-go/deepseek-v4.1-flash";
-
-    fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), "utf8");
-    console.log("✔ 已在 opencode.jsonc 注册 opencode-go 提供商，并将默认模型锁定为 opencode-go/deepseek-v4.1-flash");
 
     // 2. OpenChamber
     const chamberDirs = [];
@@ -667,6 +666,73 @@ run_doctor() {
   '
 }
 
+# 11.5 执行一键自愈修复
+run_repair() {
+  local configured_port
+  configured_port=$(get_configured_port)
+
+  echo -e "\n${YELLOW}🛠 正在执行一键环境自愈与全栈修复...${NC}"
+  CFG_PORT="$configured_port" CFG_PATH="$CONFIG_FILE" node -e '
+    const http = require("http");
+    const fs = require("fs");
+    const path = require("path");
+    const port = process.env.CFG_PORT || 4010;
+    const cfgPath = process.env.CFG_PATH;
+    let pwd = "";
+    if (fs.existsSync(cfgPath)) {
+      try {
+        const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (c.uiPassword) pwd = c.uiPassword;
+      } catch (e) {}
+    }
+    const headers = { "Content-Type": "application/json" };
+    if (pwd) {
+      headers["Authorization"] = "Bearer " + Buffer.from(pwd).toString("base64");
+    }
+    const req = http.request({
+      hostname: "127.0.0.1",
+      port: port,
+      path: "/balancer/api/repair",
+      method: "POST",
+      headers: headers
+    }, (res) => {
+      let data = "";
+      res.on("data", c => data += c);
+      res.on("end", () => {
+        try {
+          const result = JSON.parse(data);
+          if (result.success) {
+            console.log("🎉 一键自愈修复成功完成！");
+            if (Array.isArray(result.results)) {
+              result.results.forEach(r => console.log("  ✔ [" + r.item + "] " + r.message));
+            }
+          } else {
+            console.log("❌ 修复出现异常:", result.error || "未知错误");
+          }
+        } catch (e) {
+          console.log("响应解析异常:", data);
+        }
+      });
+    });
+    req.on("error", (e) => {
+      try {
+        const updater = require("./updater");
+        const ocDir = path.join(require("os").homedir(), ".config", "opencode");
+        const ocPath = path.join(ocDir, "opencode.jsonc");
+        const harm = updater.harmonizeOpencodeConfig(ocPath, port);
+        console.log("✔ 本地已完成 opencode.jsonc 离线修复 (清除 providers 冲突，全量补齐 38 款模型)");
+      } catch (err) {
+        console.log("本地离线自愈提示:", err.message);
+      }
+    });
+    req.end();
+  '
+  # 自动重新挂载 Office 预览补丁
+  if [[ -f "$SCRIPT_DIR/patch-openchamber-office.sh" ]]; then
+    bash "$SCRIPT_DIR/patch-openchamber-office.sh" install 2>/dev/null || true
+  fi
+}
+
 # 执行命令行参数逻辑
 if [[ "$OPT_STOP" == true ]]; then
   service_stop
@@ -698,6 +764,11 @@ fi
 
 if [[ "$OPT_DOCTOR" == true ]]; then
   run_doctor
+  exit 0
+fi
+
+if [[ "$OPT_REPAIR" == true ]]; then
+  run_repair
   exit 0
 fi
 

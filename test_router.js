@@ -1257,8 +1257,154 @@ async function runTests() {
     assert.ok(resAntHttpStream.body.includes('event: response.completed'));
     console.log('✓ End-to-End Anthropic Protocol Bridge via Router HTTP Port verified');
 
+    // [Test 48] Testing Platform Intelligence & Adaptive Detection Engine (detectPlatformEnvironment)
+    console.log('\n[Test 48] Testing Platform Intelligence & Adaptive Detection Engine...');
+    const curPlatform = updater.detectPlatformEnvironment();
+    assert.strictEqual(typeof curPlatform.platform, 'string');
+    assert.strictEqual(typeof curPlatform.isWindows, 'boolean');
+    assert.strictEqual(typeof curPlatform.isLinux, 'boolean');
+    assert.strictEqual(typeof curPlatform.isNas, 'boolean');
+    assert.ok(curPlatform.description.length > 0);
+
+    // Simulate fnOS (飞牛 NAS OS)
+    const fnosSim = updater.detectPlatformEnvironment({
+      platform: 'linux',
+      kernelRelease: '6.18.18.c1107-trim',
+      fsExists: (p) => p === '/vol3' || p === '/fs',
+      readFile: (p) => p === '/etc/os-release' ? 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"' : ''
+    });
+    assert.strictEqual(fnosSim.platform, 'linux-nas');
+    assert.strictEqual(fnosSim.isNas, true);
+    assert.strictEqual(fnosSim.nasType, 'fnos');
+    assert.ok(fnosSim.description.includes('fnOS (飞牛私有云 NAS / Debian)'));
+
+    // Simulate Synology DSM
+    const synoSim = updater.detectPlatformEnvironment({
+      platform: 'linux',
+      kernelRelease: '4.4.302+',
+      fsExists: (p) => p === '/etc/synoinfo.conf' || p === '/volume1',
+      readFile: () => ''
+    });
+    assert.strictEqual(synoSim.platform, 'linux-nas');
+    assert.strictEqual(synoSim.isNas, true);
+    assert.strictEqual(synoSim.nasType, 'synology');
+    assert.ok(synoSim.description.includes('Synology DSM'));
+
+    // Simulate Docker Container
+    const dockerSim = updater.detectPlatformEnvironment({
+      platform: 'linux',
+      kernelRelease: '5.15.0-generic',
+      fsExists: (p) => p === '/.dockerenv',
+      readFile: (p) => p === '/etc/os-release' ? 'PRETTY_NAME="Ubuntu 22.04.3 LTS"' : ''
+    });
+    assert.strictEqual(dockerSim.platform, 'docker');
+    assert.strictEqual(dockerSim.isDocker, true);
+
+    // Simulate Windows Desktop
+    const winSim = updater.detectPlatformEnvironment({
+      platform: 'win32',
+      kernelRelease: '10.0.26100',
+      fsExists: () => false,
+      readFile: () => ''
+    });
+    assert.strictEqual(winSim.platform, 'windows');
+    assert.strictEqual(winSim.isWindows, true);
+    assert.ok(winSim.description.includes('Windows 桌面工作站'));
+    console.log('✓ Platform Intelligence Engine verified across Windows, fnOS, Synology, and Docker simulations');
+
+    // [Test 49] Testing Cross-Platform Opencode Config Harmonization & Zero-Loss Provider Migration
+    console.log('\n[Test 49] Testing Cross-Platform Opencode Config Harmonization & Zero-Loss Provider Migration...');
+    const testHarmonizeFile = path.join(testConfigDir, 'opencode-harmonize-test.jsonc');
+    const dirtyJsonc = `
+    // User custom comments
+    {
+      "providers": {
+        "shtech": {
+          "name": "shtech",
+          "npm": "@ai-sdk/openai-compatible",
+          "options": { "baseURL": "https://sh.tech/v1", "apiKey": "sk-sh-custom" }
+        },
+        "aixforge": {
+          "name": "aixforge",
+          "options": { "baseURL": "https://aix.forge/v1" }
+        },
+        "opencode-go": {
+          "name": "opencode-go",
+          "options": { "baseURL": "http://127.0.0.1:3001/v1", "apiKey": "old-key" },
+          "models": {
+            "custom-finetuned-model": { "name": "custom-finetuned-model" }
+          }
+        }
+      },
+      "provider": {
+        "existing-custom": { "name": "existing-custom" }
+      },
+      "model": "opencode-go/glm-5.3-flash",
+    }
+    `;
+    fs.writeFileSync(testHarmonizeFile, dirtyJsonc, 'utf8');
+
+    const harmResult = updater.harmonizeOpencodeConfig(testHarmonizeFile, 4010);
+    assert.strictEqual(harmResult.success, true);
+    assert.ok(harmResult.migratedProviders.includes('shtech'));
+    assert.ok(harmResult.migratedProviders.includes('aixforge'));
+    assert.strictEqual(harmResult.currentModel, 'opencode-go/glm-5.3-flash');
+    assert.strictEqual(harmResult.modelPreserved, true);
+
+    const harmonizedData = JSON.parse(fs.readFileSync(testHarmonizeFile, 'utf8'));
+    // 1. Providers plural key MUST be completely eliminated
+    assert.strictEqual(harmonizedData.providers, undefined, 'Deprecated providers plural key must be completely eliminated');
+    // 2. All third-party providers migrated into singular provider
+    assert.ok(harmonizedData.provider['shtech'], 'shtech must be migrated into provider');
+    assert.strictEqual(harmonizedData.provider['shtech'].options.apiKey, 'sk-sh-custom');
+    assert.ok(harmonizedData.provider['aixforge'], 'aixforge must be migrated into provider');
+    assert.ok(harmonizedData.provider['existing-custom'], 'existing-custom must be retained in provider');
+    // 3. opencode-go must have baseURL pointing to 4010 and local-router
+    assert.strictEqual(harmonizedData.provider['opencode-go'].options.baseURL, 'http://127.0.0.1:4010/v1');
+    assert.strictEqual(harmonizedData.provider['opencode-go'].options.apiKey, 'local-router');
+    // 4. All 38 models must exist AND custom model must be preserved (total 39)
+    assert.strictEqual(Object.keys(harmonizedData.provider['opencode-go'].models).length, 39);
+    assert.ok(harmonizedData.provider['opencode-go'].models['deepseek-v4.1-flash']);
+    assert.ok(harmonizedData.provider['opencode-go'].models['glm-5.3-flash']);
+    assert.ok(harmonizedData.provider['opencode-go'].models['custom-finetuned-model']);
+    // 5. User choice model preserved
+    assert.strictEqual(harmonizedData.model, 'opencode-go/glm-5.3-flash');
+    console.log('✓ Cross-Platform Opencode Config Harmonization & Zero-Loss Provider Migration verified');
+
+    // [Test 50] Testing Doctor Diagnostic Platform-Awareness & Self-Healing Integration
+    console.log('\n[Test 50] Testing Doctor Diagnostic Platform-Awareness & Self-Healing Integration...');
+    // A. Doctor API returns platform object
+    const docRes50 = await request('/balancer/api/doctor', { method: 'GET' });
+    assert.strictEqual(docRes50.statusCode, 200);
+    const docJson50 = JSON.parse(docRes50.body);
+    assert.ok(docJson50.platform, 'Doctor report must include platform environment metadata');
+    assert.strictEqual(typeof docJson50.platform.platform, 'string');
+    assert.strictEqual(typeof docJson50.platform.description, 'string');
+
+    // B. Trigger repair API and verify clean self-healing
+    const repRes50 = await request('/balancer/api/repair', { method: 'POST' });
+    assert.strictEqual(repRes50.statusCode, 200);
+    const repJson50 = JSON.parse(repRes50.body);
+    assert.strictEqual(repJson50.success, true);
+    const ocRepairItem = repJson50.results.find(r => r.item === 'OpenCode Config');
+    assert.ok(ocRepairItem, 'Repair results must include OpenCode Config');
+    assert.strictEqual(ocRepairItem.success, true);
+    console.log('✓ Doctor Diagnostic Platform-Awareness & Self-Healing Integration verified');
+
+    // [Test 51] Testing Dual-Track Registry Fallback & Linux NAS Adaptive Update Strategy
+    console.log('\n[Test 51] Testing Dual-Track Registry Fallback & Linux NAS Adaptive Update Strategy...');
+    // Test fetchNpmLatestVersion resilience
+    const pkgCheck = await updater.fetchAllRemoteVersions(3000);
+    assert.ok(pkgCheck['opencode-go-router'], 'opencode-go-router version must be resolved');
+    // Test checkAllUpdates includes platform
+    const updatesCheck = await updater.checkAllUpdates(3000);
+    assert.ok(updatesCheck.platform, 'checkAllUpdates report must contain platform info');
+    assert.ok(updatesCheck.platform.description.length > 0);
+    assert.ok(Array.isArray(updatesCheck.components));
+    console.log('✓ Dual-Track Registry Fallback & Linux NAS Adaptive Update Strategy verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 47 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 51 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

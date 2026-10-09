@@ -147,30 +147,26 @@ if (Test-Path $opencodeConfig) {
 
     # 检测 provider 与 providers 单复数配置冲突 (retained native value 隐患)
     $hasPlural = $false
-    $hasSingular = $false
+    $hasPlural = $false
     try {
         $parsedJson = $ocContent | ConvertFrom-Json
-        if ($parsedJson.PSObject.Properties['providers'] -and $parsedJson.providers.PSObject.Properties['opencode-go']) {
+        if ($parsedJson.PSObject.Properties['providers'] -and $parsedJson.providers.PSObject.Properties.Count -gt 0) {
             $hasPlural = $true
         }
-        if ($parsedJson.PSObject.Properties['provider'] -and $parsedJson.provider.PSObject.Properties['opencode-go']) {
-            $hasSingular = $true
-        }
     } catch {
-        $hasPlural = [bool]($ocContent -match '"providers"\s*:\s*\{[^}]*"opencode-go"')
-        $hasSingular = [bool]($ocContent -match '"provider"\s*:\s*\{[^}]*"opencode-go"')
+        $hasPlural = [bool]($ocContent -match '"providers"\s*:')
     }
-    if ($hasPlural -and $hasSingular) {
-        Write-Host "  ❌ 发现 provider 与 providers 单复数同名配置冲突！" -ForegroundColor Red
-        Write-Host "     (OpenCode 启动将触发 conflict 并自动丢弃 4010 本地网关，回退到直连并导致 ConnectionRefused)" -ForegroundColor Yellow
+    if ($hasPlural) {
+        Write-Host "  ❌ 发现已废弃的 providers 复数配置键！" -ForegroundColor Red
+        Write-Host "     (OpenCode 2.0+ 启动将触发 conflict 并自动丢弃 4010 本地网关，回退到直连并导致 ConnectionRefused)" -ForegroundColor Yellow
         $issuesFound.Add([PSCustomObject]@{
             Id = "config_conflict"
-            Title = "opencode.jsonc 存在提供商单复数配置冲突"
+            Title = "opencode.jsonc 存在提供商单复数配置冲突 (旧复数 providers 键)"
             Severity = "High"
-            FixDesc = "自动清洗冲突项，规范化为单一标准 provider 配置"
+            FixDesc = "自动清洗并合流第三方提供商，规范化为单一标准 provider 配置并补全 38 款模型"
         })
     } else {
-        Write-Host "  ✔ 未发现单复数配置冲突 (规范无歧义)" -ForegroundColor Green
+        Write-Host "  ✔ 未发现单复数配置冲突 (规范单一 provider)" -ForegroundColor Green
     }
 
     # 检测 4010 网关绑定
@@ -467,128 +463,101 @@ foreach ($iss in $issuesFound) {
             Write-Host "    ✔ 3001 端口已成功重定向至 $routerPort 网关" -ForegroundColor Green
         }
         "config_conflict" {
-            Write-Host " -> 正在清洗 opencode.jsonc 中的单复数冲突项..." -ForegroundColor Yellow
+            Write-Host " -> 正在清洗 opencode.jsonc 中的单复数冲突项并合流第三方提供商..." -ForegroundColor Yellow
             try {
-                $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
-                $json = $raw | ConvertFrom-Json
-                if ($json.PSObject.Properties['providers']) {
-                    if ($json.providers.PSObject.Properties['opencode-go']) {
-                        $json.providers.PSObject.Properties.Remove('opencode-go')
-                    }
-                    if ($json.providers.PSObject.Properties.Count -eq 0) {
+                $updaterScript = Join-Path $PSScriptRoot "updater.js"
+                if (Test-Path $updaterScript) {
+                    $escPath = $opencodeConfig.Replace('\', '/')
+                    node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                    Write-Host "    ✔ 冲突项已彻底清除，第三方提供商已安全合流，38 款全量模型已就绪" -ForegroundColor Green
+                } else {
+                    $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
+                    $json = $raw | ConvertFrom-Json
+                    if ($json.PSObject.Properties['providers']) {
+                        if (-not $json.provider) { $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject) }
+                        foreach ($prop in $json.providers.PSObject.Properties) {
+                            if ($prop.Name -ne 'opencode-go' -and -not $json.provider.PSObject.Properties[$prop.Name]) {
+                                $json.provider | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value
+                            }
+                        }
                         $json.PSObject.Properties.Remove('providers')
                     }
+                    Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
+                    Write-Host "    ✔ 冲突项已彻底清除" -ForegroundColor Green
                 }
-                if (-not $json.provider) {
-                    $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
-                }
-                if (-not $json.provider.'opencode-go') {
-                    $goProv = [PSCustomObject]@{
-                        name = "opencode-go"
-                        npm = "@ai-sdk/openai-compatible"
-                        options = [PSCustomObject]@{
-                            baseURL = "http://127.0.0.1:$routerPort/v1"
-                            apiKey = "local-router"
-                        }
-                        models = [PSCustomObject]@{
-                            "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
-                            "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
-                            "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
-                            "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
-                            "glm-5.3" = [PSCustomObject]@{ name = "glm-5.3" }
-                            "minimax-m3" = [PSCustomObject]@{ name = "minimax-m3" }
-                        }
-                    }
-                    $json.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
-                } else {
-                    if (-not $json.provider.'opencode-go'.options) {
-                        $json.provider.'opencode-go' | Add-Member -NotePropertyName "options" -NotePropertyValue (New-Object PSObject)
-                    }
-                    $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
-                    $json.provider.'opencode-go'.options.apiKey = "local-router"
-                }
-                $json.model = "opencode-go/deepseek-v4.1-flash"
-                Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
-                Write-Host "    ✔ 冲突项已彻底清除，已规范为统一标准 provider 链路" -ForegroundColor Green
             } catch {
                 Write-Host "    ⚠ 清洗失败: $_" -ForegroundColor Red
             }
         }
         "missing_opencode_config" {
             Write-Host " -> 正在创建标准 opencode.jsonc 配置文件..." -ForegroundColor Yellow
-            $ocDir = Split-Path $opencodeConfig -Parent
-            if (-not (Test-Path $ocDir)) { New-Item -ItemType Directory -Path $ocDir -Force | Out-Null }
-            $defaultConfig = @{
-                plugin = @("oh-my-openagent@5.1.24", "opencode-goal-plugin")
-                "`$schema" = "https://opencode.ai/config.json"
-                model = "opencode-go/deepseek-v4.1-flash"
-                provider = @{
-                    "opencode-go" = @{
-                        name = "opencode-go"
-                        npm = "@ai-sdk/openai-compatible"
-                        options = @{
-                            baseURL = "http://127.0.0.1:$routerPort/v1"
-                            apiKey = "local-router"
-                        }
-                        models = @{
-                            "deepseek-v4.1-flash" = @{ name = "deepseek-v4.1-flash" }
-                            "deepseek-v4-pro" = @{ name = "deepseek-v4-pro" }
-                            "kimi-k3" = @{ name = "kimi-k3" }
-                            "qwen3.7-plus" = @{ name = "qwen3.7-plus" }
-                            "glm-5.3" = @{ name = "glm-5.3" }
-                            "minimax-m3" = @{ name = "minimax-m3" }
+            $updaterScript = Join-Path $PSScriptRoot "updater.js"
+            if (Test-Path $updaterScript) {
+                $escPath = $opencodeConfig.Replace('\', '/')
+                node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                Write-Host "    ✔ 已生成 opencode.jsonc 并绑定 4010 网关 (全量 38 款模型)" -ForegroundColor Green
+            } else {
+                $ocDir = Split-Path $opencodeConfig -Parent
+                if (-not (Test-Path $ocDir)) { New-Item -ItemType Directory -Path $ocDir -Force | Out-Null }
+                $defaultConfig = @{
+                    plugin = @("oh-my-openagent@5.1.24", "opencode-goal-plugin")
+                    "`$schema" = "https://opencode.ai/config.json"
+                    model = "opencode-go/deepseek-v4.1-flash"
+                    provider = @{
+                        "opencode-go" = @{
+                            name = "opencode-go"
+                            npm = "@ai-sdk/openai-compatible"
+                            options = @{
+                                baseURL = "http://127.0.0.1:$routerPort/v1"
+                                apiKey = "local-router"
+                            }
+                            models = @{
+                                "deepseek-v4.1-flash" = @{ name = "deepseek-v4.1-flash" }
+                                "deepseek-v4-pro" = @{ name = "deepseek-v4-pro" }
+                                "kimi-k3" = @{ name = "kimi-k3" }
+                                "qwen3.7-plus" = @{ name = "qwen3.7-plus" }
+                                "glm-5.3" = @{ name = "glm-5.3" }
+                                "minimax-m3" = @{ name = "minimax-m3" }
+                            }
                         }
                     }
                 }
+                Set-Content -Path $opencodeConfig -Value ($defaultConfig | ConvertTo-Json -Depth 10) -Encoding UTF8
+                Write-Host "    ✔ 已生成 opencode.jsonc 并绑定 4010 网关" -ForegroundColor Green
             }
-            Set-Content -Path $opencodeConfig -Value ($defaultConfig | ConvertTo-Json -Depth 10) -Encoding UTF8
-            Write-Host "    ✔ 已生成 opencode.jsonc 并绑定 4010 网关" -ForegroundColor Green
         }
         "missing_4010_gateway" {
             Write-Host " -> 正在更新 opencode.jsonc 绑定本地 4010 网关..." -ForegroundColor Yellow
             try {
-                $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
-                $json = $raw | ConvertFrom-Json
-                # 清洗冲突项
-                if ($json.PSObject.Properties['providers'] -and $json.providers.PSObject.Properties['opencode-go']) {
-                    $json.providers.PSObject.Properties.Remove('opencode-go')
-                    if ($json.providers.PSObject.Properties.Count -eq 0) {
-                        $json.PSObject.Properties.Remove('providers')
-                    }
-                }
-                if (-not $json.provider) {
-                    $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
-                }
-                if ($json.provider.'opencode-go') {
-                    if (-not $json.provider.'opencode-go'.options) {
-                        $json.provider.'opencode-go' | Add-Member -NotePropertyName "options" -NotePropertyValue (New-Object PSObject)
-                    }
-                    $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
-                    $json.provider.'opencode-go'.options.apiKey = "local-router"
+                $updaterScript = Join-Path $PSScriptRoot "updater.js"
+                if (Test-Path $updaterScript) {
+                    $escPath = $opencodeConfig.Replace('\', '/')
+                    node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                    Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 并注入 38 款全量模型" -ForegroundColor Green
                 } else {
-                    $goProv = [PSCustomObject]@{
-                        name = "opencode-go"
-                        npm = "@ai-sdk/openai-compatible"
-                        options = [PSCustomObject]@{
-                            baseURL = "http://127.0.0.1:$routerPort/v1"
-                            apiKey = "local-router"
-                        }
-                        models = [PSCustomObject]@{
-                            "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
-                            "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
-                            "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
-                            "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
-                            "glm-5.3" = [PSCustomObject]@{ name = "glm-5.3" }
-                            "minimax-m3" = [PSCustomObject]@{ name = "minimax-m3" }
+                    $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
+                    $json = $raw | ConvertFrom-Json
+                    if ($json.PSObject.Properties['providers'] -and $json.providers.PSObject.Properties['opencode-go']) {
+                        $json.providers.PSObject.Properties.Remove('opencode-go')
+                        if ($json.providers.PSObject.Properties.Count -eq 0) {
+                            $json.PSObject.Properties.Remove('providers')
                         }
                     }
-                    $json.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
+                    if (-not $json.provider) {
+                        $json | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
+                    }
+                    if ($json.provider.'opencode-go') {
+                        if (-not $json.provider.'opencode-go'.options) {
+                            $json.provider.'opencode-go' | Add-Member -NotePropertyName "options" -NotePropertyValue (New-Object PSObject)
+                        }
+                        $json.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$routerPort/v1"
+                        $json.provider.'opencode-go'.options.apiKey = "local-router"
+                    }
+                    Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
+                    Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 (无冲突纯净配置)" -ForegroundColor Green
                 }
-                $json.model = "opencode-go/deepseek-v4.1-flash"
-                Set-Content -Path $opencodeConfig -Value ($json | ConvertTo-Json -Depth 15) -Encoding UTF8
-                Write-Host "    ✔ opencode-go 已安全绑定至 127.0.0.1:$routerPort/v1 (无冲突纯净配置)" -ForegroundColor Green
             } catch {
-                Write-Host "    ⚠ 更新失败: $_" -ForegroundColor Red
+                Write-Host "    ⚠ 绑定失败: $_" -ForegroundColor Red
             }
         }
         "openchamber_ghost_process" {

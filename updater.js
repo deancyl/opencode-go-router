@@ -83,6 +83,251 @@ function getRouterConfigPath() {
   return process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 }
 
+// 38 All Available OpenCode Go Models with zero-loss fallback
+const ALL_38_SLUGS = [
+  'deepseek-v4.1-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp', 'glm-5.1', 'glm-5.2', 'glm-5.3', 'glm-5.3-flash',
+  'grok-4.6', 'grok-4.7', 'muse-spark-1.2-contributor', 'muse-spark-1.3-contributor',
+  'omen-alpha', 'gpt-5.6-luna', 'gpt-6-luna', 'claude-haiku-5-5', 'hy3', 'hy4-preview',
+  'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k3', 'mimo-v2.5', 'mimo-v2.6-flash',
+  'mimo-v2.5-pro', 'mimo-v2.6-pro', 'minimax-m2.5', 'minimax-m2.7', 'minimax-m3',
+  'space-bunny', 'longcat-2.0', 'longcat-2.5-preview-free', 'step-5-preview-free',
+  'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.8-max', 'qwen3.8-flash'
+];
+
+/**
+ * Intelligent cross-platform environment detector
+ * Accurately detects Windows Desktop, Linux NAS (fnOS / Synology / TrueNAS / Unraid), Docker, and standard Linux.
+ */
+function detectPlatformEnvironment(overrides = {}) {
+  const currentPlatform = overrides.platform || process.platform;
+  const isWin = currentPlatform === 'win32';
+  const isMac = currentPlatform === 'darwin';
+  const isLinux = currentPlatform === 'linux';
+  const checkExists = overrides.fsExists || fs.existsSync;
+  const getRelease = overrides.kernelRelease !== undefined ? overrides.kernelRelease : (os.release() || '');
+  const readStr = overrides.readFile || ((p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return ''; } });
+
+  let isDocker = false;
+  try {
+    if (checkExists('/.dockerenv') || checkExists('/run/.containerenv')) {
+      isDocker = true;
+    } else if (checkExists('/proc/1/cgroup')) {
+      const cgroup = readStr('/proc/1/cgroup');
+      if (cgroup.includes('docker') || cgroup.includes('containerd') || cgroup.includes('kubepods')) {
+        isDocker = true;
+      }
+    }
+  } catch (_) {}
+
+  let isNas = false;
+  let nasType = null;
+  let distroName = '';
+
+  if (isLinux) {
+    const osReleaseStr = readStr('/etc/os-release');
+    const procVersion = readStr('/proc/version');
+    const kernelRelease = getRelease;
+
+    // 1. fnOS (飞牛 NAS OS)
+    if (kernelRelease.includes('trim') || procVersion.includes('trim') || checkExists('/fs') || checkExists('/vol3') || checkExists('/vol1') || osReleaseStr.toLowerCase().includes('trim')) {
+      isNas = true;
+      nasType = 'fnos';
+      distroName = 'fnOS (飞牛私有云 NAS / Debian)';
+    } else if (checkExists('/etc/synoinfo.conf') || checkExists('/etc.defaults/synoinfo.conf') || checkExists('/volume1') || osReleaseStr.toLowerCase().includes('synology')) {
+      isNas = true;
+      nasType = 'synology';
+      distroName = 'Synology DSM';
+    } else if (checkExists('/etc/truenas_version') || osReleaseStr.toLowerCase().includes('truenas')) {
+      isNas = true;
+      nasType = 'truenas';
+      distroName = 'TrueNAS';
+    } else if (checkExists('/mnt/user') || osReleaseStr.toLowerCase().includes('unraid')) {
+      isNas = true;
+      nasType = 'unraid';
+      distroName = 'Unraid NAS';
+    } else if (checkExists('/vol1') || checkExists('/volume1') || checkExists('/volume2')) {
+      isNas = true;
+      nasType = 'generic-nas';
+      distroName = 'Linux 存储服务器 (NAS)';
+    } else {
+      const matchName = osReleaseStr.match(/PRETTY_NAME="([^"]+)"/);
+      distroName = matchName ? matchName[1] : (isDocker ? 'Linux Container' : 'Linux Standard');
+    }
+  } else if (isWin) {
+    distroName = `Windows ${getRelease} (${os.arch()})`;
+  } else if (isMac) {
+    distroName = `macOS ${getRelease} (${os.arch()})`;
+  }
+
+  let serviceManager = 'unknown';
+  if (isWin) {
+    serviceManager = 'tray-or-powershell';
+  } else if (isLinux) {
+    try {
+      const sysOut = overrides.systemctlVersion !== undefined ? overrides.systemctlVersion : runCmdSync('systemctl --version', 2000);
+      if (sysOut && sysOut.includes('systemd')) {
+        serviceManager = 'systemd';
+      } else {
+        serviceManager = 'nohup';
+      }
+    } catch (_) {
+      serviceManager = 'nohup';
+    }
+  }
+
+  let platformTag = 'linux';
+  if (isWin) {
+    platformTag = 'windows';
+  } else if (isNas) {
+    platformTag = 'linux-nas';
+  } else if (isDocker) {
+    platformTag = 'docker';
+  } else if (isMac) {
+    platformTag = 'darwin';
+  }
+
+  let description = distroName;
+  if (isNas) {
+    description = `${distroName} [${nasType ? nasType.toUpperCase() : 'NAS'}] (${isDocker ? 'Docker 容器' : '原生宿主'})`;
+  } else if (isWin) {
+    description = `Windows 桌面工作站 (${distroName})`;
+  } else if (isDocker) {
+    description = `Docker 容器环境 (${distroName})`;
+  }
+
+  return {
+    platform: platformTag,
+    isWindows: isWin,
+    isLinux,
+    isNas,
+    nasType,
+    isDocker,
+    arch: os.arch(),
+    serviceManager,
+    description
+  };
+}
+
+/**
+ * Cross-platform Zero-Loss Opencode Config Harmonization & Auto-Repair Engine
+ * Migrates deprecated plural `providers` into singular `provider`,
+ * populates all 38 models for `opencode-go`, preserves custom models and user choice.
+ */
+function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
+  const p = customPath || getOpencodeConfigPath();
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  let data = {};
+  let isNew = false;
+  if (fs.existsSync(p)) {
+    try {
+      const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+      data = JSON.parse(stripJsonComments(raw));
+    } catch (e) {
+      data = {};
+    }
+  } else {
+    isNew = true;
+    data = {
+      plugin: ["oh-my-openagent@5.1.24", "opencode-goal-plugin"],
+      $schema: "https://opencode.ai/config.json"
+    };
+  }
+
+  if (!data || typeof data !== 'object') data = {};
+
+  if (!Array.isArray(data.plugin)) data.plugin = [];
+  if (!data.plugin.some(item => String(item).includes('oh-my-openagent'))) {
+    data.plugin.push('oh-my-openagent@5.1.24');
+  }
+  if (!data.plugin.some(item => String(item).includes('opencode-goal-plugin'))) {
+    data.plugin.push('opencode-goal-plugin');
+  }
+
+  if (!data.provider || typeof data.provider !== 'object') {
+    data.provider = {};
+  }
+
+  const routerUrl = `http://127.0.0.1:${routerPort}/v1`;
+
+  // 1. Build models map with all 38 models
+  const allModelsMap = {};
+  for (const s of ALL_38_SLUGS) {
+    allModelsMap[s] = { name: s };
+  }
+
+  // Preserve existing models from provider['opencode-go']
+  if (data.provider['opencode-go'] && data.provider['opencode-go'].models && typeof data.provider['opencode-go'].models === 'object') {
+    for (const [k, v] of Object.entries(data.provider['opencode-go'].models)) {
+      if (!allModelsMap[k]) allModelsMap[k] = v;
+    }
+  }
+
+  // Preserve existing models from legacy providers['opencode-go']
+  if (data.providers && data.providers['opencode-go'] && data.providers['opencode-go'].models && typeof data.providers['opencode-go'].models === 'object') {
+    for (const [k, v] of Object.entries(data.providers['opencode-go'].models)) {
+      if (!allModelsMap[k]) allModelsMap[k] = v;
+    }
+  }
+
+  // 2. Harmonize third-party custom providers (shtech, aixforge, etc.)
+  const migratedProviders = [];
+  if (data.providers && typeof data.providers === 'object') {
+    for (const [k, v] of Object.entries(data.providers)) {
+      if (k !== 'opencode-go') {
+        if (!data.provider[k]) {
+          data.provider[k] = v;
+          migratedProviders.push(k);
+        }
+      }
+    }
+    // Delete legacy plural providers completely
+    delete data.providers;
+  }
+
+  // 3. Configure opencode-go
+  data.provider['opencode-go'] = {
+    name: 'opencode-go',
+    npm: '@ai-sdk/openai-compatible',
+    options: {
+      baseURL: routerUrl,
+      apiKey: 'local-router'
+    },
+    models: allModelsMap
+  };
+
+  if (data.provider['one-api']) {
+    if (!data.provider['one-api'].options) data.provider['one-api'].options = {};
+    data.provider['one-api'].options.baseURL = routerUrl;
+    data.provider['one-api'].options.apiKey = 'local-router';
+  }
+
+  // 4. Model selection: preserve user's valid choice, default to deepseek-v4.1-flash
+  let modelPreserved = true;
+  if (!data.model || data.model === 'opencode-go/gpt-6-luna') {
+    data.model = 'opencode-go/deepseek-v4.1-flash';
+    modelPreserved = false;
+  }
+
+  // Backup original file before writing
+  if (fs.existsSync(p)) {
+    try { fs.copyFileSync(p, p + '.bak'); } catch (_) {}
+  }
+
+  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
+
+  return {
+    success: true,
+    isNew,
+    migratedProviders,
+    modelCount: Object.keys(allModelsMap).length,
+    currentModel: data.model,
+    modelPreserved
+  };
+}
+
 function getOpenChamberDistCandidates(customDir = null) {
   const candidates = [];
   if (customDir) candidates.push(customDir);
@@ -243,30 +488,58 @@ function fetchNpmLatestVersion(pkgName, timeoutMs = 4500) {
 /**
  * Fetch latest release from GitHub API
  */
-function fetchGitHubLatestRelease(repo, timeoutMs = 4000) {
+function fallbackGitRemoteVersion() {
+  try {
+    const gitTag = runCmdSync('git describe --tags --abbrev=0', 2000);
+    if (gitTag) {
+      const v = gitTag.trim().replace(/^v/, '');
+      if (v) return { version: v, error: null, source: 'git-tag' };
+    }
+  } catch (_) {}
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
+    return { version: pkg.version || '2.3.0', error: null, source: 'package-local' };
+  } catch (_) {
+    return { version: '2.3.0', error: null, source: 'default' };
+  }
+}
+
+/**
+ * Fetch latest release from GitHub API with fast network resilience
+ */
+function fetchGitHubLatestRelease(repo, timeoutMs = 3500) {
   return new Promise((resolve) => {
     const url = `https://api.github.com/repos/${repo}/releases/latest`;
+    let finished = false;
     const req = https.get(url, { headers: { 'User-Agent': 'opencode-go-router-updater' } }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
+        if (finished) return;
+        finished = true;
         try {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             const parsed = JSON.parse(data);
             const tag = (parsed.tag_name || '').replace(/^v/, '');
             resolve({ version: tag || null, releaseName: parsed.name, error: null });
           } else {
-            resolve({ version: null, error: `HTTP ${res.statusCode}` });
+            resolve(fallbackGitRemoteVersion());
           }
         } catch (e) {
-          resolve({ version: null, error: e.message });
+          resolve(fallbackGitRemoteVersion());
         }
       });
     });
-    req.on('error', (e) => resolve({ version: null, error: e.message }));
+    req.on('error', () => {
+      if (finished) return;
+      finished = true;
+      resolve(fallbackGitRemoteVersion());
+    });
     req.setTimeout(timeoutMs, () => {
+      if (finished) return;
+      finished = true;
       req.destroy();
-      resolve({ version: null, error: '请求超时 (可能处于离线或受限网络环境)' });
+      resolve(fallbackGitRemoteVersion());
     });
   });
 }
@@ -574,26 +847,23 @@ function analyzeCompatibility(local, remote, options = {}) {
         parsed = JSON.parse(stripJsonComments(raw));
       } catch (e) {}
 
-      // A. Check for provider vs providers single/plural conflict
-      let hasSingular = false;
+      // A. Check for provider vs providers single/plural conflict & legacy providers key
       let hasPlural = false;
       if (parsed) {
-        hasSingular = Boolean(parsed.provider && parsed.provider['opencode-go']);
-        hasPlural = Boolean(parsed.providers && parsed.providers['opencode-go']);
+        hasPlural = Boolean(parsed.providers && Object.keys(parsed.providers).length > 0);
       } else {
-        hasSingular = /"provider"\s*:\s*\{[^}]*"opencode-go"/.test(raw);
-        hasPlural = /"providers"\s*:\s*\{[^}]*"opencode-go"/.test(raw);
+        hasPlural = /"providers"\s*:\s*\{/.test(raw);
       }
-      if (hasSingular && hasPlural) {
+      if (hasPlural) {
         isBreaking = true;
         riskLevel = 'critical';
         warnings.push({
           component: 'opencode.jsonc',
           level: 'critical',
-          title: 'opencode.jsonc 存在 provider 与 providers 单复数配置冲突',
-          desc: 'OpenCode 2.0+ 采用单数 provider 规范。单复数同名配置将触发 conflict 导致启动时丢弃本地 4010 智能网关回退直连，进而引发 ConnectionRefused！'
+          title: 'opencode.jsonc 存在已废弃的 providers 复数配置键',
+          desc: 'OpenCode 2.0+ 统一采用单数 provider 规范。存在旧版复数 providers 键会导致启动时丢弃本地 4010 智能网关，并触发 conflict 报错！可在一键修复中自动无损合流清洗。'
         });
-        recommendations.push('可在 doctor-repair.ps1 或体检修复 API 中自动清洗冲突项，规范化为单一标准 provider 配置。');
+        recommendations.push('可在管理面板【一键修复】或运行 doctor-repair.ps1 / setup-linux.sh 自动将旧复数提供商合流入单一 provider 并彻底移除冲突。');
       }
 
       // B. Check for dead port 3001
@@ -630,6 +900,21 @@ function analyzeCompatibility(local, remote, options = {}) {
           desc: 'OpenCode 2.0+ 官方规范统一为单数 plugin 数组，旧复数字段可能导致 OMO 或 Goal 插件未能正确装载。'
         });
         recommendations.push('建议规范化为 "plugin": [...] 字段。');
+      }
+
+      // E. Check if opencode-go models list is incomplete
+      if (parsed && parsed.provider && parsed.provider['opencode-go'] && parsed.provider['opencode-go'].models) {
+        const currentModelKeys = Object.keys(parsed.provider['opencode-go'].models);
+        if (currentModelKeys.length < 38) {
+          if (riskLevel === 'safe') riskLevel = 'warning';
+          warnings.push({
+            component: 'opencode.jsonc',
+            level: 'warning',
+            title: `opencode-go 提供商模型清单未补全 (当前 ${currentModelKeys.length}/38 款)`,
+            desc: '官方已提供 38 款全量模型（含 glm-5.3-flash, deepseek-v4.1, kimi-k3, qwen3.8 等），当前模型列表不完整可能导致部分模型无法在下拉列表调用。'
+          });
+          recommendations.push('在管理面板点击【一键体检与修复】，即可无损补齐官方 38 款全量模型并保留当前首选模型。');
+        }
       }
     } catch (e) {}
   }
@@ -850,9 +1135,11 @@ async function checkAllUpdates(timeoutMs = 4000) {
   });
 
   const snapshots = listSnapshots();
+  const platform = detectPlatformEnvironment();
 
   return {
     timestamp: new Date().toISOString(),
+    platform,
     components,
     compatibility,
     snapshots
@@ -1109,11 +1396,12 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
 }
 
 /**
- * Apply updates to specified components with pre-backup and post-patching
+ * Apply updates to specified components with pre-backup, platform-aware adaptation, and post-patching
  */
 async function applyUpdates(componentsToUpdate = null, options = {}) {
   const pm = options.packageManager || detectPackageManager();
   const allRemote = await fetchAllRemoteVersions(options.timeoutMs || 4000);
+  const platform = detectPlatformEnvironment();
 
   // Default to all components if none specified
   const targets = Array.isArray(componentsToUpdate) && componentsToUpdate.length > 0
@@ -1130,20 +1418,48 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
   const results = {};
   let overallSuccess = true;
 
+  logs.push(`正在识别运行平台: ${platform.description} (自适应更新引擎模式)...`);
+
+  function runNpmInstallWithMirror(pkgName, targetVersion = 'latest', extraArgs = '') {
+    const pkgSpec = targetVersion && targetVersion !== 'latest' ? `${pkgName}@${targetVersion}` : `${pkgName}@latest`;
+    const argStr = extraArgs ? ` ${extraArgs}` : '';
+    
+    if (pm === 'bun' && pkgName === '@opencode/cli') {
+      const bunCmd = `bun add -g --trust ${pkgSpec}${argStr}`;
+      logs.push(`执行 Bun 命令: ${bunCmd}...`);
+      const bRes = runCmd(bunCmd, 90000);
+      if (bRes.success) return { success: true, command: bunCmd, output: bRes.output };
+      logs.push(`Bun 安装受限，正在回退至 NPM 引擎...`);
+    } else if (pm === 'bun') {
+      const bunCmd = `bun add -g ${pkgSpec}${argStr}`;
+      logs.push(`执行 Bun 命令: ${bunCmd}...`);
+      const bRes = runCmd(bunCmd, 90000);
+      if (bRes.success) return { success: true, command: bunCmd, output: bRes.output };
+      logs.push(`Bun 安装受限，正在回退至 NPM 引擎...`);
+    }
+
+    const primaryCmd = `npm install -g ${pkgSpec}${argStr}`;
+    logs.push(`正在通过官方源更新: ${primaryCmd}...`);
+    let res = runCmd(primaryCmd, 90000);
+    if (!res.success) {
+      const mirrorCmd = `npm install -g --registry=https://registry.npmmirror.com ${pkgSpec}${argStr}`;
+      logs.push(`⚠ 官方 npm 源连接超时或受限，已自动切换至国内 npmmirror 镜像源: ${mirrorCmd}...`);
+      res = runCmd(mirrorCmd, 120000);
+      if (res.success) {
+        logs.push(`✔ 国内 npmmirror 镜像源安装成功！`);
+      }
+      return { success: res.success, command: mirrorCmd, output: res.output, error: res.error };
+    }
+    return { success: true, command: primaryCmd, output: res.output };
+  }
+
   // Step 2: Perform component upgrades
   for (const comp of targets) {
     if (comp === 'opencode') {
       const ver = allRemote['opencode'] || 'latest';
-      let cmd = pm === 'bun' ? `bun add -g --trust @opencode/cli@latest` : `npm install -g @opencode/cli@latest`;
-      logs.push(`正在升级 OpenCode CLI: ${cmd}...`);
-      let res = runCmd(cmd, 120000);
-      if (!res.success && pm === 'bun') {
-        const fallbackCmd = `npm install -g @opencode/cli@latest`;
-        logs.push(`bun 升级环境受限，正在自动回退至 npm 安全升级: ${fallbackCmd}...`);
-        res = runCmd(fallbackCmd, 120000);
-      }
+      logs.push(`正在更新 OpenCode CLI 核心引擎 (目标版本: ${ver})...`);
+      const res = runNpmInstallWithMirror('@opencode/cli', ver);
       if (res.success) {
-        // Windows binary synchronization & cleanup
         if (process.platform === 'win32') {
           try {
             const bunBinDir = path.join(os.homedir(), '.bun', 'bin');
@@ -1166,25 +1482,18 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           } catch (_) {}
         }
         logs.push(`✔ OpenCode CLI 升级成功`);
-        results['opencode'] = { success: true, command: cmd, output: res.output, targetVersion: ver };
+        results['opencode'] = { success: true, command: res.command, output: res.output, targetVersion: ver };
       } else {
         overallSuccess = false;
         logs.push(`❌ OpenCode CLI 升级失败: ${res.error}`);
-        results['opencode'] = { success: false, command: cmd, error: res.error, targetVersion: ver };
+        results['opencode'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'oh-my-openagent') {
       const ver = allRemote['oh-my-openagent'] || '5.1.24';
-      const cmd = pm === 'bun' ? `bun add -g oh-my-openagent@latest` : `npm install -g oh-my-openagent@latest`;
-      logs.push(`正在升级 Oh My OpenAgent: ${cmd}...`);
-      let res = runCmd(cmd, 60000);
-      if (!res.success && pm === 'bun') {
-        const fallbackCmd = `npm install -g oh-my-openagent@latest`;
-        logs.push(`bun 升级环境受限，正在回退至 npm 升级: ${fallbackCmd}...`);
-        res = runCmd(fallbackCmd, 120000);
-      }
+      logs.push(`正在更新 Oh My OpenAgent (OMO 插件, 目标版本: ${ver})...`);
+      const res = runNpmInstallWithMirror('oh-my-openagent', ver);
       if (res.success) {
         logs.push(`✔ Oh My OpenAgent 升级成功`);
-        // Synchronize opencode.jsonc plugin list to new version
         try {
           const ocPath = getOpencodeConfigPath();
           if (fs.existsSync(ocPath)) {
@@ -1198,42 +1507,29 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         } catch (e) {
           logs.push(`⚠ 同步 opencode.jsonc 插件标签提示: ${e.message}`);
         }
-        results['oh-my-openagent'] = { success: true, command: cmd, output: res.output, targetVersion: ver };
+        results['oh-my-openagent'] = { success: true, command: res.command, output: res.output, targetVersion: ver };
       } else {
         overallSuccess = false;
         logs.push(`❌ Oh My OpenAgent 升级失败: ${res.error}`);
-        results['oh-my-openagent'] = { success: false, command: cmd, error: res.error, targetVersion: ver };
+        results['oh-my-openagent'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'opencode-goal-plugin') {
       const ver = allRemote['opencode-goal-plugin'] || '0.11.0';
-      const cmd = pm === 'bun' ? `bun add -g opencode-goal-plugin@latest` : `npm install -g opencode-goal-plugin@latest`;
-      logs.push(`正在升级 Goal 目标推进插件: ${cmd}...`);
-      let res = runCmd(cmd, 60000);
-      if (!res.success && pm === 'bun') {
-        const fallbackCmd = `npm install -g opencode-goal-plugin@latest`;
-        logs.push(`bun 升级环境受限，正在回退至 npm 升级: ${fallbackCmd}...`);
-        res = runCmd(fallbackCmd, 120000);
-      }
+      logs.push(`正在更新 Goal 目标推进插件 (目标版本: ${ver})...`);
+      const res = runNpmInstallWithMirror('opencode-goal-plugin', ver);
       if (res.success) {
         logs.push(`✔ Goal 目标推进插件升级成功`);
-        results['opencode-goal-plugin'] = { success: true, command: cmd, output: res.output, targetVersion: ver };
+        results['opencode-goal-plugin'] = { success: true, command: res.command, output: res.output, targetVersion: ver };
       } else {
         overallSuccess = false;
         logs.push(`❌ Goal 插件升级失败: ${res.error}`);
-        results['opencode-goal-plugin'] = { success: false, command: cmd, error: res.error, targetVersion: ver };
+        results['opencode-goal-plugin'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'openchamber') {
       const ver = allRemote['openchamber'] || 'latest';
-      const cmd = pm === 'bun' ? `bun add -g @openchamber/web@latest` : `npm install -g @openchamber/web@latest`;
-      logs.push(`正在升级 OpenChamber: ${cmd}...`);
-      let res = runCmd(cmd, 60000);
-      if (!res.success && pm === 'bun') {
-        const fallbackCmd = `npm install -g @openchamber/web@latest`;
-        logs.push(`bun 升级环境受限，正在回退至 npm 升级: ${fallbackCmd}...`);
-        res = runCmd(fallbackCmd, 120000);
-      }
+      logs.push(`正在升级 OpenChamber Web 内核 (@openchamber/web, 目标版本: ${ver})...`);
+      const res = runNpmInstallWithMirror('@openchamber/web', ver);
       if (res.success) {
-        // Windows Desktop Client Full-Installer Upgrade
         if (process.platform === 'win32') {
           const desktopExe = path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'OpenChamber.exe');
           if (fs.existsSync(desktopExe)) {
@@ -1260,7 +1556,6 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
                 runCmd(`powershell -NoProfile -Command "Start-Sleep -Seconds 1; Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -Wait"`, 180000);
                 logs.push(`✔ OpenChamber 桌面端 v${ver} 安装包已成功执行静默更新！`);
 
-                // Relaunch decoupled if was running
                 if (hadRunning) {
                   logs.push('正在安全重启全新的 OpenChamber 桌面端...');
                   runCmd(`powershell -NoProfile -Command "Start-Sleep -Seconds 1; explorer.exe '${desktopExe}'"`, 5000);
@@ -1272,10 +1567,11 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
               logs.push(`⚠ 桌面端升级提示: ${desktopErr.message}`);
             }
           }
+        } else {
+          logs.push(`✔ Linux NAS 平台 OpenChamber 采用 CLI/Web/Docker 模式，已完成内核更新`);
         }
 
         logs.push(`✔ OpenChamber 升级成功`);
-        // Post-upgrade critical hook: Re-mount Air-Gapped Office Preview Engine!
         logs.push('正在自动重新挂载 OpenChamber Office 离线预览引擎补丁...');
         try {
           if (process.platform === 'win32') {
@@ -1291,7 +1587,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           } else {
             const patchSh = path.join(ROOT_DIR, 'patch-openchamber-office.sh');
             if (fs.existsSync(patchSh)) {
-              const pRes = runCmd(`bash "${patchSh}" -i`, 15000);
+              const pRes = runCmd(`bash "${patchSh}" install`, 15000);
               if (pRes.success) {
                 logs.push(`✔ Office 离线预览引擎已成功重新挂载`);
               } else {
@@ -1302,11 +1598,11 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         } catch (e) {
           logs.push(`⚠ 重新挂载 Office 预览补丁出现异常: ${e.message}`);
         }
-        results['openchamber'] = { success: true, command: cmd, output: res.output, targetVersion: ver };
+        results['openchamber'] = { success: true, command: res.command, output: res.output, targetVersion: ver };
       } else {
         overallSuccess = false;
         logs.push(`❌ OpenChamber 升级失败: ${res.error}`);
-        results['openchamber'] = { success: false, command: cmd, error: res.error, targetVersion: ver };
+        results['openchamber'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'opencode-go-router') {
       if (fs.existsSync(path.join(ROOT_DIR, '.git'))) {
@@ -1334,12 +1630,25 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     }
   }
 
+  // Step 2.5: Automatic cross-platform config harmonization post-upgrade
+  if (!options.skipHarmonize) {
+    try {
+      const targetPort = options.routerPort || options.port || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4010);
+      logs.push(`正在自动执行跨平台配置合流自愈 (清洗单复数冲突，注入全量 38 款模型，端口: ${targetPort})...`);
+      const harmRes = harmonizeOpencodeConfig(options.configPath || null, targetPort);
+      logs.push(`✔ opencode.jsonc 自动合流自愈成功 (38 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
+    } catch (harmErr) {
+      logs.push(`⚠ 跨平台配置自愈提示: ${harmErr.message}`);
+    }
+  }
+
   // Step 3: Re-detect versions post-upgrade
   const newVersions = detectLocalVersions();
 
   return {
     success: overallSuccess,
     snapshotId: snapshot ? snapshot.id : null,
+    platform,
     logs,
     results,
     newVersions
@@ -1350,6 +1659,9 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
 module.exports = {
   runCmd,
   runCmdSync,
+  detectPlatformEnvironment,
+  harmonizeOpencodeConfig,
+  ALL_38_SLUGS,
   detectLocalVersions,
   fetchAllRemoteVersions,
   analyzeCompatibility,

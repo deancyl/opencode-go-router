@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.2.3](https://img.shields.io/badge/Version-v2.2.3-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.3.0](https://img.shields.io/badge/Version-v2.3.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -76,6 +76,13 @@
    - **秒级一键回滚恢复 (One-Click Rollback)**：随时可从历史快照中一键还原全部配置文件，灾备无忧；
    - **OpenChamber 补丁无缝自愈重挂载**：在升级 OpenChamber 桌面端或 Web 客户端后，自动重新挂载 Office 离线安全预览补丁，杜绝因组件覆盖导致离线预览失效；
    - **全端协同覆盖**：Web 控制台全新“📦 组件版本与安全更新”面板、Windows `setup-wizard.ps1`、Linux `setup-linux.sh`、`doctor-repair.ps1`（第 7 项更新诊断）、托盘菜单及 `rollback-all.ps1` 全面打通。
+
+9. **平台自适应感知、OpenCode 2.0+ 配置无损合流与双轨国内源容灾系统 (Platform-Aware Auto-Harmonization & Dual-Track Fallback - v2.3.0 重磅发布)**：
+   - **跨平台自适应探测引擎 (`detectPlatformEnvironment`)**：智能感知 Windows 桌面端、Linux 私有 NAS 服务器（fnOS 飞牛私有云、群晖 Synology DSM、TrueNAS、Unraid 等）及容器（Docker）环境，精准探测多卷挂载路径（`/vol*`、`/volume*`、`/fs`），自动匹配对应的更新管理与自愈重载链路；
+   - **OpenCode 2.0+ 废弃键清洗与无损合流 (`harmonizeOpencodeConfig`)**：根除新版 OpenCode 废弃复数 `providers` 键引发的规范性冲突，将用户自定义第三方服务商（如 `shtech`, `aixforge` 等）无损合流进单数 `provider`，全量注入官方 38 款模型清单，完好保留用户自定义微调模型与当前选定模型（如 `glm-5.3-flash`），配置清理后秒级变绿；
+   - **npm / bun 双轨国内镜像源容灾 (`npmmirror`)**：针对国内网络环境下访问 npmjs.org 官方源可能发生的超时或阻断，自动切换至 `https://registry.npmmirror.com` 国内镜像源重试，保障 Linux NAS 与离线环境下更新与依赖安装 100% 成功；
+   - **Linux NAS `--repair` 命令行工具**：`setup-linux.sh` 原生支持 `-r | --repair` 参数，支持离线与在线体检自愈，全卷自动搜寻 OpenChamber 离线 Office 补丁并一键修补挂载；
+   - **自动化回归测试套件扩充至 51 项**：新增 Test 48-51，全面覆盖跨平台环境探测矩阵、配置无损合流与 38 模型注入、Doctor 诊断元数据联动以及双轨镜像容灾，51 项测试 100% 全绿通过。
 
 ---
 
@@ -377,6 +384,15 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.3.0
+- **平台自适应感知、OpenCode 2.0+ 配置合流清洗与双轨国内源容灾 (Platform Intelligence & Zero-Loss Harmonization)**：
+  - **平台自适应探测引擎 (`detectPlatformEnvironment`)**：智能识别 Windows、Linux 私有 NAS（fnOS 飞牛私有云、群晖 Synology DSM、TrueNAS、Unraid 等）及容器环境，自动探测跨卷路径（`/vol*`、`/volume*`、`/fs`），自适应服务守护与重载；
+  - **OpenCode 2.0+ 废弃键清洗与第三方无损合流 (`harmonizeOpencodeConfig`)**：根除复数 `providers` 废弃键，将用户自定义第三方服务商（如 `shtech`, `aixforge` 等）无损迁入单数 `provider`，全量注入 38 款官方模型清单，保留自定义微调与当前偏好模型；
+  - **npm / bun 双轨国内镜像源容灾 (`npmmirror`)**：针对国内网络环境下 npmjs 官方源连接超时或失败，自动无缝降级切换至 `https://registry.npmmirror.com` 国内镜像源重试，彻底保障组件在线升级成功率；
+  - **Linux NAS `--repair` 命令行工具**：`setup-linux.sh` 扩充 `-r | --repair` 参数，支持离线与在线体检自愈，自动检测并挂载全卷 OpenChamber 离线 Office 补丁；
+  - **组件更新动态端口与快照自愈对齐**：更新套件在创建安全快照与合流自愈时严格对齐活跃网关端口，保障灾备快照字节级无损还原；
+  - **自动化测试扩充至 51 项**：新增 Test 48-51 跨平台矩阵测试，51 项测试 100% 全绿通过。
 
 ### 🚀 v2.2.3
 - **原创品牌视觉升级与全尺寸高清 Logo 矩阵 (High-Def Brand Logo & Multi-Res Assets)**：

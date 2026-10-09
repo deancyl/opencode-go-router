@@ -379,69 +379,15 @@ function bindDesktopConfig() {
     const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(homeDir, '.config', 'opencode');
     if (!fs.existsSync(opencodeDir)) fs.mkdirSync(opencodeDir, { recursive: true });
     const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
-    let cfg = {};
-    if (fs.existsSync(opencodeJsonPath)) {
-      try {
-        fs.copyFileSync(opencodeJsonPath, opencodeJsonPath + '.bak');
-      } catch (e) {}
-      cfg = parseJsonSafe(opencodeJsonPath, {});
-    }
-
-    // 确保规范单一的 provider 规范，彻底将 providers 所有项合流并消除冲突
-    if (!cfg.provider || typeof cfg.provider !== 'object') cfg.provider = {};
-
-    // 构造全量 38 款模型清单，兼顾自定义已有模型
-    const allModelsMap = {};
-    if (Array.isArray(codexAdapter.OPENCODE_GO_ALL_MODELS)) {
-      for (const m of codexAdapter.OPENCODE_GO_ALL_MODELS) {
-        allModelsMap[m.slug] = { name: m.slug };
-      }
-    }
-    // 保留旧配置中自定义的模型
-    if (cfg.provider && cfg.provider['opencode-go'] && cfg.provider['opencode-go'].models) {
-      for (const [k, v] of Object.entries(cfg.provider['opencode-go'].models)) {
-        if (!allModelsMap[k]) allModelsMap[k] = v;
-      }
-    }
-    if (cfg.providers && cfg.providers['opencode-go'] && cfg.providers['opencode-go'].models) {
-      for (const [k, v] of Object.entries(cfg.providers['opencode-go'].models)) {
-        if (!allModelsMap[k]) allModelsMap[k] = v;
-      }
-    }
-
-    // 彻底将旧版复数 providers 中的所有第三方提供商（如 shtech, aixforge 等）无损合流进 provider
-    if (cfg.providers && typeof cfg.providers === 'object') {
-      for (const [pKey, pVal] of Object.entries(cfg.providers)) {
-        if (pKey !== 'opencode-go' && !cfg.provider[pKey]) {
-          cfg.provider[pKey] = pVal;
-        }
-      }
-      delete cfg.providers;
-    }
-
-    cfg.provider['opencode-go'] = {
-      name: 'opencode-go',
-      npm: '@ai-sdk/openai-compatible',
-      options: {
-        baseURL: routerUrl,
-        apiKey: 'local-router'
-      },
-      models: allModelsMap
-    };
-    if (cfg.provider['one-api']) {
-      cfg.provider['one-api'].options = {
-        baseURL: routerUrl,
-        apiKey: 'local-router'
-      };
-    }
-    if (!cfg.model || cfg.model === 'opencode-go/gpt-6-luna') {
-      cfg.model = 'opencode-go/deepseek-v4.1-flash';
-      result.messages.push('已将 OpenCode 全局首选模型设置为 opencode-go/deepseek-v4.1-flash');
+    const updater = require('./updater');
+    const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port);
+    result.opencode = harmRes.success;
+    if (harmRes.modelPreserved) {
+      result.messages.push(`已保留当前 OpenCode 全局首选模型 (${harmRes.currentModel})`);
     } else {
-      result.messages.push(`已保留当前 OpenCode 全局首选模型 (${cfg.model})`);
+      result.messages.push(`已将 OpenCode 全局首选模型设置为 ${harmRes.currentModel}`);
     }
-    fs.writeFileSync(opencodeJsonPath, JSON.stringify(cfg, null, 2), 'utf8');
-    result.opencode = true;
+    result.messages.push(`已规范单一 provider 链路，全量覆盖 38 款官方模型，无损消除单复数冲突`);
   } catch (err) {
     result.messages.push('OpenCode 配置失败: ' + err.message);
   }
@@ -1338,40 +1284,14 @@ function findDefaultWorkspace() {
 }
 
 function getOpenChamberDistCandidates(customDir = null) {
-  const candidates = [];
-  if (customDir) candidates.push(customDir);
-  if (process.platform === 'win32') {
-    if (process.env.LOCALAPPDATA) {
-      candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', '@openchamberelectron', 'resources', 'web-dist'));
-      candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'OpenChamber', 'resources', 'web-dist'));
-    }
-    candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Programs', '@openchamberelectron', 'resources', 'web-dist'));
-    candidates.push(path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'OpenChamber', 'resources', 'web-dist'));
-    candidates.push(path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'));
-    candidates.push(path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'public'));
-    if (process.env.APPDATA) {
-      candidates.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@openchamber', 'web', 'dist'));
-    }
-  } else {
-    candidates.push(
-      '/vol3/1000/docker/openchamber/web/dist',
-      '/vol3/1000/docker/openchamber/dist',
-      '/vol1/1000/docker/openchamber/web/dist',
-      '/vol1/1000/docker/openchamber/dist',
-      '/vol2/1000/docker/openchamber/web/dist',
-      '/vol4/1000/docker/openchamber/web/dist',
-      '/volume1/docker/openchamber/web/dist',
-      '/volume1/docker/openchamber/dist',
-      '/volume2/docker/openchamber/web/dist',
-      '/mnt/user/appdata/openchamber/web/dist',
-      '/var/lib/openchamber/web/dist',
-      '/var/lib/openchamber/dist',
-      '/usr/local/lib/node_modules/@openchamber/web/dist',
-      path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'),
-      path.join(os.homedir(), '.openchamber', 'web-dist')
-    );
+  try {
+    const updater = require('./updater');
+    return updater.getOpenChamberDistCandidates(customDir);
+  } catch (_) {
+    const candidates = [];
+    if (customDir) candidates.push(customDir);
+    return candidates;
   }
-  return candidates;
 }
 
 function findOpenCodeBinary() {
@@ -1448,6 +1368,9 @@ function runSystemDoctor() {
       exists: false,
       gitInitialized: false
     },
+    platform: (function() {
+      try { return require('./updater').detectPlatformEnvironment(); } catch (_) { return { platform: process.platform, isWindows: process.platform === 'win32', isLinux: process.platform === 'linux' }; }
+    })(),
     issues: []
   };
 
@@ -1574,22 +1497,34 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
       // 检测 provider 与 providers 冲突 (OpenCode normalization conflict)
       let hasPlural = false;
       let hasSingular = false;
+      let modelCount = 0;
       try {
         const parsed = JSON.parse(stripJsonComments(raw));
-        hasPlural = Boolean(parsed.providers && parsed.providers['opencode-go']);
+        hasPlural = Boolean(parsed.providers && Object.keys(parsed.providers).length > 0);
         hasSingular = Boolean(parsed.provider && parsed.provider['opencode-go']);
+        if (parsed.provider && parsed.provider['opencode-go'] && parsed.provider['opencode-go'].models) {
+          modelCount = Object.keys(parsed.provider['opencode-go'].models).length;
+        }
       } catch (e) {
-        hasPlural = /"providers"\s*:\s*\{[^}]*"opencode-go"/s.test(raw);
+        hasPlural = /"providers"\s*:\s*\{/s.test(raw);
         hasSingular = /"provider"\s*:\s*\{[^}]*"opencode-go"/s.test(raw);
       }
-      report.opencodeConfig.hasConflict = hasPlural && hasSingular;
+      report.opencodeConfig.hasConflict = hasPlural;
 
       if (report.opencodeConfig.hasConflict) {
         report.issues.push({
           id: 'config_conflict',
           severity: 'high',
-          title: 'opencode.jsonc 存在单复数提供商配置冲突',
-          desc: '同时存在 provider 与 providers 会触发 OpenCode 冲突诊断并丢弃网关设置，可一键自动清除冲突'
+          title: 'opencode.jsonc 存在已废弃的 providers 复数配置键',
+          desc: 'OpenCode 2.0+ 统一采用单数 provider 规范，外层存在 providers 会导致启动时丢弃本地网关并报 conflict 错误，可一键自动合流清洗'
+        });
+      }
+      if (hasSingular && modelCount > 0 && modelCount < 38) {
+        report.issues.push({
+          id: 'models_incomplete',
+          severity: 'low',
+          title: `opencode-go 官方模型清单未补全 (当前 ${modelCount}/38 款)`,
+          desc: '官方提供 38 款全量模型，当前清单未补齐可能导致部分模型无法直接选择，点击一键修复即可全量补全'
         });
       }
       if (report.opencodeConfig.hasDeadPort3001) {
@@ -1685,106 +1620,20 @@ function executeSystemRepair() {
   }
   results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却状态' });
 
-  // 2. Safe Repair / Initialization of opencode.jsonc
+  // 2. Harmonize & Repair opencode.jsonc
   const ocDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
   const ocPath = path.join(ocDir, 'opencode.jsonc');
   try {
-    if (!fs.existsSync(ocDir)) {
-      fs.mkdirSync(ocDir, { recursive: true });
-    }
-
-    let ocData = {};
-    let isNew = false;
-    if (fs.existsSync(ocPath)) {
-      const raw = fs.readFileSync(ocPath, 'utf8');
-      try {
-        ocData = JSON.parse(stripJsonComments(raw));
-      } catch (e) {
-        // If JSON parse fails (e.g. malformed syntax), do a string backup & replacement
-        fs.copyFileSync(ocPath, ocPath + '.bak');
-        let fixedRaw = raw.replace(/http:\/\/127\.0\.0\.1:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`)
-                          .replace(/http:\/\/localhost:3001(\/v1)?/g, `http://127.0.0.1:${config.port}/v1`);
-        fs.writeFileSync(ocPath, fixedRaw, 'utf8');
-      }
-    } else {
-      isNew = true;
-      ocData = {
-        plugin: ["oh-my-openagent@5.1.24", "opencode-goal-plugin"],
-        $schema: "https://opencode.ai/config.json",
-        provider: {}
-      };
-    }
-
-    if (typeof ocData === 'object' && ocData !== null) {
-      if (!Array.isArray(ocData.plugin)) ocData.plugin = [];
-      if (!ocData.plugin.some(p => String(p).includes('oh-my-openagent'))) {
-        ocData.plugin.push('oh-my-openagent@5.1.24');
-      }
-      if (!ocData.plugin.some(p => String(p).includes('opencode-goal-plugin'))) {
-        ocData.plugin.push('opencode-goal-plugin');
-      }
-
-      if (!ocData.provider || typeof ocData.provider !== 'object') ocData.provider = {};
-
-      const routerUrl = `http://127.0.0.1:${config.port}/v1`;
-      const allModelsMap = {};
-      if (Array.isArray(codexAdapter.OPENCODE_GO_ALL_MODELS)) {
-        for (const m of codexAdapter.OPENCODE_GO_ALL_MODELS) {
-          allModelsMap[m.slug] = { name: m.slug };
-        }
-      }
-      // 保留旧配置中已有的 models
-      if (ocData.provider && ocData.provider['opencode-go'] && ocData.provider['opencode-go'].models) {
-        for (const [k, v] of Object.entries(ocData.provider['opencode-go'].models)) {
-          if (!allModelsMap[k]) allModelsMap[k] = v;
-        }
-      }
-      if (ocData.providers && ocData.providers['opencode-go'] && ocData.providers['opencode-go'].models) {
-        for (const [k, v] of Object.entries(ocData.providers['opencode-go'].models)) {
-          if (!allModelsMap[k]) allModelsMap[k] = v;
-        }
-      }
-
-      // 关键自愈：彻底将旧版复数 providers 中的所有第三方提供商（如 shtech, aixforge 等）无损合流进 provider，彻底删除 providers
-      if (ocData.providers && typeof ocData.providers === 'object') {
-        for (const [pKey, pVal] of Object.entries(ocData.providers)) {
-          if (pKey !== 'opencode-go' && !ocData.provider[pKey]) {
-            ocData.provider[pKey] = pVal;
-          }
-        }
-        delete ocData.providers;
-      }
-
-      if (!ocData.provider['opencode-go']) {
-        ocData.provider['opencode-go'] = {
-          name: 'opencode-go',
-          npm: '@ai-sdk/openai-compatible',
-          options: {
-            baseURL: routerUrl,
-            apiKey: 'local-router'
-          },
-          models: allModelsMap
-        };
-      } else {
-        if (!ocData.provider['opencode-go'].options) ocData.provider['opencode-go'].options = {};
-        ocData.provider['opencode-go'].options.baseURL = routerUrl;
-        if (!ocData.provider['opencode-go'].options.apiKey) {
-          ocData.provider['opencode-go'].options.apiKey = 'local-router';
-        }
-        ocData.provider['opencode-go'].models = allModelsMap;
-      }
-
-      if (!ocData.model || ocData.model === 'opencode-go/gpt-6-luna') {
-        ocData.model = 'opencode-go/deepseek-v4.1-flash';
-      }
-
-      fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), 'utf8');
-      results.push({
-        item: 'OpenCode Config',
-        success: true,
-        message: isNew ? '已自动生成 opencode.jsonc 并绑定 4010 智能网关' : `已安全更新 opencode-go 绑定至 127.0.0.1:${config.port}/v1 (保留其他服务商配置)`
-      });
-    }
+    const updater = require('./updater');
+    const harmRes = updater.harmonizeOpencodeConfig(ocPath, config.port);
+    const migMsg = harmRes.migratedProviders.length > 0 ? ` (已合流第三方服务商: ${harmRes.migratedProviders.join(', ')})` : '';
+    results.push({
+      item: 'OpenCode Config',
+      success: true,
+      message: harmRes.isNew
+        ? '已自动生成 opencode.jsonc 并绑定 4010 智能网关'
+        : `已清洗旧复数 providers 冲突，全量补齐 38 款模型${migMsg}，保留当前首选模型 (${harmRes.currentModel})`
+    });
   } catch (e) {
     results.push({ item: 'OpenCode Config', success: false, message: '修复 opencode.jsonc 失败: ' + e.message });
   }
@@ -2743,6 +2592,7 @@ $ghost
       if (body.length > 0) {
         try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
       }
+      payload.routerPort = payload.routerPort || config.port;
       updater.applyUpdates(payload.components || null, payload).then((results) => {
         loadConfig();
         syncAccountStats();
