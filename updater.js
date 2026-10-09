@@ -224,9 +224,12 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
   if (fs.existsSync(p)) {
     try {
       const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
-      data = JSON.parse(stripJsonComments(raw));
+      if (raw.trim().length > 0) {
+        data = JSON.parse(stripJsonComments(raw));
+      }
     } catch (e) {
-      data = {};
+      try { fs.copyFileSync(p, p + '.corrupt-bak.' + Date.now()); } catch (_) {}
+      throw new Error(`解析 ${path.basename(p)} 失败 (已保留快照备份): ${e.message}`);
     }
   } else {
     isNew = true;
@@ -258,17 +261,29 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
     allModelsMap[s] = { name: s };
   }
 
-  // Preserve existing models from provider['opencode-go']
+  // Preserve existing models and custom parameters from provider['opencode-go']
   if (data.provider['opencode-go'] && data.provider['opencode-go'].models && typeof data.provider['opencode-go'].models === 'object') {
     for (const [k, v] of Object.entries(data.provider['opencode-go'].models)) {
-      if (!allModelsMap[k]) allModelsMap[k] = v;
+      if (allModelsMap[k]) {
+        if (typeof v === 'object' && v !== null) {
+          allModelsMap[k] = Object.assign({}, allModelsMap[k], v);
+        }
+      } else {
+        allModelsMap[k] = v;
+      }
     }
   }
 
-  // Preserve existing models from legacy providers['opencode-go']
+  // Preserve existing models and custom parameters from legacy providers['opencode-go']
   if (data.providers && data.providers['opencode-go'] && data.providers['opencode-go'].models && typeof data.providers['opencode-go'].models === 'object') {
     for (const [k, v] of Object.entries(data.providers['opencode-go'].models)) {
-      if (!allModelsMap[k]) allModelsMap[k] = v;
+      if (allModelsMap[k]) {
+        if (typeof v === 'object' && v !== null) {
+          allModelsMap[k] = Object.assign({}, allModelsMap[k], v);
+        }
+      } else {
+        allModelsMap[k] = v;
+      }
     }
   }
 
@@ -306,7 +321,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
 
   // 4. Model selection: preserve user's valid choice, default to deepseek-v4.1-flash
   let modelPreserved = true;
-  if (!data.model || data.model === 'opencode-go/gpt-6-luna') {
+  if (!data.model || data.model === 'opencode-go/gpt-6-luna' || data.model === 'gpt-6-luna') {
     data.model = 'opencode-go/deepseek-v4.1-flash';
     modelPreserved = false;
   }
@@ -418,6 +433,94 @@ function runCmd(cmd, timeoutMs = 60000, customCwd = ROOT_DIR) {
 function runCmdSync(cmd, timeoutMs = 5000) {
   const res = runCmd(cmd, timeoutMs);
   return res.success ? res.output : null;
+}
+
+/**
+ * Checks if the current process has write permissions to global npm node_modules
+ */
+function canWriteGlobalNpm(customOverrides = {}) {
+  if (customOverrides.canWriteGlobal !== undefined) return Boolean(customOverrides.canWriteGlobal);
+  if (process.platform === 'win32') return true;
+  try {
+    const rootG = runCmdSync('npm root -g', 2000);
+    if (rootG && fs.existsSync(rootG.trim())) {
+      const testDir = rootG.trim();
+      fs.accessSync(testDir, fs.constants.W_OK);
+      return true;
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Locates the local target project directory for a component on Linux NAS
+ */
+function findScopedComponentDir(comp, customOverrides = {}) {
+  if (customOverrides.scopedDirs && customOverrides.scopedDirs[comp]) {
+    return customOverrides.scopedDirs[comp];
+  }
+  if (process.platform === 'win32') return null;
+
+  if (comp === 'oh-my-openagent' || comp === 'opencode-goal-plugin') {
+    const ocDir = path.join(os.homedir(), '.config', 'opencode');
+    if (fs.existsSync(path.join(ocDir, 'package.json'))) return ocDir;
+    if (fs.existsSync(ocDir)) return ocDir;
+  }
+
+  if (comp === 'openchamber' || comp === 'opencode') {
+    // 1. Search candidate openchamber dirs
+    const cands = getOpenChamberDistCandidates();
+    for (const c of cands) {
+      let cur = c;
+      for (let i = 0; i < 4; i++) {
+        const pkg = path.join(cur, 'package.json');
+        if (fs.existsSync(pkg)) {
+          try {
+            const raw = fs.readFileSync(pkg, 'utf8');
+            if (comp === 'openchamber' && (raw.includes('@openchamber/web') || raw.includes('openchamber'))) {
+              return cur;
+            }
+            if (comp === 'opencode' && (raw.includes('@opencode/cli') || raw.includes('opencode'))) {
+              return cur;
+            }
+          } catch (_) {}
+        }
+        const parent = path.dirname(cur);
+        if (parent === cur) break;
+        cur = parent;
+      }
+    }
+
+    // 2. Dynamic check via binary realpaths
+    try {
+      const binName = comp === 'openchamber' ? 'openchamber' : 'opencode';
+      const whichOut = runCmdSync(`which ${binName}`, 2000);
+      if (whichOut) {
+        const first = whichOut.split(/\r?\n/)[0].trim();
+        if (first && fs.existsSync(first)) {
+          const real = fs.realpathSync(first);
+          let cur = path.dirname(real);
+          for (let i = 0; i < 4; i++) {
+            const pkg = path.join(cur, 'package.json');
+            if (fs.existsSync(pkg)) return cur;
+            const parent = path.dirname(cur);
+            if (parent === cur) break;
+            cur = parent;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Check ~/.config/opencode for opencode
+    if (comp === 'opencode') {
+      const ocDir = path.join(os.homedir(), '.config', 'opencode');
+      if (fs.existsSync(path.join(ocDir, 'package.json'))) return ocDir;
+    }
+  }
+
+  return null;
 }
 
 function detectPackageManager() {
@@ -578,6 +681,8 @@ function detectLocalVersions() {
       path.join(process.env.APPDATA || '', 'npm', 'opencode.cmd'),
       path.join(os.homedir(), '.bun', 'bin', 'opencode.exe'),
       path.join(os.homedir(), '.bun', 'bin', 'opencode'),
+      path.join(os.homedir(), '.opencode', 'bin', 'opencode'),
+      path.join(os.homedir(), '.local', 'bin', 'opencode'),
       '/usr/local/bin/opencode',
       '/usr/bin/opencode'
     ];
@@ -1379,11 +1484,23 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
       } else {
         const patchSh = path.join(ROOT_DIR, 'patch-openchamber-office.sh');
         if (fs.existsSync(patchSh)) {
-          const res = runCmd(`bash "${patchSh}" -i`, 10000);
+          const res = runCmd(`bash "${patchSh}" install`, 10000);
           restoredItems.push({ action: 'reapply_office_patch', status: res.success ? 'success' : 'failed' });
         }
       }
     } catch (e) {}
+  }
+
+  // 6. Linux NAS: Smoothly reload user daemon services
+  if (process.platform === 'linux') {
+    try {
+      const hasSystemd = runCmdSync('systemctl --user --version', 2000);
+      if (hasSystemd) {
+        runCmd('systemctl --user restart openchamber.service', 10000);
+        runCmd('systemctl --user restart opencode-server.service', 10000);
+        restoredItems.push({ action: 'reload_daemons', status: 'success' });
+      }
+    } catch (_) {}
   }
 
   return {
@@ -1401,7 +1518,7 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
 async function applyUpdates(componentsToUpdate = null, options = {}) {
   const pm = options.packageManager || detectPackageManager();
   const allRemote = await fetchAllRemoteVersions(options.timeoutMs || 4000);
-  const platform = detectPlatformEnvironment();
+  const platform = detectPlatformEnvironment(options);
 
   // Default to all components if none specified
   const targets = Array.isArray(componentsToUpdate) && componentsToUpdate.length > 0
@@ -1420,31 +1537,57 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
 
   logs.push(`正在识别运行平台: ${platform.description} (自适应更新引擎模式)...`);
 
-  function runNpmInstallWithMirror(pkgName, targetVersion = 'latest', extraArgs = '') {
+  function runNpmInstallWithMirror(pkgName, targetVersion = 'latest', extraArgs = '', compId = null) {
     const pkgSpec = targetVersion && targetVersion !== 'latest' ? `${pkgName}@${targetVersion}` : `${pkgName}@latest`;
     const argStr = extraArgs ? ` ${extraArgs}` : '';
-    
+
+    const scopedDir = compId ? findScopedComponentDir(compId, options) : null;
+    const canGlobal = canWriteGlobalNpm(options);
+
+    let installPrefixArg = '';
+    let runCwd = ROOT_DIR;
+
+    if (process.platform !== 'win32') {
+      if (scopedDir) {
+        installPrefixArg = `--prefix "${scopedDir}"`;
+        runCwd = scopedDir;
+        logs.push(`[Linux NAS 智能自适应] 定位到 ${pkgName} 本地运行工作区: ${scopedDir}`);
+      } else if (!canGlobal) {
+        const userLocal = path.join(os.homedir(), '.local');
+        installPrefixArg = `-g --prefix "${userLocal}"`;
+        logs.push(`[Linux NAS 权限自愈] 全局 npm 目录缺少 root 写入权限，已自动切换至用户空间安全前缀: ${userLocal}`);
+      } else {
+        installPrefixArg = '-g';
+      }
+    } else {
+      installPrefixArg = '-g';
+    }
+
     if (pm === 'bun' && pkgName === '@opencode/cli') {
-      const bunCmd = `bun add -g --trust ${pkgSpec}${argStr}`;
+      const bunCmd = scopedDir
+        ? `bun add --cwd "${scopedDir}" --trust ${pkgSpec}${argStr}`
+        : `bun add -g --trust ${pkgSpec}${argStr}`;
       logs.push(`执行 Bun 命令: ${bunCmd}...`);
-      const bRes = runCmd(bunCmd, 90000);
+      const bRes = runCmd(bunCmd, 90000, runCwd);
       if (bRes.success) return { success: true, command: bunCmd, output: bRes.output };
       logs.push(`Bun 安装受限，正在回退至 NPM 引擎...`);
     } else if (pm === 'bun') {
-      const bunCmd = `bun add -g ${pkgSpec}${argStr}`;
+      const bunCmd = scopedDir
+        ? `bun add --cwd "${scopedDir}" ${pkgSpec}${argStr}`
+        : `bun add -g ${pkgSpec}${argStr}`;
       logs.push(`执行 Bun 命令: ${bunCmd}...`);
-      const bRes = runCmd(bunCmd, 90000);
+      const bRes = runCmd(bunCmd, 90000, runCwd);
       if (bRes.success) return { success: true, command: bunCmd, output: bRes.output };
       logs.push(`Bun 安装受限，正在回退至 NPM 引擎...`);
     }
 
-    const primaryCmd = `npm install -g ${pkgSpec}${argStr}`;
+    const primaryCmd = `npm install ${installPrefixArg} ${pkgSpec}${argStr}`.replace(/\s+/g, ' ');
     logs.push(`正在通过官方源更新: ${primaryCmd}...`);
-    let res = runCmd(primaryCmd, 90000);
+    let res = runCmd(primaryCmd, 90000, runCwd);
     if (!res.success) {
-      const mirrorCmd = `npm install -g --registry=https://registry.npmmirror.com ${pkgSpec}${argStr}`;
+      const mirrorCmd = `npm install ${installPrefixArg} --registry=https://registry.npmmirror.com ${pkgSpec}${argStr}`.replace(/\s+/g, ' ');
       logs.push(`⚠ 官方 npm 源连接超时或受限，已自动切换至国内 npmmirror 镜像源: ${mirrorCmd}...`);
-      res = runCmd(mirrorCmd, 120000);
+      res = runCmd(mirrorCmd, 120000, runCwd);
       if (res.success) {
         logs.push(`✔ 国内 npmmirror 镜像源安装成功！`);
       }
@@ -1458,7 +1601,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     if (comp === 'opencode') {
       const ver = allRemote['opencode'] || 'latest';
       logs.push(`正在更新 OpenCode CLI 核心引擎 (目标版本: ${ver})...`);
-      const res = runNpmInstallWithMirror('@opencode/cli', ver);
+      const res = runNpmInstallWithMirror('@opencode/cli', ver, '', 'opencode');
       if (res.success) {
         if (process.platform === 'win32') {
           try {
@@ -1491,7 +1634,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     } else if (comp === 'oh-my-openagent') {
       const ver = allRemote['oh-my-openagent'] || '5.1.24';
       logs.push(`正在更新 Oh My OpenAgent (OMO 插件, 目标版本: ${ver})...`);
-      const res = runNpmInstallWithMirror('oh-my-openagent', ver);
+      const res = runNpmInstallWithMirror('oh-my-openagent', ver, '', 'oh-my-openagent');
       if (res.success) {
         logs.push(`✔ Oh My OpenAgent 升级成功`);
         try {
@@ -1516,7 +1659,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     } else if (comp === 'opencode-goal-plugin') {
       const ver = allRemote['opencode-goal-plugin'] || '0.11.0';
       logs.push(`正在更新 Goal 目标推进插件 (目标版本: ${ver})...`);
-      const res = runNpmInstallWithMirror('opencode-goal-plugin', ver);
+      const res = runNpmInstallWithMirror('opencode-goal-plugin', ver, '', 'opencode-goal-plugin');
       if (res.success) {
         logs.push(`✔ Goal 目标推进插件升级成功`);
         results['opencode-goal-plugin'] = { success: true, command: res.command, output: res.output, targetVersion: ver };
@@ -1528,7 +1671,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     } else if (comp === 'openchamber') {
       const ver = allRemote['openchamber'] || 'latest';
       logs.push(`正在升级 OpenChamber Web 内核 (@openchamber/web, 目标版本: ${ver})...`);
-      const res = runNpmInstallWithMirror('@openchamber/web', ver);
+      const res = runNpmInstallWithMirror('@openchamber/web', ver, '', 'openchamber');
       if (res.success) {
         if (process.platform === 'win32') {
           const desktopExe = path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'OpenChamber.exe');
@@ -1624,8 +1767,16 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           }
         }
       } else {
-        logs.push('智能网关套件处于独立部署模式，无需 git pull');
-        results['opencode-go-router'] = { success: true, method: 'standalone' };
+        logs.push('智能网关套件处于独立部署模式，正在拉取最新代码压缩包更新...');
+        const dlCmd = `curl -sSL https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+        const res = runCmd(dlCmd, 30000);
+        if (res.success) {
+          logs.push('✔ 独立部署模式下代码包已同步至最新版本');
+          results['opencode-go-router'] = { success: true, method: 'tarball-pull', output: res.output };
+        } else {
+          logs.push(`⚠ 拉取最新代码包提示: ${res.error}，保留当前版本运行`);
+          results['opencode-go-router'] = { success: true, method: 'standalone', error: res.error };
+        }
       }
     }
   }
@@ -1639,6 +1790,55 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
       logs.push(`✔ opencode.jsonc 自动合流自愈成功 (38 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
     } catch (harmErr) {
       logs.push(`⚠ 跨平台配置自愈提示: ${harmErr.message}`);
+    }
+  }
+
+  // Step 2.6: Linux NAS Graceful Daemon Service Reload
+  if (platform.isLinux) {
+    try {
+      logs.push('正在检测 Linux NAS 运行中的守护服务以执行平滑热重载...');
+      const hasSystemd = platform.serviceManager === 'systemd' || runCmdSync('systemctl --user --version', 2000);
+      if (hasSystemd) {
+        // 1. OpenChamber service reload
+        const chamberActive = runCmdSync('systemctl --user is-active openchamber.service', 2000);
+        if (chamberActive && chamberActive.trim() === 'active') {
+          logs.push('正在平滑重启 openchamber.service 守护服务...');
+          const rRes = runCmd('systemctl --user restart openchamber.service', 15000);
+          if (rRes.success) {
+            logs.push('✔ openchamber.service 已成功热重载');
+          } else {
+            logs.push(`⚠ openchamber.service 重载提示: ${rRes.error}`);
+          }
+        }
+
+        // 2. OpenCode server service reload
+        const opencodeActive = runCmdSync('systemctl --user is-active opencode-server.service', 2000);
+        if (opencodeActive && opencodeActive.trim() === 'active') {
+          logs.push('正在平滑重启 opencode-server.service 守护服务...');
+          const oRes = runCmd('systemctl --user restart opencode-server.service', 15000);
+          if (oRes.success) {
+            logs.push('✔ opencode-server.service 已成功热重载');
+          } else {
+            logs.push(`⚠ opencode-server.service 重载提示: ${oRes.error}`);
+          }
+        }
+
+        // 3. Router service reload if router itself was updated
+        if (targets.includes('opencode-go-router') && results['opencode-go-router'] && results['opencode-go-router'].success) {
+          const routerActive = runCmdSync('systemctl --user is-active opencode-router.service', 2000);
+          if (routerActive && routerActive.trim() === 'active') {
+            logs.push('检测到智能网关核心代码已更新，正在计划热重载 opencode-router.service...');
+            setTimeout(() => {
+              try { runCmd('systemctl --user restart opencode-router.service', 10000); } catch (_) {}
+            }, 1000);
+            logs.push('✔ opencode-router.service 热重载指令已排队派发 (1 秒后生效)');
+          }
+        }
+      } else {
+        logs.push('✔ 运行于非 systemd 模式 (nohup/独立进程)，服务将在下次调用时加载最新代码');
+      }
+    } catch (reloadErr) {
+      logs.push(`⚠ 守护服务热重载提示: ${reloadErr.message}`);
     }
   }
 
@@ -1677,7 +1877,9 @@ module.exports = {
   getOmoConfigPath,
   getRouterConfigPath,
   getSnapshotsDir,
-  getOpenChamberDistCandidates
+  getOpenChamberDistCandidates,
+  canWriteGlobalNpm,
+  findScopedComponentDir
 };
 
 // CLI entry point

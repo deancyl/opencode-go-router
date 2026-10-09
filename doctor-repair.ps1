@@ -169,6 +169,24 @@ if (Test-Path $opencodeConfig) {
         Write-Host "  ✔ 未发现单复数配置冲突 (规范单一 provider)" -ForegroundColor Green
     }
 
+    # 检测 38 款全量模型是否完整
+    $modelCount = 0
+    try {
+        $parsedJson = $ocContent | ConvertFrom-Json
+        if ($parsedJson.provider -and $parsedJson.provider.'opencode-go' -and $parsedJson.provider.'opencode-go'.models) {
+            $modelCount = ($parsedJson.provider.'opencode-go'.models.PSObject.Properties | Measure-Object).Count
+        }
+    } catch {}
+    if ($modelCount -gt 0 -and $modelCount -lt 38) {
+        Write-Host "  ⚠ opencode-go 官方模型清单未补全 (当前 $modelCount/38 款)" -ForegroundColor Yellow
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "models_incomplete"
+            Title = "opencode-go 官方模型清单未补全 (当前 $modelCount/38 款)"
+            Severity = "Low"
+            FixDesc = "自动补齐官方 38 款全量模型并保留当前首选模型与自定义微调模型"
+        })
+    }
+
     # 检测 4010 网关绑定
     if ($ocContent -notlike "*127.0.0.1:4010*") {
         Write-Host "  ⚠ opencode-go 未指向 4010 智能网关" -ForegroundColor Yellow
@@ -558,6 +576,19 @@ foreach ($iss in $issuesFound) {
                 }
             } catch {
                 Write-Host "    ⚠ 绑定失败: $_" -ForegroundColor Red
+            }
+        }
+        "models_incomplete" {
+            Write-Host " -> 正在补全 opencode-go 38 款官方全量模型..." -ForegroundColor Yellow
+            try {
+                $updaterScript = Join-Path $PSScriptRoot "updater.js"
+                if (Test-Path $updaterScript) {
+                    $escPath = $opencodeConfig.Replace('\', '/')
+                    node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                    Write-Host "    ✔ 38 款官方全量模型已就绪，当前首选模型已保留" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ 补全模型失败: $_" -ForegroundColor Red
             }
         }
         "openchamber_ghost_process" {

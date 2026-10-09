@@ -1749,44 +1749,39 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
   try {
     const patchScriptWin = path.join(__dirname, 'patch-openchamber-office.ps1');
     const patchScriptLinux = path.join(__dirname, 'patch-openchamber-office.sh');
-    if (process.platform === 'win32' && fs.existsSync(patchScriptWin)) {
-      let needsPatch = false;
-      const candDists = getOpenChamberDistCandidates();
-      for (const d of candDists) {
-        const idx = path.join(d, 'index.html');
-        if (fs.existsSync(idx)) {
-          const content = fs.readFileSync(idx, 'utf8');
-          if (!content.includes('office-preview-engine.js')) {
-            needsPatch = true;
-          }
-          break;
+    let foundDist = null;
+    let needsPatch = false;
+    const candDists = getOpenChamberDistCandidates();
+    for (const d of candDists) {
+      const idx = path.join(d, 'index.html');
+      if (fs.existsSync(idx)) {
+        foundDist = d;
+        const content = fs.readFileSync(idx, 'utf8');
+        if (!content.includes('office-preview-engine.js')) {
+          needsPatch = true;
+        }
+        break;
+      }
+    }
+
+    if (foundDist) {
+      if (process.platform === 'win32' && fs.existsSync(patchScriptWin)) {
+        if (needsPatch) {
+          execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${patchScriptWin}" -Install`, { timeout: 10000, stdio: 'ignore' });
+          results.push({ item: 'Office Preview Engine', success: true, message: '已自动挂载 OpenChamber 全能 Office 离线预览引擎' });
+        } else {
+          results.push({ item: 'Office Preview Engine', success: true, message: '已就绪：Office 离线安全预览引擎已处于挂载状态' });
+        }
+      } else if (process.platform === 'linux' && fs.existsSync(patchScriptLinux)) {
+        if (needsPatch) {
+          execSync(`bash "${patchScriptLinux}" install`, { timeout: 10000, stdio: 'ignore' });
+          results.push({ item: 'Office Preview Engine', success: true, message: '已自动挂载 OpenChamber 全能 Office 离线预览引擎' });
+        } else {
+          results.push({ item: 'Office Preview Engine', success: true, message: '已就绪：Office 离线安全预览引擎已处于挂载状态' });
         }
       }
-      if (needsPatch) {
-        execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${patchScriptWin}" -Install`, { timeout: 10000, stdio: 'ignore' });
-        results.push({ item: 'Office Preview Engine', success: true, message: '已自动挂载 OpenChamber 全能 Office 离线预览引擎' });
-      } else {
-        results.push({ item: 'Office Preview Engine', success: true, message: '已就绪：Office 离线安全预览引擎已处于挂载状态' });
-      }
-    } else if (process.platform === 'linux' && fs.existsSync(patchScriptLinux)) {
-      let needsPatch = false;
-      const candDists = getOpenChamberDistCandidates();
-      for (const d of candDists) {
-        const idx = path.join(d, 'index.html');
-        if (fs.existsSync(idx)) {
-          const content = fs.readFileSync(idx, 'utf8');
-          if (!content.includes('office-preview-engine.js')) {
-            needsPatch = true;
-          }
-          break;
-        }
-      }
-      if (needsPatch) {
-        execSync(`bash "${patchScriptLinux}" install`, { timeout: 10000, stdio: 'ignore' });
-        results.push({ item: 'Office Preview Engine', success: true, message: '已自动挂载 OpenChamber 全能 Office 离线预览引擎' });
-      } else {
-        results.push({ item: 'Office Preview Engine', success: true, message: '已就绪：Office 离线安全预览引擎已处于挂载状态' });
-      }
+    } else {
+      results.push({ item: 'Office Preview Engine', success: true, message: '未检测到本地已安装的 OpenChamber 前端目录，已跳过补丁挂载' });
     }
   } catch (e) {
     results.push({ item: 'Office Preview Engine', success: false, message: '挂载 Office 预览引擎异常: ' + e.message });
@@ -1811,6 +1806,22 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
     }
   } catch (e) {
     results.push({ item: 'Codex Integration', success: false, message: 'Codex 接入修复异常: ' + e.message });
+  }
+
+  // 9. Linux NAS: Smoothly reload running user daemon services to load new config
+  if (process.platform === 'linux') {
+    try {
+      const updater = require('./updater');
+      const sysOut = updater.runCmdSync('systemctl --user list-units --type=service', 2000);
+      if (sysOut && sysOut.includes('openchamber.service')) {
+        updater.runCmd('systemctl --user restart openchamber.service', 10000);
+        results.push({ item: 'Daemon Reload', success: true, message: '已热重启 openchamber.service 使新配置生效' });
+      }
+      if (sysOut && sysOut.includes('opencode-server.service')) {
+        updater.runCmd('systemctl --user restart opencode-server.service', 10000);
+        results.push({ item: 'Daemon Reload', success: true, message: '已热重启 opencode-server.service 使新配置生效' });
+      }
+    } catch (_) {}
   }
 
   return results;

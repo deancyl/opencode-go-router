@@ -62,6 +62,9 @@ OPT_ALL=false
 OPT_BIND=false
 OPT_DOCTOR=false
 OPT_REPAIR=false
+OPT_UPDATE=false
+OPT_ROLLBACK=false
+ARG_ROLLBACK_ID=""
 OPT_START=false
 OPT_STOP=false
 OPT_STATUS=false
@@ -79,6 +82,8 @@ while [[ $# -gt 0 ]]; do
     -b|--bind) OPT_BIND=true; shift ;;
     -d|--doctor) OPT_DOCTOR=true; shift ;;
     -r|--repair) OPT_REPAIR=true; shift ;;
+    -u|--update) OPT_UPDATE=true; shift ;;
+    --rollback) OPT_ROLLBACK=true; ARG_ROLLBACK_ID="$2"; shift 2 2>/dev/null || shift ;;
     --start) OPT_START=true; shift ;;
     --stop) OPT_STOP=true; shift ;;
     --status) OPT_STATUS=true; shift ;;
@@ -95,6 +100,8 @@ while [[ $# -gt 0 ]]; do
       echo "  -b, --bind       单独执行 OpenCode + OpenChamber + OMO + Goal 客户端绑定"
       echo "  -d, --doctor     运行全链路系统体检"
       echo "  -r, --repair     运行一键自愈修复 (清洗 providers 冲突、补全 38 款模型、挂载 Office 预览)"
+      echo "  -u, --update     非交互式一键安全更新全套组件 (自适应平台、灾备快照、热重载守护)"
+      echo "  --rollback [id]  非交互式灾备一键秒级回滚 (还原配置与组件版本)"
       echo "  --start          启动网关服务"
       echo "  --stop           停止网关服务"
       echo "  --restart        重启网关服务"
@@ -731,6 +738,43 @@ run_repair() {
   if [[ -f "$SCRIPT_DIR/patch-openchamber-office.sh" ]]; then
     bash "$SCRIPT_DIR/patch-openchamber-office.sh" install 2>/dev/null || true
   fi
+
+  # 热重启运行中的 OpenCode 与 OpenChamber 服务以加载修复后的配置
+  if has_systemd_user; then
+    echo -e "${YELLOW}正在热重启 OpenCode 与 OpenChamber 守护服务以加载最新配置...${NC}"
+    systemctl --user restart opencode-server.service 2>/dev/null && echo -e "${GREEN}✔ opencode-server.service 已热重启${NC}" || true
+    systemctl --user restart openchamber.service 2>/dev/null && echo -e "${GREEN}✔ openchamber.service 已热重启${NC}" || true
+  fi
+}
+
+# 11.6 执行非交互式一键更新
+run_update() {
+  check_node_env
+  local updater_js="$SCRIPT_DIR/updater.js"
+  echo -e "\n${YELLOW}🚀 正在执行 Linux NAS 全组件安全自适应更新 (自动灾备快照)...${NC}"
+  if node "$updater_js" apply; then
+    echo -e "\n${GREEN}✔ 全套组件安全更新与守护服务平滑热重载全部完成！${NC}"
+  else
+    echo -e "\n${RED}❌ 更新执行出现异常，可运行 ./setup-linux.sh --rollback 执行灾备秒级回滚！${NC}"
+    exit 1
+  fi
+}
+
+# 11.7 执行非交互式灾备回滚
+run_rollback() {
+  check_node_env
+  local updater_js="$SCRIPT_DIR/updater.js"
+  echo -e "\n${YELLOW}⏪ 正在执行灾备秒级回滚...${NC}"
+  if [[ -n "$ARG_ROLLBACK_ID" ]]; then
+    node "$updater_js" rollback "$ARG_ROLLBACK_ID"
+  else
+    node "$updater_js" rollback
+  fi
+  if has_systemd_user; then
+    systemctl --user restart openchamber.service 2>/dev/null || true
+    systemctl --user restart opencode-server.service 2>/dev/null || true
+  fi
+  echo -e "\n${GREEN}✔ 灾备回滚完成，系统配置与守护服务已恢复！${NC}"
 }
 
 # 执行命令行参数逻辑
@@ -769,6 +813,16 @@ fi
 
 if [[ "$OPT_REPAIR" == true ]]; then
   run_repair
+  exit 0
+fi
+
+if [[ "$OPT_UPDATE" == true ]]; then
+  run_update
+  exit 0
+fi
+
+if [[ "$OPT_ROLLBACK" == true ]]; then
+  run_rollback
   exit 0
 fi
 

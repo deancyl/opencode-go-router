@@ -1403,8 +1403,76 @@ async function runTests() {
     assert.ok(Array.isArray(updatesCheck.components));
     console.log('✓ Dual-Track Registry Fallback & Linux NAS Adaptive Update Strategy verified');
 
+    // [Test 52] Testing Custom Model Metadata & Configuration Preservation in Harmonization
+    console.log('\n[Test 52] Testing Custom Model Metadata & Configuration Preservation in Harmonization...');
+    const metaTestFile = path.join(testConfigDir, 'meta-preserve-test.jsonc');
+    const metaJsonc = `
+    {
+      "provider": {
+        "opencode-go": {
+          "models": {
+            "deepseek-v4.1-flash": {
+              "name": "Custom Flash Name",
+              "options": { "temperature": 0.2, "top_p": 0.95 },
+              "reasoningEffort": "high"
+            }
+          }
+        }
+      },
+      "model": "opencode-go/deepseek-v4.1-flash"
+    }
+    `;
+    fs.writeFileSync(metaTestFile, metaJsonc, 'utf8');
+    const metaHarmRes = updater.harmonizeOpencodeConfig(metaTestFile, 4010);
+    assert.strictEqual(metaHarmRes.success, true);
+    const metaHarmData = JSON.parse(fs.readFileSync(metaTestFile, 'utf8'));
+    assert.strictEqual(metaHarmData.provider['opencode-go'].models['deepseek-v4.1-flash'].name, 'Custom Flash Name', 'Custom model name must be preserved');
+    assert.deepStrictEqual(metaHarmData.provider['opencode-go'].models['deepseek-v4.1-flash'].options, { temperature: 0.2, top_p: 0.95 }, 'Custom model options must be preserved');
+    assert.strictEqual(metaHarmData.provider['opencode-go'].models['deepseek-v4.1-flash'].reasoningEffort, 'high', 'Custom reasoningEffort must be preserved');
+    console.log('✓ Custom Model Metadata & Configuration Preservation in Harmonization verified');
+
+    // [Test 53] Testing Linux NAS Non-Root Scoped NPM Install & Scoped Directory Resolution
+    console.log('\n[Test 53] Testing Linux NAS Non-Root Scoped NPM Install & Scoped Directory Resolution...');
+    // A. canWriteGlobalNpm overrides check
+    assert.strictEqual(updater.canWriteGlobalNpm({ canWriteGlobal: true }), true);
+    assert.strictEqual(updater.canWriteGlobalNpm({ canWriteGlobal: false }), false);
+
+    // B. findScopedComponentDir resolution
+    const mockNasDir = path.join(testConfigDir, 'mock-nas-openchamber');
+    fs.mkdirSync(mockNasDir, { recursive: true });
+    fs.writeFileSync(path.join(mockNasDir, 'package.json'), JSON.stringify({ name: '@openchamber/web', version: '2.1.1' }), 'utf8');
+    const resolvedScoped = updater.findScopedComponentDir('openchamber', { scopedDirs: { openchamber: mockNasDir } });
+    assert.strictEqual(resolvedScoped, mockNasDir);
+    console.log('✓ Linux NAS Non-Root Scoped NPM Install & Scoped Directory Resolution verified');
+
+    // [Test 54] Testing Doctor Diagnostic & Self-Healing for Incomplete 38-Models Catalog
+    console.log('\n[Test 54] Testing Doctor Diagnostic & Self-Healing for Incomplete 38-Models Catalog...');
+    const incompleteFile = path.join(testConfigDir, 'opencode-incomplete.jsonc');
+    fs.writeFileSync(incompleteFile, JSON.stringify({
+      provider: {
+        'opencode-go': {
+          baseURL: 'http://127.0.0.1:4010/v1',
+          models: { 'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' } }
+        }
+      },
+      model: 'opencode-go/deepseek-v4.1-flash'
+    }, null, 2), 'utf8');
+
+    // Analyze with updater.analyzeCompatibility
+    const compIncomplete = updater.analyzeCompatibility({ 'opencode': '2.0.26' }, null, { ocConfigPath: incompleteFile });
+    const modelWarn = compIncomplete.warnings.find(w => w.title && w.title.includes('模型清单未补全'));
+    assert.ok(modelWarn, 'Must detect incomplete models catalog warning');
+
+    // Harmonize to complete 38 models
+    const fixedIncomplete = updater.harmonizeOpencodeConfig(incompleteFile, 4010);
+    assert.strictEqual(fixedIncomplete.success, true);
+    assert.strictEqual(fixedIncomplete.modelCount, 38);
+    const fixedData = JSON.parse(fs.readFileSync(incompleteFile, 'utf8'));
+    assert.strictEqual(Object.keys(fixedData.provider['opencode-go'].models).length, 38);
+    console.log('✓ Doctor Diagnostic & Self-Healing for Incomplete 38-Models Catalog verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 51 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 54 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
