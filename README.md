@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.2.0](https://img.shields.io/badge/Version-v2.2.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.2.1](https://img.shields.io/badge/Version-v2.2.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -373,6 +373,13 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.2.1
+- **系统托盘与控制台全方位体验升级与高可用加固 (Experience & Dashboard Hardening)**：
+  - **默认浏览器自适应与 Chrome 独立桌面 App 模式**：通过注册表精准识别用户主力默认浏览器（Chrome / Edge 等），以纯净无地址栏的 `--app=http://127.0.0.1:4010/balancer/ui` 独立桌面模式秒级呼出，辅以 5 级优雅降级容灾，彻底根治“打开订阅管理面板打不开”问题；
+  - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
+  - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
+  - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
 
 ### 🚀 v2.2.0
 - **OpenAI Codex CLI 智能无缝接入与双向协议桥 (Codex Native Bridge Engine)**：
