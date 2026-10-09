@@ -56,22 +56,60 @@ namespace OpenCodeRouter
                 try { File.AppendAllText(logPath, "[" + DateTime.Now + "] ThreadException: " + e.Exception + "\r\n"); } catch { }
             };
 
-            // Single instance check
-            try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Main entry, rootDir=" + rootDir + "\r\n"); } catch { }
-            bool createdNew;
-            mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2", out createdNew);
-            try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Mutex createdNew=" + createdNew + "\r\n"); } catch { }
-            if (!createdNew)
+            try
             {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Not createdNew, opening dashboard and exiting\r\n"); } catch { }
+                // Auto-clean stale OpenCodeRouterTray instances to ensure new version takes effect
+                Process curProcess = Process.GetCurrentProcess();
+                try
+                {
+                    foreach (Process p in Process.GetProcessesByName("OpenCodeRouterTray"))
+                    {
+                        if (p.Id != curProcess.Id)
+                        {
+                            try
+                            {
+                                p.Kill();
+                                p.WaitForExit(1000);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+
+                // Single instance check: only bail out if another instance is actively alive
+                bool otherRunning = false;
+                foreach (Process p in Process.GetProcessesByName("OpenCodeRouterTray"))
+                {
+                    if (p.Id != curProcess.Id)
+                    {
+                        try
+                        {
+                            if (!p.HasExited)
+                            {
+                                otherRunning = true;
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (otherRunning)
+                {
+                    EnsureRouterRunning();
+                    OpenDashboard();
+                    return;
+                }
+
+                try
+                {
+                    mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2");
+                }
+                catch { }
+
                 EnsureRouterRunning();
                 OpenDashboard();
-                return;
-            }
-
-            EnsureRouterRunning();
-            OpenDashboard();
-            try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Before Application.Run()\r\n"); } catch { }
 
             // Setup NotifyIcon
             notifyIcon = new NotifyIcon();
@@ -107,10 +145,6 @@ namespace OpenCodeRouter
             menuChamber.Font = new Font(menuChamber.Font, FontStyle.Bold);
             menuChamber.Click += (s, e) => LaunchOrActivateOpenChamber();
             menu.Items.Add(menuChamber);
-
-            ToolStripMenuItem menuWebChamber = new ToolStripMenuItem("🌐 独立 Web 工作台 (3000 端口)");
-            menuWebChamber.Click += (s, e) => OpenWebChamber();
-            menu.Items.Add(menuWebChamber);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -162,7 +196,21 @@ namespace OpenCodeRouter
             };
             watchdogTimer.Start();
 
-            Application.Run();
+            Form hiddenForm = new Form();
+            hiddenForm.FormBorderStyle = FormBorderStyle.None;
+            hiddenForm.ShowInTaskbar = false;
+            hiddenForm.Size = new Size(0, 0);
+            hiddenForm.WindowState = FormWindowState.Minimized;
+            hiddenForm.Load += (s, e) => {
+                hiddenForm.Hide();
+            };
+
+            Application.Run(hiddenForm);
+            }
+            catch (Exception ex)
+            {
+                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Main CRASH: " + ex + "\r\n"); } catch { }
+            }
         }
 
         static bool IsPortListening(int targetPort)
@@ -182,34 +230,41 @@ namespace OpenCodeRouter
 
         static void EnsureRouterRunning()
         {
-            if (IsPortListening(port)) return;
-
-            string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
-            string serverJs = Path.Combine(rootDir, "server.js");
-
-            if (File.Exists(silentVbs))
+            try
             {
-                ProcessStartInfo psi = new ProcessStartInfo("wscript.exe", "\"" + silentVbs + "\"");
-                psi.WorkingDirectory = rootDir;
-                psi.CreateNoWindow = true;
-                psi.UseShellExecute = false;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
-                Process.Start(psi);
+                if (IsPortListening(port)) return;
+
+                string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
+                string serverJs = Path.Combine(rootDir, "server.js");
+
+                if (File.Exists(silentVbs))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("wscript.exe", "\"" + silentVbs + "\"");
+                    psi.WorkingDirectory = rootDir;
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    psi.WindowStyle = ProcessWindowStyle.Hidden;
+                    Process.Start(psi);
+                }
+                else if (File.Exists(serverJs))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("node.exe", "\"" + serverJs + "\"");
+                    psi.WorkingDirectory = rootDir;
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    psi.WindowStyle = ProcessWindowStyle.Hidden;
+                    Process.Start(psi);
+                }
+
+                for (int i = 0; i < 15; i++)
+                {
+                    Thread.Sleep(200);
+                    if (IsPortListening(port)) break;
+                }
             }
-            else if (File.Exists(serverJs))
+            catch (Exception ex)
             {
-                ProcessStartInfo psi = new ProcessStartInfo("node.exe", "\"" + serverJs + "\"");
-                psi.WorkingDirectory = rootDir;
-                psi.CreateNoWindow = true;
-                psi.UseShellExecute = false;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
-                Process.Start(psi);
-            }
-
-            for (int i = 0; i < 15; i++)
-            {
-                Thread.Sleep(200);
-                if (IsPortListening(port)) break;
+                try { File.AppendAllText(Path.Combine(rootDir, "tray.log"), "[" + DateTime.Now + "] EnsureRouterRunning exception: " + ex + "\r\n"); } catch { }
             }
         }
 
@@ -257,17 +312,45 @@ namespace OpenCodeRouter
             return null;
         }
 
+        static string GetDefaultBrowserName()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"))
+                {
+                    if (key != null)
+                    {
+                        object progId = key.GetValue("ProgId");
+                        if (progId != null)
+                        {
+                            string pid = progId.ToString().ToLowerInvariant();
+                            if (pid.Contains("chrome")) return "chrome.exe";
+                            if (pid.Contains("edge") || pid.Contains("msedge")) return "msedge.exe";
+                        }
+                    }
+                }
+            }
+            catch { }
+            return "chrome.exe";
+        }
+
         static void OpenUrl(string url)
         {
             EnsureRouterRunning();
 
-            // 方案 1: 优先以 Edge 独立桌面应用模式 (--app=...) 唤出（无地址栏/标签栏纯净 App 体验）
+            string defaultBrowser = GetDefaultBrowserName();
+            string primaryBrowser = defaultBrowser;
+            string secondaryBrowser = (defaultBrowser == "chrome.exe") ? "msedge.exe" : "chrome.exe";
+
+            // 方案 1: 优先以系统默认浏览器的独立桌面应用模式 (--app=...) 唤出（无地址栏/标签栏纯净体验）
             try
             {
-                string edgeExe = FindBrowserExe("msedge.exe");
-                if (!string.IsNullOrEmpty(edgeExe) && File.Exists(edgeExe))
+                string bExe = FindBrowserExe(primaryBrowser);
+                if (!string.IsNullOrEmpty(bExe) && File.Exists(bExe))
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo(edgeExe, "--app=" + url);
+                    ProcessStartInfo psi = new ProcessStartInfo();
+                    psi.FileName = bExe;
+                    psi.Arguments = "--app=" + url;
                     psi.UseShellExecute = true;
                     Process.Start(psi);
                     return;
@@ -275,13 +358,15 @@ namespace OpenCodeRouter
             }
             catch { }
 
-            // 方案 2: 备选以 Chrome 独立桌面应用模式 (--app=...) 唤出
+            // 方案 2: 备选以次要浏览器的独立桌面应用模式 (--app=...) 唤出
             try
             {
-                string chromeExe = FindBrowserExe("chrome.exe");
-                if (!string.IsNullOrEmpty(chromeExe) && File.Exists(chromeExe))
+                string bExe = FindBrowserExe(secondaryBrowser);
+                if (!string.IsNullOrEmpty(bExe) && File.Exists(bExe))
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo(chromeExe, "--app=" + url);
+                    ProcessStartInfo psi = new ProcessStartInfo();
+                    psi.FileName = bExe;
+                    psi.Arguments = "--app=" + url;
                     psi.UseShellExecute = true;
                     Process.Start(psi);
                     return;
@@ -292,7 +377,8 @@ namespace OpenCodeRouter
             // 方案 3: 使用 Windows Shell 默认关联浏览器打开 (UseShellExecute = true 核心保障)
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo(url);
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = url;
                 psi.UseShellExecute = true;
                 Process.Start(psi);
                 return;
