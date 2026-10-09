@@ -3822,7 +3822,7 @@ $ghost
             '<td style="font-family:monospace; font-weight:600; color:' + (c.current === '未知' ? 'var(--muted)' : 'var(--text)') + ';">' + c.current + '</td>' +
             '<td style="font-family:monospace; font-weight:600; color:' + (c.hasUpdate ? 'var(--primary)' : 'var(--muted)') + ';">' + c.latest + '</td>' +
             '<td>' + stBadge + '</td>' +
-            '<td style="text-align:center;"><button class="btn btn-secondary btn-sm" onclick="applySingleUpdate(\'' + c.id + '\')">单独升级</button></td>' +
+            '<td style="text-align:center;"><button class="btn btn-secondary btn-sm" onclick="applySingleUpdate(\\\'' + c.id + '\\\')">单独升级</button></td>' +
           '</tr>';
         });
 
@@ -3862,7 +3862,7 @@ $ghost
     async function applySingleUpdate(compId) {
       const comp = lastUpdateReport && lastUpdateReport.components.find(function(c) { return c.id === compId; });
       const name = comp ? comp.name : compId;
-      if (!confirm('⚠️ 确认要单独升级【' + name + '】吗？\n\n系统将在升级前自动创建灾备快照。')) return;
+      if (!confirm('⚠️ 确认要单独升级【' + name + '】吗？\\n\\n系统将在升级前自动创建灾备快照。')) return;
       await executeApplyUpdates([compId]);
     }
 
@@ -3891,11 +3891,11 @@ $ghost
         return found ? found.name : id;
       });
 
-      let msg = '即将安全升级以下组件：\n' + targetNames.map(function(n) { return '• ' + n; }).join('\n') + '\n\n';
+      let msg = '即将安全升级以下组件：\\n' + targetNames.map(function(n) { return '• ' + n; }).join('\\n') + '\\n\\n';
       if (lastUpdateReport.compatibility.riskLevel === 'critical') {
-        msg += '🛑 警告：检测到存在破坏性大版本更新或生态冲突风险！\n系统已启用自动快照备份，若更新后出现异常可秒级一键回滚。\n\n是否确认继续一键升级？';
+        msg += '🛑 警告：检测到存在破坏性大版本更新或生态冲突风险！\\n系统已启用自动快照备份，若更新后出现异常可秒级一键回滚。\\n\\n是否确认继续一键升级？';
       } else if (lastUpdateReport.compatibility.riskLevel === 'warning') {
-        msg += '⚠️ 提示：系统将在更新前自动创建全量灾备快照。\n\n是否确认执行安全升级？';
+        msg += '⚠️ 提示：系统将在更新前自动创建全量灾备快照。\\n\\n是否确认执行安全升级？';
       } else {
         msg += '系统将自动创建灾备快照并安全升级。是否确认继续？';
       }
@@ -3984,7 +3984,7 @@ $ghost
             '<td style="font-size:0.8rem; color:var(--muted);">' + new Date(s.timestamp).toLocaleString() + '</td>' +
             '<td>' + (s.reason || '自动快照') + '</td>' +
             '<td style="font-size:0.75rem; color:var(--muted); font-family:monospace;">' + vStr + '</td>' +
-            '<td><button class="btn btn-danger btn-sm" onclick="executeRollback(\'' + s.id + '\')">恢复此快照</button></td>' +
+            '<td><button class="btn btn-danger btn-sm" onclick="executeRollback(\\\'' + s.id + '\\\')">恢复此快照</button></td>' +
           '</tr>';
         });
 
@@ -3996,7 +3996,7 @@ $ghost
     }
 
     async function executeRollback(snapshotId) {
-      if (!confirm('⚠️ 确认要执行灾备回滚至快照 [' + snapshotId + '] 吗？\n\n系统将秒级复原配置与组件状态。')) return;
+      if (!confirm('⚠️ 确认要执行灾备回滚至快照 [' + snapshotId + '] 吗？\\n\\n系统将秒级复原配置与组件状态。')) return;
       const box = document.getElementById('updates-content');
       box.innerHTML = '<span style="color:var(--primary)">⏪ 正在执行一键灾备回滚恢复...</span>';
       showToast('正在回滚至快照 ' + snapshotId + '...');
