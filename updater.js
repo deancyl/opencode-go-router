@@ -156,6 +156,13 @@ function runCmdSync(cmd, timeoutMs = 5000) {
 }
 
 function detectPackageManager() {
+  if (process.platform === 'win32') {
+    const hasNpm = runCmdSync('npm --version', 2000);
+    if (hasNpm) return 'npm';
+    const hasBun = runCmdSync('bun --version', 2000);
+    if (hasBun) return 'bun';
+    return 'npm';
+  }
   const hasBun = runCmdSync('bun --version', 2000);
   if (hasBun) return 'bun';
   const hasNpm = runCmdSync('npm --version', 2000);
@@ -1032,10 +1039,37 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
   for (const comp of targets) {
     if (comp === 'opencode') {
       const ver = allRemote['opencode'] || 'latest';
-      const cmd = pm === 'bun' ? `bun add -g @opencode/cli@latest` : `npm install -g @opencode/cli@latest`;
+      let cmd = pm === 'bun' ? `bun add -g --trust @opencode/cli@latest` : `npm install -g @opencode/cli@latest`;
       logs.push(`正在升级 OpenCode CLI: ${cmd}...`);
-      const res = runCmd(cmd, 60000);
+      let res = runCmd(cmd, 120000);
+      if (!res.success && pm === 'bun') {
+        const fallbackCmd = `npm install -g @opencode/cli@latest`;
+        logs.push(`bun 升级环境受限，正在自动回退至 npm 安全升级: ${fallbackCmd}...`);
+        res = runCmd(fallbackCmd, 120000);
+      }
       if (res.success) {
+        // Windows binary synchronization & cleanup
+        if (process.platform === 'win32') {
+          try {
+            const bunBinDir = path.join(os.homedir(), '.bun', 'bin');
+            ['opencode.exe', 'opencode.bunx', 'opencode2.exe', 'opencode2.bunx'].forEach(f => {
+              const p = path.join(bunBinDir, f);
+              if (fs.existsSync(p)) {
+                try {
+                  const stat = fs.statSync(p);
+                  if (stat.size < 50000 || f.endsWith('.bunx')) fs.unlinkSync(p);
+                } catch (_) {}
+              }
+            });
+
+            const appDataNpm = path.join(process.env.APPDATA || '', 'npm');
+            const targetCliBin = path.join(appDataNpm, 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe');
+            const npmExe = path.join(appDataNpm, 'opencode.exe');
+            if (fs.existsSync(targetCliBin)) {
+              try { fs.copyFileSync(targetCliBin, npmExe); } catch (_) {}
+            }
+          } catch (_) {}
+        }
         logs.push(`✔ OpenCode CLI 升级成功`);
         results['opencode'] = { success: true, command: cmd, output: res.output, targetVersion: ver };
       } else {
@@ -1047,7 +1081,12 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
       const ver = allRemote['oh-my-openagent'] || '5.1.24';
       const cmd = pm === 'bun' ? `bun add -g oh-my-openagent@latest` : `npm install -g oh-my-openagent@latest`;
       logs.push(`正在升级 Oh My OpenAgent: ${cmd}...`);
-      const res = runCmd(cmd, 60000);
+      let res = runCmd(cmd, 60000);
+      if (!res.success && pm === 'bun') {
+        const fallbackCmd = `npm install -g oh-my-openagent@latest`;
+        logs.push(`bun 升级环境受限，正在回退至 npm 升级: ${fallbackCmd}...`);
+        res = runCmd(fallbackCmd, 120000);
+      }
       if (res.success) {
         logs.push(`✔ Oh My OpenAgent 升级成功`);
         // Synchronize opencode.jsonc plugin list to new version
@@ -1074,7 +1113,12 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
       const ver = allRemote['opencode-goal-plugin'] || '0.11.0';
       const cmd = pm === 'bun' ? `bun add -g opencode-goal-plugin@latest` : `npm install -g opencode-goal-plugin@latest`;
       logs.push(`正在升级 Goal 目标推进插件: ${cmd}...`);
-      const res = runCmd(cmd, 60000);
+      let res = runCmd(cmd, 60000);
+      if (!res.success && pm === 'bun') {
+        const fallbackCmd = `npm install -g opencode-goal-plugin@latest`;
+        logs.push(`bun 升级环境受限，正在回退至 npm 升级: ${fallbackCmd}...`);
+        res = runCmd(fallbackCmd, 120000);
+      }
       if (res.success) {
         logs.push(`✔ Goal 目标推进插件升级成功`);
         results['opencode-goal-plugin'] = { success: true, command: cmd, output: res.output, targetVersion: ver };
@@ -1087,7 +1131,12 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
       const ver = allRemote['openchamber'] || 'latest';
       const cmd = pm === 'bun' ? `bun add -g @openchamber/web@latest` : `npm install -g @openchamber/web@latest`;
       logs.push(`正在升级 OpenChamber: ${cmd}...`);
-      const res = runCmd(cmd, 60000);
+      let res = runCmd(cmd, 60000);
+      if (!res.success && pm === 'bun') {
+        const fallbackCmd = `npm install -g @openchamber/web@latest`;
+        logs.push(`bun 升级环境受限，正在回退至 npm 升级: ${fallbackCmd}...`);
+        res = runCmd(fallbackCmd, 120000);
+      }
       if (res.success) {
         logs.push(`✔ OpenChamber 升级成功`);
         // Post-upgrade critical hook: Re-mount Air-Gapped Office Preview Engine!

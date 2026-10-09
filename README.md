@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.2.1](https://img.shields.io/badge/Version-v2.2.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.2.2](https://img.shields.io/badge/Version-v2.2.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -373,6 +373,13 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.2.2
+- **组件更新引擎双轨容灾与原生二进制智能同步 (Dual-Engine Updater & Binary Sync)**：
+  - **包管理器智能识别与 npm 优先策略**：针对 Windows 环境平台差异，更新引擎优先使用能够完整运行 `postinstall.mjs` 原生解压脚本的 `npm`，根治 Bun 在 Windows 上拦截原生二进制解压导致全局 Shim 损坏（`could not create process` / `Resolving dependencies`）的顽疾；
+  - **Bun / npm 双引擎无缝回退**：在执行任何组件（OpenCode CLI、Oh My OpenAgent、Goal、OpenChamber）升级时，若首选包管理器受阻，自动透明回退至备选引擎重新执行，并自动添加 `--trust` 权限标志；
+  - **Windows 原生可执行文件智能同步与残余清理**：升级完成后自动清理 `.bun\bin` 下损坏的占位 Shim，并原子级同步更新 `%APPDATA%\npm\opencode.exe` 原生主执行文件，确保命令行即刻调用最新版；
+  - **全组件 100% 达标最新版**：OpenCode CLI v2.0.26、Oh My OpenAgent v5.1.27、OpenChamber v2.2.0、Goal v0.11.0、网关自身 v2.2.2 全量就绪。
 
 ### 🚀 v2.2.1
 - **系统托盘与控制台全方位体验升级与高可用加固 (Experience & Dashboard Hardening)**：
