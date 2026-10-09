@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.1.2](https://img.shields.io/badge/Version-v2.1.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.2.0](https://img.shields.io/badge/Version-v2.2.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -373,6 +373,15 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.2.0
+- **OpenAI Codex CLI 智能无缝接入与双向协议桥 (Codex Native Bridge Engine)**：
+  - **全量 38 款模型目录接入**：支持 OpenCode Go 官方所有 38 款模型（DeepSeek V4.1/Pro、Kimi K3、MiniMax M3、通义千问 Qwen3.7、智谱 GLM 5.3、Claude Haiku、Grok 4.7、GPT 5.6/6 Luna 等）直接在 Codex CLI 中通过 `-m <model>` 调用；
+  - **双向协议转换引擎 (`codex-adapter.js`)**：Codex 原生使用 `wire_api = "responses"`，网关自动完成 OpenAI Responses API <-> OpenAI ChatCompletions 与 Anthropic Messages API 的实时双向 SSE 流式转换，支持工具调用 (`tool_calls`) 与深度思考上下文；
+  - **思考等级 (Reasoning Effort) 自由调节**：全面适配 `low`、`medium`、`high`、`xhigh`、`max`，实时映射各模型推理推导参数；
+  - **原子配置备份与一键原样还原 (Zero-Loss Restore Engine)**：接入前自动备份原始 `config.toml`、`auth.json` 与 `models.json`，还原时字节级无损复原，还原后自动清理临时备份无残留；
+  - **全端协同联动**：Web 控制台新增专属【🤖 OpenAI Codex CLI 智能接入】配置面板、`doctor-repair.ps1` 扩展至 8 步体检自愈检测、`setup-wizard.ps1` 新增步骤 10 交互式接入与还原；
+  - **自动化测试扩充至 47 项**：全套覆盖 Codex 绑定/还原、Responses <-> ChatCompletions/Anthropic 协议桥、SSE 流生命周期与真实命令执行，47 项测试 100% 通过。
 
 ### 🚀 v2.1.2
 - **OpenChamber 原厂桌面客户端智能唤醒与前台置顶 (Native Desktop Client Launcher)**：

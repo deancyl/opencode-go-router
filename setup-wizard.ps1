@@ -649,6 +649,106 @@ function Step-ManageUpdates {
     }
 }
 
+# ----------------- 步骤 10: OpenAI Codex CLI 智能接入与模型调度 -----------------
+function Step-SetupCodex {
+    Write-Header "【步骤 10】OpenAI Codex CLI 智能接入与模型调度"
+    
+    $codexCmd = Get-Command codex -ErrorAction SilentlyContinue
+    $codexVer = if ($codexCmd) { try { (& codex --version 2>$null) } catch {} } else { $null }
+    if ($codexVer) {
+        Write-Host "✔ 检测到 OpenAI Codex CLI 已安装: $codexVer" -ForegroundColor Green
+    } else {
+        Write-Host "ℹ 本地未检测到全局 codex 命令（若需安装可执行: npm install -g @openai/codex）" -ForegroundColor Yellow
+    }
+
+    $codexAdapterJs = Join-Path $rootDir "codex-adapter.js"
+    if (-not (Test-Path $codexAdapterJs)) {
+        Write-Host "❌ 未找到 codex-adapter.js 适配引擎！" -ForegroundColor Red
+        return
+    }
+
+    # Fetch status
+    $statusJson = (& node -e "const a = require('./codex-adapter'); console.log(JSON.stringify(a.getCodexStatus($port)));" 2>$null)
+    $st = if ($statusJson) { $statusJson | ConvertFrom-Json } else { $null }
+
+    if ($st) {
+        Write-Host "`n--- 当前 Codex 接入状态 ---" -ForegroundColor Cyan
+        Write-Host " • 接入网关: $(if ($st.isBound) { '✔ 已接入 http://127.0.0.1:' + $port + '/v1' } else { '❌ 未接入' })" -ForegroundColor $(if ($st.isBound) { 'Green' } else { 'Yellow' })
+        Write-Host " • 当前生效模型: $($st.currentModel || '未设置')" -ForegroundColor White
+        Write-Host " • 思考推演等级: $($st.currentReasoningEffort || 'high')" -ForegroundColor White
+        Write-Host " • 配置目录: $($st.codexDir)" -ForegroundColor DarkGray
+        Write-Host " • 安全备份: $(if ($st.hasBackup) { '✔ 原始配置已无损备份 (随时可一键原样还原)' } else { '未生成备份 (接入时将自动原子备份)' })" -ForegroundColor White
+    }
+
+    Write-Host "`n请选择操作：" -ForegroundColor Cyan
+    Write-Host " [1] 一键接入 Codex (默认 deepseek-v4.1-flash, 深度思考 high, 自动备份)" -ForegroundColor White
+    Write-Host " [2] 自定义生效模型与思考等级接入 (从 38 款模型中挑选)" -ForegroundColor White
+    Write-Host " [3] 🔄 一键还原原本配置 (原子恢复接入前的 config.toml/auth.json/models.json)" -ForegroundColor Yellow
+    Write-Host " [0] 返回主菜单" -ForegroundColor DarkGray
+
+    $opt = Read-Host "`n请输入选项编号 [默认: 1]"
+    if (-not $opt) { $opt = "1" }
+
+    switch ($opt) {
+        "1" {
+            Write-Host "正在执行一键接入 Codex..." -ForegroundColor Yellow
+            $bindCmd = "const a = require('./codex-adapter'); const r = a.bindCodexConfig({ routerPort: $port, defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
+            $bindRes = (& node -e $bindCmd 2>$null | ConvertFrom-Json)
+            if ($bindRes -and $bindRes.success) {
+                Write-Host "🎉 成功接入 Codex！" -ForegroundColor Green
+                Write-Host "  - 默认模型: $($bindRes.boundModel)" -ForegroundColor White
+                Write-Host "  - 思考等级: $($bindRes.reasoningEffort)" -ForegroundColor White
+                Write-Host "  - Base URL: $($bindRes.routerUrl)" -ForegroundColor White
+                Write-Host "  - 提示: 可直接在终端运行: codex exec `"测试问答`"" -ForegroundColor Cyan
+            } else {
+                Write-Host "❌ 接入失败: $($bindRes.error)" -ForegroundColor Red
+            }
+        }
+        "2" {
+            Write-Host "`n可选热门模型示例：" -ForegroundColor Cyan
+            Write-Host " 1. deepseek-v4.1-flash (原生 Responses 协议，极速代码 Agent，推荐)" -ForegroundColor White
+            Write-Host " 2. deepseek-v4-pro (原生旗舰大模型，深度推理)" -ForegroundColor White
+            Write-Host " 3. kimi-k3 (长文本长程推导，智能协议桥自动转换)" -ForegroundColor White
+            Write-Host " 4. qwen3.7-plus (通义千问全栈代码与算法)" -ForegroundColor White
+            Write-Host " 5. glm-5.3 (智谱清言旗舰编程)" -ForegroundColor White
+            Write-Host " 6. minimax-m3 (高吞吐低延迟长上下文)" -ForegroundColor White
+            $customModel = Read-Host "`n请输入模型 Slug (如 deepseek-v4.1-flash 或 kimi-k3) [默认: deepseek-v4.1-flash]"
+            if (-not $customModel) { $customModel = "deepseek-v4.1-flash" }
+
+            Write-Host "`n思考等级 (Reasoning Effort): low, medium, high, xhigh, max" -ForegroundColor Cyan
+            $customEffort = Read-Host "请输入思考等级 [默认: high]"
+            if (-not $customEffort) { $customEffort = "high" }
+
+            Write-Host "正在写入配置..." -ForegroundColor Yellow
+            $bindCmd = "const a = require('./codex-adapter'); const r = a.bindCodexConfig({ routerPort: $port, defaultModel: '$customModel', reasoningEffort: '$customEffort' }); console.log(JSON.stringify(r));"
+            $bindRes = (& node -e $bindCmd 2>$null | ConvertFrom-Json)
+            if ($bindRes -and $bindRes.success) {
+                Write-Host "🎉 成功接入并应用模型: $customModel (思考等级: $customEffort)" -ForegroundColor Green
+            } else {
+                Write-Host "❌ 接入失败: $($bindRes.error)" -ForegroundColor Red
+            }
+        }
+        "3" {
+            $confRestore = Read-Host "⚠️ 确认要还原接入前原本的 Codex 配置吗？(y/N)"
+            if ($confRestore -eq "y" -or $confRestore -eq "Y") {
+                Write-Host "正在执行原子还原..." -ForegroundColor Yellow
+                $rstCmd = "const a = require('./codex-adapter'); const r = a.restoreCodexConfig(); console.log(JSON.stringify(r));"
+                $rstRes = (& node -e $rstCmd 2>$null | ConvertFrom-Json)
+                if ($rstRes -and $rstRes.success) {
+                    Write-Host "🎉 Codex 原始配置已 100% 原样恢复！" -ForegroundColor Green
+                    if ($rstRes.messages) {
+                        $rstRes.messages | ForEach-Object { Write-Host "  • $_" -ForegroundColor DarkGray }
+                    }
+                } else {
+                    Write-Host "❌ 还原提示: $($rstRes.message || $rstRes.error)" -ForegroundColor Yellow
+                }
+            }
+        }
+        "0" { return }
+        default { return }
+    }
+}
+
 # ----------------- 主流程分发 -----------------
 if ($All) {
     Step-RunAll
@@ -667,6 +767,7 @@ if ($Step -and $Step.Count -gt 0) {
             7 { Step-RunDoctor }
             8 { Step-SetupOfficePreview }
             9 { Step-ManageUpdates }
+            10 { Step-SetupCodex }
         }
     }
     exit 0
@@ -686,10 +787,11 @@ while ($true) {
     Write-Host "  [7] 🩺 系统全链路健康体检与异常一键修复 (Doctor & Repair)" -ForegroundColor Yellow
     Write-Host "  [8] 📄 挂载/管理 OpenChamber 全能 Office 离线预览引擎 (.docx/.xlsx/.pptx)" -ForegroundColor Cyan
     Write-Host "  [9] 📦 一键检测全套组件更新、兼容性诊断与安全升级/回滚" -ForegroundColor White
+    Write-Host "  [10] 🤖 OpenAI Codex CLI 智能接入与模型调度 / 还原原本配置" -ForegroundColor Cyan
     Write-Host "  [0] 退出向导" -ForegroundColor DarkGray
     Write-Host ""
 
-    $selected = Read-Host "请输入编号 [0-9]"
+    $selected = Read-Host "请输入编号 [0-10]"
     switch ($selected) {
         "1" { Step-InstallOpenCode }
         "2" { Step-SetupRouter }
@@ -700,6 +802,7 @@ while ($true) {
         "7" { Step-RunDoctor }
         "8" { Step-SetupOfficePreview }
         "9" { Step-ManageUpdates }
+        "10" { Step-SetupCodex }
         "0" { Write-Host "已退出向导。" -ForegroundColor Gray; break }
         default { Write-Host "无效输入，请重新选择。" -ForegroundColor Red }
     }

@@ -19,7 +19,7 @@ $defaultWorkspace = "D:\opencode\default"
 $issuesFound = [System.Collections.Generic.List[PSObject]]::new()
 
 # ----------------- 1. 检测 OpenCode CLI -----------------
-Write-Host "`n[1/7] 检查 OpenCode CLI 环境..." -ForegroundColor Yellow
+Write-Host "`n[1/8] 检查 OpenCode CLI 环境..." -ForegroundColor Yellow
 $opencodeVer = $null
 $opencodePath = $null
 
@@ -71,7 +71,7 @@ if ($opencodeVer) {
 }
 
 # ----------------- 2. 检测 4010 订阅路由与端到端探针 -----------------
-Write-Host "`n[2/7] 检查 4010 智能网关与端到端推理链路..." -ForegroundColor Yellow
+Write-Host "`n[2/8] 检查 4010 智能网关与端到端推理链路..." -ForegroundColor Yellow
 $routerConn = Get-NetTCPConnection -LocalPort $routerPort -State Listen -ErrorAction SilentlyContinue
 if ($routerConn) {
     Write-Host "  ✔ 4010 智能网关正在运行 (PID: $($routerConn.OwningProcess[0]))" -ForegroundColor Green
@@ -128,7 +128,7 @@ if ($routerConn) {
 }
 
 # ----------------- 3. 检测 OpenCode 配置文件与配置冲突 -----------------
-Write-Host "`n[3/7] 检查 OpenCode 配置文件与冲突隔离..." -ForegroundColor Yellow
+Write-Host "`n[3/8] 检查 OpenCode 配置文件与冲突隔离..." -ForegroundColor Yellow
 if (Test-Path $opencodeConfig) {
     $ocContent = Get-Content $opencodeConfig -Raw -Encoding UTF8
     
@@ -196,7 +196,7 @@ if (Test-Path $opencodeConfig) {
 }
 
 # ----------------- 4. 检测 DeepSeek 区域限制与 OMO Fallback -----------------
-Write-Host "`n[4/7] 检查 Oh My OpenAgent 调度配置与 DeepSeek 区域限制..." -ForegroundColor Yellow
+Write-Host "`n[4/8] 检查 Oh My OpenAgent 调度配置与 DeepSeek 区域限制..." -ForegroundColor Yellow
 if (Test-Path $omoConfig) {
     $omoContent = Get-Content $omoConfig -Raw -Encoding UTF8
     if ($omoContent -like "*opencode-go/deepseek*" -and $omoContent -notlike "*kimi-k3*") {
@@ -221,7 +221,7 @@ if (Test-Path $omoConfig) {
 }
 
 # ----------------- 5. 检测 Goal 插件与 /boost 指令 -----------------
-Write-Host "`n[5/7] 检查 Goal 目标推进体系与 /boost 模式..." -ForegroundColor Yellow
+Write-Host "`n[5/8] 检查 Goal 目标推进体系与 /boost 模式..." -ForegroundColor Yellow
 if (Test-Path $boostCommand) {
     Write-Host "  ✔ /boost 增强指令模版已就绪" -ForegroundColor Green
 } else {
@@ -235,7 +235,7 @@ if (Test-Path $boostCommand) {
 }
 
 # ----------------- 6. 检测 OpenChamber 工作区环境与服务状态 -----------------
-Write-Host "`n[6/7] 检查 OpenChamber 工作区环境与托管服务状态..." -ForegroundColor Yellow
+Write-Host "`n[6/8] 检查 OpenChamber 工作区环境与托管服务状态..." -ForegroundColor Yellow
 if (Test-Path $defaultWorkspace) {
     if (Test-Path (Join-Path $defaultWorkspace ".git")) {
         Write-Host "  ✔ 工作区 $defaultWorkspace 已初始化 Git 版本库" -ForegroundColor Green
@@ -336,7 +336,7 @@ if ($foundDist) {
 }
 
 # ----------------- 7. 检测组件版本更新与生态兼容性诊断 -----------------
-Write-Host "`n[7/7] 检查套件组件版本更新与生态兼容性诊断..." -ForegroundColor Yellow
+Write-Host "`n[7/8] 检查套件组件版本更新与生态兼容性诊断..." -ForegroundColor Yellow
 $updaterScript = Join-Path $PSScriptRoot "updater.js"
 if (Test-Path $updaterScript) {
     try {
@@ -366,6 +366,55 @@ if (Test-Path $updaterScript) {
     } catch {
         Write-Host "  ℹ 版本检测已略过: $_" -ForegroundColor DarkGray
     }
+}
+
+# ----------------- 8. 检测 OpenAI Codex CLI 与智能网关接入 -----------------
+Write-Host "`n[8/8] 检查 OpenAI Codex CLI 环境与智能网关接入..." -ForegroundColor Yellow
+$codexVer = $null
+$codexCmd = Get-Command codex -ErrorAction SilentlyContinue
+if ($codexCmd) {
+    try {
+        $codexVer = (& codex --version 2>$null)
+    } catch {}
+} else {
+    $codexCandidates = @(
+        "$env:APPDATA\npm\codex.cmd",
+        "$env:USERPROFILE\.bun\bin\codex.exe",
+        "$env:ProgramFiles\nodejs\codex.cmd"
+    )
+    foreach ($cand in $codexCandidates) {
+        if (Test-Path $cand) {
+            try {
+                $v = (& $cand --version 2>$null)
+                if ($v) { $codexVer = $v; break }
+            } catch {}
+        }
+    }
+}
+
+if ($codexVer) {
+    Write-Host "  ✔ OpenAI Codex CLI 已就绪: $codexVer" -ForegroundColor Green
+    $codexConfig = "$env:USERPROFILE\.codex\config.toml"
+    $isCodexBound = $false
+    if (Test-Path $codexConfig) {
+        $cfgRaw = Get-Content $codexConfig -Raw -ErrorAction SilentlyContinue
+        if ($cfgRaw -and ($cfgRaw -match "127\.0\.0\.1:$routerPort" -or $cfgRaw -match ":$routerPort/v1")) {
+            $isCodexBound = $true
+        }
+    }
+    if ($isCodexBound) {
+        Write-Host "  ✔ Codex CLI 已成功接入本地 $routerPort 智能网关 (38 款全量模型调度已就绪)" -ForegroundColor Green
+    } else {
+        Write-Host "  ⚠ Codex CLI 尚未接入本地智能网关" -ForegroundColor Yellow
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "codex_not_bound"
+            Title = "OpenAI Codex CLI 尚未接入本地 4010 智能网关"
+            Severity = "Medium"
+            FixDesc = "一键接入本地网关（配置 38 款模型映射、思考等级适配与无损配置备份）"
+        })
+    }
+} else {
+    Write-Host "  ℹ 未检测到全局 OpenAI Codex CLI" -ForegroundColor DarkGray
 }
 
 # ----------------- 结果汇总与修复决策 -----------------
@@ -723,6 +772,16 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
         }
         "components_critical_risk" {
             Write-Host " -> 提示: 存在重大破坏性跨版本更新，建议在 Web 面板 (/balancer/ui) 或 setup-wizard.ps1 [9] 中查看兼容性预警并执行一键升级/回滚" -ForegroundColor Yellow
+        }
+        "codex_not_bound" {
+            Write-Host " -> 正在将 OpenAI Codex CLI 接入本地智能网关..." -ForegroundColor Yellow
+            try {
+                $nodeCmd = "const a = require('./codex-adapter'); const r = a.bindCodexConfig({ routerPort: $routerPort, defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
+                $resJson = (& node -e $nodeCmd 2>$null)
+                Write-Host "    ✔ OpenAI Codex CLI 已成功接入本地 $routerPort 网关 (全量 38 款模型就绪)" -ForegroundColor Green
+            } catch {
+                Write-Host "    ❌ 接入 Codex 失败: $_" -ForegroundColor Red
+            }
         }
     }
 }

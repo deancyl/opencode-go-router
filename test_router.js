@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { fork } = require('node:child_process');
+const codexAdapter = require('./codex-adapter');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -31,8 +32,40 @@ async function runTests() {
 
   const mockUpstream = http.createServer((req, res) => {
     mockCallCount++;
-    const auth = req.headers['authorization'] || '';
+    const auth = req.headers['authorization'] || req.headers['x-api-key'] || '';
     const session = req.headers['x-opencode-session'] || '';
+
+    if (req.url === '/v1/messages') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+
+      if (session === 'session-anthropic-stream') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        res.write('data: {"type":"message_start","message":{"id":"msg_ant_1","usage":{"input_tokens":10,"output_tokens":0}}}\n\n');
+        res.write('data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n');
+        res.write('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello from Claude Anthropic Stream!"}}\n\n');
+        res.write('data: {"type":"content_block_stop","index":0}\n\n');
+        res.write('data: {"type":"message_delta","usage":{"output_tokens":12}}\n\n');
+        res.write('data: {"type":"message_stop"}\n\n');
+        res.end();
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'msg_ant_nonstream',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Hello from Claude non-streaming!' }],
+        model: 'claude-haiku-5-5',
+        usage: { input_tokens: 15, output_tokens: 20 }
+      }));
+      return;
+    }
 
     if (req.url === '/v1/simulate-both-429') {
       if (auth.includes('key-account-1')) account1Calls++;
@@ -48,6 +81,41 @@ async function runTests() {
       else account2Calls++;
       res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '2' });
       res.end(JSON.stringify({ error: { message: 'Rate limit exceeded', type: 'tokens_limit' } }));
+      return;
+    }
+
+    if (session === 'session-stream-test') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      res.write('data: {"choices":[{"delta":{"reasoning_content":"Step 1 thinking\\n"}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"content":"Hello from stream test!"}}]}\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    if (req.url === '/v1/responses') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'resp-native-1',
+        object: 'response',
+        status: 'completed',
+        model: 'deepseek-v4.1-flash',
+        output: [{
+          id: 'msg_1',
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'response from native deepseek' }]
+        }]
+      }));
       return;
     }
 
@@ -739,8 +807,458 @@ async function runTests() {
     assert.ok(updatedTrayCode.includes('explorer.exe'), 'Tray must use explorer.exe to decouple-launch native desktop client');
     console.log('✓ OpenChamber Native Desktop Client Launcher API & Tray Multi-Tier Browser Launcher verified');
 
+    // [Test 36] Testing Codex Status API (/balancer/api/codex-status)
+    console.log('\n[Test 36] Testing Codex Status API (/balancer/api/codex-status)...');
+    const resCodexStatus = await request('/balancer/api/codex-status', { method: 'GET' });
+    assert.strictEqual(resCodexStatus.statusCode, 200);
+    const jsonCodexStatus = JSON.parse(resCodexStatus.body);
+    assert.strictEqual(jsonCodexStatus.success, true);
+    assert.ok(jsonCodexStatus.status, 'status object must be present');
+    assert.strictEqual(jsonCodexStatus.status.availableModels.length, 38, 'must offer all 38 OpenCode Go models');
+    const mKimi = jsonCodexStatus.status.availableModels.find(m => m.slug === 'kimi-k3');
+    assert.ok(mKimi, 'kimi-k3 must be available');
+    assert.strictEqual(mKimi.default_reasoning_level, 'high');
+    const mDeepSeek = jsonCodexStatus.status.availableModels.find(m => m.slug === 'deepseek-v4.1-flash');
+    assert.ok(mDeepSeek, 'deepseek-v4.1-flash must be available');
+    console.log(`✓ Codex Status API verified: 38 models catalog returned with rich reasoning metadata`);
+
+    // [Test 37] Testing Codex One-Click Bind API & Zero-Loss Backup
+    console.log('\n[Test 37] Testing Codex One-Click Bind API & Zero-Loss Backup Engine...');
+    const isolatedCodexDir = path.join(testConfigDir, 'isolated-codex-test');
+    fs.mkdirSync(isolatedCodexDir, { recursive: true });
+
+    // Seed original user config in isolated directory
+    const origToml = 'model = "gpt-4o"\nmodel_provider = "openai"\nmodel_reasoning_effort = "medium"\n';
+    const origAuth = JSON.stringify({ OPENAI_API_KEY: 'sk-original-user-key-12345' }, null, 2);
+    const origModels = JSON.stringify({ models: [{ slug: 'custom-model-abc', display_name: 'Custom ABC' }] }, null, 2);
+    fs.writeFileSync(path.join(isolatedCodexDir, 'config.toml'), origToml, 'utf8');
+    fs.writeFileSync(path.join(isolatedCodexDir, 'auth.json'), origAuth, 'utf8');
+    fs.writeFileSync(path.join(isolatedCodexDir, 'models.json'), origModels, 'utf8');
+
+    // Bind using isolated directory
+    const bindResult = codexAdapter.bindCodexConfig({
+      codexDir: isolatedCodexDir,
+      routerPort: routerPort,
+      defaultModel: 'kimi-k3',
+      reasoningEffort: 'xhigh',
+      providerName: 'opencode-go'
+    });
+    assert.strictEqual(bindResult.success, true);
+    assert.strictEqual(bindResult.boundModel, 'kimi-k3');
+    assert.strictEqual(bindResult.reasoningEffort, 'xhigh');
+
+    // Verify atomic backup exists
+    const backupDir = path.join(isolatedCodexDir, 'backup-router-bind');
+    assert.ok(fs.existsSync(path.join(backupDir, 'manifest.json')), 'backup manifest must be created');
+    assert.strictEqual(fs.readFileSync(path.join(backupDir, 'config.toml'), 'utf8'), origToml);
+    assert.strictEqual(fs.readFileSync(path.join(backupDir, 'auth.json'), 'utf8'), origAuth);
+    assert.strictEqual(fs.readFileSync(path.join(backupDir, 'models.json'), 'utf8'), origModels);
+
+    // Verify bound configuration
+    const boundToml = fs.readFileSync(path.join(isolatedCodexDir, 'config.toml'), 'utf8');
+    assert.ok(boundToml.includes('model = "kimi-k3"'));
+    assert.ok(boundToml.includes('model_provider = "opencode-go"'));
+    assert.ok(boundToml.includes('model_reasoning_effort = "xhigh"'));
+    assert.ok(boundToml.includes('wire_api = "responses"'));
+    assert.ok(boundToml.includes(`base_url = "http://127.0.0.1:${routerPort}/v1"`));
+
+    // Verify models.json merged original with 38 models
+    const boundModels = JSON.parse(fs.readFileSync(path.join(isolatedCodexDir, 'models.json'), 'utf8'));
+    assert.strictEqual(boundModels.models.length, 39, '38 OpenCode Go models + 1 custom user model');
+    assert.ok(boundModels.models.some(m => m.slug === 'custom-model-abc'), 'User original model retained');
+    assert.ok(boundModels.models.some(m => m.slug === 'kimi-k3'), 'OpenCode Go models injected');
+
+    // Verify API endpoint /balancer/api/bind-codex
+    const resBindApi = await request('/balancer/api/bind-codex', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' })
+    });
+    assert.strictEqual(resBindApi.statusCode, 200);
+    const jsonBindApi = JSON.parse(resBindApi.body);
+    assert.strictEqual(jsonBindApi.success, true);
+    console.log('✓ Codex One-Click Bind API & Zero-Loss Backup verified');
+
+    // [Test 38] Testing Codex One-Click Restore API & 100% Fidelity Rollback
+    console.log('\n[Test 38] Testing Codex One-Click Restore API & 100% Fidelity Rollback...');
+    const restoreResult = codexAdapter.restoreCodexConfig(isolatedCodexDir);
+    assert.strictEqual(restoreResult.success, true);
+    assert.strictEqual(restoreResult.restoredFrom, 'backup-manifest');
+
+    // Verify 100% byte fidelity restoration
+    assert.strictEqual(fs.readFileSync(path.join(isolatedCodexDir, 'config.toml'), 'utf8'), origToml, 'config.toml restored 100%');
+    assert.strictEqual(fs.readFileSync(path.join(isolatedCodexDir, 'auth.json'), 'utf8'), origAuth, 'auth.json restored 100%');
+    assert.strictEqual(fs.readFileSync(path.join(isolatedCodexDir, 'models.json'), 'utf8'), origModels, 'models.json restored 100%');
+    assert.ok(!fs.existsSync(backupDir), 'backup folder cleaned up after restore');
+
+    // Verify API endpoint /balancer/api/restore-codex
+    const resRestoreApi = await request('/balancer/api/restore-codex', { method: 'POST' });
+    assert.strictEqual(resRestoreApi.statusCode, 200);
+    console.log('✓ Codex One-Click Restore API & 100% Fidelity Rollback verified');
+
+    // [Test 39] Testing Responses to ChatCompletions Bidirectional Payload Translation
+    console.log('\n[Test 39] Testing Responses to ChatCompletions Bidirectional Payload Translation...');
+    const sampleResponsesPayload = {
+      model: 'opencode-go/kimi-k3',
+      input: [
+        { role: 'developer', content: 'You are an expert coder.' },
+        { role: 'user', content: 'Refactor this algorithm' }
+      ],
+      stream: false,
+      reasoning: { effort: 'xhigh' },
+      max_output_tokens: 4096,
+      temperature: 0.7
+    };
+    const translatedChat = codexAdapter.convertResponsesToChatPayload(sampleResponsesPayload);
+    assert.strictEqual(translatedChat.model, 'kimi-k3', 'Prefix opencode-go/ stripped');
+    assert.strictEqual(translatedChat.reasoning_effort, 'high', 'xhigh mapped to high');
+    assert.strictEqual(translatedChat.messages.length, 2);
+    assert.strictEqual(translatedChat.messages[0].role, 'system', 'developer mapped to system');
+    assert.strictEqual(translatedChat.max_tokens, 4096);
+    assert.strictEqual(translatedChat.stream, false);
+
+    const sampleChatResponse = {
+      id: 'chatcmpl-test-xyz',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: 'Here is the refactored code',
+          reasoning_content: 'Let us consider performance...'
+        }
+      }],
+      usage: { prompt_tokens: 20, completion_tokens: 50, total_tokens: 70 }
+    };
+    const convertedResponses = codexAdapter.convertChatResponseToResponses(sampleChatResponse, 'kimi-k3', 'resp_123');
+    assert.strictEqual(convertedResponses.object, 'response');
+    assert.strictEqual(convertedResponses.status, 'completed');
+    assert.strictEqual(convertedResponses.model, 'kimi-k3');
+    assert.strictEqual(convertedResponses.output.length, 2);
+    assert.strictEqual(convertedResponses.output[0].type, 'reasoning');
+    assert.strictEqual(convertedResponses.output[0].content[0].text, 'Let us consider performance...');
+    assert.strictEqual(convertedResponses.output[1].type, 'message');
+    assert.strictEqual(convertedResponses.output[1].content[0].text, 'Here is the refactored code');
+    console.log('✓ Responses to ChatCompletions Bidirectional Payload Translation verified');
+
+    // [Test 40] Testing Responses Streaming SSE Bridge Engine (Reasoning + Text + Completion Events)
+    console.log('\n[Test 40] Testing Responses Streaming SSE Bridge Engine...');
+    const { EventEmitter } = require('node:events');
+    const mockUpstreamStream = new EventEmitter();
+    const mockClientRes = new EventEmitter();
+    mockClientRes.writeHead = (status, headers) => { mockClientRes.headers = headers; mockClientRes.statusCode = status; };
+    const emittedEvents = [];
+    mockClientRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          emittedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    mockClientRes.end = () => { mockClientRes.emit('finish'); };
+
+    codexAdapter.bridgeResponsesStream(mockUpstreamStream, mockClientRes, 'kimi-k3', 'resp_stream_test', () => {});
+
+    // Feed SSE chunks with reasoning first, then text content
+    mockUpstreamStream.emit('data', Buffer.from('data: {"choices":[{"delta":{"reasoning":"I need to think carefully"}}]}\n\n'));
+    mockUpstreamStream.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"Done result!"}}]}\n\n'));
+    mockUpstreamStream.emit('data', Buffer.from('data: [DONE]\n\n'));
+    mockUpstreamStream.emit('end');
+
+    const eventTypes = emittedEvents.map(e => e.event);
+    assert.ok(eventTypes.includes('response.created'), 'Must emit response.created');
+    assert.ok(eventTypes.includes('response.output_item.added'), 'Must emit response.output_item.added');
+    assert.ok(eventTypes.includes('response.content_part.added'), 'Must emit response.content_part.added');
+    assert.ok(eventTypes.includes('response.reasoning_text.delta'), 'Must emit response.reasoning_text.delta');
+    assert.ok(eventTypes.includes('response.reasoning_text.done'), 'Must emit response.reasoning_text.done');
+    assert.ok(eventTypes.includes('response.output_text.delta'), 'Must emit response.output_text.delta');
+    assert.ok(eventTypes.includes('response.completed'), 'Must emit response.completed');
+
+    // Validate strict order: output_item.added before reasoning_text.delta (Codex requirement)
+    const itemAddedIdx = eventTypes.indexOf('response.output_item.added');
+    const reasoningDeltaIdx = eventTypes.indexOf('response.reasoning_text.delta');
+    assert.ok(itemAddedIdx < reasoningDeltaIdx, 'output_item.added must precede reasoning_text.delta');
+    console.log('✓ Responses Streaming SSE Bridge Engine verified (strict event ordering confirmed)');
+
+    // [Test 41] Testing End-to-End Transparent Proxy & Bridge via Router HTTP Port
+    console.log('\n[Test 41] Testing End-to-End Transparent Proxy & Bridge via Router HTTP Port...');
+
+    // A. Native model to /v1/responses (e.g. deepseek-v4.1-flash with prefix)
+    const resNative = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode-go/deepseek-v4.1-flash', input: 'Hello' })
+    });
+    assert.strictEqual(resNative.statusCode, 200);
+    const jsonNative = JSON.parse(resNative.body);
+    assert.strictEqual(jsonNative.id, 'resp-native-1');
+    assert.strictEqual(jsonNative.model, 'deepseek-v4.1-flash');
+
+    // B. Non-native model (kimi-k3) automatically bridged to /v1/chat/completions non-streaming
+    const resBridge = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'kimi-k3', input: 'Hello Kimi', stream: false })
+    });
+    assert.strictEqual(resBridge.statusCode, 200);
+    const jsonBridge = JSON.parse(resBridge.body);
+    assert.strictEqual(jsonBridge.object, 'response');
+    assert.strictEqual(jsonBridge.model, 'kimi-k3');
+
+    // C. Non-native model (kimi-k3) automatically bridged to /v1/chat/completions with streaming SSE
+    const resBridgeStream = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-opencode-session': 'session-stream-test' },
+      body: JSON.stringify({ model: 'kimi-k3', input: 'Streaming query', stream: true })
+    });
+    assert.strictEqual(resBridgeStream.statusCode, 200);
+    assert.ok(resBridgeStream.headers['content-type'].includes('text/event-stream'));
+    assert.ok(resBridgeStream.body.includes('event: response.created'));
+    assert.ok(resBridgeStream.body.includes('event: response.reasoning_text.delta'));
+    assert.ok(resBridgeStream.body.includes('event: response.output_text.delta'));
+    assert.ok(resBridgeStream.body.includes('event: response.completed'));
+    console.log('✓ End-to-End Transparent Proxy & Bridge via Router HTTP Port verified');
+
+    // [Test 42] Testing Doctor Diagnostic & Auto-Repair Integration for Codex
+    console.log('\n[Test 42] Testing Doctor Diagnostic & Auto-Repair Integration for Codex...');
+    const docWithCodex = await request('/balancer/api/doctor', { method: 'GET' });
+    assert.strictEqual(docWithCodex.statusCode, 200);
+    const docCodexJson = JSON.parse(docWithCodex.body);
+    assert.ok(docCodexJson.codex, 'Doctor report must feature codex status');
+    assert.ok(typeof docCodexJson.codex.isBound === 'boolean');
+    assert.ok(Array.isArray(docCodexJson.codex.availableModels));
+
+    // Execute auto-repair
+    const repWithCodex = await request('/balancer/api/repair', { method: 'POST' });
+    assert.strictEqual(repWithCodex.statusCode, 200);
+    const repCodexJson = JSON.parse(repWithCodex.body);
+    assert.strictEqual(repCodexJson.success, true);
+    console.log('✓ Doctor Diagnostic & Auto-Repair Integration for Codex verified');
+
+    // [Test 43] Testing Responses Streaming SSE Reasoning-to-Tool Lifecycle & Strict Ordering
+    console.log('\n[Test 43] Testing Responses Streaming SSE Reasoning-to-Tool Lifecycle & Strict Ordering...');
+    const sseStreamUpstream = new EventEmitter();
+    const sseStreamClientRes = new EventEmitter();
+    sseStreamClientRes.writeHead = (status, headers) => { sseStreamClientRes.headers = headers; sseStreamClientRes.statusCode = status; };
+    const sseRecordedEvents = [];
+    sseStreamClientRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          sseRecordedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    sseStreamClientRes.end = () => { sseStreamClientRes.emit('finish'); };
+
+    codexAdapter.bridgeResponsesStream(sseStreamUpstream, sseStreamClientRes, 'qwen3.7-plus', 'resp_tool_order_test', () => {});
+
+    // Upstream emits reasoning chunk -> followed directly by tool_calls (NO intervening text content)
+    sseStreamUpstream.emit('data', Buffer.from('data: {"choices":[{"delta":{"reasoning":"Analyzing file system structure..."}}]}\n\n'));
+    sseStreamUpstream.emit('data', Buffer.from('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_fs_1","function":{"name":"list_dir","arguments":"{\\"path\\":\\"/src\\"}"}}]}}]}\n\n'));
+    sseStreamUpstream.emit('data', Buffer.from('data: [DONE]\n\n'));
+    sseStreamUpstream.emit('end');
+
+    const sseEventNames = sseRecordedEvents.map(e => e.event);
+    const reasoningDoneIdx = sseEventNames.indexOf('response.reasoning_text.done');
+    const reasoningItemDoneIdx = sseEventNames.indexOf('response.output_item.done');
+    const toolItemAddedIdx = sseEventNames.indexOf('response.output_item.added', sseEventNames.indexOf('response.reasoning_text.delta'));
+
+    assert.ok(reasoningDoneIdx !== -1, 'Must emit response.reasoning_text.done');
+    assert.ok(reasoningItemDoneIdx !== -1, 'Must emit response.output_item.done for reasoning');
+    assert.ok(toolItemAddedIdx !== -1, 'Must emit response.output_item.added for tool call');
+    assert.ok(reasoningDoneIdx < toolItemAddedIdx, 'Reasoning must close BEFORE tool item is added');
+    assert.ok(reasoningItemDoneIdx < toolItemAddedIdx, 'Reasoning output_item.done must precede tool output_item.added');
+
+    const completedEv = sseRecordedEvents.find(e => e.event === 'response.completed');
+    assert.ok(completedEv, 'Must emit response.completed');
+    assert.strictEqual(completedEv.data.response.output.length, 2, 'Output must have 2 items: reasoning and function_call');
+    assert.strictEqual(completedEv.data.response.output[0].type, 'reasoning');
+    assert.strictEqual(completedEv.data.response.output[1].type, 'function_call');
+    assert.strictEqual(completedEv.data.response.output[1].name, 'list_dir');
+    console.log('✓ Responses Streaming SSE Reasoning-to-Tool Lifecycle & Strict Ordering verified');
+
+    // [Test 44] Testing Multi-turn Complex Tool Call & Local Shell Payload Conversion
+    console.log('\n[Test 44] Testing Multi-turn Complex Tool Call & Local Shell Payload Conversion...');
+    const multiTurnPayload = {
+      model: 'opencode-go/kimi-k3',
+      input: [
+        { type: 'message', role: 'user', content: 'Run git status and inspect files' },
+        { type: 'local_shell_call', call_id: 'call_sh_1', command: 'git status' },
+        { type: 'custom_tool_call_output', call_id: 'call_sh_1', output: 'On branch master\nclean' },
+        { type: 'custom_tool_call', call_id: 'call_custom_2', action: { query: 'package.json' } },
+        { type: 'tool_search_output', call_id: 'call_custom_2', output: { found: true } },
+        { type: 'agent_message', content: 'All checks passed successfully.' }
+      ],
+      tool_choice: { type: 'function', name: 'execute_command' },
+      reasoning: { effort: 'max' }
+    };
+    const multiTurnChat = codexAdapter.convertResponsesToChatPayload(multiTurnPayload);
+    assert.strictEqual(multiTurnChat.model, 'kimi-k3', 'Prefix opencode-go/ stripped');
+    assert.strictEqual(multiTurnChat.reasoning_effort, 'high', 'max mapped to high');
+    assert.strictEqual(multiTurnChat.tool_choice.type, 'function');
+    assert.strictEqual(multiTurnChat.tool_choice.function.name, 'execute_command');
+
+    // Verify messages array structure
+    const chatMsgRoles = multiTurnChat.messages.map(m => m.role);
+    assert.ok(chatMsgRoles.includes('user'), 'Contains user message');
+    assert.ok(chatMsgRoles.includes('assistant'), 'Contains assistant tool calls');
+    assert.ok(chatMsgRoles.includes('tool'), 'Contains tool output responses');
+
+    // Verify local_shell_call mapped to function arguments with command
+    const assistantMsg1 = multiTurnChat.messages.find(m => m.role === 'assistant' && m.tool_calls);
+    assert.ok(assistantMsg1, 'Assistant message has tool_calls');
+    const shellCall = assistantMsg1.tool_calls.find(t => t.id === 'call_sh_1');
+    assert.ok(shellCall, 'Shell tool call present');
+    assert.ok(shellCall.function.arguments.includes('git status'), 'Shell command preserved in arguments');
+
+    // Test single object input
+    const singleObjPayload = {
+      model: 'qwen3.7-plus',
+      input: { role: 'user', content: 'Single prompt object' }
+    };
+    const singleObjChat = codexAdapter.convertResponsesToChatPayload(singleObjPayload);
+    assert.strictEqual(singleObjChat.messages.length, 1);
+    assert.strictEqual(singleObjChat.messages[0].content, 'Single prompt object');
+    console.log('✓ Multi-turn Complex Tool Call & Local Shell Payload Conversion verified');
+
+    // [Test 45] Testing Anthropic Messages Bridge Full Suite (Streaming & Non-Streaming)
+    console.log('\n[Test 45] Testing Anthropic Messages Bridge Full Suite...');
+    const anthropicResponsesReq = {
+      model: 'opencode-go/claude-haiku-5-5',
+      instructions: 'You are an Anthropic Assistant.',
+      input: [
+        { type: 'message', role: 'user', content: 'Check system health' },
+        { type: 'function_call', call_id: 'call_ant_1', name: 'health_check', arguments: '{"full":true}' },
+        { type: 'function_call_output', call_id: 'call_ant_1', output: '{"status":"ok"}' },
+        { type: 'message', role: 'user', content: 'Any warnings?' }
+      ]
+    };
+    const antPayload = codexAdapter.convertResponsesToAnthropicPayload(anthropicResponsesReq);
+    assert.strictEqual(antPayload.model, 'claude-haiku-5-5');
+    assert.strictEqual(antPayload.system, 'You are an Anthropic Assistant.');
+    assert.ok(Array.isArray(antPayload.messages));
+    assert.strictEqual(antPayload.messages[0].role, 'user');
+
+    // Verify bridgeAnthropicStream
+    const antUpstreamStream = new EventEmitter();
+    const antClientRes = new EventEmitter();
+    antClientRes.writeHead = (status, headers) => { antClientRes.headers = headers; antClientRes.statusCode = status; };
+    const antRecordedEvents = [];
+    antClientRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          antRecordedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    antClientRes.end = () => { antClientRes.emit('finish'); };
+
+    codexAdapter.bridgeAnthropicStream(antUpstreamStream, antClientRes, 'claude-haiku-5-5', 'resp_ant_stream_test', () => {});
+
+    // Feed Anthropic SSE chunks
+    antUpstreamStream.emit('data', Buffer.from('data: {"type":"message_start","message":{"id":"msg_100","usage":{"input_tokens":30,"output_tokens":0}}}\n\n'));
+    antUpstreamStream.emit('data', Buffer.from('data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'));
+    antUpstreamStream.emit('data', Buffer.from('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Claude responses stream verified."}}\n\n'));
+    antUpstreamStream.emit('data', Buffer.from('data: {"type":"content_block_stop","index":0}\n\n'));
+    antUpstreamStream.emit('data', Buffer.from('data: {"type":"message_delta","usage":{"output_tokens":18}}\n\n'));
+    antUpstreamStream.emit('data', Buffer.from('data: {"type":"message_stop"}\n\n'));
+    antUpstreamStream.emit('end');
+
+    const antEventNames = antRecordedEvents.map(e => e.event);
+    assert.ok(antEventNames.includes('response.created'));
+    assert.ok(antEventNames.includes('response.output_item.added'));
+    assert.ok(antEventNames.includes('response.output_text.delta'));
+    assert.ok(antEventNames.includes('response.completed'));
+
+    const antCompleted = antRecordedEvents.find(e => e.event === 'response.completed');
+    assert.strictEqual(antCompleted.data.response.status, 'completed');
+    assert.strictEqual(antCompleted.data.response.output[0].content[0].text, 'Claude responses stream verified.');
+
+    // Test convertAnthropicResponseToResponses (non-streaming)
+    const antNonStreamJson = {
+      id: 'msg_nonstream_1',
+      content: [
+        { type: 'text', text: 'Anthropic raw answer' },
+        { type: 'tool_use', id: 'call_ant_tool_1', name: 'search_api', input: { query: 'test' } }
+      ],
+      usage: { input_tokens: 15, output_tokens: 25 }
+    };
+    const antToResp = codexAdapter.convertAnthropicResponseToResponses(antNonStreamJson, 'claude-haiku-5-5', 'resp_ant_conv');
+    assert.strictEqual(antToResp.object, 'response');
+    assert.strictEqual(antToResp.status, 'completed');
+    assert.strictEqual(antToResp.output.length, 2);
+    assert.strictEqual(antToResp.output[0].type, 'message');
+    assert.strictEqual(antToResp.output[1].type, 'function_call');
+    assert.strictEqual(antToResp.output[1].name, 'search_api');
+    console.log('✓ Anthropic Messages Bridge Full Suite verified');
+
+    // [Test 46] Testing Codex Bind & Restore Cleanliness & Zero-Residue Check
+    console.log('\n[Test 46] Testing Codex Bind & Restore Cleanliness & Zero-Residue Check...');
+    const zeroResidueDir = path.join(os.tmpdir(), `test-codex-clean-${Date.now()}`);
+    fs.mkdirSync(zeroResidueDir, { recursive: true });
+    fs.writeFileSync(path.join(zeroResidueDir, 'config.toml'), 'model = "old-model"\nmodel_provider = "old-prov"\n', 'utf8');
+
+    // Bind
+    const cleanBindRes = codexAdapter.bindCodexConfig({
+      codexDir: zeroResidueDir,
+      routerPort: routerPort,
+      defaultModel: 'deepseek-v4.1-flash',
+      reasoningEffort: 'high'
+    });
+    assert.strictEqual(cleanBindRes.success, true);
+    const boundStatus = codexAdapter.getCodexStatus(zeroResidueDir);
+    assert.strictEqual(boundStatus.isBound, true);
+
+    // Restore
+    const cleanRestoreRes = codexAdapter.restoreCodexConfig(zeroResidueDir);
+    assert.strictEqual(cleanRestoreRes.success, true);
+    const restoredStatus = codexAdapter.getCodexStatus(zeroResidueDir);
+    assert.strictEqual(restoredStatus.isBound, false, 'isBound must be false after restore');
+    assert.strictEqual(restoredStatus.hasBackup, false, 'hasBackup must be false after clean restore');
+    assert.ok(!fs.existsSync(path.join(zeroResidueDir, 'config.toml.router-bak')), 'config.toml.router-bak must not exist');
+    assert.ok(!fs.existsSync(path.join(zeroResidueDir, 'model-catalogs', 'opencode-go-catalog.json')), 'catalog must not exist');
+    try { fs.rmSync(zeroResidueDir, { recursive: true, force: true }); } catch (e) {}
+    console.log('✓ Codex Bind & Restore Cleanliness & Zero-Residue Check verified');
+
+    // [Test 47] Testing End-to-End Anthropic Protocol Bridge via Router HTTP Port
+    console.log('\n[Test 47] Testing End-to-End Anthropic Protocol Bridge via Router HTTP Port...');
+
+    // A. Claude Haiku non-streaming via Router port
+    const resAntHttp = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-haiku-5-5', input: 'Hello Claude', stream: false })
+    });
+    assert.strictEqual(resAntHttp.statusCode, 200);
+    const jsonAntHttp = JSON.parse(resAntHttp.body);
+    assert.strictEqual(jsonAntHttp.object, 'response');
+    assert.strictEqual(jsonAntHttp.model, 'claude-haiku-5-5');
+    assert.strictEqual(jsonAntHttp.status, 'completed');
+    assert.strictEqual(jsonAntHttp.output[0].content[0].text, 'Hello from Claude non-streaming!');
+
+    // B. Claude Haiku streaming via Router port
+    const resAntHttpStream = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-opencode-session': 'session-anthropic-stream' },
+      body: JSON.stringify({ model: 'claude-haiku-5-5', input: 'Streaming Claude query', stream: true })
+    });
+    assert.strictEqual(resAntHttpStream.statusCode, 200);
+    assert.ok(resAntHttpStream.headers['content-type'].includes('text/event-stream'));
+    assert.ok(resAntHttpStream.body.includes('event: response.created'));
+    assert.ok(resAntHttpStream.body.includes('event: response.output_text.delta'));
+    assert.ok(resAntHttpStream.body.includes('Hello from Claude Anthropic Stream!'));
+    assert.ok(resAntHttpStream.body.includes('event: response.completed'));
+    console.log('✓ End-to-End Anthropic Protocol Bridge via Router HTTP Port verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 35 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 47 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
@@ -754,6 +1272,9 @@ async function runTests() {
     if (fs.existsSync(testSnapshotsDir)) {
       try { fs.rmSync(testSnapshotsDir, { recursive: true, force: true }); } catch (e) {}
     }
+    try {
+      codexAdapter.restoreCodexConfig();
+    } catch (e) {}
   }
 }
 

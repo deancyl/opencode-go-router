@@ -24,6 +24,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execSync, exec, spawn } = require('node:child_process');
+const codexAdapter = require('./codex-adapter');
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
@@ -612,6 +613,30 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   }
   const upstreamPath = upstreamPathname + (targetPath.startsWith('/') ? targetPath : '/' + targetPath);
 
+  // Model prefix normalization & Responses protocol check
+  let parsedBody = null;
+  if (reqBody && reqBody.length > 0) {
+    try {
+      parsedBody = JSON.parse(reqBody.toString('utf8'));
+      if (parsedBody && typeof parsedBody.model === 'string' && parsedBody.model.startsWith('opencode-go/')) {
+        parsedBody.model = parsedBody.model.slice(12);
+        reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+      }
+    } catch (e) {}
+  }
+
+  const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
+  if (isResponsesReq && parsedBody) {
+    const reqModel = parsedBody.model || 'deepseek-v4.1-flash';
+    if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(reqModel)) {
+      bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+      return;
+    } else if (!codexAdapter.NATIVE_RESPONSES_MODELS.has(reqModel)) {
+      bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+      return;
+    }
+  }
+
   const proxyHeaders = { ...clientReq.headers };
   delete proxyHeaders['host'];
   delete proxyHeaders['connection'];
@@ -720,6 +745,34 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
+    // Check if Responses protocol is unsupported on upstream for native models
+    if (isResponsesReq && statusCode === 400 && parsedBody && !clientAborted && !clientRes.destroyed) {
+      const errChunks = [];
+      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        const errText = Buffer.concat(errChunks).toString('utf8');
+        if (errText.includes('ModelProtocolUnsupported') || errText.includes('does not support /responses')) {
+          console.log(`[Protocol Fallback] Model "${parsedBody.model}" triggered ModelProtocolUnsupported on /responses. Bridging...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(parsedBody.model)) {
+            bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+          } else {
+            bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+          }
+        } else {
+          finishRequest();
+          const outHeaders = getCorsHeaders(upstreamRes.headers);
+          const errorBody = Buffer.from(errText, 'utf8');
+          outHeaders['content-length'] = String(errorBody.length);
+          clientRes.writeHead(statusCode, outHeaders);
+          clientRes.end(errorBody);
+        }
+      });
+      return;
+    }
+
     responded = true;
     clientRes.writeHead(statusCode, getCorsHeaders(upstreamRes.headers));
     upstreamRes.pipe(clientRes);
@@ -785,6 +838,407 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   if (reqBody && reqBody.length > 0) {
     proxyReq.write(reqBody);
   }
+  proxyReq.end();
+}
+
+function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set()) {
+  triedAccountIds.add(account.id);
+  const stat = accountStats.get(account.id);
+  if (stat) {
+    stat.activeRequests += 1;
+    stat.totalRequests += 1;
+    stat.lastUsedAt = Date.now();
+  }
+
+  const upstreamUrl = new URL(config.upstream);
+  const isHttps = upstreamUrl.protocol === 'https:';
+  const transport = isHttps ? https : http;
+
+  const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody);
+  const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
+  const isStream = chatPayload.stream !== false;
+  const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
+
+  const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
+  const upstreamChatPath = upstreamPathname + '/chat/completions';
+
+  let sessionId = clientReq.headers['x-opencode-session'];
+  if (!sessionId || !sessionId.trim()) {
+    sessionId = 'session-opencode-go-default';
+  }
+
+  const proxyHeaders = {
+    'content-type': 'application/json',
+    'content-length': String(chatBody.length),
+    'authorization': `Bearer ${account.apiKey.trim()}`,
+    'x-opencode-session': sessionId,
+    'user-agent': clientReq.headers['user-agent'] || 'OpenCode-Go-Router-CodexBridge/2.1'
+  };
+
+  const proxyOptions = {
+    protocol: upstreamUrl.protocol,
+    hostname: upstreamUrl.hostname,
+    port: upstreamUrl.port || (isHttps ? 443 : 80),
+    path: upstreamChatPath,
+    method: 'POST',
+    headers: proxyHeaders,
+    timeout: 300000
+  };
+
+  const proxyReq = transport.request(proxyOptions);
+  let responded = false;
+  let requestFinished = false;
+  let clientAborted = false;
+
+  const finishRequest = () => {
+    if (!requestFinished) {
+      requestFinished = true;
+      if (stat && stat.activeRequests > 0) {
+        stat.activeRequests -= 1;
+      }
+    }
+  };
+
+  const clientCloseHandler = () => {
+    if (!clientRes.writableEnded) {
+      clientAborted = true;
+      if (!proxyReq.destroyed) {
+        proxyReq.destroy();
+      }
+    }
+    finishRequest();
+  };
+
+  clientRes.once('close', clientCloseHandler);
+
+  proxyReq.on('timeout', () => {
+    console.error(`[Bridge Timeout] Upstream chat request for model "${reqModel}" timed out after 300s`);
+    proxyReq.destroy(new Error('Gateway Timeout (upstream took longer than 300s)'));
+  });
+
+  proxyReq.on('response', (upstreamRes) => {
+    const statusCode = upstreamRes.statusCode;
+
+    // 429 / 503 failover
+    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
+      let cooldownMs = config.defaultCooldownMs;
+      const retryAfter = upstreamRes.headers['retry-after'];
+      if (retryAfter) {
+        const sec = parseInt(retryAfter, 10);
+        if (!isNaN(sec) && sec > 0) cooldownMs = sec * 1000;
+        else {
+          const dateMs = new Date(retryAfter).getTime();
+          if (!isNaN(dateMs) && dateMs > Date.now()) cooldownMs = dateMs - Date.now();
+        }
+      }
+      recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+
+      const errorChunks = [];
+      upstreamRes.on('data', chunk => errorChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        if (clientAborted || clientRes.destroyed) return;
+        const nextAccount = selectAccount(sessionId, triedAccountIds);
+        if (nextAccount) {
+          if (stat) stat.failoverCount += 1;
+          console.log(`[Bridge Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        } else {
+          const errorBody = Buffer.concat(errorChunks);
+          const outHeaders = getCorsHeaders(upstreamRes.headers);
+          outHeaders['content-length'] = String(errorBody.length);
+          clientRes.writeHead(statusCode, outHeaders);
+          clientRes.end(errorBody);
+        }
+      });
+      return;
+    }
+
+    if (statusCode !== 200) {
+      responded = true;
+      const errChunks = [];
+      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        finishRequest();
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        const errorBody = Buffer.concat(errChunks);
+        const outHeaders = getCorsHeaders(upstreamRes.headers);
+        outHeaders['content-length'] = String(errorBody.length);
+        clientRes.writeHead(statusCode, outHeaders);
+        clientRes.end(errorBody);
+      });
+      return;
+    }
+
+    responded = true;
+
+    if (isStream) {
+      codexAdapter.bridgeResponsesStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
+        finishRequest();
+      });
+      upstreamRes.on('error', (err) => {
+        console.error('[Bridge Stream Error]', err.message);
+        finishRequest();
+        if (!clientRes.writableEnded) clientRes.end();
+      });
+    } else {
+      const dataChunks = [];
+      upstreamRes.on('data', chunk => dataChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        finishRequest();
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        try {
+          const chatJson = JSON.parse(Buffer.concat(dataChunks).toString('utf8'));
+          const responsesJson = codexAdapter.convertChatResponseToResponses(chatJson, reqModel, responsesBody.id);
+          const outBuf = Buffer.from(JSON.stringify(responsesJson), 'utf8');
+          const headers = getCorsHeaders(upstreamRes.headers);
+          headers['content-type'] = 'application/json; charset=utf-8';
+          headers['content-length'] = String(outBuf.length);
+          clientRes.writeHead(200, headers);
+          clientRes.end(outBuf);
+        } catch (e) {
+          clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          clientRes.end(JSON.stringify({ error: { message: 'Bridge parse error: ' + e.message } }));
+        }
+      });
+      upstreamRes.on('error', (err) => {
+        finishRequest();
+        if (!clientRes.writableEnded) clientRes.end();
+      });
+    }
+  });
+
+  proxyReq.on('error', (err) => {
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+    if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
+
+    if (!responded && attemptNumber <= config.maxFailoverRetries) {
+      const nextAccount = selectAccount(sessionId, triedAccountIds);
+      if (nextAccount) {
+        if (stat) stat.failoverCount += 1;
+        console.log(`[Bridge Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
+        bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        return;
+      }
+    }
+
+    if (!responded) {
+      responded = true;
+      clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({
+        error: {
+          message: `Bridge proxy error: ${err.message}`,
+          type: 'router_bridge_error',
+          code: 502
+        }
+      }));
+    }
+  });
+
+  proxyReq.write(chatBody);
+  proxyReq.end();
+}
+
+function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set()) {
+  triedAccountIds.add(account.id);
+  const stat = accountStats.get(account.id);
+  if (stat) {
+    stat.activeRequests += 1;
+    stat.totalRequests += 1;
+    stat.lastUsedAt = Date.now();
+  }
+
+  const upstreamUrl = new URL(config.upstream);
+  const isHttps = upstreamUrl.protocol === 'https:';
+  const transport = isHttps ? https : http;
+
+  const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody);
+  const reqModel = anthropicPayload.model || 'claude-haiku-5-5';
+  const isStream = anthropicPayload.stream !== false;
+  const anthropicBody = Buffer.from(JSON.stringify(anthropicPayload), 'utf8');
+
+  const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
+  const upstreamMessagesPath = upstreamPathname + '/messages';
+
+  let sessionId = clientReq.headers['x-opencode-session'];
+  if (!sessionId || !sessionId.trim()) {
+    sessionId = 'session-opencode-go-default';
+  }
+
+  const proxyHeaders = {
+    'content-type': 'application/json',
+    'content-length': String(anthropicBody.length),
+    'x-api-key': account.apiKey.trim(),
+    'x-opencode-session': sessionId,
+    'anthropic-version': '2023-06-01',
+    'user-agent': clientReq.headers['user-agent'] || 'OpenCode-Go-Router-AnthropicBridge/2.1'
+  };
+
+  const proxyOptions = {
+    protocol: upstreamUrl.protocol,
+    hostname: upstreamUrl.hostname,
+    port: upstreamUrl.port || (isHttps ? 443 : 80),
+    path: upstreamMessagesPath,
+    method: 'POST',
+    headers: proxyHeaders,
+    timeout: 300000
+  };
+
+  const proxyReq = transport.request(proxyOptions);
+  let responded = false;
+  let requestFinished = false;
+  let clientAborted = false;
+
+  const finishRequest = () => {
+    if (!requestFinished) {
+      requestFinished = true;
+      if (stat && stat.activeRequests > 0) {
+        stat.activeRequests -= 1;
+      }
+    }
+  };
+
+  const clientCloseHandler = () => {
+    if (!clientRes.writableEnded) {
+      clientAborted = true;
+      if (!proxyReq.destroyed) {
+        proxyReq.destroy();
+      }
+    }
+    finishRequest();
+  };
+
+  clientRes.once('close', clientCloseHandler);
+
+  proxyReq.on('timeout', () => {
+    console.error(`[Bridge Timeout] Upstream Anthropic request for model "${reqModel}" timed out after 300s`);
+    proxyReq.destroy(new Error('Gateway Timeout (upstream took longer than 300s)'));
+  });
+
+  proxyReq.on('response', (upstreamRes) => {
+    const statusCode = upstreamRes.statusCode;
+
+    // 429 / 503 failover
+    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
+      let cooldownMs = config.defaultCooldownMs;
+      const retryAfter = upstreamRes.headers['retry-after'];
+      if (retryAfter) {
+        const sec = parseInt(retryAfter, 10);
+        if (!isNaN(sec) && sec > 0) cooldownMs = sec * 1000;
+        else {
+          const dateMs = new Date(retryAfter).getTime();
+          if (!isNaN(dateMs) && dateMs > Date.now()) cooldownMs = dateMs - Date.now();
+        }
+      }
+      recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+
+      const errorChunks = [];
+      upstreamRes.on('data', chunk => errorChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        if (clientAborted || clientRes.destroyed) return;
+        const nextAccount = selectAccount(sessionId, triedAccountIds);
+        if (nextAccount) {
+          if (stat) stat.failoverCount += 1;
+          console.log(`[Anthropic Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        } else {
+          const errorBody = Buffer.concat(errorChunks);
+          const outHeaders = getCorsHeaders(upstreamRes.headers);
+          outHeaders['content-length'] = String(errorBody.length);
+          clientRes.writeHead(statusCode, outHeaders);
+          clientRes.end(errorBody);
+        }
+      });
+      return;
+    }
+
+    if (statusCode !== 200) {
+      responded = true;
+      const errChunks = [];
+      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        finishRequest();
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        const errorBody = Buffer.concat(errChunks);
+        const outHeaders = getCorsHeaders(upstreamRes.headers);
+        outHeaders['content-length'] = String(errorBody.length);
+        clientRes.writeHead(statusCode, outHeaders);
+        clientRes.end(errorBody);
+      });
+      return;
+    }
+
+    responded = true;
+
+    if (isStream) {
+      codexAdapter.bridgeAnthropicStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
+        finishRequest();
+      });
+      upstreamRes.on('error', (err) => {
+        console.error('[Anthropic Stream Error]', err.message);
+        finishRequest();
+        if (!clientRes.writableEnded) clientRes.end();
+      });
+    } else {
+      const dataChunks = [];
+      upstreamRes.on('data', chunk => dataChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        finishRequest();
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        try {
+          const anthropicJson = JSON.parse(Buffer.concat(dataChunks).toString('utf8'));
+          const responsesJson = codexAdapter.convertAnthropicResponseToResponses(anthropicJson, reqModel, responsesBody.id);
+          const outBuf = Buffer.from(JSON.stringify(responsesJson), 'utf8');
+          const headers = getCorsHeaders(upstreamRes.headers);
+          headers['content-type'] = 'application/json; charset=utf-8';
+          headers['content-length'] = String(outBuf.length);
+          clientRes.writeHead(200, headers);
+          clientRes.end(outBuf);
+        } catch (e) {
+          clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          clientRes.end(JSON.stringify({ error: { message: 'Anthropic parse error: ' + e.message } }));
+        }
+      });
+      upstreamRes.on('error', (err) => {
+        finishRequest();
+        if (!clientRes.writableEnded) clientRes.end();
+      });
+    }
+  });
+
+  proxyReq.on('error', (err) => {
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+    if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
+
+    if (!responded && attemptNumber <= config.maxFailoverRetries) {
+      const nextAccount = selectAccount(sessionId, triedAccountIds);
+      if (nextAccount) {
+        if (stat) stat.failoverCount += 1;
+        console.log(`[Anthropic Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
+        bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        return;
+      }
+    }
+
+    if (!responded) {
+      responded = true;
+      clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({
+        error: {
+          message: `Anthropic proxy error: ${err.message}`,
+          type: 'router_anthropic_error',
+          code: 502
+        }
+      }));
+    }
+  });
+
+  proxyReq.write(anthropicBody);
   proxyReq.end();
 }
 
@@ -1146,6 +1600,20 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     }
   } catch (e) {}
 
+  // 8. Check OpenAI Codex CLI & binding
+  try {
+    const codexStatus = codexAdapter.getCodexStatus(config.port);
+    report.codex = codexStatus;
+    if (codexStatus.cliInstalled && !codexStatus.isBound) {
+      report.issues.push({
+        id: 'codex_not_bound',
+        severity: 'medium',
+        title: 'OpenAI Codex CLI 尚未接入本地智能网关',
+        desc: `检测到本地已安装 Codex CLI (${codexStatus.cliVersion || '已安装'})，可一键接入 OpenCode Go 38 款模型及思考等级映射`
+      });
+    }
+  } catch (e) {}
+
   return report;
 }
 
@@ -1412,6 +1880,27 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
     }
   } catch (e) {
     results.push({ item: 'Office Preview Engine', success: false, message: '挂载 Office 预览引擎异常: ' + e.message });
+  }
+
+  // 8. Auto-bind Codex CLI if installed and not yet bound
+  try {
+    const codexStatus = codexAdapter.getCodexStatus(config.port);
+    if (codexStatus.cliInstalled && !codexStatus.isBound) {
+      const bindRes = codexAdapter.bindCodexConfig({
+        routerPort: config.port,
+        routerUrl: `http://127.0.0.1:${config.port}/v1`,
+        defaultModel: 'deepseek-v4.1-flash',
+        reasoningEffort: 'high',
+        providerName: 'opencode-go'
+      });
+      results.push({
+        item: 'Codex Integration',
+        success: bindRes.success,
+        message: bindRes.success ? '已自动将 OpenAI Codex CLI 接入本地 4010 智能网关（支持全量 38 款模型）' : bindRes.error
+      });
+    }
+  } catch (e) {
+    results.push({ item: 'Codex Integration', success: false, message: 'Codex 接入修复异常: ' + e.message });
   }
 
   return results;
@@ -1875,6 +2364,69 @@ const server = http.createServer((req, res) => {
         success: result.opencode || result.openchamber,
         result,
         message: result.messages.join('；')
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
+  // Codex CLI Status API
+  if (reqUrl.pathname === '/balancer/api/codex-status' && req.method === 'GET') {
+    try {
+      const status = codexAdapter.getCodexStatus(config.port);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, status }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
+  // Bind Codex CLI API
+  if (reqUrl.pathname === '/balancer/api/bind-codex' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        let payload = {};
+        if (body.length > 0) {
+          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        }
+        const defaultModel = payload.defaultModel || 'deepseek-v4.1-flash';
+        const reasoningEffort = payload.reasoningEffort || 'high';
+        const result = codexAdapter.bindCodexConfig({
+          routerPort: config.port,
+          routerUrl: `http://127.0.0.1:${config.port}/v1`,
+          defaultModel,
+          reasoningEffort,
+          providerName: 'opencode-go'
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: result.success,
+          result,
+          message: result.messages ? result.messages.join('；') : (result.success ? 'Codex 接入成功' : result.error)
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Restore Codex Configuration API
+  if (reqUrl.pathname === '/balancer/api/restore-codex' && req.method === 'POST') {
+    try {
+      const result = codexAdapter.restoreCodexConfig();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({
+        success: result.success,
+        result,
+        message: result.messages && result.messages.length > 0 ? result.messages.join('；') : (result.message || 'Codex 配置已还原')
       }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -2538,6 +3090,7 @@ $ghost
         <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
         <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">📦 检查更新</button>
         <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
+        <button class="btn btn-secondary btn-sm" onclick="bindCodexQuick()" title="一键将本地网关锁定为 OpenAI Codex 默认配置">🤖 接入 Codex</button>
         <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
         <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="退出管理登录" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出登录</button>
       </div>
@@ -2585,6 +3138,39 @@ $ghost
       </div>
       <div id="updates-content" class="doctor-box">
         <span style="color:var(--muted)">点击【检查最新版本】自动检测 OpenCode CLI、OMO 调度插件、Goal 插件、OpenChamber 及智能网关套件的最新版本与兼容性状态...</span>
+      </div>
+    </div>
+
+    <!-- OpenAI Codex CLI 智能接入与全量模型调度卡片 -->
+    <div class="card" id="codex-card">
+      <div class="section-title">
+        <span>🤖 OpenAI Codex CLI 智能接入与模型调度 (Codex Integration)</span>
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔍 刷新状态</button>
+          <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="bindCodex()">⚡ 一键接入 Codex</button>
+          <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="restoreCodex()">🔄 一键还原原本配置</button>
+        </div>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
+        <div class="form-group" style="flex:1; min-width:280px; margin-bottom:0;">
+          <label>首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)</label>
+          <select id="codex-model-select" class="form-control" style="background:#0b1120;">
+            <!-- 动态生成 38 款模型 -->
+          </select>
+        </div>
+        <div class="form-group" style="width:200px; margin-bottom:0;">
+          <label>思考等级 (Reasoning Effort)</label>
+          <select id="codex-effort-select" class="form-control" style="background:#0b1120;">
+            <option value="low">low (极速轻量思考)</option>
+            <option value="medium">medium (均衡思考)</option>
+            <option value="high" selected>high (深度思考 - 默认推荐)</option>
+            <option value="xhigh">xhigh (超强思考)</option>
+            <option value="max">max (极限思考)</option>
+          </select>
+        </div>
+      </div>
+      <div id="codex-status-content" class="doctor-box" style="margin-top:10px;">
+        <span style="color:var(--muted)">正在检测 OpenAI Codex CLI 状态与网关接入配置...</span>
       </div>
     </div>
 
@@ -3444,6 +4030,117 @@ $ghost
       }
     }
 
+    // Codex Management Functions
+    let codexStatusData = null;
+    async function loadCodexStatus() {
+      const box = document.getElementById('codex-status-content');
+      const sel = document.getElementById('codex-model-select');
+      try {
+        const res = await fetch('/balancer/api/codex-status', { headers: apiHeaders() });
+        const data = await res.json();
+        if (data.success && data.status) {
+          codexStatusData = data.status;
+          const st = data.status;
+
+          if (sel && sel.options.length === 0 && Array.isArray(st.availableModels)) {
+            sel.innerHTML = '';
+            st.availableModels.forEach(function(m) {
+              const opt = document.createElement('option');
+              const isNative = ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'grok-4.6', 'grok-4.7', 'gpt-5.6-luna'].includes(m.slug);
+              const isAnthropic = m.slug === 'claude-haiku-5-5';
+              let tag = ' [智能协议桥]';
+              if (isNative) tag = ' [原生 Responses]';
+              else if (isAnthropic) tag = ' [Anthropic 协议桥]';
+              opt.innerText = m.display_name + tag;
+              if (m.slug === (st.currentModel || 'deepseek-v4.1-flash')) opt.selected = true;
+              sel.appendChild(opt);
+            });
+          }
+
+          if (st.currentReasoningEffort && document.getElementById('codex-effort-select')) {
+            document.getElementById('codex-effort-select').value = st.currentReasoningEffort;
+          }
+
+          let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">';
+          html += '<div><strong>Codex CLI 引擎状态:</strong> ' + (st.cliInstalled ? '<span class="badge badge-healthy">已安装 (v' + (st.cliVersion || '最新') + ')</span>' : '<span class="badge badge-disabled">未检测到全局 CLI (可预配置)</span>') + '</div>';
+          html += '<div><strong>网关接入状态:</strong> ' + (st.isBound ? '<span class="badge badge-healthy">已接入 4010 网关</span>' : '<span class="badge badge-cooling">未接入</span>') + '</div>';
+          html += '</div>';
+
+          html += '<div style="font-size:0.85rem; color:#cbd5e1; line-height:1.6;">';
+          html += '<div>• <strong>当前模型:</strong> <code style="color:var(--primary); font-family:monospace;">' + (st.currentModel || '未设置') + '</code> | <strong>提供商:</strong> ' + (st.currentProvider || '无') + ' | <strong>思考等级:</strong> ' + (st.currentReasoningEffort || 'high') + '</div>';
+          html += '<div>• <strong>配置目录:</strong> <code style="color:var(--muted); font-family:monospace;">' + st.codexDir + '</code></div>';
+          html += '<div>• <strong>灾备备份:</strong> ' + (st.hasBackup ? '<span style="color:var(--success);">✔ 原始配置已无损备份 (' + (st.backupInfo && st.backupInfo.isoDate ? st.backupInfo.isoDate : '已备份') + ')，随时可原样还原</span>' : '<span style="color:var(--muted);">初次接入前将自动执行原子备份</span>') + '</div>';
+          html += '</div>';
+
+          if (st.isBound) {
+            html += '<div style="margin-top:8px; font-size:0.8rem; background:rgba(6,95,70,0.2); border:1px solid rgba(5,150,105,0.4); padding:6px 10px; border-radius:6px; color:#a7f3d0;">';
+            html += '🚀 <strong>终端即用指令:</strong> <code>codex exec "编写单元测试"</code> 或 <code>codex --model ' + (st.currentModel || 'kimi-k3') + '</code>';
+            html += '</div>';
+          }
+
+          box.innerHTML = html;
+        } else {
+          box.innerHTML = '<div style="color:var(--danger);">获取状态失败: ' + (data.error || '未知错误') + '</div>';
+        }
+      } catch (e) {
+        box.innerHTML = '<div style="color:var(--danger);">检测 Codex 状态异常: ' + e.message + '</div>';
+      }
+    }
+
+    async function bindCodex() {
+      const model = document.getElementById('codex-model-select') ? document.getElementById('codex-model-select').value : 'deepseek-v4.1-flash';
+      const effort = document.getElementById('codex-effort-select') ? document.getElementById('codex-effort-select').value : 'high';
+      const box = document.getElementById('codex-status-content');
+      if (box) box.innerHTML = '<span style="color:var(--muted)">正在执行原子配置备份并接入 OpenCode Go 38 款模型目录与网关...</span>';
+      try {
+        const res = await fetch('/balancer/api/bind-codex', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ defaultModel: model, reasoningEffort: effort })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('🎉 Codex 一键接入成功！');
+          loadCodexStatus();
+        } else {
+          showToast('接入失败: ' + (data.error || data.message), true);
+          loadCodexStatus();
+        }
+      } catch (e) {
+        showToast('接入请求异常: ' + e.message, true);
+        loadCodexStatus();
+      }
+    }
+
+    async function bindCodexQuick() {
+      await bindCodex();
+      const card = document.getElementById('codex-card');
+      if (card) card.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function restoreCodex() {
+      if (!confirm('确定要一键还原 Codex 原始配置吗？系统将从 backup-router-bind 恢复您接入前原本的所有配置与认证。')) return;
+      const box = document.getElementById('codex-status-content');
+      if (box) box.innerHTML = '<span style="color:var(--muted)">正在从安全备份中还原原始 Codex 配置...</span>';
+      try {
+        const res = await fetch('/balancer/api/restore-codex', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✔ Codex 原始配置已恢复！');
+          loadCodexStatus();
+        } else {
+          showToast('还原未完成: ' + (data.message || data.error), true);
+          loadCodexStatus();
+        }
+      } catch (e) {
+        showToast('还原请求异常: ' + e.message, true);
+        loadCodexStatus();
+      }
+    }
+
     // Init
     const currentHost = window.location.hostname || '127.0.0.1';
     const baseUrlElem = document.getElementById('lbl-baseurl');
@@ -3460,6 +4157,7 @@ $ghost
     }
     fetchConfig();
     fetchStatus();
+    loadCodexStatus();
     setInterval(fetchStatus, 2000);
     if (window.location.hash === '#updates') {
       setTimeout(function() {

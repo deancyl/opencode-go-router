@@ -234,7 +234,8 @@ function detectLocalVersions() {
     'opencode': null,
     'oh-my-openagent': null,
     'opencode-goal-plugin': null,
-    'openchamber': null
+    'openchamber': null,
+    'codex': null
   };
 
   // 1. Router version from package.json
@@ -350,6 +351,25 @@ function detectLocalVersions() {
     for (const c of chamberCandidates) {
       if (fs.existsSync(c)) {
         try { versions['openchamber'] = JSON.parse(fs.readFileSync(c, 'utf8')).version; break; } catch (e) {}
+      }
+    }
+  }
+
+  // 6. OpenAI Codex CLI
+  let codexOut = runCmdSync('codex --version');
+  if (codexOut) {
+    const m = codexOut.match(/(\d+\.\d+\.\d+)/);
+    if (m) versions['codex'] = m[1];
+  }
+  if (!versions['codex']) {
+    const codexCandidates = [
+      path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex', 'package.json'),
+      path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openai', 'codex', 'package.json'),
+      '/usr/local/lib/node_modules/@openai/codex/package.json'
+    ];
+    for (const c of codexCandidates) {
+      if (fs.existsSync(c)) {
+        try { versions['codex'] = JSON.parse(fs.readFileSync(c, 'utf8')).version; break; } catch (e) {}
       }
     }
   }
