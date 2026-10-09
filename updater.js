@@ -343,10 +343,28 @@ function detectLocalVersions() {
   }
 
   // 5. OpenChamber
-  let chamberOut = runCmdSync('openchamber --version');
-  if (chamberOut) {
-    const m = chamberOut.match(/(?:v)?(\d+\.\d+\.\d+)/);
-    if (m) versions['openchamber'] = m[1];
+  let chamberDetected = false;
+  if (process.platform === 'win32') {
+    const desktopExe = path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'OpenChamber.exe');
+    if (fs.existsSync(desktopExe)) {
+      try {
+        const vOut = runCmdSync(`powershell -NoProfile -Command "(Get-Command '${desktopExe}').FileVersionInfo.FileVersion"`, 3000);
+        if (vOut) {
+          const m = vOut.match(/(\d+\.\d+\.\d+)/);
+          if (m) {
+            versions['openchamber'] = m[1];
+            chamberDetected = true;
+          }
+        }
+      } catch (e) {}
+    }
+  }
+  if (!chamberDetected) {
+    let chamberOut = runCmdSync('openchamber --version');
+    if (chamberOut) {
+      const m = chamberOut.match(/(?:v)?(\d+\.\d+\.\d+)/);
+      if (m) versions['openchamber'] = m[1];
+    }
   }
   if (!versions['openchamber']) {
     const chamberCandidates = [
@@ -1138,6 +1156,47 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         res = runCmd(fallbackCmd, 120000);
       }
       if (res.success) {
+        // Windows Desktop Client Full-Installer Upgrade
+        if (process.platform === 'win32') {
+          const desktopExe = path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'OpenChamber.exe');
+          if (fs.existsSync(desktopExe)) {
+            logs.push(`检测到已安装 OpenChamber 桌面客户端，正在准备升级桌面端程序至 v${ver}...`);
+            try {
+              const installerDir = path.join(os.tmpdir(), 'openchamber-update');
+              if (!fs.existsSync(installerDir)) fs.mkdirSync(installerDir, { recursive: true });
+              const installerPath = path.join(installerDir, `OpenChamber-${ver}-win-x64.exe`);
+
+              if (!fs.existsSync(installerPath) || fs.statSync(installerPath).size < 10000000) {
+                logs.push(`正在下载 OpenChamber 桌面端完整安装包 (v${ver})...`);
+                let dlRes = runCmd(`gh release download v${ver} --repo openchamber/openchamber --pattern "OpenChamber-${ver}-win-x64.exe" --dir "${installerDir}"`, 180000);
+                if (!dlRes.success || !fs.existsSync(installerPath)) {
+                  const dlUrl = `https://github.com/openchamber/openchamber/releases/download/v${ver}/OpenChamber-${ver}-win-x64.exe`;
+                  logs.push(`正在通过直接下载源拉取安装包: ${dlUrl}...`);
+                  dlRes = runCmd(`curl -L -f -o "${installerPath}" "${dlUrl}"`, 300000);
+                }
+              }
+
+              if (fs.existsSync(installerPath) && fs.statSync(installerPath).size > 10000000) {
+                const hadRunning = runCmdSync(`powershell -NoProfile -Command "(Get-Process *openchamber* -ErrorAction SilentlyContinue).Count"`, 3000) > 0;
+                logs.push(`正在安全关闭运行中的 OpenChamber 实例并执行静默升级...`);
+                runCmd(`powershell -NoProfile -Command "Get-Process *openchamber* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"`, 10000);
+                runCmd(`powershell -NoProfile -Command "Start-Sleep -Seconds 1; Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -Wait"`, 180000);
+                logs.push(`✔ OpenChamber 桌面端 v${ver} 安装包已成功执行静默更新！`);
+
+                // Relaunch decoupled if was running
+                if (hadRunning) {
+                  logs.push('正在安全重启全新的 OpenChamber 桌面端...');
+                  runCmd(`powershell -NoProfile -Command "Start-Sleep -Seconds 1; explorer.exe '${desktopExe}'"`, 5000);
+                }
+              } else {
+                logs.push(`⚠ 未能下载到桌面安装包，已保留 Web 内核更新`);
+              }
+            } catch (desktopErr) {
+              logs.push(`⚠ 桌面端升级提示: ${desktopErr.message}`);
+            }
+          }
+        }
+
         logs.push(`✔ OpenChamber 升级成功`);
         // Post-upgrade critical hook: Re-mount Air-Gapped Office Preview Engine!
         logs.push('正在自动重新挂载 OpenChamber Office 离线预览引擎补丁...');
