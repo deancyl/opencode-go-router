@@ -99,7 +99,25 @@ function getOpenChamberDistCandidates(customDir = null) {
       candidates.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@openchamber', 'web', 'dist'));
     }
   } else {
+    // Dynamic resolution via which openchamber realpath
+    try {
+      const bin = runCmdSync('which openchamber');
+      if (bin) {
+        const firstLine = bin.split(/\r?\n/)[0].trim();
+        if (firstLine && fs.existsSync(firstLine)) {
+          const realBin = fs.realpathSync(firstLine);
+          const pkgRoot = path.join(path.dirname(realBin), '..');
+          candidates.push(path.join(pkgRoot, 'dist'));
+          candidates.push(path.join(pkgRoot, 'public'));
+        }
+      }
+    } catch (_) {}
+
     candidates.push(
+      '/vol3/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist',
+      '/vol3/1000/docker/opencode/openchamber/dist',
+      '/vol1/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist',
+      '/vol2/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist',
       '/vol3/1000/docker/openchamber/web/dist',
       '/vol3/1000/docker/openchamber/dist',
       '/vol1/1000/docker/openchamber/web/dist',
@@ -113,6 +131,8 @@ function getOpenChamberDistCandidates(customDir = null) {
       '/var/lib/openchamber/web/dist',
       '/var/lib/openchamber/dist',
       '/usr/local/lib/node_modules/@openchamber/web/dist',
+      '/usr/lib/node_modules/@openchamber/web/dist',
+      path.join(os.homedir(), '.local', 'share', 'openchamber', 'dist'),
       path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'dist'),
       path.join(os.homedir(), '.openchamber', 'web-dist')
     );
@@ -171,33 +191,52 @@ function detectPackageManager() {
 }
 
 /**
- * Fetch latest version of npm package with timeout
+ * Fetch latest version of npm package with dual-track timeout & npmmirror fallback
  */
-function fetchNpmLatestVersion(pkgName, timeoutMs = 4000) {
+function fetchNpmLatestVersion(pkgName, timeoutMs = 4500) {
   return new Promise((resolve) => {
     const encodedName = pkgName.startsWith('@') ? '@' + encodeURIComponent(pkgName.slice(1)) : encodeURIComponent(pkgName);
-    const url = `https://registry.npmjs.org/${encodedName}/latest`;
-    const req = https.get(url, { headers: { 'User-Agent': 'opencode-go-router-updater' } }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            const parsed = JSON.parse(data);
-            resolve({ version: parsed.version || null, error: null });
-          } else {
-            resolve({ version: null, error: `HTTP ${res.statusCode}` });
-          }
-        } catch (e) {
+    const primaryUrl = `https://registry.npmjs.org/${encodedName}/latest`;
+    const mirrorUrl = `https://registry.npmmirror.com/${encodedName}/latest`;
+
+    function doFetch(targetUrl, isFallback = false) {
+      try {
+        const u = new URL(targetUrl);
+        const req = https.get(u, { headers: { 'User-Agent': 'opencode-go-router-updater' } }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                const parsed = JSON.parse(data);
+                return resolve({ version: parsed.version || null, error: null });
+              } else {
+                if (!isFallback) return doFetch(mirrorUrl, true);
+                resolve({ version: null, error: `HTTP ${res.statusCode}` });
+              }
+            } catch (e) {
+              if (!isFallback) return doFetch(mirrorUrl, true);
+              resolve({ version: null, error: e.message });
+            }
+          });
+        });
+        req.on('error', (e) => {
+          if (!isFallback) return doFetch(mirrorUrl, true);
           resolve({ version: null, error: e.message });
-        }
-      });
-    });
-    req.on('error', (e) => resolve({ version: null, error: e.message }));
-    req.setTimeout(timeoutMs, () => {
-      req.destroy();
-      resolve({ version: null, error: '请求超时 (可能处于离线或受限网络环境)' });
-    });
+        });
+        const timerLimit = isFallback ? 2500 : 2000;
+        req.setTimeout(timerLimit, () => {
+          req.destroy();
+          if (!isFallback) return doFetch(mirrorUrl, true);
+          resolve({ version: null, error: '请求超时 (可能处于离线或受限网络环境)' });
+        });
+      } catch (err) {
+        if (!isFallback) return doFetch(mirrorUrl, true);
+        resolve({ version: null, error: err.message });
+      }
+    }
+
+    doFetch(primaryUrl, false);
   });
 }
 
@@ -317,9 +356,13 @@ function detectLocalVersions() {
   }
   if (!versions['oh-my-openagent']) {
     const omoPkgCandidates = [
+      path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'package.json'),
+      path.join(os.homedir(), '.config', 'opencode', 'oh-my-openagent', 'package.json'),
+      path.join(os.homedir(), '.local', 'lib', 'node_modules', 'oh-my-openagent', 'package.json'),
       path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', 'oh-my-openagent', 'package.json'),
       path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'oh-my-openagent', 'package.json'),
-      '/usr/local/lib/node_modules/oh-my-openagent/package.json'
+      '/usr/local/lib/node_modules/oh-my-openagent/package.json',
+      '/usr/lib/node_modules/oh-my-openagent/package.json'
     ];
     for (const c of omoPkgCandidates) {
       if (fs.existsSync(c)) {
@@ -331,9 +374,12 @@ function detectLocalVersions() {
   // opencode-goal-plugin check if not found yet
   if (!versions['opencode-goal-plugin']) {
     const goalPkgCandidates = [
+      path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'opencode-goal-plugin', 'package.json'),
+      path.join(os.homedir(), '.local', 'lib', 'node_modules', 'opencode-goal-plugin', 'package.json'),
       path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', 'opencode-goal-plugin', 'package.json'),
       path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'opencode-goal-plugin', 'package.json'),
-      '/usr/local/lib/node_modules/opencode-goal-plugin/package.json'
+      '/usr/local/lib/node_modules/opencode-goal-plugin/package.json',
+      '/usr/lib/node_modules/opencode-goal-plugin/package.json'
     ];
     for (const c of goalPkgCandidates) {
       if (fs.existsSync(c)) {
@@ -367,11 +413,42 @@ function detectLocalVersions() {
     }
   }
   if (!versions['openchamber']) {
+    // Dynamic resolution from openchamber binary realpath
+    try {
+      const binCmd = process.platform === 'win32' ? 'where openchamber' : 'which openchamber';
+      const binPath = runCmdSync(binCmd);
+      if (binPath) {
+        const firstLine = binPath.split(/\r?\n/)[0].trim();
+        if (firstLine && fs.existsSync(firstLine)) {
+          const realBin = fs.realpathSync(firstLine);
+          let dir = path.dirname(realBin);
+          while (dir && dir !== path.dirname(dir)) {
+            const p = path.join(dir, 'package.json');
+            if (fs.existsSync(p)) {
+              try {
+                const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+                if (j.name === '@openchamber/web' || j.name === 'openchamber') {
+                  versions['openchamber'] = j.version;
+                  break;
+                }
+              } catch (e) {}
+            }
+            dir = path.dirname(dir);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  if (!versions['openchamber']) {
     const chamberCandidates = [
       path.join(process.env.LOCALAPPDATA || '', 'Programs', '@openchamberelectron', 'resources', 'web-dist', 'package.json'),
       path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', '@openchamber', 'web', 'package.json'),
       path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@openchamber', 'web', 'package.json'),
-      '/vol3/1000/docker/openchamber/web/dist/package.json'
+      '/vol3/1000/docker/opencode/openchamber/node_modules/@openchamber/web/package.json',
+      '/vol3/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist/package.json',
+      '/vol1/1000/docker/opencode/openchamber/node_modules/@openchamber/web/package.json',
+      '/vol3/1000/docker/openchamber/web/dist/package.json',
+      path.join(os.homedir(), '.local', 'lib', 'node_modules', '@openchamber', 'web', 'package.json')
     ];
     for (const c of chamberCandidates) {
       if (fs.existsSync(c)) {

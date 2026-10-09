@@ -387,15 +387,38 @@ function bindDesktopConfig() {
       cfg = parseJsonSafe(opencodeJsonPath, {});
     }
 
-    // 确保规范单一的 provider 配置，彻底清除 providers 冲突，防止 OpenCode 报错 retained native value
-    if (cfg.providers && cfg.providers['opencode-go']) {
-      delete cfg.providers['opencode-go'];
-      if (Object.keys(cfg.providers).length === 0) {
-        delete cfg.providers;
+    // 确保规范单一的 provider 规范，彻底将 providers 所有项合流并消除冲突
+    if (!cfg.provider || typeof cfg.provider !== 'object') cfg.provider = {};
+
+    // 构造全量 38 款模型清单，兼顾自定义已有模型
+    const allModelsMap = {};
+    if (Array.isArray(codexAdapter.OPENCODE_GO_ALL_MODELS)) {
+      for (const m of codexAdapter.OPENCODE_GO_ALL_MODELS) {
+        allModelsMap[m.slug] = { name: m.slug };
+      }
+    }
+    // 保留旧配置中自定义的模型
+    if (cfg.provider && cfg.provider['opencode-go'] && cfg.provider['opencode-go'].models) {
+      for (const [k, v] of Object.entries(cfg.provider['opencode-go'].models)) {
+        if (!allModelsMap[k]) allModelsMap[k] = v;
+      }
+    }
+    if (cfg.providers && cfg.providers['opencode-go'] && cfg.providers['opencode-go'].models) {
+      for (const [k, v] of Object.entries(cfg.providers['opencode-go'].models)) {
+        if (!allModelsMap[k]) allModelsMap[k] = v;
       }
     }
 
-    if (!cfg.provider) cfg.provider = {};
+    // 彻底将旧版复数 providers 中的所有第三方提供商（如 shtech, aixforge 等）无损合流进 provider
+    if (cfg.providers && typeof cfg.providers === 'object') {
+      for (const [pKey, pVal] of Object.entries(cfg.providers)) {
+        if (pKey !== 'opencode-go' && !cfg.provider[pKey]) {
+          cfg.provider[pKey] = pVal;
+        }
+      }
+      delete cfg.providers;
+    }
+
     cfg.provider['opencode-go'] = {
       name: 'opencode-go',
       npm: '@ai-sdk/openai-compatible',
@@ -403,14 +426,7 @@ function bindDesktopConfig() {
         baseURL: routerUrl,
         apiKey: 'local-router'
       },
-      models: {
-        'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' },
-        'deepseek-v4-pro': { name: 'deepseek-v4-pro' },
-        'kimi-k3': { name: 'kimi-k3' },
-        'qwen3.7-plus': { name: 'qwen3.7-plus' },
-        'glm-5.3': { name: 'glm-5.3' },
-        'minimax-m3': { name: 'minimax-m3' }
-      }
+      models: allModelsMap
     };
     if (cfg.provider['one-api']) {
       cfg.provider['one-api'].options = {
@@ -418,10 +434,14 @@ function bindDesktopConfig() {
         apiKey: 'local-router'
       };
     }
-    cfg.model = 'opencode-go/deepseek-v4.1-flash';
+    if (!cfg.model || cfg.model === 'opencode-go/gpt-6-luna') {
+      cfg.model = 'opencode-go/deepseek-v4.1-flash';
+      result.messages.push('已将 OpenCode 全局首选模型设置为 opencode-go/deepseek-v4.1-flash');
+    } else {
+      result.messages.push(`已保留当前 OpenCode 全局首选模型 (${cfg.model})`);
+    }
     fs.writeFileSync(opencodeJsonPath, JSON.stringify(cfg, null, 2), 'utf8');
     result.opencode = true;
-    result.messages.push('已将 OpenCode 全局首选模型锁定为 opencode-go/deepseek-v4.1-flash');
   } catch (err) {
     result.messages.push('OpenCode 配置失败: ' + err.message);
   }
@@ -1705,26 +1725,34 @@ function executeSystemRepair() {
       }
 
       if (!ocData.provider || typeof ocData.provider !== 'object') ocData.provider = {};
-      if (!ocData.providers || typeof ocData.providers !== 'object') ocData.providers = {};
 
       const routerUrl = `http://127.0.0.1:${config.port}/v1`;
-      const standardModels = {
-        'deepseek-v4.1-flash': { modelID: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' },
-        'deepseek-v4-pro': { modelID: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
-        'kimi-k3': { modelID: 'kimi-k3', name: 'kimi-k3' },
-        'qwen3.7-plus': { modelID: 'qwen3.7-plus', name: 'qwen3.7-plus' },
-        'glm-5.3': { modelID: 'glm-5.3', name: 'glm-5.3' },
-        'minimax-m3': { modelID: 'minimax-m3', name: 'minimax-m3' }
-      };
+      const allModelsMap = {};
+      if (Array.isArray(codexAdapter.OPENCODE_GO_ALL_MODELS)) {
+        for (const m of codexAdapter.OPENCODE_GO_ALL_MODELS) {
+          allModelsMap[m.slug] = { name: m.slug };
+        }
+      }
+      // 保留旧配置中已有的 models
+      if (ocData.provider && ocData.provider['opencode-go'] && ocData.provider['opencode-go'].models) {
+        for (const [k, v] of Object.entries(ocData.provider['opencode-go'].models)) {
+          if (!allModelsMap[k]) allModelsMap[k] = v;
+        }
+      }
+      if (ocData.providers && ocData.providers['opencode-go'] && ocData.providers['opencode-go'].models) {
+        for (const [k, v] of Object.entries(ocData.providers['opencode-go'].models)) {
+          if (!allModelsMap[k]) allModelsMap[k] = v;
+        }
+      }
 
-      // 关键自愈：彻底清理复数 providers 中的冲突项与残留空对象，防止 OpenCode 触发 conflict 导致丢弃本地网关
-      if (ocData.providers) {
-        if (ocData.providers['opencode-go']) {
-          delete ocData.providers['opencode-go'];
+      // 关键自愈：彻底将旧版复数 providers 中的所有第三方提供商（如 shtech, aixforge 等）无损合流进 provider，彻底删除 providers
+      if (ocData.providers && typeof ocData.providers === 'object') {
+        for (const [pKey, pVal] of Object.entries(ocData.providers)) {
+          if (pKey !== 'opencode-go' && !ocData.provider[pKey]) {
+            ocData.provider[pKey] = pVal;
+          }
         }
-        if (Object.keys(ocData.providers).length === 0) {
-          delete ocData.providers;
-        }
+        delete ocData.providers;
       }
 
       if (!ocData.provider['opencode-go']) {
@@ -1735,14 +1763,7 @@ function executeSystemRepair() {
             baseURL: routerUrl,
             apiKey: 'local-router'
           },
-          models: {
-            'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' },
-            'deepseek-v4-pro': { name: 'deepseek-v4-pro' },
-            'kimi-k3': { name: 'kimi-k3' },
-            'qwen3.7-plus': { name: 'qwen3.7-plus' },
-            'glm-5.3': { name: 'glm-5.3' },
-            'minimax-m3': { name: 'minimax-m3' }
-          }
+          models: allModelsMap
         };
       } else {
         if (!ocData.provider['opencode-go'].options) ocData.provider['opencode-go'].options = {};
@@ -1750,9 +1771,12 @@ function executeSystemRepair() {
         if (!ocData.provider['opencode-go'].options.apiKey) {
           ocData.provider['opencode-go'].options.apiKey = 'local-router';
         }
+        ocData.provider['opencode-go'].models = allModelsMap;
       }
 
-      ocData.model = 'opencode-go/deepseek-v4.1-flash';
+      if (!ocData.model || ocData.model === 'opencode-go/gpt-6-luna') {
+        ocData.model = 'opencode-go/deepseek-v4.1-flash';
+      }
 
       fs.writeFileSync(ocPath, JSON.stringify(ocData, null, 2), 'utf8');
       results.push({

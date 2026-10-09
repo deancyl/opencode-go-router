@@ -43,6 +43,23 @@ fi
 # 自动探测 OpenChamber web-dist / dist 目录
 CANDIDATES=(
   "$TARGET_DIR"
+)
+
+if command -v openchamber >/dev/null 2>&1; then
+  OC_BIN="$(which openchamber)"
+  if [[ -f "$OC_BIN" ]]; then
+    OC_REAL="$(readlink -f "$OC_BIN" 2>/dev/null || echo "$OC_BIN")"
+    OC_DIR="$(cd "$(dirname "$OC_REAL")/.." && pwd)/dist"
+    if [[ -d "$OC_DIR" ]]; then
+      CANDIDATES+=("$OC_DIR")
+    fi
+  fi
+fi
+
+CANDIDATES+=(
+  "/vol3/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist"
+  "/vol1/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist"
+  "/vol2/1000/docker/opencode/openchamber/node_modules/@openchamber/web/dist"
   "/vol3/1000/docker/openchamber/web/dist"
   "/vol3/1000/docker/openchamber/dist"
   "/vol1/1000/docker/openchamber/web/dist"
@@ -57,6 +74,8 @@ CANDIDATES=(
   "/var/lib/openchamber/dist"
   "$HOME/.bun/install/global/node_modules/@openchamber/web/dist"
   "/usr/local/lib/node_modules/@openchamber/web/dist"
+  "/usr/lib/node_modules/@openchamber/web/dist"
+  "$HOME/.local/share/openchamber/dist"
   "$HOME/.openchamber/web-dist"
 )
 
