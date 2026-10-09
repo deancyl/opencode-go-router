@@ -644,6 +644,10 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   delete proxyHeaders['transfer-encoding'];
   delete proxyHeaders['expect'];
 
+  if (!proxyHeaders['user-agent'] || /python|curl|undici|node-fetch/i.test(proxyHeaders['user-agent'])) {
+    proxyHeaders['user-agent'] = 'opencode/2.0.26 (Desktop; Linux x86_64)';
+  }
+
   if (reqBody && reqBody.length > 0) {
     proxyHeaders['content-length'] = String(Buffer.byteLength(reqBody));
   } else if (clientReq.method === 'POST' || clientReq.method === 'PUT' || clientReq.method === 'PATCH') {
@@ -769,6 +773,39 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           clientRes.writeHead(statusCode, outHeaders);
           clientRes.end(errorBody);
         }
+      });
+      return;
+    }
+
+    // Check if Region Blocked (403 unsupported_country_region_territory) or Protocol Incompatible (400)
+    if ((statusCode === 403 || statusCode === 400) && parsedBody && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
+      const errChunks = [];
+      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        const errText = Buffer.concat(errChunks).toString('utf8');
+        const isRegionBlocked = errText.includes('unsupported_country_region_territory') || errText.includes('territory not supported');
+        const isProtocolUnsupported = statusCode === 400 && errText.includes('ModelProtocolUnsupported');
+
+        if (isRegionBlocked || isProtocolUnsupported) {
+          const reason = isRegionBlocked ? 'OpenAI 地域封锁 (unsupported_country_region_territory)' : '上游协议不兼容 (ModelProtocolUnsupported)';
+          const originalModel = parsedBody.model || 'unknown';
+          const targetFallback = 'deepseek-v4.1-flash';
+          console.log(`[Auto Self-Healing] 模型 "${originalModel}" 触发 ${reason}。网关正在无缝自动挽救并切至 "${targetFallback}"...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          parsedBody.model = targetFallback;
+          const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds);
+          return;
+        }
+
+        finishRequest();
+        const outHeaders = getCorsHeaders(upstreamRes.headers);
+        const errorBody = Buffer.from(errText, 'utf8');
+        outHeaders['content-length'] = String(errorBody.length);
+        clientRes.writeHead(statusCode, outHeaders);
+        clientRes.end(errorBody);
       });
       return;
     }
