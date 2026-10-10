@@ -1946,6 +1946,39 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
     filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
   }
 
+  // Ensure [desktop] section has localeOverride = "zh-CN"
+  let hasDesktop = false;
+  inSection = false;
+  let hasLocaleOverride = false;
+  for (let i = 0; i < filteredLines.length; i++) {
+    const l = filteredLines[i].trim();
+    if (l === '[desktop]') {
+      hasDesktop = true;
+      inSection = true;
+      continue;
+    }
+    if (inSection) {
+      if (l.startsWith('[')) {
+        inSection = false;
+      } else if (l.startsWith('localeOverride =')) {
+        hasLocaleOverride = true;
+      }
+    }
+  }
+
+  if (hasDesktop && !hasLocaleOverride) {
+    for (let i = 0; i < filteredLines.length; i++) {
+      if (filteredLines[i].trim() === '[desktop]') {
+        filteredLines.splice(i + 1, 0, 'localeOverride = "zh-CN"');
+        break;
+      }
+    }
+  } else if (!hasDesktop) {
+    filteredLines.push('');
+    filteredLines.push('[desktop]');
+    filteredLines.push('localeOverride = "zh-CN"');
+  }
+
   return filteredLines.join('\n');
 }
 
@@ -2046,6 +2079,15 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     hasValidAuthKey,
     hasBackup,
     backupInfo,
+    desktopLocale: (function() {
+      if (!fs.existsSync(configPath)) return null;
+      try {
+        const raw = fs.readFileSync(configPath, 'utf8');
+        const m = raw.match(/localeOverride\s*=\s*["']([^"']+)["']/);
+        return m ? m[1] : null;
+      } catch (_) { return null; }
+    })(),
+    localeNotice: '已配置简体中文 (localeOverride = "zh-CN")。注意：Codex 桌面端 Web 界面内部汉化受制于官方该版本 Feature Gate (Statsig 72216192) 默认值冲突，官方放量或更新后将自动全面显示中文。',
     availableModels: OPENCODE_GO_ALL_MODELS.map(m => ({
       slug: m.slug,
       display_name: m.display_name,
