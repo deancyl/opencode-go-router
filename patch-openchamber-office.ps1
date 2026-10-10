@@ -81,7 +81,8 @@ $backupFilesView = "$($filesViewJs.FullName).bak"
 
 # 检查当前状态
 $hasScriptInHtml = (Get-Content $indexHtml -Raw) -like "*office-preview-engine.js*"
-$hasHookInJs = (Get-Content $filesViewJs.FullName -Raw) -like "*OpenChamberOfficeViewer*"
+$jsContentCheck = Get-Content $filesViewJs.FullName -Raw
+$hasHookInJs = $jsContentCheck -like "*OpenChamberOfficeViewer.isOfficeFile*" -and ($jsContentCheck -match '([A-Za-z0-9_$]+)=r=>\{if\(window\.OpenChamberOfficeViewer')
 $isInstalled = $hasScriptInHtml -and $hasHookInJs -and (Test-Path $targetEngine)
 
 if ($Status) {
@@ -128,7 +129,7 @@ if ($Rollback) {
 # ----------------- 安装挂载 -----------------
 Write-Host "`n正在安装全能 Office 离线安全预览引擎..." -ForegroundColor Yellow
 
-# 1. 备份原文件
+# 1. 备份原文件 (若已有纯净备份，优先从干净备份恢复基准)
 if (-not (Test-Path $backupIndex)) {
     Copy-Item $indexHtml $backupIndex -Force
     Write-Host "  ✔ 已创建备份: index.html.bak" -ForegroundColor DarkGray
@@ -136,6 +137,11 @@ if (-not (Test-Path $backupIndex)) {
 if (-not (Test-Path $backupFilesView)) {
     Copy-Item $filesViewJs.FullName $backupFilesView -Force
     Write-Host "  ✔ 已创建备份: $($filesViewJs.Name).bak" -ForegroundColor DarkGray
+} else {
+    $bakContent = Get-Content $backupFilesView -Raw
+    if ($bakContent -notlike "*OpenChamberOfficeViewer*") {
+        Copy-Item $backupFilesView $filesViewJs.FullName -Force
+    }
 }
 
 # 2. 复制引擎文件
@@ -157,34 +163,53 @@ if ($htmlContent -notlike "*office-preview-engine.js*") {
     Write-Host "  ℹ index.html 已包含引擎引用" -ForegroundColor DarkGray
 }
 
-# 4. 挂载 Hook 到 FilesView JS
+# 4. 挂载 Hook 到 FilesView JS (AST 级别精准定位二进制分发组件)
 $jsContent = Get-Content $filesViewJs.FullName -Raw
-if ($jsContent -notlike "*OpenChamberOfficeViewer*") {
-    $targetPattern = "Zd=r=>{"
-    $matchedPattern = $null
-    if ($jsContent.Contains($targetPattern)) {
-        $matchedPattern = $targetPattern
-    } else {
-        # 动态正则匹配分发组件特征模式
-        $regexMatch = [regex]::Match($jsContent, '([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary')
-        if ($regexMatch.Success) {
-            $compVar = $regexMatch.Groups[1].Value
-            $matchedPattern = "$compVar=r=>{"
-        }
-    }
 
-    if ($matchedPattern -and $jsContent.Contains($matchedPattern)) {
-        $hook = 'if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return s.jsx("div",{className:"h-full w-full min-h-0",ref:node=>{if(node&&!node.dataset.mounted){node.dataset.mounted="true";window.OpenChamberOfficeViewer.mount(node,r)}}});}'
-        $insertIdx = $jsContent.IndexOf($matchedPattern) + $matchedPattern.Length
-        $jsContent = $jsContent.Insert($insertIdx, $hook)
-        [System.IO.File]::WriteAllText($filesViewJs.FullName, $jsContent, [System.Text.Encoding]::UTF8)
-        Write-Host "  ✔ 已成功在 FilesView 视图分发层挂载全能 Office 渲染拦截器 (特征模式: $matchedPattern)！" -ForegroundColor Green
-    } else {
-        Write-Host "  ❌ 未能在 $($filesViewJs.Name) 中匹配到 FilesView 视图分发组件特征！" -ForegroundColor Red
-        exit 1
-    }
+# 查找 filesView.artifact.binary 所在位置
+$binaryIdx = $jsContent.IndexOf("filesView.artifact.binary")
+if ($binaryIdx -eq -1) {
+    Write-Host "  ❌ 未能在 $($filesViewJs.Name) 中找到 filesView.artifact.binary 特征！" -ForegroundColor Red
+    exit 1
+}
+
+# 向前寻找最近的函数定义入口 ([A-Za-z0-9_$]+)=r=>\{
+$searchStart = [Math]::Max(0, $binaryIdx - 2000)
+$searchLen = $binaryIdx - $searchStart
+$preText = $jsContent.Substring($searchStart, $searchLen)
+$funcMatches = [regex]::Matches($preText, '([A-Za-z0-9_$]+)=r=>\{')
+
+if ($funcMatches.Count -eq 0) {
+    Write-Host "  ❌ 未能精准定位二进制分发组件入口！" -ForegroundColor Red
+    exit 1
+}
+
+$targetFuncMatch = $funcMatches[$funcMatches.Count - 1]
+$compVar = $targetFuncMatch.Groups[1].Value
+$targetPattern = "$compVar=r=>{"
+
+# 自动探测该组件内使用的 JSX 运行时标识 (如 n.jsx 或 s.jsx)
+$compBodyLen = [Math]::Min(3000, $jsContent.Length - ($searchStart + $targetFuncMatch.Index))
+$compBody = $jsContent.Substring($searchStart + $targetFuncMatch.Index, $compBodyLen)
+$jsxMatch = [regex]::Match($compBody, '([A-Za-z0-9_$]+)\.(?:jsx|jsxs)\(')
+$jsxId = if ($jsxMatch.Success) { $jsxMatch.Groups[1].Value } else { "n" }
+
+# 清理旧的遗留/错位 Hook (防止多重注入或污染 Font 组件)
+if ($jsContent.Contains("OpenChamberOfficeViewer")) {
+    $jsContent = [regex]::Replace($jsContent, 'if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(r\.path\|\|r\.name\)\)\{return [^;]+;?\}', '')
+}
+
+$hook = "if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return $($jsxId).jsx(`"div`",{key:r.path||r.name,className:`"h-full w-full min-h-0`",ref:node=>{if(node&&node.dataset.file!==(r.path||r.name)){node.dataset.file=r.path||r.name;window.OpenChamberOfficeViewer.mount(node,r)}}});}"
+
+$targetIdx = $jsContent.IndexOf($targetPattern)
+if ($targetIdx -ne -1) {
+    $insertPos = $targetIdx + $targetPattern.Length
+    $jsContent = $jsContent.Insert($insertPos, $hook)
+    [System.IO.File]::WriteAllText($filesViewJs.FullName, $jsContent, [System.Text.Encoding]::UTF8)
+    Write-Host "  ✔ 已精准挂载 Office 渲染拦截器至二进制组件 $compVar (JSX 标识: $jsxId)！" -ForegroundColor Green
 } else {
-    Write-Host "  ℹ FilesView 已挂载 Office 拦截器" -ForegroundColor DarkGray
+    Write-Host "  ❌ 未能在 $($filesViewJs.Name) 中匹配到 $targetPattern 特征！" -ForegroundColor Red
+    exit 1
 }
 
 Write-Host "`n==========================================================" -ForegroundColor Green

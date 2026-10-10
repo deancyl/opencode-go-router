@@ -403,8 +403,19 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       right.appendChild(btnNative);
 
       // 另存为按钮
-      if (fileInfo.download) {
+      if (fileInfo.download && (fileInfo.download instanceof Node || fileInfo.download instanceof HTMLElement)) {
         right.appendChild(fileInfo.download);
+      } else {
+        const btnSave = document.createElement('a');
+        btnSave.className = 'oc-btn';
+        btnSave.innerHTML = '📥 保存文件';
+        btnSave.title = '下载或保存此文件到本地';
+        const rawDlUrl = fileInfo.src || ('/api/fs/raw?path=' + encodeURIComponent(path));
+        const dlJoin = rawDlUrl.includes('?') ? '&' : '?';
+        btnSave.href = rawDlUrl + dlJoin + 'download=true&allowOutsideWorkspace=true';
+        btnSave.download = name;
+        btnSave.target = '_blank';
+        right.appendChild(btnSave);
       }
 
       toolbar.appendChild(left);
@@ -425,8 +436,10 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       container.appendChild(root);
 
       // 3. 读取并解析数据
-      const fileUrl = '/api/fs/raw?path=' + encodeURIComponent(path);
-      fetch(fileUrl)
+      const rawUrl = fileInfo.src || ('/api/fs/raw?path=' + encodeURIComponent(path));
+      const fetchJoin = rawUrl.includes('?') ? '&' : '?';
+      const fileUrl = rawUrl + fetchJoin + 'allowOutsideWorkspace=true';
+      fetch(fileUrl, { credentials: 'include' })
         .then(res => {
           if (!res.ok) throw new Error('读取文件失败: HTTP ' + res.status);
           return res.arrayBuffer();

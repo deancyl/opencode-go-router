@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.4.0](https://img.shields.io/badge/Version-v2.4.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.4.1](https://img.shields.io/badge/Version-v2.4.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -496,6 +496,14 @@ npm run build:exe
   - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
   - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
 - **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
+
+### 🚀 v2.4.1
+- **彻底根治 OpenChamber Office 离线预览“不解码 DOCX 文件”痛点**：
+  - **AST 级动态精准定位二进制组件**：彻底修复旧版本挂载脚本误匹配到 `Zd=r=>{`（字体文件预览组件）而非 `Xd=r=>{`（真实二进制文件兜底分发组件）的缺陷，通过向前动态回溯 AST 函数入口精确定位目标组件；
+  - **动态 JSX 运行时标识智能适配**：自动探测目标 chunk 中使用的 JSX 运行时标识（如 `n.jsx`），彻底杜绝硬编码未定义标识（`s.jsx`）引发的 ReferenceError 异常；
+  - **DOM 挂载安全沙箱与 React 虚拟节点隔离**：在 `office-preview-engine.js` 中严密校验下载按钮类型（`instanceof Node`），隔离 React VNode 传入 `appendChild` 引发的类型错误，并提供原生安全高保真下载按钮；
+  - **全卷与工作区外路径无阻解析**：注入 `allowOutsideWorkspace=true` 与 `fileInfo.src` 优先读取协议，确保跨工作区及 `_handoff` 目录下文件均可秒级本地高保真渲染；
+  - **体检与自愈管线全链路纳管**：更新 `server.js` 体检自愈（`/balancer/api/repair`）与挂载状态检测，实现 Windows 与 Linux / NAS 全端对齐。
 
 ### 🚀 v1.3.3
 - **深度根治 OpenChamber 桌面端打不开 / 无法启动 / 秒退痛点**：

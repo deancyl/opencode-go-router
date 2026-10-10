@@ -1486,7 +1486,17 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
   if (chamberDist) {
     try {
       const idxHtml = fs.readFileSync(path.join(chamberDist, 'index.html'), 'utf8');
-      if (idxHtml.includes('office-preview-engine.js')) {
+      let jsHooked = false;
+      const assetsDir = path.join(chamberDist, 'assets');
+      if (fs.existsSync(assetsDir)) {
+        const files = fs.readdirSync(assetsDir);
+        const fv = files.find(f => f.startsWith('FilesView-') && f.endsWith('.js'));
+        if (fv) {
+          const fvContent = fs.readFileSync(path.join(assetsDir, fv), 'utf8');
+          jsHooked = fvContent.includes('OpenChamberOfficeViewer.isOfficeFile');
+        }
+      }
+      if (idxHtml.includes('office-preview-engine.js') && jsHooked) {
         report.openchamber.officePreview.installed = true;
       } else {
         report.issues.push({
@@ -1786,6 +1796,17 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
         const content = fs.readFileSync(idx, 'utf8');
         if (!content.includes('office-preview-engine.js')) {
           needsPatch = true;
+        }
+        const assetsDir = path.join(d, 'assets');
+        if (fs.existsSync(assetsDir)) {
+          const files = fs.readdirSync(assetsDir);
+          const fv = files.find(f => f.startsWith('FilesView-') && f.endsWith('.js'));
+          if (fv) {
+            const fvContent = fs.readFileSync(path.join(assetsDir, fv), 'utf8');
+            if (!fvContent.includes('OpenChamberOfficeViewer.isOfficeFile')) {
+              needsPatch = true;
+            }
+          }
         }
         break;
       }

@@ -168,35 +168,81 @@ if ! grep -q "office-preview-engine.js" "$INDEX_HTML"; then
   echo "  ✔ 已在 index.html 中注册全局驱动引擎"
 fi
 
-# 4. 挂载 Hook 到 FilesView JS
-if ! grep -q "OpenChamberOfficeViewer" "$FILES_VIEW_JS"; then
-  if command -v node >/dev/null 2>&1; then
-    node -e '
-      const fs = require("fs");
-      const targetFile = process.argv[1];
-      let content = fs.readFileSync(targetFile, "utf8");
-      const hook = "if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return s.jsx(\"div\",{className:\"h-full w-full min-h-0\",ref:node=>{if(node&&!node.dataset.mounted){node.dataset.mounted=\"true\";window.OpenChamberOfficeViewer.mount(node,r)}}});}";
-      if (content.includes("Zd=r=>{")) {
-        content = content.replace("Zd=r=>{", "Zd=r=>{" + hook);
-        fs.writeFileSync(targetFile, content, "utf8");
-        console.log("  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器 (特征模式: Zd=r=>{)！");
-      } else {
-        const match = content.match(/([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary/);
-        if (match) {
-          const comp = match[1];
-          content = content.replace(comp + "=r=>{", comp + "=r=>{" + hook);
-          fs.writeFileSync(targetFile, content, "utf8");
-          console.log("  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器 (特征模式: " + comp + "=r=>{)！");
-        } else {
-          console.error("  ❌ 未能在 FilesView 中匹配到视图组件特征！");
-          process.exit(1);
-        }
-      }
-    ' "$FILES_VIEW_JS"
-  else
-    HOOK='if(window.OpenChamberOfficeViewer\&\&window.OpenChamberOfficeViewer.isOfficeFile(r.path\|\|r.name)){return s.jsx("div",{className:"h-full w-full min-h-0",ref:node=>{if(node\&\&!node.dataset.mounted){node.dataset.mounted="true";window.OpenChamberOfficeViewer.mount(node,r)}}});}'
-    sed -i "s|Zd=r=>{|Zd=r=>{$HOOK|g" "$FILES_VIEW_JS"
-    echo "  ✔ 已在 FilesView 视图分发层挂载全能 Office 渲染拦截器！"
+# 4. 挂载 Hook 到 FilesView JS (AST 级别精准定位二进制组件与 JSX 运行时)
+if command -v node >/dev/null 2>&1; then
+  node -e '
+    const fs = require("fs");
+    const targetFile = process.argv[1];
+    let content = fs.readFileSync(targetFile, "utf8");
+
+    // 1. 定位 filesView.artifact.binary
+    const binaryIdx = content.indexOf("filesView.artifact.binary");
+    if (binaryIdx === -1) {
+      console.error("  ❌ 未找到 filesView.artifact.binary 特征！");
+      process.exit(1);
+    }
+
+    // 2. 向前寻找最近的函数定义入口
+    const before = content.substring(Math.max(0, binaryIdx - 2000), binaryIdx);
+    const matches = [...before.matchAll(/([A-Za-z0-9_$]+)=r=>\{/g)];
+    if (!matches.length) {
+      console.error("  ❌ 未能精准定位二进制分发组件入口！");
+      process.exit(1);
+    }
+    const compMatch = matches[matches.length - 1];
+    const compName = compMatch[1];
+    const compPattern = compMatch[0];
+
+    // 3. 探测 JSX 运行时标识
+    const compStart = binaryIdx - (before.length - compMatch.index);
+    const compBody = content.substring(compStart, binaryIdx + 1500);
+    const jsxMatch = compBody.match(/([A-Za-z0-9_$]+)\.(?:jsx|jsxs)\(/);
+    const jsxId = jsxMatch ? jsxMatch[1] : "n";
+
+    // 4. 清理旧错位 Hook
+    if (content.includes("OpenChamberOfficeViewer")) {
+      content = content.replace(/if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(r\.path\|\|r\.name\)\)\{return [^;]+;?\}/g, "");
+    }
+
+    // 5. 注入最新 Hook
+    const hook = `if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return ${jsxId}.jsx("div",{key:r.path||r.name,className:"h-full w-full min-h-0",ref:node=>{if(node&&node.dataset.file!==(r.path||r.name)){node.dataset.file=r.path||r.name;window.OpenChamberOfficeViewer.mount(node,r)}}});}`;
+    const targetIdx = content.indexOf(compPattern);
+    if (targetIdx !== -1) {
+      content = content.substring(0, targetIdx + compPattern.length) + hook + content.substring(targetIdx + compPattern.length);
+      fs.writeFileSync(targetFile, content, "utf8");
+      console.log(`  ✔ 已精准挂载 Office 渲染拦截器至二进制组件 ${compName} (JSX 标识: ${jsxId})！`);
+    } else {
+      console.error(`  ❌ 未能在文件中匹配到 ${compPattern} 特征！`);
+      process.exit(1);
+    }
+  ' "$FILES_VIEW_JS"
+else
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import sys, re
+target_file = sys.argv[1]
+with open(target_file, "r", encoding="utf-8") as f:
+    content = f.read()
+b_idx = content.find("filesView.artifact.binary")
+if b_idx != -1:
+    search_start = max(0, b_idx - 2000)
+    pre = content[search_start:b_idx]
+    matches = list(re.finditer(r"([A-Za-z0-9_$]+)=r=>\{", pre))
+    if matches:
+        comp = matches[-1].group(1)
+        pat = f"{comp}=r={{"
+        comp_body = content[search_start + matches[-1].start():b_idx + 1500]
+        jsx_match = re.search(r"([A-Za-z0-9_$]+)\.(?:jsx|jsxs)\(", comp_body)
+        jsx_id = jsx_match.group(1) if jsx_match else "n"
+        content = re.sub(r"if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(r\.path\|\|r\.name\)\)\{return [^;]+;?\}", "", content)
+        hook = f"if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){{return {jsx_id}.jsx(\"div\",{{key:r.path||r.name,className:\"h-full w-full min-h-0\",ref:node=>{{if(node&&node.dataset.file!==(r.path||r.name)){{node.dataset.file=r.path||r.name;window.OpenChamberOfficeViewer.mount(node,r)}}}}}});}}"
+        idx = content.find(pat)
+        if idx != -1:
+            content = content[:idx + len(pat)] + hook + content[idx + len(pat):]
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"  ✔ [Python] 已精准挂载 Office 渲染拦截器至 {comp} (JSX: {jsx_id})！")
+' "$FILES_VIEW_JS"
   fi
 fi
 
