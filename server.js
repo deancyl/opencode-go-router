@@ -1824,6 +1824,46 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
     } catch (_) {}
   }
 
+  // 10. Platform-Aware Updater & Environment Self-Healing (Linux NAS & Windows)
+  try {
+    const updater = require('./updater');
+    const platInfo = updater.detectPlatformEnvironment();
+    if (platInfo.isLinux) {
+      const userLocal = path.join(os.homedir(), '.local');
+      const userLocalBin = path.join(userLocal, 'bin');
+      const userLocalModules = path.join(userLocal, 'lib', 'node_modules');
+      if (!fs.existsSync(userLocalBin)) fs.mkdirSync(userLocalBin, { recursive: true });
+      if (!fs.existsSync(userLocalModules)) fs.mkdirSync(userLocalModules, { recursive: true });
+
+      const gitLock = path.join(__dirname, '.git', 'index.lock');
+      if (fs.existsSync(gitLock)) {
+        try { fs.unlinkSync(gitLock); } catch (_) {}
+      }
+
+      if (fs.existsSync(path.join(__dirname, '.git'))) {
+        try { updater.runCmdSync(`git config --global --add safe.directory "${__dirname}"`, 2000); } catch (_) {}
+      }
+
+      results.push({
+        item: 'Updater Environment',
+        success: true,
+        message: `已就绪 Linux NAS 非 root 权限安全更新环境 (~/.local) 与 Git 容灾自愈 (${platInfo.description})`
+      });
+    } else if (platInfo.isWindows) {
+      const gitLock = path.join(__dirname, '.git', 'index.lock');
+      if (fs.existsSync(gitLock)) {
+        try { fs.unlinkSync(gitLock); } catch (_) {}
+      }
+      results.push({
+        item: 'Updater Environment',
+        success: true,
+        message: '已就绪 Windows 桌面更新环境与 Git 容灾防护'
+      });
+    }
+  } catch (envErr) {
+    results.push({ item: 'Updater Environment', success: false, message: '自愈更新环境异常: ' + envErr.message });
+  }
+
   return results;
 }
 

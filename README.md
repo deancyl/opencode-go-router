@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.3.0](https://img.shields.io/badge/Version-v2.3.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.3.1](https://img.shields.io/badge/Version-v2.3.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -384,6 +384,14 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.3.1
+- **Linux NAS 全链路更新容灾加固、网关套件优雅降级与一键修复自愈 (Linux NAS Resilient Updater & Disaster Recovery Graceful Degradation)**：
+  - **网关核心套件更新容灾优雅降级 (`preserved-current-version`)**：重构 `updater.js` 对 `opencode-go-router` 的升级逻辑。在弱网、国内直连 GitHub 超时、连接重置或离线场景下，如果 `git pull --rebase` 或 tarball 下载失败，自动启用容灾优雅降级：记录明确告警并平滑保留当前稳定运行版本，绝不阻断整体更新流程或让 API 报错返回失败；
+  - **Linux NAS 平台非 Root 权限与作用域工作区智能自愈**：全自动识别 Linux NAS（fnOS 飞牛私有云、群晖 Synology、TrueNAS 等），智能解决无 root 权限下全局 npm 写入受阻问题（自动切换作用域工作区或 `~/.local` 前缀），辅以 `npmmirror` 国内镜像源双轨兜底；
+  - **服务平滑热重载与防重保护**：在 Linux NAS 上仅当代码包或镜像实际更新成功时才重载 `systemd --user` 守护服务，规避无意义的服务启停中断；
+  - **一键自愈引擎扩展 (`/balancer/api/repair`)**：新增更新环境自愈检测，自动排查并清理 Git 残留 `index.lock` 锁、自动配置 Git `safe.directory`，一键自愈 Linux NAS 用户空间更新目录与依赖环境；
+  - **自动化测试 54 项 100% 全绿通过**：在弱网与离线模拟下验证 Test 17 容灾降级机制，保持与 Linux NAS（192.168.1.50）代码 100% 同步并全部通过。
 
 ### 🚀 v2.3.0
 - **平台自适应感知、OpenCode 2.0+ 配置合流清洗与双轨国内源容灾 (Platform Intelligence & Zero-Loss Harmonization)**：

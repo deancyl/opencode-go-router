@@ -495,6 +495,9 @@ async function runTests() {
     const applyJson = JSON.parse(resApply.body);
     assert.strictEqual(applyJson.success, true);
     assert.ok(applyJson.snapshotId, 'snapshotId must be returned');
+    assert.ok(applyJson.results && applyJson.results['opencode-go-router'], 'opencode-go-router result must exist');
+    assert.strictEqual(applyJson.results['opencode-go-router'].success, true);
+    assert.ok(['git-pull', 'tarball-pull', 'preserved-dirty-tree', 'preserved-current-version'].includes(applyJson.results['opencode-go-router'].method), 'method must be valid');
 
     const resSnapshots = await request('/balancer/api/updates/snapshots');
     assert.strictEqual(resSnapshots.statusCode, 200);
@@ -502,7 +505,7 @@ async function runTests() {
     assert.strictEqual(snapsJson.success, true);
     assert.ok(snapsJson.snapshots.length > 0, 'snapshots must contain at least 1 record');
     assert.strictEqual(snapsJson.snapshots[0].id, applyJson.snapshotId);
-    console.log(`✓ Updates Apply & Snapshots API verified: created ${applyJson.snapshotId}`);
+    console.log(`✓ Updates Apply & Snapshots API verified: created ${applyJson.snapshotId} (router update method: ${applyJson.results['opencode-go-router'].method})`);
 
     // [Test 18] Testing Component Updates Rollback API
     console.log('\n[Test 18] Testing Component Updates Rollback API (/balancer/api/updates/rollback)...');
@@ -1401,7 +1404,18 @@ async function runTests() {
     assert.ok(updatesCheck.platform, 'checkAllUpdates report must contain platform info');
     assert.ok(updatesCheck.platform.description.length > 0);
     assert.ok(Array.isArray(updatesCheck.components));
-    console.log('✓ Dual-Track Registry Fallback & Linux NAS Adaptive Update Strategy verified');
+
+    // Test applyUpdates graceful degradation on opencode-go-router under short timeout / offline simulation
+    const directApplyRes = await updater.applyUpdates(['opencode-go-router'], {
+      skipBackup: true,
+      skipHarmonize: true,
+      timeoutMs: 10
+    });
+    assert.strictEqual(directApplyRes.success, true, 'Overall update must succeed under timeout/offline resilience');
+    assert.ok(directApplyRes.results['opencode-go-router']);
+    assert.strictEqual(directApplyRes.results['opencode-go-router'].success, true);
+    assert.ok(['git-pull', 'tarball-pull', 'preserved-dirty-tree', 'preserved-current-version'].includes(directApplyRes.results['opencode-go-router'].method));
+    console.log('✓ Dual-Track Registry Fallback & Linux NAS Adaptive Update Strategy verified (including router graceful degradation)');
 
     // [Test 52] Testing Custom Model Metadata & Configuration Preservation in Harmonization
     console.log('\n[Test 52] Testing Custom Model Metadata & Configuration Preservation in Harmonization...');

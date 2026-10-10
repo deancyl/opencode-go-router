@@ -592,19 +592,24 @@ function fetchNpmLatestVersion(pkgName, timeoutMs = 4500) {
  * Fetch latest release from GitHub API
  */
 function fallbackGitRemoteVersion() {
+  let pkgVer = null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
+    pkgVer = pkg.version || null;
+  } catch (_) {}
   try {
     const gitTag = runCmdSync('git describe --tags --abbrev=0', 2000);
     if (gitTag) {
       const v = gitTag.trim().replace(/^v/, '');
-      if (v) return { version: v, error: null, source: 'git-tag' };
+      if (v) {
+        if (pkgVer && compareSemver(pkgVer, v) > 0) {
+          return { version: pkgVer, error: null, source: 'package-local' };
+        }
+        return { version: v, error: null, source: 'git-tag' };
+      }
     }
   } catch (_) {}
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-    return { version: pkg.version || '2.3.0', error: null, source: 'package-local' };
-  } catch (_) {
-    return { version: '2.3.0', error: null, source: 'default' };
-  }
+  return { version: pkgVer || '2.3.1', error: null, source: 'package-local' };
 }
 
 /**
@@ -1756,26 +1761,36 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           results['opencode-go-router'] = { success: true, method: 'preserved-dirty-tree', message: '检测到未提交改动，已安全保护' };
         } else {
           logs.push('正在通过 git pull --rebase 更新智能网关套件代码...');
-          const res = runCmd('git pull --rebase', 20000);
+          const pullTimeout = options.timeoutMs ? Math.min(options.timeoutMs, 20000) : 20000;
+          const res = runCmd('git pull --rebase', pullTimeout);
           if (res.success) {
             logs.push(`✔ 智能网关套件代码已同步至最新`);
             results['opencode-go-router'] = { success: true, method: 'git-pull', output: res.output };
           } else {
-            overallSuccess = false;
-            logs.push(`❌ git pull 失败: ${res.error}`);
-            results['opencode-go-router'] = { success: false, method: 'git-pull', error: res.error };
+            logs.push(`⚠ 远端 Git 同步受限或网络波动 (${res.error || '超时/离线'})，已启用容灾优雅降级：保留当前稳定版本继续运行`);
+            results['opencode-go-router'] = {
+              success: true,
+              method: 'preserved-current-version',
+              warning: res.error || '远端仓库连接受限，已平滑保留当前稳定版本',
+              preserved: true
+            };
           }
         }
       } else {
         logs.push('智能网关套件处于独立部署模式，正在拉取最新代码压缩包更新...');
         const dlCmd = `curl -sSL https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
-        const res = runCmd(dlCmd, 30000);
+        const res = runCmd(dlCmd, options.timeoutMs || 30000);
         if (res.success) {
           logs.push('✔ 独立部署模式下代码包已同步至最新版本');
           results['opencode-go-router'] = { success: true, method: 'tarball-pull', output: res.output };
         } else {
-          logs.push(`⚠ 拉取最新代码包提示: ${res.error}，保留当前版本运行`);
-          results['opencode-go-router'] = { success: true, method: 'standalone', error: res.error };
+          logs.push(`⚠ 拉取最新代码包提示: ${res.error || '网络受限'}，已启用容灾优雅降级：保留当前版本稳定运行`);
+          results['opencode-go-router'] = {
+            success: true,
+            method: 'preserved-current-version',
+            warning: res.error || '无法拉取远端代码包，保留当前稳定版本',
+            preserved: true
+          };
         }
       }
     }
