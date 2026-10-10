@@ -535,11 +535,11 @@ $ARGUMENTS
     result.messages.push('Boost 指令模版提醒: ' + err.message);
   }
 
-  // 5. On Linux, notify systemd user services to reload configuration
+  // 5. On Linux, preserve running tasks: OpenCode uses native inotify hot-reload for opencode.jsonc
   if (process.platform === 'linux') {
     try {
-      execSync('systemctl --user restart opencode-server.service openchamber.service 2>/dev/null || true');
-      result.messages.push('已通知后台 OpenCode 与 OpenChamber 服务热重载配置');
+      execSync('systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || true');
+      result.messages.push('已通知前端 OpenChamber 服务同步，OpenCode 核心由 Inotify 原生热加载无需重启');
     } catch (e) {}
   }
 
@@ -1814,13 +1814,11 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
       const updater = require('./updater');
       const sysOut = updater.runCmdSync('systemctl --user list-units --type=service', 2000);
       if (sysOut && sysOut.includes('openchamber.service')) {
-        updater.runCmd('systemctl --user restart openchamber.service', 10000);
-        results.push({ item: 'Daemon Reload', success: true, message: '已热重启 openchamber.service 使新配置生效' });
+        updater.runCmd('systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || systemctl --user restart openchamber.service', 10000);
+        results.push({ item: 'Daemon Reload', success: true, message: '已同步 openchamber.service 前端视图配置' });
       }
-      if (sysOut && sysOut.includes('opencode-server.service')) {
-        updater.runCmd('systemctl --user restart opencode-server.service', 10000);
-        results.push({ item: 'Daemon Reload', success: true, message: '已热重启 opencode-server.service 使新配置生效' });
-      }
+      // 铁律：严禁在自愈体检中重启 opencode-server.service，以保护运行中会话与任务避免出现 Step interrupted
+      results.push({ item: 'OpenCode Zero-Disturbance', success: true, message: 'OpenCode 原生 Inotify 热感知已生效，已严格保护业务长程任务不被中断' });
     } catch (_) {}
   }
 

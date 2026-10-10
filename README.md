@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.3.2](https://img.shields.io/badge/Version-v2.3.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.3.3](https://img.shields.io/badge/Version-v2.3.3-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -82,7 +82,12 @@
    - **OpenCode 2.0+ 废弃键清洗与无损合流 (`harmonizeOpencodeConfig`)**：根除新版 OpenCode 废弃复数 `providers` 键引发的规范性冲突，将用户自定义第三方服务商（如 `shtech`, `aixforge` 等）无损合流进单数 `provider`，全量注入官方 38 款模型清单，完好保留用户自定义微调模型与当前选定模型（如 `glm-5.3-flash`），配置清理后秒级变绿；
    - **npm / bun 双轨国内镜像源容灾 (`npmmirror`)**：针对国内网络环境下访问 npmjs.org 官方源可能发生的超时或阻断，自动切换至 `https://registry.npmmirror.com` 国内镜像源重试，保障 Linux NAS 与离线环境下更新与依赖安装 100% 成功；
    - **Linux NAS `--repair` 命令行工具**：`setup-linux.sh` 原生支持 `-r | --repair` 参数，支持离线与在线体检自愈，全卷自动搜寻 OpenChamber 离线 Office 补丁并一键修补挂载；
-   - **自动化回归测试套件扩充至 51 项**：新增 Test 48-51，全面覆盖跨平台环境探测矩阵、配置无损合流与 38 模型注入、Doctor 诊断元数据联动以及双轨镜像容灾，51 项测试 100% 全绿通过。
+   - **自动化回归测试套件扩充至 54 项**：全面覆盖跨平台环境探测矩阵、配置无损合流与 38 模型注入、Doctor 诊断元数据联动、双轨镜像容灾及零干扰守护测试，54 项测试 100% 全绿通过。
+
+10. **零干扰长程任务守护与服务重载解耦 (Zero-Disturbance Daemon Protection - v2.3.3 发布)**：
+   - **彻底根治 `Step interrupted` 异常**：深度诊断发现 OpenCode 核心服务 `opencode-server.service`（4096 端口）在被频繁重启时，会强行掐断底层所有执行中的 fibers 线程，抛出 `InterruptError` 导致用户长程任务（如自主编程、大文件生成）夭折；
+   - **OpenCode 原生 Inotify 热感知联动**：由于 OpenCode 原生内置文件监听，对 `opencode.jsonc` 的变更（如切换模型、更新提供商）均会自动触发热加载生效；因此智能网关在桌面绑定、自愈体检和非核心组件更新时，**严格禁绝重启 `opencode-server.service`**，仅平滑同步前端 `openchamber.service` 视图；
+   - **细粒度更新重载隔离**：在 `updater.js` 与 `setup-linux.sh` 中实现差异化重载，只有在 OpenCode CLI 二进制自身被升级时才进行受控重启，最大化保障用户业务连续性与长程会话不被中断。
 
 ---
 

@@ -1497,13 +1497,13 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
   }
 
   // 6. Linux NAS: Smoothly reload user daemon services
+  // 6. Linux NAS: Smoothly reload frontend workstation without disturbing OpenCode execution engine
   if (process.platform === 'linux') {
     try {
       const hasSystemd = runCmdSync('systemctl --user --version', 2000);
       if (hasSystemd) {
-        runCmd('systemctl --user restart openchamber.service', 10000);
-        runCmd('systemctl --user restart opencode-server.service', 10000);
-        restoredItems.push({ action: 'reload_daemons', status: 'success' });
+        runCmd('systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || systemctl --user restart openchamber.service', 10000);
+        restoredItems.push({ action: 'reload_openchamber', status: 'success' });
       }
     } catch (_) {}
   }
@@ -1858,16 +1858,22 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           }
         }
 
-        // 2. OpenCode server service reload
-        const opencodeActive = runCmdSync('systemctl --user is-active opencode-server.service', 2000);
-        if (opencodeActive && opencodeActive.trim() === 'active') {
-          logs.push('正在平滑重启 opencode-server.service 守护服务...');
-          const oRes = runCmd('systemctl --user restart opencode-server.service', 15000);
-          if (oRes.success) {
-            logs.push('✔ opencode-server.service 已成功热重载');
-          } else {
-            logs.push(`⚠ opencode-server.service 重载提示: ${oRes.error}`);
+        // 2. OpenCode server service reload - ONLY when opencode CLI was actually upgraded!
+        const ocRes = results['opencode'];
+        const isOcUpdated = ocRes && ocRes.success && targets.includes('opencode');
+        if (isOcUpdated) {
+          const opencodeActive = runCmdSync('systemctl --user is-active opencode-server.service', 2000);
+          if (opencodeActive && opencodeActive.trim() === 'active') {
+            logs.push('检测到 OpenCode 核心引擎二进制已更新，正在平滑重启 opencode-server.service 守护服务...');
+            const oRes = runCmd('systemctl --user restart opencode-server.service', 15000);
+            if (oRes.success) {
+              logs.push('✔ opencode-server.service 已成功热重载');
+            } else {
+              logs.push(`⚠ opencode-server.service 重载提示: ${oRes.error}`);
+            }
           }
+        } else {
+          logs.push('✔ OpenCode 核心引擎保持稳定常驻（Inotify 自动监听配置，保护现有长程会话不被中断）');
         }
 
         // 3. Router service reload ONLY if router was ACTUALLY updated (not preserved)

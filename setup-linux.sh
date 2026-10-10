@@ -607,11 +607,10 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
     bash "$SCRIPT_DIR/patch-openchamber-office.sh" install 2>/dev/null || true
   fi
 
-  # 热重启运行中的 OpenCode 和 OpenChamber 服务以应用新配置
+  # 平滑通知 OpenChamber 前端同步，OpenCode 原生 Inotify 热感知无需重启进程（防止掐断长程任务）
   if has_systemd_user; then
-    echo -e "${YELLOW}正在热重启 OpenCode 与 OpenChamber 服务使配置生效...${NC}"
-    systemctl --user restart opencode-server.service 2>/dev/null && echo -e "${GREEN}✔ opencode-server.service 已重启${NC}" || true
-    systemctl --user restart openchamber.service 2>/dev/null && echo -e "${GREEN}✔ openchamber.service 已重启${NC}" || true
+    systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || systemctl --user restart openchamber.service 2>/dev/null && echo -e "${GREEN}✔ openchamber.service 前端视图已同步${NC}" || true
+    echo -e "${GREEN}✔ OpenCode 核心服务保持常驻（Inotify 原生自动监听 opencode.jsonc 变更，长任务不受干扰）${NC}"
   fi
 
   echo -e "${GREEN}🎉 全栈客户端绑定成功！${NC}"
@@ -739,11 +738,10 @@ run_repair() {
     bash "$SCRIPT_DIR/patch-openchamber-office.sh" install 2>/dev/null || true
   fi
 
-  # 热重启运行中的 OpenCode 与 OpenChamber 服务以加载修复后的配置
+  # 平滑通知 OpenChamber 前端服务，OpenCode 核心由 Inotify 原生自动感知
   if has_systemd_user; then
-    echo -e "${YELLOW}正在热重启 OpenCode 与 OpenChamber 守护服务以加载最新配置...${NC}"
-    systemctl --user restart opencode-server.service 2>/dev/null && echo -e "${GREEN}✔ opencode-server.service 已热重启${NC}" || true
-    systemctl --user restart openchamber.service 2>/dev/null && echo -e "${GREEN}✔ openchamber.service 已热重启${NC}" || true
+    systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || systemctl --user restart openchamber.service 2>/dev/null && echo -e "${GREEN}✔ openchamber.service 前端视图已同步${NC}" || true
+    echo -e "${GREEN}✔ OpenCode 核心服务保持常驻（Inotify 原生自动监听 opencode.jsonc 变更，长任务不受干扰）${NC}"
   fi
 }
 
@@ -753,7 +751,7 @@ run_update() {
   local updater_js="$SCRIPT_DIR/updater.js"
   echo -e "\n${YELLOW}🚀 正在执行 Linux NAS 全组件安全自适应更新 (自动灾备快照)...${NC}"
   if node "$updater_js" apply; then
-    echo -e "\n${GREEN}✔ 全套组件安全更新与守护服务平滑热重载全部完成！${NC}"
+    echo -e "\n${GREEN}✔ 全套组件安全更新完成！${NC}"
   else
     echo -e "\n${RED}❌ 更新执行出现异常，可运行 ./setup-linux.sh --rollback 执行灾备秒级回滚！${NC}"
     exit 1
@@ -771,8 +769,7 @@ run_rollback() {
     node "$updater_js" rollback
   fi
   if has_systemd_user; then
-    systemctl --user restart openchamber.service 2>/dev/null || true
-    systemctl --user restart opencode-server.service 2>/dev/null || true
+    systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || systemctl --user restart openchamber.service 2>/dev/null || true
   fi
   echo -e "\n${GREEN}✔ 灾备回滚完成，系统配置与守护服务已恢复！${NC}"
 }
