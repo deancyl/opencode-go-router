@@ -1759,6 +1759,8 @@ $orphanFound = [bool]$orphanProcs
 if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
   if ($orphanProcs) { $orphanProcs | Stop-Process -Force }
 }
+$codeCache = Join-Path $env:APPDATA "OpenChamber\Code Cache"
+if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction SilentlyContinue }
 [PSCustomObject]@{ GhostKilled = $ghostFound; OrphanKilled = $orphanFound } | ConvertTo-Json -Compress
 `;
       const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCleanup.replace(/\\r?\\n/g, ' ')}"`, {

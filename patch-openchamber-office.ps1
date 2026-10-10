@@ -119,6 +119,10 @@ if ($Rollback) {
     }
 
     if ($restored) {
+        $codeCacheDir = Join-Path $env:APPDATA "OpenChamber\Code Cache"
+        if (Test-Path $codeCacheDir) {
+            Remove-Item $codeCacheDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Write-Host "`n🎉 OpenChamber 前端已成功恢复出厂纯净默认状态！" -ForegroundColor Green
     } else {
         Write-Host "`nℹ 未发现备份文件，系统已处于初始状态。" -ForegroundColor DarkGray
@@ -207,6 +211,13 @@ if ($targetIdx -ne -1) {
     $jsContent = $jsContent.Insert($insertPos, $hook)
     [System.IO.File]::WriteAllText($filesViewJs.FullName, $jsContent, [System.Text.Encoding]::UTF8)
     Write-Host "  ✔ 已精准挂载 Office 渲染拦截器至二进制组件 $compVar (JSX 标识: $jsxId)！" -ForegroundColor Green
+    
+    # 自动清除 Chromium V8 Code Cache 与持久缓存，确保 Electron 桌面端无需手动清缓存即可生效
+    $codeCacheDir = Join-Path $env:APPDATA "OpenChamber\Code Cache"
+    if (Test-Path $codeCacheDir) {
+        Remove-Item $codeCacheDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "  ✔ 已自动清除 Chromium V8 字节码缓存 (Code Cache)，杜绝旧脚本锁死" -ForegroundColor Green
+    }
 } else {
     Write-Host "  ❌ 未能在 $($filesViewJs.Name) 中匹配到 $targetPattern 特征！" -ForegroundColor Red
     exit 1

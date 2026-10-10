@@ -601,8 +601,11 @@ foreach ($iss in $issuesFound) {
                         (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine -like "*serve*--hostname*127.0.0.1*"
                     } catch { $false }
                 } | Stop-Process -Force
+                # 同步清除 Chromium V8 Code Cache，防止旧字节码锁死
+                $codeCache = Join-Path $env:APPDATA "OpenChamber\Code Cache"
+                if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction SilentlyContinue }
                 Start-Sleep -Seconds 1
-                Write-Host "    ✔ 后台僵死进程已全部清除，单实例锁已释放，现在可在桌面正常双击启动" -ForegroundColor Green
+                Write-Host "    ✔ 后台僵死进程与 V8 缓存已清除，单实例锁已释放，现在可在桌面正常双击启动" -ForegroundColor Green
             } catch {
                 Write-Host "    ⚠ 清理失败: $_" -ForegroundColor Red
             }
