@@ -389,6 +389,32 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     delete data.providers;
   }
 
+  // 2.1 Sanitize & Normalize all third-party providers to OpenCode v2 schema
+  for (const [k, prov] of Object.entries(data.provider)) {
+    if (k === 'opencode-go') continue;
+    if (prov && typeof prov === 'object') {
+      if (prov.package && typeof prov.package === 'string' && prov.package.startsWith('aisdk:')) {
+        prov.npm = '@ai-sdk/openai-compatible';
+        delete prov.package;
+      } else if (prov.package && !prov.npm) {
+        prov.npm = prov.package;
+        delete prov.package;
+      }
+      if (prov.settings && !prov.options) {
+        prov.options = prov.settings;
+        delete prov.settings;
+      }
+      if (prov.models && typeof prov.models === 'object') {
+        for (const [mKey, mVal] of Object.entries(prov.models)) {
+          if (mVal && typeof mVal === 'object') {
+            if (mVal.modelID && !mVal.name) mVal.name = mVal.modelID;
+            delete mVal.modelID;
+          }
+        }
+      }
+    }
+  }
+
   // 3. Configure opencode-go
   data.provider['opencode-go'] = {
     name: 'opencode-go',
@@ -1998,11 +2024,68 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
 }
 
 // Export module functions
+function patchOmoPluginV2() {
+  const targets = [];
+  const cacheNpm = path.join(os.homedir(), '.cache', 'opencode', 'npm');
+  if (fs.existsSync(cacheNpm)) {
+    try {
+      const dirs = fs.readdirSync(cacheNpm).filter(d => d.includes('oh-my-openagent'));
+      for (const d of dirs) {
+        const fullD = path.join(cacheNpm, d);
+        for (const sub of fs.readdirSync(fullD)) {
+          const idx = path.join(fullD, sub, 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
+          if (fs.existsSync(idx)) targets.push(idx);
+        }
+      }
+    } catch (_) {}
+  }
+  if (process.platform === 'win32') {
+    const globalIdx = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
+    if (fs.existsSync(globalIdx)) targets.push(globalIdx);
+  } else {
+    const globalIdx = '/usr/local/lib/node_modules/oh-my-openagent/dist/index.js';
+    if (fs.existsSync(globalIdx)) targets.push(globalIdx);
+  }
+  const userLocal = path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
+  if (fs.existsSync(userLocal)) targets.push(userLocal);
+
+  let patchedCount = 0;
+  for (const t of targets) {
+    try {
+      let content = fs.readFileSync(t, 'utf8');
+      if (content.includes('setup: serverPlugin') && content.includes('effect: serverPlugin')) {
+        continue;
+      }
+      const target1 = 'return {\n    id: "oh-my-openagent",\n    server: serverPlugin\n  };';
+      const target1_cr = 'return {\r\n    id: "oh-my-openagent",\r\n    server: serverPlugin\r\n  };';
+      const repl1 = 'return {\n    id: "oh-my-openagent",\n    setup: serverPlugin,\n    effect: serverPlugin,\n    server: serverPlugin\n  };';
+      if (content.includes(target1)) {
+        content = content.replace(target1, repl1);
+        fs.writeFileSync(t, content, 'utf8');
+        patchedCount++;
+      } else if (content.includes(target1_cr)) {
+        content = content.replace(target1_cr, repl1);
+        fs.writeFileSync(t, content, 'utf8');
+        patchedCount++;
+      } else {
+        const regex = /return\s*\{\s*id:\s*["']oh-my-openagent["'],\s*server:\s*serverPlugin\s*\};/;
+        if (regex.test(content)) {
+          content = content.replace(regex, 'return { id: "oh-my-openagent", setup: serverPlugin, effect: serverPlugin, server: serverPlugin };');
+          fs.writeFileSync(t, content, 'utf8');
+          patchedCount++;
+        }
+      }
+    } catch (_) {}
+  }
+  return { targets: targets.length, patchedCount };
+}
+
 module.exports = {
   runCmd,
   runCmdSync,
   detectPlatformEnvironment,
   harmonizeOpencodeConfig,
+  patchOmoPluginV2,
   fetchOfficialModels,
   ALL_38_SLUGS,
   detectLocalVersions,

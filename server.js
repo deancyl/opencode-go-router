@@ -1926,6 +1926,21 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     results.push({ item: 'Updater Environment', success: false, message: '自愈更新环境异常: ' + envErr.message });
   }
 
+  // 8. Auto-Patch OMO Plugin for OpenCode v2 compatibility (setup/effect shim)
+  try {
+    const updater = require('./updater');
+    const omoRes = updater.patchOmoPluginV2();
+    if (omoRes.patchedCount > 0) {
+      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已成功为 ${omoRes.patchedCount} 处 oh-my-openagent 注入 OpenCode v2 兼容适配桥接（setup/effect 垫片）` });
+    } else if (omoRes.targets > 0) {
+      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已校验 ${omoRes.targets} 处 oh-my-openagent 均具备 OpenCode v2 兼容适配桥接` });
+    } else {
+      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: '未检测到已安装的 OMO 插件目录' });
+    }
+  } catch (e) {
+    results.push({ item: 'OMO v2 Bridge Patch', success: false, message: '修补 OMO 插件异常: ' + e.message });
+  }
+
   return results;
 }
 
