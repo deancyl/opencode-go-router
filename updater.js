@@ -609,7 +609,7 @@ function fallbackGitRemoteVersion() {
       }
     }
   } catch (_) {}
-  return { version: pkgVer || '2.3.1', error: null, source: 'package-local' };
+  return { version: pkgVer || '2.3.2', error: null, source: 'package-local' };
 }
 
 /**
@@ -1753,8 +1753,18 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         results['openchamber'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'opencode-go-router') {
-      if (fs.existsSync(path.join(ROOT_DIR, '.git'))) {
+      const hasGit = fs.existsSync(path.join(ROOT_DIR, '.git'));
+      if (hasGit) {
         logs.push('正在检查智能网关套件代码更新...');
+        // Pre-emptive healing: safe.directory & clear stale locks if needed
+        try {
+          const gitLock = path.join(ROOT_DIR, '.git', 'index.lock');
+          if (fs.existsSync(gitLock)) fs.unlinkSync(gitLock);
+          if (platform.isLinux) {
+            runCmdSync(`git config --global --add safe.directory "${ROOT_DIR}"`, 2000);
+          }
+        } catch (_) {}
+
         const statusRes = runCmd('git status --porcelain', 5000);
         if (statusRes.success && statusRes.output) {
           logs.push('⚠ 检测到本地工作区存在未提交修改，已略过自动 git pull 以保护现有改动');
@@ -1767,6 +1777,11 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
             logs.push(`✔ 智能网关套件代码已同步至最新`);
             results['opencode-go-router'] = { success: true, method: 'git-pull', output: res.output };
           } else {
+            // Clean up any incomplete rebase state and lingering locks
+            try { runCmdSync('git rebase --abort', 2000); } catch (_) {}
+            const gitLock = path.join(ROOT_DIR, '.git', 'index.lock');
+            if (fs.existsSync(gitLock)) { try { fs.unlinkSync(gitLock); } catch (_) {} }
+
             logs.push(`⚠ 远端 Git 同步受限或网络波动 (${res.error || '超时/离线'})，已启用容灾优雅降级：保留当前稳定版本继续运行`);
             results['opencode-go-router'] = {
               success: true,
@@ -1778,8 +1793,25 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         }
       } else {
         logs.push('智能网关套件处于独立部署模式，正在拉取最新代码压缩包更新...');
-        const dlCmd = `curl -sSL https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
-        const res = runCmd(dlCmd, options.timeoutMs || 30000);
+        const timeout = options.timeoutMs || 30000;
+        const connectTimeoutSec = Math.max(2, Math.min(8, Math.floor(timeout / 1000)));
+        const maxTimeSec = Math.max(5, Math.floor(timeout / 1000));
+        const primaryUrl = 'https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz';
+        const mirrorUrl = 'https://ghproxy.net/https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz';
+
+        let dlCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${primaryUrl}" | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+        let res = runCmd(dlCmd, timeout);
+
+        if (!res.success && platform.isLinux) {
+          logs.push(`⚠ 官方 GitHub 压缩包直连受限 (${res.error || '超时'})，正在尝试国内加速镜像源拉取...`);
+          const mirrorCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${mirrorUrl}" | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+          res = runCmd(mirrorCmd, timeout);
+          if (!res.success) {
+            const wgetCmd = `wget -qO- --timeout=${connectTimeoutSec} "${mirrorUrl}" | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+            res = runCmd(wgetCmd, timeout);
+          }
+        }
+
         if (res.success) {
           logs.push('✔ 独立部署模式下代码包已同步至最新版本');
           results['opencode-go-router'] = { success: true, method: 'tarball-pull', output: res.output };
@@ -1838,8 +1870,10 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           }
         }
 
-        // 3. Router service reload if router itself was updated
-        if (targets.includes('opencode-go-router') && results['opencode-go-router'] && results['opencode-go-router'].success) {
+        // 3. Router service reload ONLY if router was ACTUALLY updated (not preserved)
+        const routerRes = results['opencode-go-router'];
+        const isRouterUpdated = routerRes && routerRes.success && !routerRes.preserved && routerRes.method !== 'preserved-dirty-tree';
+        if (targets.includes('opencode-go-router') && isRouterUpdated) {
           const routerActive = runCmdSync('systemctl --user is-active opencode-router.service', 2000);
           if (routerActive && routerActive.trim() === 'active') {
             logs.push('检测到智能网关核心代码已更新，正在计划热重载 opencode-router.service...');

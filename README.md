@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.3.1](https://img.shields.io/badge/Version-v2.3.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.3.2](https://img.shields.io/badge/Version-v2.3.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -384,6 +384,13 @@ npm run build:exe
   - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
   - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
   - 全量发布说明与文档对齐。
+
+### 🚀 v2.3.2
+- **网关自愈防护升级与 Linux NAS 更新深度容灾 (Deep Resilient Updater & Self-Healing Guard)**：
+  - **Git 锁与未决 Rebase 深度自愈**：在更新执行失败或遇到中断时，自动执行 `git rebase --abort` 并彻底清理 `index.lock`、`rebase-merge`、`rebase-apply` 等残留状态，彻底规避因网络超时导致代码库锁死的问题；
+  - **精准服务重载防护**：修正服务热重载机制，仅当网关套件代码实际发生物理更新（`git-pull` 或 `tarball-pull`）时才向 systemd 派发热重载指令，在容灾降级（`preserved-current-version`）时杜绝无意义的服务启停中断；
+  - **独立部署国内加速双轨镜像与 Wget 兜底**：在 Linux NAS 独立模式下，当 GitHub 原生代码包拉取超时时，自动平滑切换国内加速镜像代理拉取，并在缺少 curl 时自动启用 wget 兜底；
+  - **一键自愈引擎增强 (`/balancer/api/repair`)**：自动排查清理各类 Git 锁及未决 rebase 文件夹，并在 Linux NAS 平台自动补全 `~/.bashrc` 中的 `~/.local/bin` PATH 环境变量，确保非 root 权限全局工具开箱即用。
 
 ### 🚀 v2.3.1
 - **Linux NAS 全链路更新容灾加固、网关套件优雅降级与一键修复自愈 (Linux NAS Resilient Updater & Disaster Recovery Graceful Degradation)**：

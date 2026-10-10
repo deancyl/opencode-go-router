@@ -1828,6 +1828,23 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
   try {
     const updater = require('./updater');
     const platInfo = updater.detectPlatformEnvironment();
+    const gitDir = path.join(__dirname, '.git');
+
+    if (fs.existsSync(gitDir)) {
+      // Clear git locks and incomplete rebase/merge states
+      ['index.lock', 'rebase-merge', 'rebase-apply', 'ORIG_HEAD', 'CHERRY_PICK_HEAD', 'AUTO_MERGE'].forEach(f => {
+        const p = path.join(gitDir, f);
+        try {
+          if (fs.existsSync(p)) {
+            if (fs.lstatSync(p).isDirectory()) fs.rmSync(p, { recursive: true, force: true });
+            else fs.unlinkSync(p);
+          }
+        } catch (_) {}
+      });
+      try { updater.runCmdSync('git rebase --abort', 2000); } catch (_) {}
+      try { updater.runCmdSync(`git config --global --add safe.directory "${__dirname}"`, 2000); } catch (_) {}
+    }
+
     if (platInfo.isLinux) {
       const userLocal = path.join(os.homedir(), '.local');
       const userLocalBin = path.join(userLocal, 'bin');
@@ -1835,13 +1852,14 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
       if (!fs.existsSync(userLocalBin)) fs.mkdirSync(userLocalBin, { recursive: true });
       if (!fs.existsSync(userLocalModules)) fs.mkdirSync(userLocalModules, { recursive: true });
 
-      const gitLock = path.join(__dirname, '.git', 'index.lock');
-      if (fs.existsSync(gitLock)) {
-        try { fs.unlinkSync(gitLock); } catch (_) {}
-      }
-
-      if (fs.existsSync(path.join(__dirname, '.git'))) {
-        try { updater.runCmdSync(`git config --global --add safe.directory "${__dirname}"`, 2000); } catch (_) {}
+      const bashrc = path.join(os.homedir(), '.bashrc');
+      if (fs.existsSync(bashrc)) {
+        try {
+          const content = fs.readFileSync(bashrc, 'utf8');
+          if (!content.includes('.local/bin')) {
+            fs.appendFileSync(bashrc, '\nexport PATH="$HOME/.local/bin:$PATH"\n', 'utf8');
+          }
+        } catch (_) {}
       }
 
       results.push({
@@ -1850,10 +1868,6 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
         message: `已就绪 Linux NAS 非 root 权限安全更新环境 (~/.local) 与 Git 容灾自愈 (${platInfo.description})`
       });
     } else if (platInfo.isWindows) {
-      const gitLock = path.join(__dirname, '.git', 'index.lock');
-      if (fs.existsSync(gitLock)) {
-        try { fs.unlinkSync(gitLock); } catch (_) {}
-      }
       results.push({
         item: 'Updater Environment',
         success: true,
