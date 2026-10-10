@@ -345,7 +345,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   }
   const allModelsMap = {};
   for (const s of baseSlugs) {
-    allModelsMap[s] = { name: s };
+    allModelsMap[s] = { name: s, modelID: s };
   }
 
   // Preserve existing models and custom parameters from provider['opencode-go']
@@ -353,10 +353,20 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     for (const [k, v] of Object.entries(data.provider['opencode-go'].models)) {
       if (allModelsMap[k]) {
         if (typeof v === 'object' && v !== null) {
-          allModelsMap[k] = Object.assign({}, allModelsMap[k], v);
+          allModelsMap[k] = Object.assign({}, allModelsMap[k], v, {
+            name: v.name || v.modelID || k,
+            modelID: v.modelID || v.name || k
+          });
         }
       } else {
-        allModelsMap[k] = v;
+        if (typeof v === 'object' && v !== null) {
+          allModelsMap[k] = Object.assign({}, v, {
+            name: v.name || v.modelID || k,
+            modelID: v.modelID || v.name || k
+          });
+        } else {
+          allModelsMap[k] = { name: k, modelID: k };
+        }
       }
     }
   }
@@ -366,10 +376,20 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     for (const [k, v] of Object.entries(data.providers['opencode-go'].models)) {
       if (allModelsMap[k]) {
         if (typeof v === 'object' && v !== null) {
-          allModelsMap[k] = Object.assign({}, allModelsMap[k], v);
+          allModelsMap[k] = Object.assign({}, allModelsMap[k], v, {
+            name: v.name || v.modelID || k,
+            modelID: v.modelID || v.name || k
+          });
         }
       } else {
-        allModelsMap[k] = v;
+        if (typeof v === 'object' && v !== null) {
+          allModelsMap[k] = Object.assign({}, v, {
+            name: v.name || v.modelID || k,
+            modelID: v.modelID || v.name || k
+          });
+        } else {
+          allModelsMap[k] = { name: k, modelID: k };
+        }
       }
     }
   }
@@ -389,37 +409,50 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     delete data.providers;
   }
 
-  // 2.1 Sanitize & Normalize all third-party providers to OpenCode v2 schema
+  // 2.1 Sanitize & Normalize all third-party providers to Dual-Track OpenCode & OpenChamber schema
   for (const [k, prov] of Object.entries(data.provider)) {
     if (k === 'opencode-go') continue;
     if (prov && typeof prov === 'object') {
-      if (prov.package && typeof prov.package === 'string' && prov.package.startsWith('aisdk:')) {
-        prov.npm = '@ai-sdk/openai-compatible';
-        delete prov.package;
-      } else if (prov.package && !prov.npm) {
-        prov.npm = prov.package;
-        delete prov.package;
+      // CLI needs npm, OpenChamber needs package
+      if (!prov.npm) {
+        if (prov.package && typeof prov.package === 'string' && prov.package.startsWith('aisdk:')) {
+          prov.npm = prov.package.slice('aisdk:'.length);
+        } else {
+          prov.npm = '@ai-sdk/openai-compatible';
+        }
       }
+      if (!prov.package) {
+        prov.package = '@opencode/ai/providers/openai-compatible';
+      }
+      // CLI needs options, OpenChamber needs settings
       if (prov.settings && !prov.options) {
-        prov.options = prov.settings;
-        delete prov.settings;
+        prov.options = Object.assign({}, prov.settings);
+      } else if (prov.options && !prov.settings) {
+        prov.settings = Object.assign({}, prov.options);
       }
+      // Models dual-track (name & modelID)
       if (prov.models && typeof prov.models === 'object') {
         for (const [mKey, mVal] of Object.entries(prov.models)) {
           if (mVal && typeof mVal === 'object') {
-            if (mVal.modelID && !mVal.name) mVal.name = mVal.modelID;
-            delete mVal.modelID;
+            const mName = mVal.name || mVal.modelID || mKey;
+            mVal.name = mName;
+            mVal.modelID = mName;
           }
         }
       }
     }
   }
 
-  // 3. Configure opencode-go
+  // 3. Configure opencode-go (Dual-Track Schema for CLI & OpenChamber UI)
   data.provider['opencode-go'] = {
     name: 'opencode-go',
     npm: '@ai-sdk/openai-compatible',
+    package: '@opencode/ai/providers/openai-compatible',
     options: {
+      baseURL: routerUrl,
+      apiKey: 'local-router'
+    },
+    settings: {
       baseURL: routerUrl,
       apiKey: 'local-router'
     },
@@ -2053,12 +2086,25 @@ function patchOmoPluginV2() {
   for (const t of targets) {
     try {
       let content = fs.readFileSync(t, 'utf8');
-      if (content.includes('setup: serverPlugin') && content.includes('effect: serverPlugin')) {
+      // Clean up spurious effect: serverPlugin if previously injected
+      if (content.includes('effect: serverPlugin')) {
+        content = content.replace(/effect:\s*serverPlugin,?\s*/g, '');
+        fs.writeFileSync(t, content, 'utf8');
+      }
+      const wrapperRepl = 'setup: async (input, options) => { input = input || {}; input.directory = input.directory || input.location?.directory || process.cwd(); return serverPlugin(input, options); },';
+      if (content.includes('setup: async (input, options) => { input = input || {}; input.directory = input.directory || input.location?.directory || process.cwd();')) {
+        continue;
+      }
+      const regex = /setup:\s*(?:serverPlugin|async\s*\(input[^}]+return\s*serverPlugin[^}]+),?/;
+      if (regex.test(content)) {
+        content = content.replace(regex, wrapperRepl);
+        fs.writeFileSync(t, content, 'utf8');
+        patchedCount++;
         continue;
       }
       const target1 = 'return {\n    id: "oh-my-openagent",\n    server: serverPlugin\n  };';
       const target1_cr = 'return {\r\n    id: "oh-my-openagent",\r\n    server: serverPlugin\r\n  };';
-      const repl1 = 'return {\n    id: "oh-my-openagent",\n    setup: serverPlugin,\n    effect: serverPlugin,\n    server: serverPlugin\n  };';
+      const repl1 = 'return {\n    id: "oh-my-openagent",\n    ' + wrapperRepl + '\n    server: serverPlugin\n  };';
       if (content.includes(target1)) {
         content = content.replace(target1, repl1);
         fs.writeFileSync(t, content, 'utf8');
@@ -2068,9 +2114,9 @@ function patchOmoPluginV2() {
         fs.writeFileSync(t, content, 'utf8');
         patchedCount++;
       } else {
-        const regex = /return\s*\{\s*id:\s*["']oh-my-openagent["'],\s*server:\s*serverPlugin\s*\};/;
-        if (regex.test(content)) {
-          content = content.replace(regex, 'return { id: "oh-my-openagent", setup: serverPlugin, effect: serverPlugin, server: serverPlugin };');
+        const regex2 = /return\s*\{\s*id:\s*["']oh-my-openagent["'],\s*server:\s*serverPlugin\s*\};/;
+        if (regex2.test(content)) {
+          content = content.replace(regex2, 'return { id: "oh-my-openagent", ' + wrapperRepl + ' server: serverPlugin };');
           fs.writeFileSync(t, content, 'utf8');
           patchedCount++;
         }
