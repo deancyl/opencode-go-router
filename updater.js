@@ -2057,7 +2057,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
 }
 
 // Export module functions
-function patchOmoPluginV2() {
+function getOmoPluginFiles() {
   const targets = [];
   const cacheNpm = path.join(os.homedir(), '.cache', 'opencode', 'npm');
   if (fs.existsSync(cacheNpm)) {
@@ -2067,21 +2067,54 @@ function patchOmoPluginV2() {
         const fullD = path.join(cacheNpm, d);
         for (const sub of fs.readdirSync(fullD)) {
           const idx = path.join(fullD, sub, 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
-          if (fs.existsSync(idx)) targets.push(idx);
+          if (fs.existsSync(idx) && !targets.includes(idx)) targets.push(idx);
         }
       }
     } catch (_) {}
   }
   if (process.platform === 'win32') {
     const globalIdx = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
-    if (fs.existsSync(globalIdx)) targets.push(globalIdx);
+    if (fs.existsSync(globalIdx) && !targets.includes(globalIdx)) targets.push(globalIdx);
   } else {
     const globalIdx = '/usr/local/lib/node_modules/oh-my-openagent/dist/index.js';
-    if (fs.existsSync(globalIdx)) targets.push(globalIdx);
+    if (fs.existsSync(globalIdx) && !targets.includes(globalIdx)) targets.push(globalIdx);
   }
   const userLocal = path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
-  if (fs.existsSync(userLocal)) targets.push(userLocal);
+  if (fs.existsSync(userLocal) && !targets.includes(userLocal)) targets.push(userLocal);
 
+  return targets;
+}
+
+function checkOmoPluginV2Integrity() {
+  const targets = getOmoPluginFiles();
+  let hasDeadlockEffect = false;
+  let hasMissingWrapper = false;
+  const targetDetails = [];
+
+  for (const t of targets) {
+    try {
+      const content = fs.readFileSync(t, 'utf8');
+      const hasEffect = content.includes('effect: serverPlugin');
+      const hasWrapper = content.includes('input.directory = input.directory || input.location?.directory || process.cwd()');
+      if (hasEffect) hasDeadlockEffect = true;
+      if (!hasWrapper) hasMissingWrapper = true;
+      targetDetails.push({ file: t, hasEffect, hasWrapper });
+    } catch (_) {}
+  }
+
+  const installed = targets.length > 0;
+  return {
+    installed,
+    targetsCount: targets.length,
+    targetDetails,
+    hasDeadlockEffect,
+    hasMissingWrapper,
+    healthy: installed ? (!hasDeadlockEffect && !hasMissingWrapper) : true
+  };
+}
+
+function patchOmoPluginV2() {
+  const targets = getOmoPluginFiles();
   let patchedCount = 0;
   for (const t of targets) {
     try {
@@ -2126,12 +2159,143 @@ function patchOmoPluginV2() {
   return { targets: targets.length, patchedCount };
 }
 
+function checkProviderDualTrackSchema(configPath = null) {
+  const p = configPath || getOpencodeConfigPath();
+  if (!fs.existsSync(p)) {
+    return { exists: false, healthy: true, issues: [] };
+  }
+  try {
+    const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+    const data = JSON.parse(stripJsonComments(raw));
+    const issues = [];
+    if (!data.provider || typeof data.provider !== 'object') {
+      issues.push('missing_provider_root');
+      return { exists: true, healthy: false, issues };
+    }
+    // Check opencode-go
+    const og = data.provider['opencode-go'];
+    if (og) {
+      if (!og.npm || !og.options) issues.push('opencode-go: 缺少 CLI 规范字段 (npm/options)');
+      if (!og.package || !og.settings) issues.push('opencode-go: 缺少 OpenChamber 桌面端规范字段 (package/settings)');
+      if (og.models && typeof og.models === 'object') {
+        const missingModelID = Object.entries(og.models).some(([k, v]) => !v || typeof v !== 'object' || !v.modelID);
+        if (missingModelID) issues.push('opencode-go: 模型缺少桌面端 modelID 识别字段');
+      }
+    } else {
+      issues.push('opencode-go: 缺失智能网关提供商定义');
+    }
+    // Check third-party custom providers
+    for (const [k, prov] of Object.entries(data.provider)) {
+      if (k === 'opencode-go') continue;
+      if (prov && typeof prov === 'object') {
+        if (!prov.npm && !prov.package) issues.push(`${k}: 缺少 npm/package 依赖规范`);
+        if (!prov.package) issues.push(`${k}: 缺少 OpenChamber package 规范`);
+        if (!prov.settings && prov.options) issues.push(`${k}: 缺少 OpenChamber settings 规范`);
+        if (!prov.options && prov.settings) issues.push(`${k}: 缺少 CLI options 规范`);
+        if (prov.models && typeof prov.models === 'object') {
+          const missingModelID = Object.entries(prov.models).some(([mK, mV]) => !mV || typeof mV !== 'object' || !mV.modelID);
+          if (missingModelID) issues.push(`${k}: 模型缺少桌面端 modelID 识别字段`);
+        }
+      }
+    }
+    return {
+      exists: true,
+      healthy: issues.length === 0,
+      issues
+    };
+  } catch (e) {
+    return { exists: true, healthy: false, error: e.message, issues: ['parse_error: ' + e.message] };
+  }
+}
+
+function detectOpenChamberActivePort() {
+  try {
+    const sPath = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+    if (fs.existsSync(sPath)) {
+      const s = JSON.parse(fs.readFileSync(sPath, 'utf8'));
+      if (s.desktopLocalPort) return s.desktopLocalPort;
+    }
+  } catch (_) {}
+  try {
+    const mDir = path.join(os.homedir(), '.config', 'openchamber', 'managed-opencode');
+    if (fs.existsSync(mDir)) {
+      for (const f of fs.readdirSync(mDir)) {
+        if (f.endsWith('.json')) {
+          const d = JSON.parse(fs.readFileSync(path.join(mDir, f), 'utf8'));
+          if (d.port) return d.port;
+        }
+      }
+    }
+  } catch (_) {}
+  return 3000;
+}
+
+async function probeOpenChamberServices(port = null, timeoutMs = 2000) {
+  const p = port || detectOpenChamberActivePort();
+  const result = {
+    port: p,
+    integration: { status: 'unknown', latencyMs: null, error: null },
+    plugins: { status: 'unknown', activeCount: 0, failedCount: 0, failedPlugins: [], error: null }
+  };
+
+  // 1. Probe /api/integration
+  const t0 = Date.now();
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(`http://127.0.0.1:${p}/api/integration`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    result.integration.latencyMs = Date.now() - t0;
+    if (res.ok) {
+      result.integration.status = 'healthy';
+    } else {
+      result.integration.status = 'error';
+      result.integration.error = `HTTP ${res.status}`;
+    }
+  } catch (e) {
+    result.integration.latencyMs = Date.now() - t0;
+    result.integration.status = e.name === 'AbortError' ? 'deadlocked' : 'unreachable';
+    result.integration.error = e.message;
+  }
+
+  // 2. Probe /api/plugin
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(`http://127.0.0.1:${p}/api/plugin`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      const list = data.data || data || [];
+      const failed = list.filter(item => item.state && item.state.status === 'failed').map(item => item.id);
+      const active = list.filter(item => item.state && item.state.status === 'active').map(item => item.id);
+      result.plugins.status = failed.length > 0 ? 'degraded' : 'healthy';
+      result.plugins.activeCount = active.length;
+      result.plugins.failedCount = failed.length;
+      result.plugins.failedPlugins = failed;
+    } else {
+      result.plugins.status = 'error';
+      result.plugins.error = `HTTP ${res.status}`;
+    }
+  } catch (e) {
+    result.plugins.status = 'unreachable';
+    result.plugins.error = e.message;
+  }
+
+  return result;
+}
+
 module.exports = {
   runCmd,
   runCmdSync,
   detectPlatformEnvironment,
   harmonizeOpencodeConfig,
+  getOmoPluginFiles,
+  checkOmoPluginV2Integrity,
   patchOmoPluginV2,
+  checkProviderDualTrackSchema,
+  detectOpenChamberActivePort,
+  probeOpenChamberServices,
   fetchOfficialModels,
   ALL_38_SLUGS,
   detectLocalVersions,

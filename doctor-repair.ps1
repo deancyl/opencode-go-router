@@ -199,6 +199,26 @@ if (Test-Path $opencodeConfig) {
     } else {
         Write-Host "  ✔ opencode-go 已成功绑定 4010 智能网关" -ForegroundColor Green
     }
+
+    # 检测双轨 Schema 镜像对齐 (OpenCode CLI & OpenChamber UI)
+    try {
+        $escPath = $opencodeConfig.Replace('\', '/')
+        $dtJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.checkProviderDualTrackSchema('$escPath')));" 2>$null
+        if ($dtJson) {
+            $dtObj = $dtJson | ConvertFrom-Json
+            if (-not $dtObj.healthy) {
+                Write-Host "  ⚠ 提供商配置缺少双轨 Schema 镜像规范 (可能导致桌面端丢失卡片)" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "provider_dual_track_missing"
+                    Title = "提供商缺少双轨 Schema 镜像 (package/settings/modelID)"
+                    Severity = "High"
+                    FixDesc = "自动对齐 CLI 与 OpenChamber 桌面端规范字段并补齐 modelID"
+                })
+            } else {
+                Write-Host "  ✔ 提供商配置满足双轨 Schema 镜像规范 (CLI 与桌面端双兼容)" -ForegroundColor Green
+            }
+        }
+    } catch {}
 } else {
     Write-Host "  ⚠ 尚未生成 opencode.jsonc 配置文件" -ForegroundColor Yellow
     $issuesFound.Add([PSCustomObject]@{
@@ -233,6 +253,33 @@ if (Test-Path $omoConfig) {
         FixDesc = "自动生成标准多智能体调度映射（内置无限制模型）"
     })
 }
+
+# 检测 OMO v2 运行时兼容性与 Effect-TS 死锁缺陷
+try {
+    $omoIntegJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.checkOmoPluginV2Integrity()));" 2>$null
+    if ($omoIntegJson) {
+        $omoInteg = $omoIntegJson | ConvertFrom-Json
+        if ($omoInteg.hasDeadlockEffect) {
+            Write-Host "  ❌ 检测到 OMO 插件中存在 Effect-TS 死锁标记 (导致添加提供商挂死/转圈)！" -ForegroundColor Red
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "omo_effect_deadlock"
+                Title = "Oh My OpenAgent 插件存在 Effect-TS 死锁标记"
+                Severity = "High"
+                FixDesc = "自动清除 OMO 中的 effect: serverPlugin 声明，释放调度器死锁"
+            })
+        } elseif ($omoInteg.hasMissingWrapper) {
+            Write-Host "  ⚠ OMO 插件缺少 OpenCode v2 运行时目录安全兼容包装 (可能导致插件显示未加载)" -ForegroundColor Yellow
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "omo_v2_wrapper_missing"
+                Title = "Oh My OpenAgent 缺少 OpenCode v2 上下文目录安全兼容包装"
+                Severity = "High"
+                FixDesc = "自动注入 input.directory 安全兼容包装器并修复运行环境"
+            })
+        } else {
+            Write-Host "  ✔ OMO 插件已具备 OpenCode v2 目录安全包装且无死锁标记" -ForegroundColor Green
+        }
+    }
+} catch {}
 
 # ----------------- 5. 检测 Goal 插件与 /boost 指令 -----------------
 Write-Host "`n[5/8] 检查 Goal 目标推进体系与 /boost 模式..." -ForegroundColor Yellow
@@ -589,6 +636,36 @@ foreach ($iss in $issuesFound) {
                 }
             } catch {
                 Write-Host "    ⚠ 补全模型失败: $_" -ForegroundColor Red
+            }
+        }
+        "provider_dual_track_missing" {
+            Write-Host " -> 正在为所有提供商补全双轨 Schema 镜像 (兼容 CLI 与 OpenChamber 桌面端)..." -ForegroundColor Yellow
+            try {
+                $escPath = $opencodeConfig.Replace('\', '/')
+                node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                Write-Host "    ✔ 提供商双轨 Schema 已成功镜像并补全 modelID" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 双轨合流失败: $_" -ForegroundColor Red
+            }
+        }
+        "omo_effect_deadlock" {
+            Write-Host " -> 正在自动为 OMO 插件注入 OpenCode v2 安全包装并清除 Effect-TS 死锁标记..." -ForegroundColor Yellow
+            try {
+                $resJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.patchOmoPluginV2()));" 2>$null
+                $resObj = $resJson | ConvertFrom-Json
+                Write-Host "    ✔ OMO 插件已完成安全兼容升级 (已校验 $($resObj.targets) 处，修复 $($resObj.patchedCount) 处)" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 修补失败: $_" -ForegroundColor Red
+            }
+        }
+        "omo_v2_wrapper_missing" {
+            Write-Host " -> 正在自动为 OMO 插件注入 OpenCode v2 安全包装并清除 Effect-TS 死锁标记..." -ForegroundColor Yellow
+            try {
+                $resJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.patchOmoPluginV2()));" 2>$null
+                $resObj = $resJson | ConvertFrom-Json
+                Write-Host "    ✔ OMO 插件已完成安全兼容升级 (已校验 $($resObj.targets) 处，修复 $($resObj.patchedCount) 处)" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 修补失败: $_" -ForegroundColor Red
             }
         }
         "openchamber_ghost_process" {

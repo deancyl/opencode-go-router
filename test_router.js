@@ -1547,8 +1547,82 @@ async function runTests() {
     assert.ok(Array.isArray(syncData.models), 'Must return models array');
     console.log('✓ Dynamic Models Sync API (/balancer/api/models/sync) verified');
 
+    // [Test 58] Testing OMO Plugin v2 Integrity Detection Engine
+    console.log('\n[Test 58] Testing OMO Plugin v2 Integrity Detection Engine...');
+    const omoIntegrityRes = updater.checkOmoPluginV2Integrity();
+    assert.strictEqual(typeof omoIntegrityRes.installed, 'boolean');
+    assert.strictEqual(typeof omoIntegrityRes.healthy, 'boolean');
+    assert.strictEqual(typeof omoIntegrityRes.hasDeadlockEffect, 'boolean');
+    assert.strictEqual(typeof omoIntegrityRes.hasMissingWrapper, 'boolean');
+    console.log(`✓ OMO Plugin v2 Integrity Detection verified (checked ${omoIntegrityRes.targetsCount} targets, healthy: ${omoIntegrityRes.healthy})`);
+
+    // [Test 59] Testing Provider Dual-Track Schema Detection Engine
+    console.log('\n[Test 59] Testing Provider Dual-Track Schema Detection Engine...');
+    const singleTrackFile = path.join(testConfigDir, 'single-track.jsonc');
+    fs.writeFileSync(singleTrackFile, JSON.stringify({
+      provider: {
+        'opencode-go': {
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'http://127.0.0.1:4010/v1', apiKey: 'local-router' },
+          models: { 'deepseek-v4.1-flash': { name: 'deepseek-v4.1-flash' } }
+        },
+        'aixforge': {
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'https://api.aixforge.com/v1', apiKey: 'sk-test' },
+          models: { 'deepseek-v4-flash': { name: 'deepseek-v4-flash' } }
+        }
+      }
+    }, null, 2), 'utf8');
+
+    const dtCheck1 = updater.checkProviderDualTrackSchema(singleTrackFile);
+    assert.strictEqual(dtCheck1.healthy, false, 'Single track config must be flagged as non-healthy');
+    assert.ok(dtCheck1.issues.length >= 2, 'Must report missing OpenChamber package/settings/modelID');
+
+    // Run harmonizeOpencodeConfig to apply Dual-Track Schema
+    updater.harmonizeOpencodeConfig(singleTrackFile, 4010);
+    const dtCheck2 = updater.checkProviderDualTrackSchema(singleTrackFile);
+    assert.strictEqual(dtCheck2.healthy, true, 'Harmonized config must satisfy Dual-Track Schema');
+    assert.strictEqual(dtCheck2.issues.length, 0);
+    const dtParsed = JSON.parse(fs.readFileSync(singleTrackFile, 'utf8'));
+    assert.strictEqual(dtParsed.provider['opencode-go'].package, '@opencode/ai/providers/openai-compatible');
+    assert.strictEqual(dtParsed.provider['opencode-go'].settings.baseURL, 'http://127.0.0.1:4010/v1');
+    assert.strictEqual(dtParsed.provider['aixforge'].package, '@opencode/ai/providers/openai-compatible');
+    assert.strictEqual(dtParsed.provider['aixforge'].settings.baseURL, 'https://api.aixforge.com/v1');
+    assert.strictEqual(dtParsed.provider['aixforge'].models['deepseek-v4-flash'].modelID, 'deepseek-v4-flash');
+    console.log('✓ Provider Dual-Track Schema Detection & Auto-Harmonization verified');
+
+    // [Test 60] Testing OpenChamber Live Port Detection & Service Probing
+    console.log('\n[Test 60] Testing OpenChamber Live Port Detection & Service Probing...');
+    const detectedPort = updater.detectOpenChamberActivePort();
+    assert.strictEqual(typeof detectedPort, 'number');
+    assert.ok(detectedPort > 0);
+    const probeTestRes = await updater.probeOpenChamberServices(mockPort, 1000);
+    assert.strictEqual(probeTestRes.port, mockPort);
+    assert.ok(['healthy', 'error', 'deadlocked', 'unreachable'].includes(probeTestRes.integration.status));
+    assert.ok(['healthy', 'degraded', 'error', 'unreachable'].includes(probeTestRes.plugins.status));
+    console.log(`✓ OpenChamber Live Port Detection & Probing verified (detected port: ${detectedPort})`);
+
+    // [Test 61] Testing Doctor & Auto-Repair Lifecycle with OMO Deadlock Eradication & Dual-Track Schema
+    console.log('\n[Test 61] Testing Doctor & Auto-Repair Lifecycle with OMO Deadlock Eradication & Dual-Track Schema...');
+    const docRes61 = await request('/balancer/api/doctor', { method: 'GET' });
+    assert.strictEqual(docRes61.statusCode, 200);
+    const docData61 = JSON.parse(docRes61.body);
+    assert.ok(docData61.omoIntegrity, 'Doctor must return omoIntegrity field');
+    assert.ok(docData61.dualTrackSchema, 'Doctor must return dualTrackSchema field');
+    assert.ok(docData61.openchamberProbe, 'Doctor must return openchamberProbe field');
+
+    const repairRes61 = await request('/balancer/api/repair', { method: 'POST' });
+    assert.strictEqual(repairRes61.statusCode, 200);
+    const repairData61 = JSON.parse(repairRes61.body);
+    assert.strictEqual(repairData61.success, true);
+    assert.ok(Array.isArray(repairData61.results));
+    const omoRepairItem = repairData61.results.find(r => r.item === 'OMO Plugin v2 Patch');
+    assert.ok(omoRepairItem, 'Repair results must include OMO Plugin v2 Patch step');
+    assert.strictEqual(omoRepairItem.success, true);
+    console.log('✓ Doctor & Auto-Repair Lifecycle with OMO Deadlock Eradication & Dual-Track Schema verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 57 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 61 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

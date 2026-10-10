@@ -1336,7 +1336,7 @@ function findOpenCodeBinary() {
   return null;
 }
 
-function runSystemDoctor() {
+async function runSystemDoctor() {
   let defaultWs = findDefaultWorkspace();
 
   const report = {
@@ -1614,6 +1614,58 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
         });
       });
     }
+
+    // 7.5 Check OMO v2 plugin integrity and deadlocks
+    const omoInteg = updater.checkOmoPluginV2Integrity();
+    report.omoIntegrity = omoInteg;
+    if (omoInteg.hasDeadlockEffect) {
+      report.issues.push({
+        id: 'omo_effect_deadlock',
+        severity: 'high',
+        title: 'Oh My OpenAgent 插件存在 Effect-TS 死锁标记',
+        desc: '检测到 OMO 插件中注入了 effect: serverPlugin，导致 OpenCode v2 调度锁全局死锁、/api/integration 超时挂死及提供商连接转圈卡死，可一键自动清除'
+      });
+    }
+    if (omoInteg.hasMissingWrapper) {
+      report.issues.push({
+        id: 'omo_v2_wrapper_missing',
+        severity: 'high',
+        title: 'Oh My OpenAgent 缺少 OpenCode v2 运行时目录安全兼容包装',
+        desc: '检测到 OMO 插件未注入 input.directory 安全兼容包装器，可能导致运行时崩溃并显示为“未加载”，可一键自动注入'
+      });
+    }
+
+    // 7.6 Check Provider Dual-Track Schema (OpenCode CLI & OpenChamber UI)
+    const dtSchema = updater.checkProviderDualTrackSchema(report.opencodeConfig.path);
+    report.dualTrackSchema = dtSchema;
+    if (!dtSchema.healthy && dtSchema.issues && dtSchema.issues.length > 0) {
+      report.issues.push({
+        id: 'provider_dual_track_missing',
+        severity: 'high',
+        title: '提供商配置缺少双轨 Schema 镜像（导致 OpenChamber 或 CLI 丢失卡片）',
+        desc: `检测到提供商缺少 OpenChamber 或 CLI 所需字段 (${dtSchema.issues.join('; ')})，会导致桌面端提供商列表丢失或添加卡住，可一键对齐合流`
+      });
+    }
+
+    // 7.7 Probe live OpenChamber / OpenCode services
+    const probeRes = await updater.probeOpenChamberServices(null, 1500);
+    report.openchamberProbe = probeRes;
+    if (probeRes.integration && probeRes.integration.status === 'deadlocked') {
+      report.issues.push({
+        id: 'integration_api_deadlock',
+        severity: 'high',
+        title: 'OpenCode 插件调度锁死锁（添加提供商界面转圈挂死）',
+        desc: '实测 /api/integration 响应超时挂死，表明后台 PluginSupervisor 已处于死锁状态，一键修复将清理 OMO 补丁并重启释放进程'
+      });
+    }
+    if (probeRes.plugins && probeRes.plugins.status === 'degraded' && probeRes.plugins.failedPlugins && probeRes.plugins.failedPlugins.length > 0) {
+      report.issues.push({
+        id: 'plugin_load_failed',
+        severity: 'high',
+        title: `核心智能体插件处于加载失败状态 (${probeRes.plugins.failedPlugins.join(', ')})`,
+        desc: '检测到插件未能正常加载激活，一键修复将自动注入安全补丁并重载'
+      });
+    }
   } catch (e) {}
 
   // 8. Check OpenAI Codex CLI & binding
@@ -1673,6 +1725,27 @@ async function executeSystemRepair(options = {}) {
     });
   } catch (e) {
     results.push({ item: 'OpenCode Config', success: false, message: '修复 opencode.jsonc 失败: ' + e.message });
+  }
+
+  // 2.5 Auto-Patch OMO v2 Compatibility & Clean Deadlocks
+  try {
+    const updater = require('./updater');
+    const omoPatchRes = updater.patchOmoPluginV2();
+    if (omoPatchRes.patchedCount > 0) {
+      results.push({
+        item: 'OMO Plugin v2 Patch',
+        success: true,
+        message: `已为 ${omoPatchRes.patchedCount} 处 OMO 插件注入 OpenCode v2 安全目录包装器并清除 Effect-TS 死锁标记`
+      });
+    } else {
+      results.push({
+        item: 'OMO Plugin v2 Patch',
+        success: true,
+        message: `已就绪：本地 ${omoPatchRes.targets} 处 OMO 插件均已具备安全目录包装器且无死锁标记`
+      });
+    }
+  } catch (e) {
+    results.push({ item: 'OMO Plugin v2 Patch', success: false, message: '修补 OMO 插件异常: ' + e.message });
   }
 
   // 3. Ensure omo.jsonc exists
@@ -2685,9 +2758,16 @@ $ghost
 
   // Doctor API
   if (reqUrl.pathname === '/balancer/api/doctor' && req.method === 'GET') {
-    const report = runSystemDoctor();
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify(report, null, 2));
+    (async () => {
+      try {
+        const report = await runSystemDoctor();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(report, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: err.message }, null, 2));
+      }
+    })();
     return;
   }
 
@@ -3708,6 +3788,9 @@ $ghost
             <span><strong>路由端口:</strong> <span style="color:var(--success)">✔ \${doc.router.port}</span></span>
             <span><strong>OpenChamber:</strong> \${doc.openchamber.reachable ? '<span style="color:var(--success)">✔ 运行中</span>' : (doc.openchamber.ghost ? '<span style="color:var(--danger)">❌ 僵死死锁</span>' : '<span style="color:var(--muted)">未运行</span>')} <button class="btn btn-secondary btn-sm" style="padding:1px 6px; font-size:11px; margin-left:4px;" onclick="launchOpenChamber()">💻 唤醒桌面端</button></span>
             <span><strong>Office 预览:</strong> \${doc.openchamber.officePreview && doc.openchamber.officePreview.installed ? '<span style="color:var(--success)">✔ 已挂载</span>' : '<span style="color:var(--muted)">未挂载</span>'}</span>
+            <span><strong>OMO 插件:</strong> \${doc.omoIntegrity ? (doc.omoIntegrity.healthy ? '<span style="color:var(--success)">✔ v2安全</span>' : '<span style="color:var(--danger)">❌ 存在缺陷</span>') : '<span style="color:var(--muted)">-</span>'}</span>
+            <span><strong>双轨 Schema:</strong> \${doc.dualTrackSchema ? (doc.dualTrackSchema.healthy ? '<span style="color:var(--success)">✔ 镜像正常</span>' : '<span style="color:var(--warning)">⚠ 缺失规范</span>') : '<span style="color:var(--muted)">-</span>'}</span>
+            <span><strong>提供商接口:</strong> \${doc.openchamberProbe && doc.openchamberProbe.integration ? (doc.openchamberProbe.integration.status === 'healthy' ? '<span style="color:var(--success)">✔ ' + doc.openchamberProbe.integration.latencyMs + 'ms</span>' : (doc.openchamberProbe.integration.status === 'deadlocked' ? '<span style="color:var(--danger)">❌ 死锁挂死</span>' : '<span style="color:var(--muted)">' + doc.openchamberProbe.integration.status + '</span>')) : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
           </div>
         \`;
