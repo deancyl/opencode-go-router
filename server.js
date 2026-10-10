@@ -369,7 +369,7 @@ function parseJsonSafe(filePath, defaultVal = {}) {
   }
 }
 
-function bindDesktopConfig() {
+async function bindDesktopConfig(options = {}) {
   const result = { opencode: false, openchamber: false, omo: false, boost: false, messages: [] };
   const homeDir = os.homedir();
   const routerUrl = `http://127.0.0.1:${config.port}/v1`;
@@ -380,14 +380,27 @@ function bindDesktopConfig() {
     if (!fs.existsSync(opencodeDir)) fs.mkdirSync(opencodeDir, { recursive: true });
     const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
     const updater = require('./updater');
-    const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port);
+
+    // 动态嗅探拉取官方最新模型（若在线），离线则自动使用 38 款基准字典兜底
+    let officialModels = options.officialModels || null;
+    if (!officialModels) {
+      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+      if (validAccount) {
+        try {
+          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500);
+        } catch (_) {}
+      }
+    }
+
+    const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port, { officialModels });
     result.opencode = harmRes.success;
     if (harmRes.modelPreserved) {
       result.messages.push(`已保留当前 OpenCode 全局首选模型 (${harmRes.currentModel})`);
     } else {
       result.messages.push(`已将 OpenCode 全局首选模型设置为 ${harmRes.currentModel}`);
     }
-    result.messages.push(`已规范单一 provider 链路，全量覆盖 38 款官方模型，无损消除单复数冲突`);
+    const syncTag = (officialModels && officialModels.length > 0) ? `已动态同步官方最新 ${harmRes.modelCount} 款模型` : `全量覆盖 ${harmRes.modelCount} 款官方基准模型`;
+    result.messages.push(`已规范单一 provider 链路，${syncTag}，无损消除单复数冲突`);
   } catch (err) {
     result.messages.push('OpenCode 配置失败: ' + err.message);
   }
@@ -1519,12 +1532,13 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
           desc: 'OpenCode 2.0+ 统一采用单数 provider 规范，外层存在 providers 会导致启动时丢弃本地网关并报 conflict 错误，可一键自动合流清洗'
         });
       }
-      if (hasSingular && modelCount > 0 && modelCount < 38) {
+      const targetCount = 38;
+      if (hasSingular && modelCount > 0 && modelCount < targetCount) {
         report.issues.push({
           id: 'models_incomplete',
           severity: 'low',
-          title: `opencode-go 官方模型清单未补全 (当前 ${modelCount}/38 款)`,
-          desc: '官方提供 38 款全量模型，当前清单未补齐可能导致部分模型无法直接选择，点击一键修复即可全量补全'
+          title: `opencode-go 官方模型清单未补全 (当前 ${modelCount}/${targetCount} 款)`,
+          desc: `官方上游支持全量模型目录，当前本地清单存在未同步模型，点击一键修复即可全量补全并增量合并`
         });
       }
       if (report.opencodeConfig.hasDeadPort3001) {
@@ -1610,7 +1624,7 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
 }
 
 // Auto-Repair Engine
-function executeSystemRepair() {
+async function executeSystemRepair(options = {}) {
   const results = [];
 
   // 1. Reset all cooldowns
@@ -1625,14 +1639,27 @@ function executeSystemRepair() {
   const ocPath = path.join(ocDir, 'opencode.jsonc');
   try {
     const updater = require('./updater');
-    const harmRes = updater.harmonizeOpencodeConfig(ocPath, config.port);
+
+    // 动态嗅探拉取官方最新模型（若在线），离线则自动使用 38 款基准字典兜底
+    let officialModels = options.officialModels || null;
+    if (!officialModels) {
+      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+      if (validAccount) {
+        try {
+          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500);
+        } catch (_) {}
+      }
+    }
+
+    const harmRes = updater.harmonizeOpencodeConfig(ocPath, config.port, { officialModels });
     const migMsg = harmRes.migratedProviders.length > 0 ? ` (已合流第三方服务商: ${harmRes.migratedProviders.join(', ')})` : '';
+    const syncTag = (officialModels && officialModels.length > 0) ? `已动态同步官方最新 ${harmRes.modelCount} 款模型` : `全量补齐 ${harmRes.modelCount} 款官方模型`;
     results.push({
       item: 'OpenCode Config',
       success: true,
       message: harmRes.isNew
         ? '已自动生成 opencode.jsonc 并绑定 4010 智能网关'
-        : `已清洗旧复数 providers 冲突，全量补齐 38 款模型${migMsg}，保留当前首选模型 (${harmRes.currentModel})`
+        : `已清洗旧复数 providers 冲突，${syncTag}${migMsg}，保留当前首选模型 (${harmRes.currentModel})`
     });
   } catch (e) {
     results.push({ item: 'OpenCode Config', success: false, message: '修复 opencode.jsonc 失败: ' + e.message });
@@ -2332,18 +2359,20 @@ const server = http.createServer((req, res) => {
 
   // Bind to OpenCode & OpenChamber Desktop API
   if (reqUrl.pathname === '/balancer/api/bind-desktop' && req.method === 'POST') {
-    try {
-      const result = bindDesktopConfig();
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({
-        success: result.opencode || result.openchamber,
-        result,
-        message: result.messages.join('；')
-      }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    }
+    (async () => {
+      try {
+        const result = await bindDesktopConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: result.opencode || result.openchamber,
+          result,
+          message: result.messages.join('；')
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    })();
     return;
   }
 
@@ -2626,9 +2655,69 @@ $ghost
 
   // Repair API
   if (reqUrl.pathname === '/balancer/api/repair' && req.method === 'POST') {
-    const results = executeSystemRepair();
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify({ success: true, results }, null, 2));
+    (async () => {
+      try {
+        const results = await executeSystemRepair();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, results }, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  // Dynamic Official Models Sync API
+  if (reqUrl.pathname === '/balancer/api/models/sync') {
+    (async () => {
+      let apiKey = '';
+      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+      if (validAccount) apiKey = validAccount.apiKey.trim();
+
+      try {
+        const updater = require('./updater');
+        const officialModels = await updater.fetchOfficialModels(apiKey, config.upstream, 5000);
+        if (officialModels && officialModels.length > 0) {
+          const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
+          const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
+          const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port, { officialModels });
+          
+          let codexSynced = false;
+          try {
+            const codex = require('./codex-adapter');
+            codex.syncDynamicModels(officialModels);
+            codexSynced = true;
+          } catch (_) {}
+
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({
+            success: true,
+            upstream: config.upstream,
+            officialCount: officialModels.length,
+            totalModelCount: harmRes.modelCount,
+            currentModel: harmRes.currentModel,
+            codexSynced,
+            models: officialModels,
+            message: `已成功从官方上游动态嗅探并同步 ${officialModels.length} 款模型，本地客户端配置已增量热更新！`
+          }, null, 2));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({
+            success: true,
+            upstream: config.upstream,
+            officialCount: 38,
+            totalModelCount: 38,
+            fallback: true,
+            models: updater.ALL_38_SLUGS,
+            message: '当前上游网络或密钥未就绪，已安全使用内置 38 款高保真基准模型字典兜底！'
+          }, null, 2));
+        }
+      } catch (syncErr) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: syncErr.message }));
+      }
+    })();
     return;
   }
 

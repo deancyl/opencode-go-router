@@ -631,6 +631,42 @@ for (const m of OPENCODE_GO_ALL_MODELS) {
   if (!m.shell_type) m.shell_type = 'shell_command';
 }
 
+/**
+ * Dynamically synchronizes official upstream models into Codex catalog
+ */
+function syncDynamicModels(slugList) {
+  if (!Array.isArray(slugList) || slugList.length === 0) return OPENCODE_GO_ALL_MODELS;
+  const existingSlugs = new Set(OPENCODE_GO_ALL_MODELS.map(m => m.slug));
+  for (const slug of slugList) {
+    if (typeof slug === 'string' && slug.trim() && !existingSlugs.has(slug.trim())) {
+      const cleanSlug = slug.trim();
+      existingSlugs.add(cleanSlug);
+      OPENCODE_GO_ALL_MODELS.push({
+        slug: cleanSlug,
+        display_name: cleanSlug.toUpperCase(),
+        description: `OpenCode Go ${cleanSlug} 动态感知模型`,
+        default_reasoning_level: 'medium',
+        supported_reasoning_levels: [
+          { effort: 'low', description: '极速轻量思考' },
+          { effort: 'medium', description: '均衡思考' },
+          { effort: 'high', description: '深度思考' }
+        ],
+        supports_parallel_tool_calls: true,
+        supports_image_detail_original: true,
+        input_modalities: ['text', 'image'],
+        context_window: 1048576,
+        max_context_window: 1048576,
+        effective_context_window_percent: 95,
+        visibility: 'list',
+        supported_in_api: true,
+        priority: 600,
+        shell_type: 'shell_command'
+      });
+    }
+  }
+  return OPENCODE_GO_ALL_MODELS;
+}
+
 // Models natively supporting OpenAI Responses API on OpenCode Go upstream
 const NATIVE_RESPONSES_MODELS = new Set([
   'deepseek-v4-flash',
@@ -2362,6 +2398,7 @@ module.exports = {
   convertAnthropicResponseToResponses,
   updateCodexTomlString,
   getCodexStatus,
+  syncDynamicModels,
   bindCodexConfig,
   restoreCodexConfig
 };

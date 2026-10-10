@@ -96,6 +96,72 @@ const ALL_38_SLUGS = [
 ];
 
 /**
+ * Dynamically fetch official OpenCode Go models catalog from upstream API
+ * Returns array of model slugs or null if offline/unreachable
+ */
+function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (!apiKey || !apiKey.trim()) {
+      return resolve(null);
+    }
+    try {
+      let endpoint = upstream.replace(/\/+$/, '');
+      if (endpoint.endsWith('/models')) {
+        // already ends with /models
+      } else if (endpoint.endsWith('/v1')) {
+        endpoint += '/models';
+      } else {
+        endpoint += '/v1/models';
+      }
+      const parsed = new URL(endpoint);
+      const transport = parsed.protocol === 'https:' ? https : http;
+      let finished = false;
+      const req = transport.request(parsed, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey.trim()}`,
+          'User-Agent': 'opencode-go-router-updater'
+        },
+        timeout: timeoutMs
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          if (finished) return;
+          finished = true;
+          try {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              const parsedRes = JSON.parse(data);
+              const list = Array.isArray(parsedRes.data) ? parsedRes.data : [];
+              const slugs = list.map(m => {
+                let id = m.id || m.name;
+                if (typeof id === 'string' && id.startsWith('opencode-go/')) id = id.slice(12);
+                return id;
+              }).filter(id => typeof id === 'string' && id.trim().length > 0);
+              if (slugs.length > 0) {
+                return resolve(Array.from(new Set(slugs)));
+              }
+            }
+            resolve(null);
+          } catch (_) {
+            resolve(null);
+          }
+        });
+      });
+      req.on('error', () => {
+        if (!finished) { finished = true; resolve(null); }
+      });
+      req.on('timeout', () => {
+        if (!finished) { finished = true; req.destroy(); resolve(null); }
+      });
+      req.end();
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+/**
  * Intelligent cross-platform environment detector
  * Accurately detects Windows Desktop, Linux NAS (fnOS / Synology / TrueNAS / Unraid), Docker, and standard Linux.
  */
@@ -212,12 +278,16 @@ function detectPlatformEnvironment(overrides = {}) {
 /**
  * Cross-platform Zero-Loss Opencode Config Harmonization & Auto-Repair Engine
  * Migrates deprecated plural `providers` into singular `provider`,
- * populates all 38 models for `opencode-go`, preserves custom models and user choice.
+ * populates models for `opencode-go` (dynamic official upstream or 38 fallback),
+ * normalizes OMO tags, preserves custom models and user choice.
  */
-function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
+function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options = {}) {
   const p = customPath || getOpencodeConfigPath();
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const targetOmoVer = options.omoVersion || '5.1.29';
+  const targetOmoTag = `oh-my-openagent@${targetOmoVer}`;
 
   let data = {};
   let isNew = false;
@@ -234,7 +304,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
   } else {
     isNew = true;
     data = {
-      plugin: ["oh-my-openagent@5.1.24", "opencode-goal-plugin"],
+      plugin: [targetOmoTag, "opencode-goal-plugin"],
       $schema: "https://opencode.ai/config.json"
     };
   }
@@ -242,10 +312,23 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
   if (!data || typeof data !== 'object') data = {};
 
   if (!Array.isArray(data.plugin)) data.plugin = [];
-  if (!data.plugin.some(item => String(item).includes('oh-my-openagent'))) {
-    data.plugin.push('oh-my-openagent@5.1.24');
+  // 规范化与同步更新 OMO 插件标签
+  let omoFound = false;
+  for (let i = 0; i < data.plugin.length; i++) {
+    const item = data.plugin[i];
+    if (typeof item === 'string' && (item === 'oh-my-openagent' || item.startsWith('oh-my-openagent@'))) {
+      data.plugin[i] = targetOmoTag;
+      omoFound = true;
+    } else if (Array.isArray(item) && typeof item[0] === 'string' && (item[0] === 'oh-my-openagent' || item[0].startsWith('oh-my-openagent@'))) {
+      item[0] = targetOmoTag;
+      omoFound = true;
+    }
   }
-  if (!data.plugin.some(item => String(item).includes('opencode-goal-plugin'))) {
+  if (!omoFound) {
+    data.plugin.unshift(targetOmoTag);
+  }
+
+  if (!data.plugin.some(item => String(Array.isArray(item) ? item[0] : item).includes('opencode-goal-plugin'))) {
     data.plugin.push('opencode-goal-plugin');
   }
 
@@ -255,9 +338,13 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010) {
 
   const routerUrl = `http://127.0.0.1:${routerPort}/v1`;
 
-  // 1. Build models map with all 38 models
+  // 1. Build models map with dynamic models + fallback 38 models
+  let baseSlugs = ALL_38_SLUGS;
+  if (Array.isArray(options.officialModels) && options.officialModels.length > 0) {
+    baseSlugs = Array.from(new Set([...ALL_38_SLUGS, ...options.officialModels]));
+  }
   const allModelsMap = {};
-  for (const s of ALL_38_SLUGS) {
+  for (const s of baseSlugs) {
     allModelsMap[s] = { name: s };
   }
 
@@ -1916,6 +2003,7 @@ module.exports = {
   runCmdSync,
   detectPlatformEnvironment,
   harmonizeOpencodeConfig,
+  fetchOfficialModels,
   ALL_38_SLUGS,
   detectLocalVersions,
   fetchAllRemoteVersions,

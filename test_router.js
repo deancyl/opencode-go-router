@@ -1485,8 +1485,70 @@ async function runTests() {
     assert.strictEqual(Object.keys(fixedData.provider['opencode-go'].models).length, 38);
     console.log('✓ Doctor Diagnostic & Self-Healing for Incomplete 38-Models Catalog verified');
 
+    // [Test 55] Testing Dynamic Upstream Models Sync & Incremental Hot-Merge
+    console.log('\n[Test 55] Testing Dynamic Upstream Models Sync & Incremental Hot-Merge...');
+    const dynamicFile = path.join(testConfigDir, 'opencode-dynamic.jsonc');
+    fs.writeFileSync(dynamicFile, JSON.stringify({
+      provider: {
+        'opencode-go': {
+          baseURL: 'http://127.0.0.1:4010/v1',
+          models: {
+            'custom-fine-tuned-model': { name: 'My Private Model', customParam: 123 },
+            'glm-5.3-flash': { name: 'glm-5.3-flash' }
+          }
+        }
+      },
+      model: 'opencode-go/glm-5.3-flash'
+    }, null, 2), 'utf8');
+
+    // Simulate official upstream introducing 2 brand new models (total 40 models)
+    const simulatedOfficialModels = [...updater.ALL_38_SLUGS, 'deepseek-v5', 'glm-6'];
+    const dynamicHarmRes = updater.harmonizeOpencodeConfig(dynamicFile, 4010, {
+      officialModels: simulatedOfficialModels
+    });
+    assert.strictEqual(dynamicHarmRes.success, true);
+    assert.ok(dynamicHarmRes.modelCount >= 40, `Model count must be at least 40 (got ${dynamicHarmRes.modelCount})`);
+    assert.strictEqual(dynamicHarmRes.currentModel, 'opencode-go/glm-5.3-flash', 'User selected model must be preserved');
+
+    const dynamicParsed = JSON.parse(fs.readFileSync(dynamicFile, 'utf8'));
+    const dynamicModels = dynamicParsed.provider['opencode-go'].models;
+    assert.ok(dynamicModels['deepseek-v5'], 'New upstream model deepseek-v5 must be auto-injected');
+    assert.ok(dynamicModels['glm-6'], 'New upstream model glm-6 must be auto-injected');
+    assert.ok(dynamicModels['custom-fine-tuned-model'], 'Custom fine-tuned model must be strictly preserved');
+    assert.strictEqual(dynamicModels['custom-fine-tuned-model'].customParam, 123, 'Custom metadata preserved');
+    console.log('✓ Dynamic Upstream Models Sync & Incremental Hot-Merge verified');
+
+    // [Test 56] Testing OMO Plugin Version Tag Normalization & Auto-Alignment
+    console.log('\n[Test 56] Testing OMO Plugin Version Tag Normalization & Auto-Alignment...');
+    const omoTagFile = path.join(testConfigDir, 'opencode-omo-tag.jsonc');
+    fs.writeFileSync(omoTagFile, JSON.stringify({
+      plugin: ['oh-my-openagent', 'opencode-goal-plugin'],
+      provider: {
+        'opencode-go': {
+          baseURL: 'http://127.0.0.1:4010/v1',
+          models: {}
+        }
+      }
+    }, null, 2), 'utf8');
+
+    const omoHarmRes = updater.harmonizeOpencodeConfig(omoTagFile, 4010, { omoVersion: '5.1.29' });
+    assert.strictEqual(omoHarmRes.success, true);
+    const omoParsed = JSON.parse(fs.readFileSync(omoTagFile, 'utf8'));
+    assert.strictEqual(omoParsed.plugin[0], 'oh-my-openagent@5.1.29', 'OMO plugin tag must be normalized to oh-my-openagent@5.1.29');
+    console.log('✓ OMO Plugin Version Tag Normalization & Auto-Alignment verified');
+
+    // [Test 57] Testing Dynamic Models Sync API (/balancer/api/models/sync)
+    console.log('\n[Test 57] Testing Dynamic Models Sync API (/balancer/api/models/sync)...');
+    const syncRes = await request('/balancer/api/models/sync', { method: 'GET' });
+    assert.strictEqual(syncRes.statusCode, 200);
+    const syncData = JSON.parse(syncRes.body);
+    assert.strictEqual(syncData.success, true);
+    assert.ok(syncData.officialCount >= 38, `Official count must be at least 38 (got ${syncData.officialCount})`);
+    assert.ok(Array.isArray(syncData.models), 'Must return models array');
+    console.log('✓ Dynamic Models Sync API (/balancer/api/models/sync) verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 54 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 57 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
