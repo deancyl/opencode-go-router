@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.4.1](https://img.shields.io/badge/Version-v2.4.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.4.6](https://img.shields.io/badge/Version-v2.4.6-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -496,6 +496,20 @@ npm run build:exe
   - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
   - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
 - **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
+
+### 🚀 v2.4.6
+- **官方配额 (Usage Quota) 定时自动刷新、交互倒计时与智能防抖引擎**：
+  - **自定义多档刷新周期**：在 Web 管理控制台“OpenCode Go 订阅账号列表”标题栏注入现代化控制条，支持切换【关闭】、【15 秒】、【30 秒】、【60 秒 (默认推荐)】、【2 分钟】、【5 分钟】；
+  - **偏好自动记忆与持久化**：刷新间隔偏好自动保存在浏览器的 `localStorage` 中，重新打开或刷新控制台自动继承配置；
+  - **交互式 1 秒步长倒计时徽章（`⏱️ 58s`）**：实时平滑倒计时，支持点击倒计时徽章或【🔄 刷新全部配额】按钮立即全量强制刷新并重置定时器；
+  - **单卡片时间戳与防连点状态指示**：各账号限额卡片实时呈现最新更新时间（如 `11:05:36 更新 (缓存)`），并在刷新中呈现加载中状态防止重复点击；
+  - **首屏静默自动探测与切台挂起**：进入管理面板自动无感探测所有账号额度，结合 Page Visibility API 在切出后台时挂起倒计时，切回前台时若即将超时则自动补查并恢复；
+  - **后端 8 秒防抖内存缓存池 (Rate-Limit Defense)**：在 `server.js` 设立 `upstream + apiKey` 内存缓存池（TTL 8000ms），绝不因自动轮询或多标签页导致上游 429 限流；支持 `force: true` 显式穿透；
+  - **测试覆盖扩充**：新增 `Test 62` 自动化验证防抖缓存、强制穿透与前端定时调度，全套 62 项测试 100% 绿灯通过。
+- **Linux / NAS 组件升级与版本漂移根治 (OMO 5.1.30 同步与兼容)**：
+  - **彻底清除版本硬编码降级漏洞**：重构 `updater.js` 中的 `harmonizeOpencodeConfig`，彻底删除旧版硬编码默认值 `'5.1.29'`，引入“升级目标版本优先 > 磁盘真实安装包版本 > 现有配置继承”动态确定策略，彻底杜绝升级后版本被反向篡改；
+  - **升级后全自动注入 OMO v2 运行时安全兼容包装**：在升级 `oh-my-openagent` 后全自动执行 `patchOmoPluginV2()`，注入 `input.directory` 安全包装器并清除 Effect-TS 死锁，彻底终结升级后插件因缺少目录包装导致崩溃或显示为“未加载状态”的难题；
+  - **双向消除版本漂移 (Drift Auto-Healing)**：在 `detectLocalVersions()` 中以物理磁盘真实安装的包为基准，若检测到 `opencode.jsonc` 中的版本标签落后，自动热对齐更新配置文件，确保 Web 面板诊断与物理机状态 100% 同步。
 
 ### 🚀 v2.4.1
 - **彻底根治 OpenChamber Office 离线预览“不解码 DOCX 文件”痛点**：
