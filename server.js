@@ -299,8 +299,20 @@ function testAccountConnection(upstream, apiKey) {
   });
 }
 
-// Account Usage & Quota Fetcher (Rolling 5h, Weekly, Monthly limits)
-function fetchAccountUsage(upstream, apiKey) {
+// Account Usage & Quota Fetcher (Rolling 5h, Weekly, Monthly limits) with Debounce Cache
+const quotaCache = new Map();
+const QUOTA_CACHE_TTL_MS = 8000; // 8 seconds memory cache to prevent upstream rate-limiting
+
+function fetchAccountUsage(upstream, apiKey, force = false) {
+  const cacheKey = `${(upstream || '').trim()}#${(apiKey || '').trim()}`;
+  const now = Date.now();
+  if (!force && quotaCache.has(cacheKey)) {
+    const cached = quotaCache.get(cacheKey);
+    if (now - cached.timestamp < QUOTA_CACHE_TTL_MS) {
+      return Promise.resolve({ ...cached.result, fromCache: true, cachedAt: cached.timestamp });
+    }
+  }
+
   return new Promise((resolve) => {
     try {
       let endpoint = upstream.replace(/\/+$/, '');
@@ -329,25 +341,27 @@ function fetchAccountUsage(upstream, apiKey) {
           if (res.statusCode === 200) {
             try {
               const data = JSON.parse(body);
-              resolve({ success: true, statusCode: 200, usage: data.usage || null });
+              const result = { success: true, statusCode: 200, usage: data.usage || null, fromCache: false, cachedAt: Date.now() };
+              quotaCache.set(cacheKey, { timestamp: Date.now(), result });
+              resolve(result);
             } catch (e) {
-              resolve({ success: false, statusCode: 200, error: '解析配额数据失败: ' + e.message });
+              resolve({ success: false, statusCode: 200, error: '解析配额数据失败: ' + e.message, fromCache: false });
             }
           } else {
-            resolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}` });
+            resolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}`, fromCache: false });
           }
         });
       });
       req.on('error', (err) => {
-        resolve({ success: false, statusCode: 0, error: `网络异常: ${err.message}` });
+        resolve({ success: false, statusCode: 0, error: `网络异常: ${err.message}`, fromCache: false });
       });
       req.on('timeout', () => {
         req.destroy();
-        resolve({ success: false, statusCode: 0, error: '请求配额超时 (8秒)' });
+        resolve({ success: false, statusCode: 0, error: '请求配额超时 (8秒)', fromCache: false });
       });
       req.end();
     } catch (err) {
-      resolve({ success: false, statusCode: 0, error: `端点解析失败: ${err.message}` });
+      resolve({ success: false, statusCode: 0, error: `端点解析失败: ${err.message}`, fromCache: false });
     }
   });
 }
@@ -2457,7 +2471,8 @@ const server = http.createServer((req, res) => {
           return;
         }
 
-        const result = await fetchAccountUsage(targetUpstream, apiKey);
+        const force = Boolean(payload.force);
+        const result = await fetchAccountUsage(targetUpstream, apiKey, force);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(result));
       } catch (err) {
@@ -3233,6 +3248,40 @@ $ghost
       color: #64748b;
       text-align: right;
     }
+    .quota-ctrl-bar {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      background: #0b1120;
+      border: 1px solid #334155;
+      padding: 3px 10px;
+      border-radius: 6px;
+    }
+    .quota-countdown-badge {
+      display: inline-block;
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--primary);
+      font-size: 0.78rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+    .quota-countdown-badge:hover {
+      background: rgba(56, 189, 248, 0.2);
+      color: #fff;
+    }
+    .quota-time-tag {
+      font-size: 0.72rem;
+      color: #64748b;
+      margin-left: 6px;
+      font-weight: normal;
+    }
 
     /* Updates and Compatibility Matrix */
     .update-table {
@@ -3383,9 +3432,26 @@ $ghost
 
     <!-- 账号配置区域 -->
     <div class="card">
-      <div class="section-title">
-        <span>📋 OpenCode Go 订阅账号列表</span>
-        <button class="btn btn-secondary btn-sm" onclick="addAccountCard()">+ 添加订阅账号</button>
+      <div class="section-title" style="flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span>📋 OpenCode Go 订阅账号列表</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div class="quota-ctrl-bar">
+            <span>⏱️ 配额自动刷新:</span>
+            <select id="quota-refresh-interval" class="form-control" style="width:auto; padding:2px 8px; font-size:0.75rem; height:26px; background:#0f172a; border-color:#334155;" onchange="changeQuotaRefreshInterval(this.value)">
+              <option value="0">已关闭</option>
+              <option value="15">15 秒</option>
+              <option value="30">30 秒</option>
+              <option value="60" selected>60 秒 (默认)</option>
+              <option value="120">2 分钟</option>
+              <option value="300">5 分钟</option>
+            </select>
+            <span id="quota-countdown-badge" class="quota-countdown-badge" title="点击立即全量刷新官方配额" onclick="triggerManualQuotaRefreshAll()">⏱️ 60s</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="triggerManualQuotaRefreshAll()">🔄 刷新全部配额</button>
+          <button class="btn btn-secondary btn-sm" onclick="addAccountCard()">+ 添加订阅账号</button>
+        </div>
       </div>
       <div id="accounts-container" class="accounts-grid">
         <!-- 动态渲染账号卡片 -->
@@ -3587,7 +3653,8 @@ $ghost
         const logoutBtn = document.getElementById('btn-logout');
         if (logoutBtn) logoutBtn.style.display = currentConfig.hasUiPassword ? 'inline-block' : 'none';
         renderAccounts();
-        refreshAllQuotas();
+        initQuotaRefreshScheduler();
+        refreshAllQuotas(true, false);
       } catch (e) {
         showToast('获取配置失败: ' + e.message, true);
       }
@@ -3642,8 +3709,11 @@ $ghost
 
           <div class="quota-box" id="quota-box-\${acc.id}">
             <div class="quota-header">
-              <span>📊 官方限额 (Usage Quota)</span>
-              <button type="button" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="fetchSingleQuota('\${acc.id}')">🔄 刷新</button>
+              <div style="display:flex; align-items:center;">
+                <span>📊 官方限额 (Usage Quota)</span>
+                <span id="quota-updated-\${acc.id}" class="quota-time-tag"></span>
+              </div>
+              <button type="button" id="quota-btn-\${acc.id}" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="fetchSingleQuota('\${acc.id}', true)">🔄 刷新</button>
             </div>
             <div id="quota-content-\${acc.id}">
               \${accountQuotas[acc.id] ? buildQuotaContent(accountQuotas[acc.id]) : '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding: 4px 0;">点击【测速】或【刷新】查询官方 5h、周、月配额</div>'}
@@ -3926,40 +3996,125 @@ $ghost
       }
     }
 
-    async function fetchSingleQuota(id) {
+    let quotaTimer = null;
+    let quotaCountdown = 60;
+    let quotaRefreshInterval = 60;
+
+    function initQuotaRefreshScheduler() {
+      const saved = localStorage.getItem('opencode_router_quota_interval');
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && [0, 15, 30, 60, 120, 300].includes(parsed)) {
+          quotaRefreshInterval = parsed;
+        }
+      }
+      const selectElem = document.getElementById('quota-refresh-interval');
+      if (selectElem) selectElem.value = String(quotaRefreshInterval);
+
+      quotaCountdown = quotaRefreshInterval;
+      updateQuotaCountdownBadge();
+
+      if (quotaTimer) clearInterval(quotaTimer);
+      quotaTimer = setInterval(handleQuotaTick, 1000);
+    }
+
+    function handleQuotaTick() {
+      if (quotaRefreshInterval <= 0) return;
+      quotaCountdown--;
+      if (quotaCountdown <= 0) {
+        quotaCountdown = quotaRefreshInterval;
+        updateQuotaCountdownBadge();
+        refreshAllQuotas(true, false);
+      } else {
+        updateQuotaCountdownBadge();
+      }
+    }
+
+    function updateQuotaCountdownBadge() {
+      const badge = document.getElementById('quota-countdown-badge');
+      if (!badge) return;
+      if (quotaRefreshInterval <= 0) {
+        badge.innerText = '⏸️ 已暂停';
+        badge.title = '定时自动刷新已关闭，点击立即刷新';
+      } else {
+        badge.innerText = '⏱️ ' + quotaCountdown + 's';
+        badge.title = '距离下次自动刷新还剩 ' + quotaCountdown + ' 秒，点击立即刷新';
+      }
+    }
+
+    function changeQuotaRefreshInterval(newVal) {
+      quotaRefreshInterval = parseInt(newVal, 10) || 0;
+      localStorage.setItem('opencode_router_quota_interval', String(quotaRefreshInterval));
+      quotaCountdown = quotaRefreshInterval;
+      updateQuotaCountdownBadge();
+      if (quotaRefreshInterval > 0) {
+        showToast('✔ 配额自动刷新已设置为 ' + quotaRefreshInterval + ' 秒');
+      } else {
+        showToast('ℹ️ 配额自动刷新已关闭');
+      }
+    }
+
+    function triggerManualQuotaRefreshAll() {
+      quotaCountdown = quotaRefreshInterval > 0 ? quotaRefreshInterval : 60;
+      updateQuotaCountdownBadge();
+      refreshAllQuotas(false, true);
+    }
+
+    async function fetchSingleQuota(id, force = false) {
       const qBox = document.getElementById('quota-content-' + id);
+      const qBtn = document.getElementById('quota-btn-' + id);
+      const qTime = document.getElementById('quota-updated-' + id);
       const acc = currentConfig ? currentConfig.accounts.find(a => a.id === id) : null;
-      const upstream = document.getElementById('cfg-upstream').value;
+      const upstream = document.getElementById('cfg-upstream') ? document.getElementById('cfg-upstream').value : '';
       if (!acc || !acc.apiKey.trim()) {
         if (qBox) qBox.innerHTML = '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding:4px 0;">请先输入 API Key 密钥</div>';
         return;
       }
-      if (qBox) qBox.innerHTML = '<div style="color:var(--primary); font-size:0.75rem; text-align:center; padding:4px 0;">⏳ 正在查询官方配额限制...</div>';
+      if (qBtn) {
+        qBtn.disabled = true;
+        qBtn.innerText = '⏳ 刷新中...';
+      }
+      if (!accountQuotas[id] && qBox) {
+        qBox.innerHTML = '<div style="color:var(--primary); font-size:0.75rem; text-align:center; padding:4px 0;">⏳ 正在查询官方配额限制...</div>';
+      }
 
       try {
         const res = await fetch('/balancer/api/account-quota', {
           method: 'POST',
           headers: apiHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ upstream, apiKey: acc.apiKey, id })
+          body: JSON.stringify({ upstream, apiKey: acc.apiKey, id, force })
         });
         const data = await res.json();
         if (data.success && data.usage) {
           accountQuotas[id] = data.usage;
           if (qBox) qBox.innerHTML = buildQuotaContent(data.usage);
+          if (qTime) {
+            const now = new Date();
+            const timeStr = String(now.getHours()).padStart(2, '0') + ':' +
+                            String(now.getMinutes()).padStart(2, '0') + ':' +
+                            String(now.getSeconds()).padStart(2, '0');
+            qTime.innerText = timeStr + ' 更新' + (data.fromCache ? ' (缓存)' : '');
+          }
         } else {
           if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0;">查询失败: ' + (data.error || '未返回配额数据') + '</div>';
         }
       } catch (e) {
         if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0;">网络异常: ' + e.message + '</div>';
+      } finally {
+        if (qBtn) {
+          qBtn.disabled = false;
+          qBtn.innerText = '🔄 刷新';
+        }
       }
     }
 
-    async function refreshAllQuotas() {
+    async function refreshAllQuotas(silent = true, force = false) {
       if (!currentConfig || !currentConfig.accounts) return;
-      for (const acc of currentConfig.accounts) {
-        if (acc.apiKey && acc.apiKey.trim()) {
-          fetchSingleQuota(acc.id);
-        }
+      const validAccounts = currentConfig.accounts.filter(a => a.apiKey && a.apiKey.trim() && a.enabled);
+      if (validAccounts.length === 0) return;
+      await Promise.all(validAccounts.map(a => fetchSingleQuota(a.id, force)));
+      if (!silent) {
+        showToast('✔ 已完成所有账号官方限额刷新！');
       }
     }
 
@@ -4369,6 +4524,15 @@ $ghost
     fetchStatus();
     loadCodexStatus();
     setInterval(fetchStatus, 2000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && quotaRefreshInterval > 0) {
+        if (quotaCountdown <= 3) {
+          quotaCountdown = quotaRefreshInterval;
+          updateQuotaCountdownBadge();
+          refreshAllQuotas(true, false);
+        }
+      }
+    });
     if (window.location.hash === '#updates') {
       setTimeout(function() {
         checkUpdates();

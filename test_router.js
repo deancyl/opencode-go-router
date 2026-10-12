@@ -28,12 +28,26 @@ async function runTests() {
   let mockCallCount = 0;
   let account1Calls = 0;
   let account2Calls = 0;
+  let quotaUsageCalls = 0;
   let simulate429Triggered = false;
 
   const mockUpstream = http.createServer((req, res) => {
     mockCallCount++;
     const auth = req.headers['authorization'] || req.headers['x-api-key'] || '';
     const session = req.headers['x-opencode-session'] || '';
+
+    if (req.url === '/v1/usage' || req.url === '/usage') {
+      quotaUsageCalls++;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        usage: {
+          rolling: { percent: 15, resetsAt: new Date(Date.now() + 3600000).toISOString() },
+          weekly: { percent: 25, resetsAt: new Date(Date.now() + 86400000).toISOString() },
+          monthly: { percent: 35, resetsAt: new Date(Date.now() + 604800000).toISOString() }
+        }
+      }));
+      return;
+    }
 
     if (req.url === '/v1/messages') {
       if (auth.includes('key-account-1')) account1Calls++;
@@ -1619,10 +1633,60 @@ async function runTests() {
     const omoRepairItem = repairData61.results.find(r => r.item === 'OMO Plugin v2 Patch');
     assert.ok(omoRepairItem, 'Repair results must include OMO Plugin v2 Patch step');
     assert.strictEqual(omoRepairItem.success, true);
-    console.log('✓ Doctor & Auto-Repair Lifecycle with OMO Deadlock Eradication & Dual-Track Schema verified');
+    // [Test 62] Testing Account Quota API Debounce Cache & UI Auto-Refresh Engine
+    console.log('\n[Test 62] Testing Account Quota API Debounce Cache & UI Auto-Refresh Engine...');
+    const initialQuotaCalls = quotaUsageCalls;
+
+    // 1. First fetch (no cache yet)
+    const quotaRes1 = await request('/balancer/api/account-quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'account-1' })
+    });
+    assert.strictEqual(quotaRes1.statusCode, 200);
+    const quotaData1 = JSON.parse(quotaRes1.body);
+    assert.strictEqual(quotaData1.success, true);
+    assert.strictEqual(quotaData1.fromCache, false);
+    assert.ok(quotaData1.usage);
+    assert.strictEqual(quotaData1.usage.rolling.percent, 15);
+    assert.strictEqual(quotaUsageCalls, initialQuotaCalls + 1, 'Upstream should be called once');
+
+    // 2. Second fetch within 8 seconds without force flag (must hit in-memory debounce cache)
+    const quotaRes2 = await request('/balancer/api/account-quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'account-1' })
+    });
+    assert.strictEqual(quotaRes2.statusCode, 200);
+    const quotaData2 = JSON.parse(quotaRes2.body);
+    assert.strictEqual(quotaData2.success, true);
+    assert.strictEqual(quotaData2.fromCache, true, 'Debounce cache must be hit');
+    assert.strictEqual(quotaData2.usage.rolling.percent, 15);
+    assert.strictEqual(quotaUsageCalls, initialQuotaCalls + 1, 'Upstream should NOT be called again due to cache');
+
+    // 3. Third fetch with force: true (must penetrate cache and call upstream)
+    const quotaRes3 = await request('/balancer/api/account-quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'account-1', force: true })
+    });
+    assert.strictEqual(quotaRes3.statusCode, 200);
+    const quotaData3 = JSON.parse(quotaRes3.body);
+    assert.strictEqual(quotaData3.success, true);
+    assert.strictEqual(quotaData3.fromCache, false, 'Force flag must penetrate cache');
+    assert.strictEqual(quotaUsageCalls, initialQuotaCalls + 2, 'Upstream must be called when force is true');
+
+    // 4. Verify UI HTML includes auto-refresh controls and countdown hooks
+    const uiRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes.statusCode, 200);
+    assert.ok(uiRes.body.includes('quota-refresh-interval'), 'UI must include quota-refresh-interval selector');
+    assert.ok(uiRes.body.includes('quota-countdown-badge'), 'UI must include quota-countdown-badge');
+    assert.ok(uiRes.body.includes('initQuotaRefreshScheduler'), 'UI must include initQuotaRefreshScheduler function');
+    assert.ok(uiRes.body.includes('triggerManualQuotaRefreshAll'), 'UI must include triggerManualQuotaRefreshAll handler');
+    console.log('✓ Account Quota API Debounce Cache & UI Auto-Refresh Engine verified');
 
     console.log('\n======================================================');
-    console.log('🎉 ALL 61 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 62 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
