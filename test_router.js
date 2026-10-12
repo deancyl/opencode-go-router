@@ -1685,8 +1685,40 @@ async function runTests() {
     assert.ok(uiRes.body.includes('triggerManualQuotaRefreshAll'), 'UI must include triggerManualQuotaRefreshAll handler');
     console.log('✓ Account Quota API Debounce Cache & UI Auto-Refresh Engine verified');
 
+    // [Test 63] Testing OpenCode 2.0 Native Agent Self-Healing (Goal & Goal-Verify Auto-Injection)
+    console.log('\n[Test 63] Testing OpenCode 2.0 Native Agent Self-Healing (Goal & Goal-Verify Auto-Injection)...');
+    const agentTestDir = path.join(os.tmpdir(), 'opencode-agent-test-' + Date.now());
+    fs.mkdirSync(agentTestDir, { recursive: true });
+    try {
+      const agentConfigFile = path.join(agentTestDir, 'opencode.jsonc');
+      // Case 1: Missing agent section completely
+      fs.writeFileSync(agentConfigFile, JSON.stringify({
+        model: 'opencode-go/deepseek-v4.1-flash',
+        provider: { 'opencode-go': { options: {} } }
+      }, null, 2), 'utf8');
+
+      const res1 = updater.harmonizeOpencodeConfig(agentConfigFile, 4010);
+      assert.strictEqual(res1.agentGoalInjected, true, 'agentGoalInjected must be true when agent is missing');
+      const data1 = JSON.parse(fs.readFileSync(agentConfigFile, 'utf8'));
+      assert.ok(data1.agent && data1.agent.goal, 'agent.goal must be injected');
+      assert.strictEqual(data1.agent.goal.mode, 'primary');
+      assert.ok(data1.agent['goal-verify'], 'agent.goal-verify must be injected');
+      assert.strictEqual(data1.agent['goal-verify'].mode, 'subagent');
+
+      // Case 2: Custom agent already exists - must preserve user custom definitions
+      data1.agent.goal.description = 'Custom User Goal Agent';
+      fs.writeFileSync(agentConfigFile, JSON.stringify(data1, null, 2), 'utf8');
+      const res2 = updater.harmonizeOpencodeConfig(agentConfigFile, 4010);
+      assert.strictEqual(res2.agentGoalInjected, false, 'agentGoalInjected must be false when already present');
+      const data2 = JSON.parse(fs.readFileSync(agentConfigFile, 'utf8'));
+      assert.strictEqual(data2.agent.goal.description, 'Custom User Goal Agent', 'Custom agent description must be preserved');
+    } finally {
+      try { fs.rmSync(agentTestDir, { recursive: true, force: true }); } catch (_) {}
+    }
+    console.log('✓ OpenCode 2.0 Native Agent Self-Healing (Goal & Goal-Verify Auto-Injection) verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 62 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 63 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

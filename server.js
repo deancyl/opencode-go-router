@@ -1710,6 +1710,9 @@ async function executeSystemRepair(options = {}) {
   }
   results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却状态' });
 
+  let omoPatchedNow = false;
+  let agentGoalInjectedNow = false;
+
   // 2. Harmonize & Repair opencode.jsonc
   const ocDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
   const ocPath = path.join(ocDir, 'opencode.jsonc');
@@ -1728,6 +1731,7 @@ async function executeSystemRepair(options = {}) {
     }
 
     const harmRes = updater.harmonizeOpencodeConfig(ocPath, config.port, { officialModels });
+    if (harmRes.agentGoalInjected) agentGoalInjectedNow = true;
     const migMsg = harmRes.migratedProviders.length > 0 ? ` (已合流第三方服务商: ${harmRes.migratedProviders.join(', ')})` : '';
     const syncTag = (officialModels && officialModels.length > 0) ? `已动态同步官方最新 ${harmRes.modelCount} 款模型` : `全量补齐 ${harmRes.modelCount} 款官方模型`;
     results.push({
@@ -1746,6 +1750,7 @@ async function executeSystemRepair(options = {}) {
     const updater = require('./updater');
     const omoPatchRes = updater.patchOmoPluginV2();
     if (omoPatchRes.patchedCount > 0) {
+      omoPatchedNow = true;
       results.push({
         item: 'OMO Plugin v2 Patch',
         success: true,
@@ -1954,8 +1959,16 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
         updater.runCmd('systemctl --user reload-or-try-restart openchamber.service 2>/dev/null || systemctl --user restart openchamber.service', 10000);
         results.push({ item: 'Daemon Reload', success: true, message: '已同步 openchamber.service 前端视图配置' });
       }
-      // 铁律：严禁在自愈体检中重启 opencode-server.service，以保护运行中会话与任务避免出现 Step interrupted
-      results.push({ item: 'OpenCode Zero-Disturbance', success: true, message: 'OpenCode 原生 Inotify 热感知已生效，已严格保护业务长程任务不被中断' });
+
+      // 若刚为 OMO 插件注入补丁或为 opencode.jsonc 补齐了缺失的 agent.goal，必须重启 opencode-server 刷新 Bun 运行时内存模块缓存
+      const shouldRestartOpencode = omoPatchedNow || agentGoalInjectedNow;
+      if (shouldRestartOpencode && sysOut && sysOut.includes('opencode-server.service')) {
+        updater.runCmd('systemctl --user restart opencode-server.service', 15000);
+        results.push({ item: 'OpenCode Plugin Reload', success: true, message: '检测到核心智能体/插件补丁已对齐，已平滑重启 opencode-server.service 刷新模块缓存' });
+      } else {
+        // 常规体检保持稳定常驻，保护运行中会话与任务避免出现 Step interrupted
+        results.push({ item: 'OpenCode Zero-Disturbance', success: true, message: 'OpenCode 原生 Inotify 热感知已生效，已严格保护业务长程任务不被中断' });
+      }
     } catch (_) {}
   }
 

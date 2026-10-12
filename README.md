@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.4.6](https://img.shields.io/badge/Version-v2.4.6-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.4.7](https://img.shields.io/badge/Version-v2.4.7-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -496,6 +496,19 @@ npm run build:exe
   - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
   - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
 - **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
+
+### 🚀 v2.4.7
+- **OpenCode 2.0 原生智能体自动补齐与自愈 (Native Agent Self-Healing)**：
+  - **原生注册 Agent 补全**：在 `updater.js` 的 `harmonizeOpencodeConfig` 中自动检测并补全 OpenCode 2.0 原生 `agent.goal` (mode: `primary`) 与 `agent['goal-verify']` (mode: `subagent`) 配置；
+  - **根除生态识别断层**：彻底解决 OpenChamber 桌面端与 Web 客户端顶部切换到 `goal` 时抛出 `Session.AgentNotFoundError: Agent not found: "goal"` 的报错，使 OpenChamber / OpenCode 2.0 能够原生调度目标智能体；
+  - **用户自定义安全隔离**：严密保留用户在 `opencode.jsonc` 中已有的自定义 Agent Prompt、自定义模型及描述，绝不暴力覆盖已定制项目。
+- **Linux / NAS Bun 运行时模块缓存热重载与守护协同**：
+  - **Bun 动态模块缓存刷新**：针对 OpenCode 2.0 (Bun 引擎) 动态 import ESM 插件常驻内存的问题，在升级关键插件 (OMO, Goal) 或自愈注入智能体声明时，自动平滑重启 `opencode-server.service`（具备 15 秒超时保护），使最新插件包装补丁与智能体配置即时生效；
+  - **零干扰守护机制 (Zero-Disturbance)**：常规路由体检维持无感静默，严格保护运行中的长程任务不受中断。
+- **全套自动化测试扩展至 63 项**：
+  - 新增 `Test 63`，全链路严密覆盖 OpenCode 2.0 原生智能体自愈注入与用户自定义保留逻辑，全套 63 项测试 100% 绿灯通过；
+- **Linux NAS 实机全链路验证**：
+  - 飞牛私有云 (fnOS / Debian) 实机端到端验证通过，9 大智能体就绪（Build, General, Explore, Compaction, Title, Summary, Plan, Goal, Goal-Verify），OpenChamber 交互恢复正常。
 
 ### 🚀 v2.4.6
 - **官方配额 (Usage Quota) 定时自动刷新、交互倒计时与智能防抖引擎**：

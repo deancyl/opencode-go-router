@@ -499,6 +499,29 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     data.provider['one-api'].options.apiKey = 'local-router';
   }
 
+  // 3.1 Ensure Native Goal & Verifier Agent Definitions for OpenCode 2.0 & OpenChamber
+  let agentGoalInjected = false;
+  if (!data.agent || typeof data.agent !== 'object') {
+    data.agent = {};
+    agentGoalInjected = true;
+  }
+  if (!data.agent.goal) {
+    data.agent.goal = {
+      description: "Execute an explicit user goal with persistent progress and evidence-gated completion.",
+      mode: "primary",
+      prompt: "Execute explicit goals persistently. Use goal tools to track state and checkpoints. Make concrete progress; claim completion only with verification evidence. Report only genuine blockers."
+    };
+    agentGoalInjected = true;
+  }
+  if (!data.agent['goal-verify']) {
+    data.agent['goal-verify'] = {
+      description: "Independently verify a goal completion claim without modifying the workspace.",
+      mode: "subagent",
+      hidden: true
+    };
+    agentGoalInjected = true;
+  }
+
   // 4. Model selection: preserve user's valid choice, default to deepseek-v4.1-flash
   let modelPreserved = true;
   if (!data.model || data.model === 'opencode-go/gpt-6-luna' || data.model === 'gpt-6-luna') {
@@ -519,7 +542,8 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     migratedProviders,
     modelCount: Object.keys(allModelsMap).length,
     currentModel: data.model,
-    modelPreserved
+    modelPreserved,
+    agentGoalInjected
   };
 }
 
@@ -2068,13 +2092,17 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           }
         }
 
-        // 2. OpenCode server service reload - ONLY when opencode CLI was actually upgraded!
+        // 2. OpenCode server service reload - when opencode CLI OR plugins (omo, goal) were updated!
         const ocRes = results['opencode'];
         const isOcUpdated = ocRes && ocRes.success && targets.includes('opencode');
-        if (isOcUpdated) {
+        const isPluginUpdated = Boolean(
+          (results['oh-my-openagent'] && results['oh-my-openagent'].success) ||
+          (results['opencode-goal-plugin'] && results['opencode-goal-plugin'].success)
+        );
+        if (isOcUpdated || isPluginUpdated) {
           const opencodeActive = runCmdSync('systemctl --user is-active opencode-server.service', 2000);
           if (opencodeActive && opencodeActive.trim() === 'active') {
-            logs.push('检测到 OpenCode 核心引擎二进制已更新，正在平滑重启 opencode-server.service 守护服务...');
+            logs.push('检测到 OpenCode 核心引擎或关键插件已更新，正在平滑重启 opencode-server.service 守护服务以载入最新内存模块...');
             const oRes = runCmd('systemctl --user restart opencode-server.service', 15000);
             if (oRes.success) {
               logs.push('✔ opencode-server.service 已成功热重载');
