@@ -286,9 +286,6 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  const targetOmoVer = options.omoVersion || '5.1.29';
-  const targetOmoTag = `oh-my-openagent@${targetOmoVer}`;
-
   let data = {};
   let isNew = false;
   if (fs.existsSync(p)) {
@@ -304,14 +301,51 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   } else {
     isNew = true;
     data = {
-      plugin: [targetOmoTag, "opencode-goal-plugin"],
+      plugin: ["oh-my-openagent@5.1.30", "opencode-goal-plugin"],
       $schema: "https://opencode.ai/config.json"
     };
   }
 
   if (!data || typeof data !== 'object') data = {};
-
   if (!Array.isArray(data.plugin)) data.plugin = [];
+
+  // 1. 获取现有配置中的 OMO 版本
+  let existingOmoVer = null;
+  for (const item of data.plugin) {
+    const str = typeof item === 'string' ? item : (Array.isArray(item) ? item[0] : '');
+    const m = String(str).match(/oh-my-openagent@(\d+\.\d+\.\d+)/);
+    if (m) {
+      existingOmoVer = m[1];
+      break;
+    }
+  }
+
+  // 2. 探测真实安装在磁盘中的包版本
+  let detectedLocalOmoVer = null;
+  const omoPkgCandidates = [
+    path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'package.json'),
+    path.join(os.homedir(), '.config', 'opencode', 'oh-my-openagent', 'package.json'),
+    path.join(os.homedir(), '.local', 'lib', 'node_modules', 'oh-my-openagent', 'package.json'),
+    path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'oh-my-openagent', 'package.json'),
+    '/usr/local/lib/node_modules/oh-my-openagent/package.json',
+    '/usr/lib/node_modules/oh-my-openagent/package.json'
+  ];
+  for (const c of omoPkgCandidates) {
+    if (fs.existsSync(c)) {
+      try {
+        const pkgData = JSON.parse(fs.readFileSync(c, 'utf8'));
+        if (pkgData && pkgData.version) {
+          detectedLocalOmoVer = pkgData.version;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 3. 动态确定目标版本：options 优先 > 真实已安装版本 > 现有配置版本 > 5.1.30 兜底
+  const targetOmoVer = options.omoVersion || detectedLocalOmoVer || existingOmoVer || '5.1.30';
+  const targetOmoTag = `oh-my-openagent@${targetOmoVer}`;
+
   // 规范化与同步更新 OMO 插件标签
   let omoFound = false;
   for (let i = 0; i < data.plugin.length; i++) {
@@ -849,7 +883,30 @@ function detectLocalVersions() {
   }
 
   // 3. oh-my-openagent (OMO) & 4. opencode-goal-plugin
+  let detectedOmoPkgVer = null;
+  const omoPkgCandidates = [
+    path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'package.json'),
+    path.join(os.homedir(), '.config', 'opencode', 'oh-my-openagent', 'package.json'),
+    path.join(os.homedir(), '.local', 'lib', 'node_modules', 'oh-my-openagent', 'package.json'),
+    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', 'oh-my-openagent', 'package.json'),
+    path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'oh-my-openagent', 'package.json'),
+    '/usr/local/lib/node_modules/oh-my-openagent/package.json',
+    '/usr/lib/node_modules/oh-my-openagent/package.json'
+  ];
+  for (const c of omoPkgCandidates) {
+    if (fs.existsSync(c)) {
+      try {
+        const pkgData = JSON.parse(fs.readFileSync(c, 'utf8'));
+        if (pkgData && pkgData.version) {
+          detectedOmoPkgVer = pkgData.version;
+          break;
+        }
+      } catch (e) {}
+    }
+  }
+
   const ocConfigPath = getOpencodeConfigPath();
+  let configOmoVer = null;
   if (fs.existsSync(ocConfigPath)) {
     try {
       const raw = fs.readFileSync(ocConfigPath, 'utf8').replace(/^\uFEFF/, '');
@@ -859,7 +916,7 @@ function detectLocalVersions() {
         const pluginsArr = Array.isArray(parsed.plugin) ? parsed.plugin : (Array.isArray(parsed.plugins) ? parsed.plugins : []);
         for (const p of pluginsArr) {
           const m = String(p).match(/oh-my-openagent@(\d+\.\d+\.\d+)/);
-          if (m) versions['oh-my-openagent'] = m[1];
+          if (m) configOmoVer = m[1];
           const gm = String(p).match(/opencode-goal-plugin(?:@(\d+\.\d+\.\d+))?/);
           if (gm) {
             versions['opencode-goal-plugin'] = gm[1] || '0.11.0';
@@ -868,7 +925,7 @@ function detectLocalVersions() {
       } catch (pe) {
         // Fallback: regex search on raw content
         const m = raw.match(/oh-my-openagent@(\d+\.\d+\.\d+)/);
-        if (m) versions['oh-my-openagent'] = m[1];
+        if (m) configOmoVer = m[1];
         const gm = raw.match(/opencode-goal-plugin(?:@(\d+\.\d+\.\d+))?/);
         if (gm) {
           versions['opencode-goal-plugin'] = gm[1] || '0.11.0';
@@ -876,27 +933,24 @@ function detectLocalVersions() {
       }
     } catch (e) {}
   }
-  if (!versions['oh-my-openagent']) {
+
+  if (detectedOmoPkgVer) {
+    versions['oh-my-openagent'] = detectedOmoPkgVer;
+    // 自动自愈：若磁盘实际版本与 opencode.jsonc 标签不一致，无损替换消除漂移
+    if (configOmoVer && configOmoVer !== detectedOmoPkgVer && fs.existsSync(ocConfigPath)) {
+      try {
+        let raw = fs.readFileSync(ocConfigPath, 'utf8');
+        raw = raw.replace(new RegExp(`oh-my-openagent@${configOmoVer}`, 'g'), `oh-my-openagent@${detectedOmoPkgVer}`);
+        fs.writeFileSync(ocConfigPath, raw, 'utf8');
+      } catch (_) {}
+    }
+  } else if (configOmoVer) {
+    versions['oh-my-openagent'] = configOmoVer;
+  } else {
     const omoOut = runCmdSync('oh-my-openagent --version');
     if (omoOut) {
       const m = omoOut.match(/(?:v)?(\d+\.\d+\.\d+)/);
       if (m) versions['oh-my-openagent'] = m[1];
-    }
-  }
-  if (!versions['oh-my-openagent']) {
-    const omoPkgCandidates = [
-      path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'package.json'),
-      path.join(os.homedir(), '.config', 'opencode', 'oh-my-openagent', 'package.json'),
-      path.join(os.homedir(), '.local', 'lib', 'node_modules', 'oh-my-openagent', 'package.json'),
-      path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', 'oh-my-openagent', 'package.json'),
-      path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'oh-my-openagent', 'package.json'),
-      '/usr/local/lib/node_modules/oh-my-openagent/package.json',
-      '/usr/lib/node_modules/oh-my-openagent/package.json'
-    ];
-    for (const c of omoPkgCandidates) {
-      if (fs.existsSync(c)) {
-        try { versions['oh-my-openagent'] = JSON.parse(fs.readFileSync(c, 'utf8')).version; break; } catch (e) {}
-      }
     }
   }
 
@@ -1783,7 +1837,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         results['opencode'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'oh-my-openagent') {
-      const ver = allRemote['oh-my-openagent'] || '5.1.24';
+      const ver = allRemote['oh-my-openagent'] || '5.1.30';
       logs.push(`正在更新 Oh My OpenAgent (OMO 插件, 目标版本: ${ver})...`);
       const res = runNpmInstallWithMirror('oh-my-openagent', ver, '', 'oh-my-openagent');
       if (res.success) {
@@ -1801,6 +1855,15 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         } catch (e) {
           logs.push(`⚠ 同步 opencode.jsonc 插件标签提示: ${e.message}`);
         }
+
+        // 自动注入 OMO v2 运行时安全兼容包装，防止更新后插件崩溃或显示为未加载状态
+        try {
+          const patchRes = patchOmoPluginV2();
+          logs.push(`✔ OMO 插件 v2 运行时安全兼容包装已自动对齐 (目标文件数: ${patchRes.targets}, 修复数: ${patchRes.patchedCount})`);
+        } catch (pe) {
+          logs.push(`⚠ OMO 插件 v2 兼容包装注入提示: ${pe.message}`);
+        }
+
         results['oh-my-openagent'] = { success: true, command: res.command, output: res.output, targetVersion: ver };
       } else {
         overallSuccess = false;
@@ -1978,8 +2041,9 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
   if (!options.skipHarmonize) {
     try {
       const targetPort = options.routerPort || options.port || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4010);
+      const targetOmoVer = results['oh-my-openagent'] ? results['oh-my-openagent'].targetVersion : null;
       logs.push(`正在自动执行跨平台配置合流自愈 (清洗单复数冲突，注入全量 38 款模型，端口: ${targetPort})...`);
-      const harmRes = harmonizeOpencodeConfig(options.configPath || null, targetPort);
+      const harmRes = harmonizeOpencodeConfig(options.configPath || null, targetPort, { omoVersion: targetOmoVer });
       logs.push(`✔ opencode.jsonc 自动合流自愈成功 (38 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
     } catch (harmErr) {
       logs.push(`⚠ 跨平台配置自愈提示: ${harmErr.message}`);
