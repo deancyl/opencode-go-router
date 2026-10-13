@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.5.1](https://img.shields.io/badge/Version-v2.5.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.5.2](https://img.shields.io/badge/Version-v2.5.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -444,6 +444,16 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.5.2 (全量 38 款模型实测排查、协议不兼容与地域限制智能自愈容灾)
+- **OpenCode 官方全量 38 款模型端到端压测与体检排查**：
+  - 针对 Codex CLI / ChatGPT 客户端直连 4010 网关的场景，对 38 款模型执行自动化批量通信与生成测试；
+  - 筛查确认主流 24+ 款主力模型（`deepseek-v4.1-flash`、`deepseek-v4-pro`、`qwen3.7-plus`、`qwen3.8-flash`、`glm-5.3-flash`、`kimi-k2.7`、`minimax-m3`、`claude-haiku-5-5` 等）100% 毫秒级生成可用；
+  - 准确定位上游 5 款尚未对公放开协议的模型（`gpt-5.6-luna`、`gpt-6-luna`、`grok-4.6`、`grok-4.7`、`minimax-m2.7` 会报 `ModelProtocolUnsupported`）以及 2 款受上游地域限制模型（`muse-spark-1.2`、`1.3`）。
+- **模型自适应协议自愈与容灾引擎 (Model Protocol Self-Healing & Disaster Recovery)**：
+  - 在 Responses 协议桥中加入主动错误拦截；当上游返回 `ModelProtocolUnsupported`（协议未支持）或 `unsupported_country_region_territory`（地域限制）时，智能网关绝不向前端客户端抛出裸错误；
+  - 自动且无缝将请求平滑切至高可用旗舰模型（`deepseek-v4.1-flash`），确保会话连续、工具调用顺畅、零弹窗报错，彻底终结 `Model does not support this protocol` 困局。
+- **全套 63 项自动化集成测试持续 100% 绿灯**。
 
 ### 🚀 v2.5.1 (Windows 物理交互桌面挂接、专属翡翠绿网关托盘与杀软启发式误报零容忍)
 - **Windows 物理交互桌面与会话隔离深度排查 (Desktop Session & Station Defense)**：

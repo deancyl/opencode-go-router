@@ -986,13 +986,28 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
 
     if (statusCode !== 200) {
-      responded = true;
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('end', () => {
-        finishRequest();
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
-        const errorBody = Buffer.concat(errChunks);
+        const errText = Buffer.concat(errChunks).toString('utf8');
+        const isProtocolUnsupported = errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses');
+        const isRegionBlocked = errText.includes('not available in your country') || errText.includes('unsupported_country_region_territory');
+
+        if ((isProtocolUnsupported || isRegionBlocked) && reqModel !== 'deepseek-v4.1-flash') {
+          const reason = isProtocolUnsupported ? '上游协议暂未支持该模型 (ModelProtocolUnsupported)' : '上游地域限制 (Region Blocked)';
+          const fallbackModel = 'deepseek-v4.1-flash';
+          console.warn(`[Auto Self-Healing] 模型 "${reqModel}" 触发 ${reason}。网关正在无缝自动挽救并切换至 "${fallbackModel}"...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          const healedResponsesBody = { ...responsesBody, model: fallbackModel };
+          bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber, triedAccountIds);
+          return;
+        }
+
+        responded = true;
+        finishRequest();
+        const errorBody = Buffer.from(errText, 'utf8');
         const outHeaders = getCorsHeaders(upstreamRes.headers);
         outHeaders['content-length'] = String(errorBody.length);
         clientRes.writeHead(statusCode, outHeaders);
