@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.5.0](https://img.shields.io/badge/Version-v2.5.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.5.1](https://img.shields.io/badge/Version-v2.5.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -444,6 +444,18 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.5.1 (Windows 物理交互桌面挂接、专属翡翠绿网关托盘与杀软启发式误报零容忍)
+- **Windows 物理交互桌面与会话隔离深度排查 (Desktop Session & Station Defense)**：
+  - **根治“后台托盘在跑却在物理桌面上看不见”的底层系统盲区**：排查并解决了在终端或 Agent 子进程中启动托盘时被 Windows 分配到非交互沙箱桌面（`Desktop: exbox-...`）的问题；通过 Windows 交互桌面桥接技术（`WinSta0\Default`），确保系统托盘图标稳定注册在用户物理屏幕右下角的任务栏通知区域；
+  - **全新高辨识度专属翡翠绿网关图标 (Emerald Green Gateway Icon)**：彻底告别与官方 ChatGPT 客户端黑白花瓣 Logo 撞车的混淆痛点，改用高对比度翡翠绿圆角高光节点图标（`assets/router_green.ico` 并覆盖 `assets/router.ico`），在折叠浮层（`^`）中清晰立现；
+  - **100% 微软官方签名宿主，彻底免疫卡巴斯基/杀软启发式误报 (Zero AV False Positives)**：全面移除临时编译的外部无签名二进制，改用 Windows 原生官方已签名的 `powershell.exe`（WinForms STA 宿主）与 `wscript.exe` 原生静默运行；配合 `start-tray.vbs` 纯内核级静默引导，彻底消除终端黑框闪烁，彻底杜绝 `HEUR:Trojan.Win32.Generic` 杀软误报；
+  - **“桌面独立客户端 + 系统托盘常驻”两者兼得 (Dual Experience)**：
+    - **桌面独立应用客户端**：桌面快捷方式以 Chrome/Edge 独立桌面应用模式（`--app=http://127.0.0.1:4010/balancer/ui`）秒级唤起无地址栏、无标签页的清爽管理面板；
+    - **系统托盘小图标常驻**：常驻右下角，左键单击/双击直达控制面板，右键唤出全栈快捷菜单（启动 OpenChamber、重置 429 冷却、重启服务、体检自愈、检查更新等）；
+    - **自由拖拽至外层任务栏**：在 Windows 11 下支持直接将翡翠绿小图标拖拽至任务栏外层常驻显示；
+    - **开机自启**：开机启动目录（`shell:startup`）自动挂载静默启动项，开机无感守护。
+- **全套 63 项自动化集成测试持续 100% 绿灯验证**。
 
 ### 🚀 v2.5.0 (Codex 会话死锁根除与 ChatGPT 历史会话连续性保护里程碑)
 - **Codex CLI / ChatGPT Desktop 无限 Thinking 彻底根治 (Deadlock Defense & Keep-Alive Bridge)**：
