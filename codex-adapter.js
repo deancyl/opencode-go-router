@@ -2691,7 +2691,7 @@ function restartCodex(options = {}) {
   if (isWin) {
     try {
       // 1. Terminate running Codex Desktop / ChatGPT / CLI processes
-      execSync('powershell -NoProfile -Command "Stop-Process -Name ChatGPT, codex, codex-windows-sandbox-service -Force -ErrorAction SilentlyContinue"', { timeout: 10000 });
+      execSync('powershell -NoProfile -Command "try { Get-Process -Name ChatGPT, codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}; exit 0"', { timeout: 10000 });
       messages.push('已终止旧版 Codex / ChatGPT 运行实例与后台进程');
     } catch (e) {
       messages.push(`终止旧进程提醒: ${e.message}`);
