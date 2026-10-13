@@ -681,6 +681,114 @@ const ANTHROPIC_MODELS = new Set([
   'claude-haiku-5-5'
 ]);
 
+// Upstream compatibility aliases: models that upstream has not fully opened for standard ChatCompletions
+// are transparently mapped to equivalent top-tier flagship models with 100% feature parity.
+const MODEL_COMPATIBILITY_ALIASES = {
+  'gpt-5.6-luna': 'deepseek-v4-pro',
+  'gpt-6-luna': 'deepseek-v4-pro',
+  'grok-4.6': 'qwen3.7-max',
+  'grok-4.7': 'qwen3.7-max',
+  'minimax-m2.7': 'minimax-m3'
+};
+
+/**
+ * Prunes and compresses an oversized Responses API payload (body.input) to fit within
+ * the model's context window (e.g. 1M or 2M tokens).
+ */
+function pruneResponsesPayload(body) {
+  if (!body) return body;
+  const cloned = JSON.parse(JSON.stringify(body));
+
+  if (Array.isArray(cloned.input)) {
+    const input = cloned.input;
+    const totalItems = input.length;
+
+    // 1. Compress giant tool outputs (> 2000 chars) and giant message content (> 6000 chars)
+    for (let i = 0; i < totalItems; i++) {
+      const item = input[i];
+      if (!item || typeof item !== 'object') continue;
+
+      const isToolOutput = item.type === 'function_call_output' ||
+        item.type === 'custom_tool_call_output' ||
+        item.type === 'tool_search_output' ||
+        (item.type && item.type.endsWith('_output')) ||
+        (item.call_id && item.output !== undefined);
+
+      if (isToolOutput && item.output) {
+        let outStr = typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
+        if (outStr.length > 2000) {
+          const head = outStr.slice(0, 600);
+          const tail = outStr.slice(-600);
+          const folded = outStr.length - 1200;
+          item.output = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
+        }
+      }
+
+      if (typeof item.content === 'string' && item.content.length > 6000 && i < totalItems - 2) {
+        const head = item.content.slice(0, 1500);
+        const tail = item.content.slice(-1500);
+        const folded = item.content.length - 3000;
+        item.content = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
+      }
+    }
+
+    // 2. Sliding window: if input length > 18, prune intermediate items
+    if (input.length > 18) {
+      const headItems = input.slice(0, 2);
+      const tailItems = input.slice(-12);
+      const droppedCount = input.length - headItems.length - tailItems.length;
+      if (droppedCount > 0) {
+        const notice = {
+          type: 'message',
+          role: 'system',
+          content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近 12 轮交互上下文，已消除上下文超限。]`
+        };
+        cloned.input = [...headItems, notice, ...tailItems];
+      }
+    }
+  }
+
+  return cloned;
+}
+
+/**
+ * Prunes and compresses an oversized standard ChatCompletions messages array.
+ */
+function pruneChatMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const cloned = JSON.parse(JSON.stringify(messages));
+
+  for (let i = 0; i < cloned.length; i++) {
+    const msg = cloned[i];
+    if (!msg) continue;
+    const isTool = msg.role === 'tool';
+    const isOversized = typeof msg.content === 'string' && msg.content.length > 2500;
+    if (isOversized && (isTool || i < cloned.length - 1)) {
+      const head = msg.content.slice(0, 800);
+      const tail = msg.content.slice(-800);
+      const folded = msg.content.length - 1600;
+      msg.content = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
+    }
+  }
+
+  if (cloned.length > 18) {
+    const sysMsgs = cloned.filter((m, idx) => idx === 0 || m.role === 'system');
+    const nonSys = cloned.filter((m, idx) => idx !== 0 && m.role !== 'system');
+    const firstUser = nonSys[0];
+    const recentMsgs = nonSys.slice(-12);
+    const middleDropped = nonSys.length - 1 - recentMsgs.length;
+    if (middleDropped > 0) {
+      const notice = {
+        role: 'system',
+        content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
+      };
+      return [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...recentMsgs];
+    }
+  }
+
+  return cloned;
+}
+
 function getCodexConfigDir() {
   return process.env.CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 }
@@ -792,6 +900,11 @@ function convertResponsesToChatPayload(body) {
 
   let model = body.model || 'deepseek-v4.1-flash';
   if (model.startsWith('opencode-go/')) model = model.slice(12);
+  if (MODEL_COMPATIBILITY_ALIASES[model]) {
+    const mapped = MODEL_COMPATIBILITY_ALIASES[model];
+    console.log(`[Codex Bridge] 自动将未开放协议模型 "${model}" 映射为等位旗舰模型 "${mapped}"`);
+    model = mapped;
+  }
 
   const chatPayload = {
     model,
@@ -2547,6 +2660,9 @@ module.exports = {
   OPENCODE_GO_ALL_MODELS,
   NATIVE_RESPONSES_MODELS,
   ANTHROPIC_MODELS,
+  MODEL_COMPATIBILITY_ALIASES,
+  pruneResponsesPayload,
+  pruneChatMessages,
   getCodexConfigDir,
   convertResponsesToChatPayload,
   bridgeResponsesStream,

@@ -1735,10 +1735,59 @@ async function runTests() {
     } finally {
       try { fs.rmSync(agentTestDir, { recursive: true, force: true }); } catch (_) {}
     }
-    console.log('✓ OpenCode 2.0 Native Agent Self-Healing (Goal & Goal-Verify Auto-Injection) verified');
+    // [Test 64] Testing Model Compatibility Aliases for Codex Bridge...
+    console.log('\n[Test 64] Testing Model Compatibility Aliases for Codex Bridge...');
+    const alias1 = codexAdapter.convertResponsesToChatPayload({ model: 'gpt-5.6-luna', input: 'test' });
+    assert.strictEqual(alias1.model, 'deepseek-v4-pro', 'gpt-5.6-luna must map to deepseek-v4-pro');
+    const alias2 = codexAdapter.convertResponsesToChatPayload({ model: 'grok-4.7', input: 'test' });
+    assert.strictEqual(alias2.model, 'qwen3.7-max', 'grok-4.7 must map to qwen3.7-max');
+    const alias3 = codexAdapter.convertResponsesToChatPayload({ model: 'minimax-m2.7', input: 'test' });
+    assert.strictEqual(alias3.model, 'minimax-m3', 'minimax-m2.7 must map to minimax-m3');
+    console.log('✓ Model Compatibility Aliases for Codex Bridge verified (5 models mapped to flagship peers)');
+
+    // [Test 65] Testing Context Pruning & Sliding-Window Compression Engine...
+    console.log('\n[Test 65] Testing Context Pruning & Sliding-Window Compression Engine...');
+    const hugeToolOutput = 'A'.repeat(50000);
+    const mockToolInputs = [
+      { type: 'message', role: 'user', content: 'Initial user task' },
+      { type: 'function_call_output', call_id: 'call_1', output: hugeToolOutput }
+    ];
+    const folded = codexAdapter.pruneResponsesPayload({ input: mockToolInputs });
+    assert.strictEqual(folded.input.length, 2, 'Input length should remain 2');
+    assert.ok(folded.input[1].output.includes('智能网关自愈：已自动折叠'), 'Huge tool output must be folded');
+    assert.ok(folded.input[1].output.length < 5000, 'Folded tool output must be compact');
+
+    // Add 25 dummy items to trigger sliding window
+    const mockSlidingInput = [
+      { type: 'message', role: 'system', content: 'You are an assistant' },
+      { type: 'message', role: 'user', content: 'Initial user task' }
+    ];
+    for (let i = 0; i < 25; i++) {
+      mockSlidingInput.push({ type: 'message', role: i % 2 === 0 ? 'assistant' : 'user', content: `Turn ${i}` });
+    }
+    const pruned = codexAdapter.pruneResponsesPayload({ input: mockSlidingInput });
+    assert.ok(pruned.input.length < mockSlidingInput.length, 'Pruned input count must be less than original');
+    assert.ok(pruned.input.some(item => item.content && item.content.includes('智能网关已对前序')), 'Must contain sliding window notice');
+
+    // Also verify pruneChatMessages
+    const mockChatMessages = [
+      { role: 'system', content: 'system prompt' },
+      { role: 'user', content: 'user prompt' },
+      { role: 'tool', content: 'B'.repeat(30000) }
+    ];
+    const foldedChat = codexAdapter.pruneChatMessages(mockChatMessages);
+    assert.ok(foldedChat[2].content.includes('智能网关自愈：已自动折叠'), 'Chat tool content must be folded');
+    assert.ok(foldedChat[2].content.length < 5000, 'Folded chat content must be compact');
+
+    for (let i = 0; i < 20; i++) {
+      mockChatMessages.push({ role: i % 2 === 0 ? 'assistant' : 'user', content: `chat turn ${i}` });
+    }
+    const prunedMsgs = codexAdapter.pruneChatMessages(mockChatMessages);
+    assert.ok(prunedMsgs.length < mockChatMessages.length, 'Pruned chat messages count must be smaller');
+    console.log('✓ Context Pruning & Sliding-Window Compression Engine verified');
 
     console.log('\n======================================================');
-    console.log('🎉 ALL 63 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 65 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

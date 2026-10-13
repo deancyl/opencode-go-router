@@ -114,6 +114,21 @@ if ($routerConn) {
                 FixDesc = "重置账号限频冷却并刷新网关通道"
             })
         }
+
+        # Codex Responses 协议桥极速握手探针 (Codex Responses Bridge Probe)
+        try {
+            $respBody = @{
+                model = "deepseek-v4.1-flash"
+                input = @("probe")
+                max_output_tokens = 2
+            } | ConvertTo-Json
+            $respProbe = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/v1/responses" -Method Post -Body $respBody -ContentType "application/json" -Headers @{ Authorization = "Bearer local-router" } -TimeoutSec 6
+            if ($respProbe) {
+                Write-Host "    ✔ Codex Responses 协议桥握手通过！极速就绪" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "    ⚠ Codex Responses 协议桥握手受阻: $_" -ForegroundColor Yellow
+        }
     } catch {
         Write-Host "    ⚠ 网关响应异常: $_" -ForegroundColor Yellow
     }
@@ -453,8 +468,10 @@ if ($codexCmd) {
     }
 }
 
-if ($codexVer) {
-    Write-Host "  ✔ OpenAI Codex CLI 已就绪: $codexVer" -ForegroundColor Green
+$hasCodexDir = Test-Path "$env:USERPROFILE\.codex"
+if ($codexVer -or $hasCodexDir) {
+    $codexLabel = if ($codexVer) { "OpenAI Codex CLI ($codexVer)" } else { "OpenAI Codex (桌面客户端/环境)" }
+    Write-Host "  ✔ $codexLabel 已检测到" -ForegroundColor Green
     $codexConfig = "$env:USERPROFILE\.codex\config.toml"
     $isCodexBound = $false
     if (Test-Path $codexConfig) {
@@ -464,18 +481,18 @@ if ($codexVer) {
         }
     }
     if ($isCodexBound) {
-        Write-Host "  ✔ Codex CLI 已成功接入本地 $routerPort 智能网关 (38 款全量模型调度已就绪)" -ForegroundColor Green
+        Write-Host "  ✔ Codex 已成功接入本地 $routerPort 智能网关 (38 款全量模型调度已就绪)" -ForegroundColor Green
     } else {
-        Write-Host "  ⚠ Codex CLI 尚未接入本地智能网关" -ForegroundColor Yellow
+        Write-Host "  ⚠ Codex 尚未接入本地智能网关" -ForegroundColor Yellow
         $issuesFound.Add([PSCustomObject]@{
             Id = "codex_not_bound"
-            Title = "OpenAI Codex CLI 尚未接入本地 4010 智能网关"
+            Title = "OpenAI Codex 尚未接入本地 4010 智能网关"
             Severity = "Medium"
             FixDesc = "一键接入本地网关（配置 38 款模型映射、思考等级适配与无损配置备份）"
         })
     }
 } else {
-    Write-Host "  ℹ 未检测到全局 OpenAI Codex CLI" -ForegroundColor DarkGray
+    Write-Host "  ℹ 未检测到 OpenAI Codex 环境" -ForegroundColor DarkGray
 }
 
 # ----------------- 结果汇总与修复决策 -----------------

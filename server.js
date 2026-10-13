@@ -770,15 +770,37 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
-    // Check if Region Blocked (403 unsupported_country_region_territory) or Protocol Incompatible (400)
+    // Check if Region Blocked (403), Protocol Incompatible (400), or Context Exceeded (400)
     if ((statusCode === 403 || statusCode === 400) && parsedBody && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
-        const isRegionBlocked = errText.includes('unsupported_country_region_territory') || errText.includes('territory not supported');
-        const isProtocolUnsupported = statusCode === 400 && errText.includes('ModelProtocolUnsupported');
+        const isRegionBlocked = errText.includes('unsupported_country_region_territory') || errText.includes('territory not supported') || errText.includes('not available in your country');
+        const isProtocolUnsupported = statusCode === 400 && (errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses'));
+        const isContextLengthExceeded = statusCode === 400 && (
+          errText.includes('context_length_exceeded') || 
+          errText.includes('Input too long') || 
+          errText.includes('exceeds the maximum context length')
+        );
+
+        if (isContextLengthExceeded) {
+          const originalModel = parsedBody.model || 'unknown';
+          console.warn(`[Auto Self-Healing] 模型 "${originalModel}" 触发上下文长度超限 (context_length_exceeded)。网关正在执行智能滑动窗口裁剪自愈...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          if (Array.isArray(parsedBody.messages)) {
+            parsedBody.messages = codexAdapter.pruneChatMessages(parsedBody.messages);
+          }
+          if (attemptNumber > 1 && originalModel !== 'kimi-k2.7-code') {
+            console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
+            parsedBody.model = 'kimi-k2.7-code';
+          }
+          const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds);
+          return;
+        }
 
         if (isRegionBlocked || isProtocolUnsupported) {
           const reason = isRegionBlocked ? 'OpenAI 地域封锁 (unsupported_country_region_territory)' : '上游协议不兼容 (ModelProtocolUnsupported)';
@@ -993,6 +1015,24 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         const errText = Buffer.concat(errChunks).toString('utf8');
         const isProtocolUnsupported = errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses');
         const isRegionBlocked = errText.includes('not available in your country') || errText.includes('unsupported_country_region_territory');
+        const isContextLengthExceeded = statusCode === 400 && (
+          errText.includes('context_length_exceeded') || 
+          errText.includes('Input too long') || 
+          errText.includes('exceeds the maximum context length')
+        );
+
+        if (isContextLengthExceeded && attemptNumber <= config.maxFailoverRetries) {
+          console.warn(`[Auto Self-Healing] Codex 请求触发上下文长度超限 (${reqModel}): ${errText.slice(0, 160)}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          let prunedBody = codexAdapter.pruneResponsesPayload(responsesBody);
+          if (attemptNumber > 1 && reqModel !== 'kimi-k2.7-code') {
+            console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
+            prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
+          }
+          bridgeResponsesToChatRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds);
+          return;
+        }
 
         if ((isProtocolUnsupported || isRegionBlocked) && reqModel !== 'deepseek-v4.1-flash') {
           const reason = isProtocolUnsupported ? '上游协议暂未支持该模型 (ModelProtocolUnsupported)' : '上游地域限制 (Region Blocked)';
