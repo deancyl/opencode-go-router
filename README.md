@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.4.9](https://img.shields.io/badge/Version-v2.4.9-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.5.0](https://img.shields.io/badge/Version-v2.5.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -444,6 +444,18 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.5.0 (Codex 会话死锁根除与 ChatGPT 历史会话连续性保护里程碑)
+- **Codex CLI / ChatGPT Desktop 无限 Thinking 彻底根治 (Deadlock Defense & Keep-Alive Bridge)**：
+  - **上游 `/responses` 云端死锁穿透与全量转接**：排查发现上游官方闭源 `/v1/responses` 代理在遭遇大上下文（6万+ tokens）、复杂工具调用与高思考等级时极易陷入云端挂死（长达 28 分钟无响应）；智能网关重构全量 38 款模型统一收口至高可用稳定的本地智能协议桥（通过高并发高吞吐的 `/v1/chat/completions` 分发）；
+  - **10 秒双轨 SSE 心跳保活机制 (`: keep-alive\n\n`)**：在协议桥流式推送中注入主动心跳，彻底防止反向代理、客户端与网络中间件在长生成期间因静默断流；
+  - **90 秒停滞看门狗 (Stall Watchdog)**：针对突发网络死锁或上游异常中断，自动优雅平滑收口完成事件，杜绝前端无限转圈卡死；
+  - **`<think>` 深度思考标签智能解包**：自动兼容不同模型后端在正文与思维链混流的场景，将 `<think>...</think>` 平滑拆分为原生 `reasoning_text` 事件。
+- **ChatGPT Desktop 历史会话连续性保护 (Thread Continuity & Compatibility Preservation)**：
+  - **根治 `Model provider opencode-go not found` 崩溃**：ChatGPT 历史会话永久绑定创建时的提供商 ID。一键还原时默认开启 `preserveCompatibility` 机制，在无损还原用户的首选模型与主提供商的同时，智能保留 `opencode-go` 提供商声明与全量 38 款模型元数据目录，彻底杜绝历史会话因缺少提供商无法加载的致命阻断；
+  - **支持双模还原**：日常还原默认启用连续性安全模式；同时保留严格字节级零残留回滚模式（`preserveCompatibility: false`）。
+- **全套自动化测试扩展至 63 项 100% 绿灯**：
+  - 严密覆盖协议桥单向/双向流式转换、非流式默认规范对齐、心跳保活、历史会话兼容保护与零残留回滚，63 项测试全绿通过。
 
 ### 🚀 v2.2.0
 - **OpenAI Codex CLI 智能无缝接入与双向协议桥 (Codex Native Bridge Engine)**：

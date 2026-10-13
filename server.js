@@ -886,7 +886,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
   const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody);
   const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
-  const isStream = chatPayload.stream !== false;
+  const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
 
   const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
@@ -4424,11 +4424,8 @@ $ghost
             sel.innerHTML = '';
             st.availableModels.forEach(function(m) {
               const opt = document.createElement('option');
-              const isNative = ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'grok-4.6', 'grok-4.7', 'gpt-5.6-luna'].includes(m.slug);
               const isAnthropic = m.slug === 'claude-haiku-5-5';
-              let tag = ' [智能协议桥]';
-              if (isNative) tag = ' [原生 Responses]';
-              else if (isAnthropic) tag = ' [Anthropic 协议桥]';
+              const tag = isAnthropic ? ' [Anthropic 协议桥]' : ' [智能双轨协议桥]';
               opt.innerText = m.display_name + tag;
               if (m.slug === (st.currentModel || 'deepseek-v4.1-flash')) opt.selected = true;
               sel.appendChild(opt);

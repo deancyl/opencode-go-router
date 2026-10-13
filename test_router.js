@@ -121,13 +121,13 @@ async function runTests() {
         id: 'resp-native-1',
         object: 'response',
         status: 'completed',
-        model: 'deepseek-v4.1-flash',
+        model: 'native-model-test',
         output: [{
           id: 'msg_1',
           type: 'message',
           status: 'completed',
           role: 'assistant',
-          content: [{ type: 'output_text', text: 'response from native deepseek' }]
+          content: [{ type: 'output_text', text: 'response from native test' }]
         }]
       }));
       return;
@@ -898,7 +898,7 @@ async function runTests() {
 
     // [Test 38] Testing Codex One-Click Restore API & 100% Fidelity Rollback
     console.log('\n[Test 38] Testing Codex One-Click Restore API & 100% Fidelity Rollback...');
-    const restoreResult = codexAdapter.restoreCodexConfig(isolatedCodexDir);
+    const restoreResult = codexAdapter.restoreCodexConfig(isolatedCodexDir, { preserveCompatibility: false });
     assert.strictEqual(restoreResult.success, true);
     assert.strictEqual(restoreResult.restoredFrom, 'backup-manifest');
 
@@ -907,6 +907,15 @@ async function runTests() {
     assert.strictEqual(fs.readFileSync(path.join(isolatedCodexDir, 'auth.json'), 'utf8'), origAuth, 'auth.json restored 100%');
     assert.strictEqual(fs.readFileSync(path.join(isolatedCodexDir, 'models.json'), 'utf8'), origModels, 'models.json restored 100%');
     assert.ok(!fs.existsSync(backupDir), 'backup folder cleaned up after restore');
+
+    // Verify thread continuity restoration (keeps opencode-go declaration for historical ChatGPT thread resilience)
+    codexAdapter.bindCodexConfig({ codexDir: isolatedCodexDir, routerPort: routerPort, defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' });
+    const resilientRestore = codexAdapter.restoreCodexConfig(isolatedCodexDir, { preserveCompatibility: true });
+    assert.strictEqual(resilientRestore.success, true);
+    const resilientToml = fs.readFileSync(path.join(isolatedCodexDir, 'config.toml'), 'utf8');
+    assert.ok(resilientToml.includes('model = "gpt-4o"'), 'Original model restored');
+    assert.ok(resilientToml.includes('model_provider = "openai"'), 'Original provider restored');
+    assert.ok(resilientToml.includes('[model_providers."opencode-go"]'), 'Historical thread resilience provider declaration preserved');
 
     // Verify API endpoint /balancer/api/restore-codex
     const resRestoreApi = await request('/balancer/api/restore-codex', { method: 'POST' });
@@ -1001,16 +1010,16 @@ async function runTests() {
     // [Test 41] Testing End-to-End Transparent Proxy & Bridge via Router HTTP Port
     console.log('\n[Test 41] Testing End-to-End Transparent Proxy & Bridge via Router HTTP Port...');
 
-    // A. Native model to /v1/responses (e.g. deepseek-v4.1-flash with prefix)
+    // A. Native model to /v1/responses (e.g. native-model-test with prefix)
     const resNative = await request('/v1/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'opencode-go/deepseek-v4.1-flash', input: 'Hello' })
+      body: JSON.stringify({ model: 'opencode-go/native-model-test', input: 'Hello' })
     });
     assert.strictEqual(resNative.statusCode, 200);
     const jsonNative = JSON.parse(resNative.body);
     assert.strictEqual(jsonNative.id, 'resp-native-1');
-    assert.strictEqual(jsonNative.model, 'deepseek-v4.1-flash');
+    assert.strictEqual(jsonNative.model, 'native-model-test');
 
     // B. Non-native model (kimi-k3) automatically bridged to /v1/chat/completions non-streaming
     const resBridge = await request('/v1/responses', {
@@ -1035,6 +1044,17 @@ async function runTests() {
     assert.ok(resBridgeStream.body.includes('event: response.reasoning_text.delta'));
     assert.ok(resBridgeStream.body.includes('event: response.output_text.delta'));
     assert.ok(resBridgeStream.body.includes('event: response.completed'));
+
+    // D. Standard OpenCode Go model (deepseek-v4.1-flash) with stream omitted correctly bridges to non-streaming ChatCompletions
+    const resBridgeDefault = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode-go/deepseek-v4.1-flash', input: 'Hello default non-streaming' })
+    });
+    assert.strictEqual(resBridgeDefault.statusCode, 200);
+    const jsonBridgeDefault = JSON.parse(resBridgeDefault.body);
+    assert.strictEqual(jsonBridgeDefault.object, 'response');
+    assert.strictEqual(jsonBridgeDefault.model, 'deepseek-v4.1-flash');
     console.log('✓ End-to-End Transparent Proxy & Bridge via Router HTTP Port verified');
 
     // [Test 42] Testing Doctor Diagnostic & Auto-Repair Integration for Codex
@@ -1234,7 +1254,7 @@ async function runTests() {
     assert.strictEqual(boundStatus.isBound, true);
 
     // Restore
-    const cleanRestoreRes = codexAdapter.restoreCodexConfig(zeroResidueDir);
+    const cleanRestoreRes = codexAdapter.restoreCodexConfig(zeroResidueDir, { preserveCompatibility: false });
     assert.strictEqual(cleanRestoreRes.success, true);
     const restoredStatus = codexAdapter.getCodexStatus(zeroResidueDir);
     assert.strictEqual(restoredStatus.isBound, false, 'isBound must be false after restore');

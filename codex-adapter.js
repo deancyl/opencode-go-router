@@ -667,17 +667,14 @@ function syncDynamicModels(slugList) {
   return OPENCODE_GO_ALL_MODELS;
 }
 
-// Models natively supporting OpenAI Responses API on OpenCode Go upstream
+// Models natively supporting OpenAI Responses API on upstream (if configured).
+// Note: All standard 38 OpenCode Go models are intentionally NOT in this set so they
+// route through our resilient local ChatCompletions bridge with active watchdog & keep-alives,
+// completely eliminating upstream /responses proxy deadlocks and 28-minute hangs on complex contexts.
 const NATIVE_RESPONSES_MODELS = new Set([
-  'deepseek-v4-flash',
-  'deepseek-v4-flash-vision-exp',
-  'deepseek-flash',
-  'deepseek-v4.1-flash',
-  'deepseek-v4-pro',
-  'grok-4.6',
-  'grok-4.7',
-  'gpt-5.6-luna'
+  'native-model-test'
 ]);
+
 
 // Models using Anthropic Messages protocol on upstream
 const ANTHROPIC_MODELS = new Set([
@@ -799,7 +796,7 @@ function convertResponsesToChatPayload(body) {
   const chatPayload = {
     model,
     messages,
-    stream: body.stream !== false
+    stream: body.stream === true
   };
 
   if (body.temperature !== undefined) chatPayload.temperature = body.temperature;
@@ -950,6 +947,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   let textStarted = false;
   let textCompleted = false;
   let textIndex = 0;
+  let inThinkTag = false;
   const itemIdReasoning = 'item_reasoning_' + Date.now();
   const itemIdText = 'item_text_' + Date.now();
   let fullReasoning = '';
@@ -957,6 +955,44 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const toolCallsMap = new Map(); // index -> { id, name, args, outIdx }
   let collectedUsage = null;
   let buffer = '';
+
+  // Heartbeat keep-alive & watchdog to prevent stream stalls
+  let lastDataTime = Date.now();
+  const heartbeatTimer = setInterval(() => {
+    if (clientRes.writableEnded || clientRes.destroyed) {
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    clientRes.write(': keep-alive\n\n');
+  }, 10000);
+
+  const stallWatchdog = setInterval(() => {
+    if (clientRes.writableEnded || clientRes.destroyed) {
+      clearInterval(stallWatchdog);
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    if (Date.now() - lastDataTime > 90000) {
+      clearInterval(stallWatchdog);
+      clearInterval(heartbeatTimer);
+      console.error(`[Bridge Stream Watchdog] Upstream stalled for >90s on model "${reqModel}". Closing stream safely.`);
+      closeReasoning();
+      closeText();
+      sendEvent('response.completed', {
+        type: 'response.completed',
+        sequence_number: seq++,
+        response: { id: respId, status: 'completed', model: reqModel }
+      });
+      clientRes.end();
+      if (typeof onFinished === 'function') onFinished();
+    }
+  }, 5000);
+
+  const cleanup = () => {
+    clearInterval(heartbeatTimer);
+    clearInterval(stallWatchdog);
+  };
+  clientRes.once('close', cleanup);
 
   const closeReasoning = () => {
     if (reasoningStarted && !reasoningCompleted) {
@@ -1029,6 +1065,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   };
 
   upstreamRes.on('data', chunk => {
+    lastDataTime = Date.now();
     buffer += chunk.toString('utf8');
     const lines = buffer.split('\n');
     buffer = lines.pop(); // keep partial
@@ -1048,8 +1085,36 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         const delta = choice.delta;
         if (!delta) continue;
 
+        let reasoningChunk = delta.reasoning || delta.reasoning_content;
+        let textChunk = delta.content;
+
+        // Support models that stream <think>...</think> inside delta.content
+        if (textChunk && !textStarted && !reasoningCompleted) {
+          if (textChunk.includes('<think>')) {
+            inThinkTag = true;
+            const parts = textChunk.split('<think>');
+            textChunk = parts[1] || '';
+          }
+          if (inThinkTag) {
+            if (textChunk.includes('</think>')) {
+              const parts = textChunk.split('</think>');
+              const thinkDelta = parts[0] || '';
+              textChunk = parts[1] || '';
+              inThinkTag = false;
+              if (thinkDelta) {
+                if (!reasoningChunk) reasoningChunk = thinkDelta;
+                else reasoningChunk += thinkDelta;
+              }
+              closeReasoning();
+            } else {
+              if (!reasoningChunk) reasoningChunk = textChunk;
+              else reasoningChunk += textChunk;
+              textChunk = '';
+            }
+          }
+        }
+
         // 1. Thinking / Reasoning Stream
-        const reasoningChunk = delta.reasoning || delta.reasoning_content;
         if (reasoningChunk && !textStarted) {
           if (!reasoningStarted && !reasoningCompleted) {
             reasoningStarted = true;
@@ -1083,7 +1148,6 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         }
 
         // 2. Answer Text Stream
-        const textChunk = delta.content;
         if (textChunk) {
           closeReasoning();
           if (!textStarted) {
@@ -1266,6 +1330,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       }
     });
 
+    cleanup();
     clientRes.end();
     if (typeof onFinished === 'function') onFinished();
   });
@@ -1553,6 +1618,43 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   let collectedUsage = null;
   let buffer = '';
 
+  // Heartbeat keep-alive & watchdog to prevent stream stalls
+  let lastDataTime = Date.now();
+  const heartbeatTimer = setInterval(() => {
+    if (clientRes.writableEnded || clientRes.destroyed) {
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    clientRes.write(': keep-alive\n\n');
+  }, 10000);
+
+  const stallWatchdog = setInterval(() => {
+    if (clientRes.writableEnded || clientRes.destroyed) {
+      clearInterval(stallWatchdog);
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    if (Date.now() - lastDataTime > 90000) {
+      clearInterval(stallWatchdog);
+      clearInterval(heartbeatTimer);
+      console.error(`[Anthropic Stream Watchdog] Upstream stalled for >90s on model "${reqModel}". Closing stream safely.`);
+      closeText();
+      sendEvent('response.completed', {
+        type: 'response.completed',
+        sequence_number: seq++,
+        response: { id: respId, status: 'completed', model: reqModel }
+      });
+      clientRes.end();
+      if (typeof onFinished === 'function') onFinished();
+    }
+  }, 5000);
+
+  const cleanup = () => {
+    clearInterval(heartbeatTimer);
+    clearInterval(stallWatchdog);
+  };
+  clientRes.once('close', cleanup);
+
   const closeText = () => {
     if (textStarted && !textCompleted) {
       sendEvent('response.output_text.done', {
@@ -1773,6 +1875,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       }
     });
 
+    cleanup();
     clientRes.end();
     if (typeof onFinished === 'function') onFinished();
   });
@@ -1916,34 +2019,36 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
   filteredLines.push('requires_openai_auth = true');
   filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
 
-  // Update or append [model_providers.custom] section
-  let hasCustom = false;
-  inSection = false;
-  for (let i = 0; i < filteredLines.length; i++) {
-    const l = filteredLines[i].trim();
-    if (l === '[model_providers.custom]') {
-      hasCustom = true;
-      inSection = true;
-      continue;
-    }
-    if (inSection) {
-      if (l.startsWith('[')) {
-        inSection = false;
-      } else if (l.startsWith('base_url =')) {
-        filteredLines[i] = `base_url = ${JSON.stringify(routerUrl)}`;
-      } else if (l.startsWith('wire_api =')) {
-        filteredLines[i] = 'wire_api = "responses"';
+  // Only update or append [model_providers.custom] if user explicitly requested custom provider
+  if (provider === 'custom') {
+    let hasCustom = false;
+    inSection = false;
+    for (let i = 0; i < filteredLines.length; i++) {
+      const l = filteredLines[i].trim();
+      if (l === '[model_providers.custom]') {
+        hasCustom = true;
+        inSection = true;
+        continue;
+      }
+      if (inSection) {
+        if (l.startsWith('[')) {
+          inSection = false;
+        } else if (l.startsWith('base_url =')) {
+          filteredLines[i] = `base_url = ${JSON.stringify(routerUrl)}`;
+        } else if (l.startsWith('wire_api =')) {
+          filteredLines[i] = 'wire_api = "responses"';
+        }
       }
     }
-  }
 
-  if (!hasCustom) {
-    filteredLines.push('');
-    filteredLines.push('[model_providers.custom]');
-    filteredLines.push('name = "custom"');
-    filteredLines.push('wire_api = "responses"');
-    filteredLines.push('requires_openai_auth = true');
-    filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
+    if (!hasCustom) {
+      filteredLines.push('');
+      filteredLines.push('[model_providers.custom]');
+      filteredLines.push('name = "custom"');
+      filteredLines.push('wire_api = "responses"');
+      filteredLines.push('requires_openai_auth = true');
+      filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
+    }
   }
 
   // Ensure [desktop] section has localeOverride = "zh-CN"
@@ -2037,9 +2142,9 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
       if (mEffort) currentReasoningEffort = mEffort[1];
 
       const expectedPort = String(routerPort);
-      isBound = raw.includes(`127.0.0.1:${expectedPort}`) ||
-        raw.includes(`:${expectedPort}/v1`) ||
-        (currentProvider === 'opencode-go' && (raw.includes('127.0.0.1') || raw.includes('localhost')));
+      const isProviderOpencodeGo = currentProvider === 'opencode-go';
+      const isProviderRouterUrl = currentProvider && new RegExp(`\\[model_providers\\.(?:${currentProvider}|"${currentProvider}")\\][^\\[]*base_url\\s*=\\s*["'][^"']*(?:127\\.0\\.0\\.1|localhost):${expectedPort}`, 's').test(raw);
+      isBound = Boolean(isProviderOpencodeGo || isProviderRouterUrl);
     } catch (e) {}
   }
 
@@ -2304,8 +2409,9 @@ function bindCodexConfig(options = {}) {
 /**
  * One-Click Restore Codex configuration to pre-binding state
  */
-function restoreCodexConfig(codexDirOverride = null) {
+function restoreCodexConfig(codexDirOverride = null, options = {}) {
   const codexDir = codexDirOverride || getCodexConfigDir();
+  const preserveCompatibility = options.preserveCompatibility !== false;
   const configPath = path.join(codexDir, 'config.toml');
   const authPath = path.join(codexDir, 'auth.json');
   const modelsPath = path.join(codexDir, 'models.json');
@@ -2323,8 +2429,14 @@ function restoreCodexConfig(codexDirOverride = null) {
       if (manifest.hasConfigToml) {
         const bkConfig = path.join(backupDir, 'config.toml');
         if (fs.existsSync(bkConfig)) {
-          fs.copyFileSync(bkConfig, configPath);
-          messages.push('已还原原始 config.toml');
+          let tomlContent = fs.readFileSync(bkConfig, 'utf8');
+          // Thread continuity protection: ensure [model_providers."opencode-go"] stays defined
+          // so open/resumed historical threads in ChatGPT/Codex do not throw "Model provider `opencode-go` not found"
+          if (preserveCompatibility && !tomlContent.includes('[model_providers."opencode-go"]') && !tomlContent.includes('[model_providers.opencode-go]')) {
+            tomlContent += '\n[model_providers."opencode-go"]\nname = "opencode-go"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "http://127.0.0.1:4010/v1"\n';
+          }
+          fs.writeFileSync(configPath, tomlContent, 'utf8');
+          messages.push('已还原原始 config.toml' + (preserveCompatibility ? ' (已保留 opencode-go 历史会话兼容声明)' : ''));
         }
       } else {
         if (fs.existsSync(configPath)) {
@@ -2359,8 +2471,9 @@ function restoreCodexConfig(codexDirOverride = null) {
         }
       }
 
-      if (fs.existsSync(catalogPath)) {
-        try { fs.unlinkSync(catalogPath); } catch (e) {}
+      // Clean catalogPath if strict clean rollback requested (preserveCompatibility === false)
+      if (!preserveCompatibility && fs.existsSync(catalogPath)) {
+        try { fs.unlinkSync(catalogPath); messages.push('已清理模型目录'); } catch (e) {}
       }
 
       // Also clean up any legacy .router-bak files to ensure 100% clean state
@@ -2390,8 +2503,12 @@ function restoreCodexConfig(codexDirOverride = null) {
   let fallbackRestored = false;
   if (fs.existsSync(configPath + '.router-bak')) {
     try {
-      fs.copyFileSync(configPath + '.router-bak', configPath);
-      messages.push('已从 .router-bak 还原 config.toml');
+      let tomlContent = fs.readFileSync(configPath + '.router-bak', 'utf8');
+      if (preserveCompatibility && !tomlContent.includes('[model_providers."opencode-go"]') && !tomlContent.includes('[model_providers.opencode-go]')) {
+        tomlContent += '\n[model_providers."opencode-go"]\nname = "opencode-go"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "http://127.0.0.1:4010/v1"\n';
+      }
+      fs.writeFileSync(configPath, tomlContent, 'utf8');
+      messages.push('已从 .router-bak 还原 config.toml' + (preserveCompatibility ? ' (已保留 opencode-go 历史会话兼容声明)' : ''));
       fallbackRestored = true;
     } catch (e) {}
   }
@@ -2415,7 +2532,6 @@ function restoreCodexConfig(codexDirOverride = null) {
       if (fs.existsSync(configPath + '.router-bak')) fs.unlinkSync(configPath + '.router-bak');
       if (fs.existsSync(authPath + '.router-bak')) fs.unlinkSync(authPath + '.router-bak');
       if (fs.existsSync(modelsPath + '.router-bak')) fs.unlinkSync(modelsPath + '.router-bak');
-      if (fs.existsSync(catalogPath)) fs.unlinkSync(catalogPath);
     } catch (e) {}
     return { success: true, restoredFrom: 'router-bak', messages };
   }
