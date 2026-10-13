@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.4.7](https://img.shields.io/badge/Version-v2.4.7-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.4.8](https://img.shields.io/badge/Version-v2.4.8-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -496,6 +496,13 @@ npm run build:exe
   - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
   - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
 - **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
+
+### 🚀 v2.4.8
+- **修复 Linux / NAS 端“提供商接口”鉴权探测与端口自适应解析 (Provider Integration Probing)**：
+  - **环境感知与密码自适应发现**：在 `updater.js` 中新增 `detectOpenCodeServiceInfo()`，自动识别 Linux / NAS 宿主 systemd 守护服务（`opencode-server.service`、`openchamber.service`）与系统环境变量，动态解析 OpenCode 后端真实监听端口（4096）与 `OPENCODE_PASSWORD` 访问密码；
+  - **鉴权头自动注入与双向容灾**：在自检探针 `probeOpenChamberServices()` 中自动装配 `Authorization: Basic` 认证头，彻底消除 NAS 端因带密保护导致接口返回 401 并误报为 `error` 的假死提示；
+  - **友好状态呈现**：Web 控制台顶栏提供商接口状态卡片精细化呈现探测时延（如 `✔ 68ms`）与鉴权状态指示，消除歧义；
+  - **Linux NAS 实机实测**：飞牛私有云 (fnOS) 实机验证通过，/api/integration 响应 68ms 绿灯，88 款核心插件健康度 100%。
 
 ### 🚀 v2.4.7
 - **OpenCode 2.0 原生智能体自动补齐与自愈 (Native Agent Self-Healing)**：

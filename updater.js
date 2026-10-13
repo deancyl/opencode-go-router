@@ -2300,46 +2300,148 @@ function checkProviderDualTrackSchema(configPath = null) {
   }
 }
 
-function detectOpenChamberActivePort() {
-  try {
-    const sPath = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
-    if (fs.existsSync(sPath)) {
-      const s = JSON.parse(fs.readFileSync(sPath, 'utf8'));
-      if (s.desktopLocalPort) return s.desktopLocalPort;
-    }
-  } catch (_) {}
+function detectOpenCodeServiceInfo() {
+  let port = null;
+  let password = process.env.OPENCODE_PASSWORD || null;
+
+  // 1. Check openchamber managed opencode (desktop Electron)
   try {
     const mDir = path.join(os.homedir(), '.config', 'openchamber', 'managed-opencode');
     if (fs.existsSync(mDir)) {
       for (const f of fs.readdirSync(mDir)) {
         if (f.endsWith('.json')) {
           const d = JSON.parse(fs.readFileSync(path.join(mDir, f), 'utf8'));
-          if (d.port) return d.port;
+          if (d.port) {
+            port = d.port;
+            if (d.password) password = d.password;
+            break;
+          }
         }
       }
     }
   } catch (_) {}
-  return 3000;
+
+  // 2. Check openchamber settings
+  if (!port) {
+    try {
+      const sPath = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+      if (fs.existsSync(sPath)) {
+        const s = JSON.parse(fs.readFileSync(sPath, 'utf8'));
+        if (s.desktopLocalPort) port = s.desktopLocalPort;
+        if (s.opencodePassword) password = s.opencodePassword;
+      }
+    } catch (_) {}
+  }
+
+  // 3. Check systemd user & system services (Linux / NAS)
+  if (!port || !password) {
+    const serviceFiles = [
+      path.join(os.homedir(), '.config', 'systemd', 'user', 'opencode-server.service'),
+      path.join(os.homedir(), '.config', 'systemd', 'user', 'openchamber.service'),
+      '/etc/systemd/system/opencode-server.service',
+      '/etc/systemd/system/openchamber.service'
+    ];
+    for (const sf of serviceFiles) {
+      if (fs.existsSync(sf)) {
+        try {
+          const content = fs.readFileSync(sf, 'utf8');
+          if (!password) {
+            const mPwd = content.match(/OPENCODE_PASSWORD=([^\s"'\r\n]+)/);
+            if (mPwd) password = mPwd[1];
+          }
+          if (!port) {
+            const mHost = content.match(/OPENCODE_HOST=https?:\/\/[^:]+:(\d+)/);
+            if (mHost) port = parseInt(mHost[1], 10);
+            const mPort = content.match(/--port\s+(\d+)/);
+            if (mPort && sf.includes('opencode-server')) {
+              port = parseInt(mPort[1], 10);
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  // 4. Environment variables
+  if (!port && process.env.OPENCODE_PORT) {
+    port = parseInt(process.env.OPENCODE_PORT, 10);
+  }
+  if (!port && process.env.OPENCODE_HOST) {
+    const m = process.env.OPENCODE_HOST.match(/:(\d+)/);
+    if (m) port = parseInt(m[1], 10);
+  }
+
+  // 5. Default port fallback:
+  // On Linux/NAS, standard OpenCode headless server runs on 4096; on desktop fallback to 3000
+  if (!port) {
+    port = process.platform === 'linux' ? 4096 : 3000;
+  }
+
+  return { port, password };
+}
+
+function detectOpenChamberActivePort() {
+  const info = detectOpenCodeServiceInfo();
+  return info.port || (process.platform === 'linux' ? 4096 : 3000);
 }
 
 async function probeOpenChamberServices(port = null, timeoutMs = 2000) {
-  const p = port || detectOpenChamberActivePort();
+  const serviceInfo = detectOpenCodeServiceInfo();
+  const p = port || serviceInfo.port || (process.platform === 'linux' ? 4096 : 3000);
+  const password = serviceInfo.password || process.env.OPENCODE_PASSWORD || null;
+
   const result = {
     port: p,
-    integration: { status: 'unknown', latencyMs: null, error: null },
-    plugins: { status: 'unknown', activeCount: 0, failedCount: 0, failedPlugins: [], error: null }
+    integration: { status: 'unknown', latencyMs: null, error: null, authRequired: false },
+    plugins: { status: 'unknown', activeCount: 0, failedCount: 0, failedPlugins: [], error: null, authRequired: false }
   };
+
+  const getHeaders = (pwd) => {
+    const headers = {};
+    if (pwd) {
+      headers['Authorization'] = 'Basic ' + Buffer.from('opencode:' + pwd).toString('base64');
+    }
+    return headers;
+  };
+
+  async function fetchWithTimeout(url, pwd) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { headers: getHeaders(pwd), signal: ctrl.signal });
+      clearTimeout(timer);
+      return res;
+    } catch (e) {
+      clearTimeout(timer);
+      throw e;
+    }
+  }
 
   // 1. Probe /api/integration
   const t0 = Date.now();
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const res = await fetch(`http://127.0.0.1:${p}/api/integration`, { signal: ctrl.signal });
-    clearTimeout(timer);
+    let res;
+    try {
+      res = await fetchWithTimeout(`http://127.0.0.1:${p}/api/integration`, password);
+    } catch (ePrimary) {
+      if (p !== 4096 && (ePrimary.message && (ePrimary.message.includes('ECONNREFUSED') || ePrimary.code === 'ECONNREFUSED'))) {
+        try {
+          res = await fetchWithTimeout(`http://127.0.0.1:4096/api/integration`, password);
+          result.port = 4096;
+        } catch (_) {
+          throw ePrimary;
+        }
+      } else {
+        throw ePrimary;
+      }
+    }
+
     result.integration.latencyMs = Date.now() - t0;
     if (res.ok) {
       result.integration.status = 'healthy';
+    } else if (res.status === 401) {
+      result.integration.status = 'healthy';
+      result.integration.authRequired = true;
     } else {
       result.integration.status = 'error';
       result.integration.error = `HTTP ${res.status}`;
@@ -2351,11 +2453,9 @@ async function probeOpenChamberServices(port = null, timeoutMs = 2000) {
   }
 
   // 2. Probe /api/plugin
+  const effectivePort = result.port;
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const res = await fetch(`http://127.0.0.1:${p}/api/plugin`, { signal: ctrl.signal });
-    clearTimeout(timer);
+    const res = await fetchWithTimeout(`http://127.0.0.1:${effectivePort}/api/plugin`, password);
     if (res.ok) {
       const data = await res.json();
       const list = data.data || data || [];
@@ -2365,6 +2465,9 @@ async function probeOpenChamberServices(port = null, timeoutMs = 2000) {
       result.plugins.activeCount = active.length;
       result.plugins.failedCount = failed.length;
       result.plugins.failedPlugins = failed;
+    } else if (res.status === 401) {
+      result.plugins.status = 'healthy';
+      result.plugins.authRequired = true;
     } else {
       result.plugins.status = 'error';
       result.plugins.error = `HTTP ${res.status}`;
@@ -2386,6 +2489,7 @@ module.exports = {
   checkOmoPluginV2Integrity,
   patchOmoPluginV2,
   checkProviderDualTrackSchema,
+  detectOpenCodeServiceInfo,
   detectOpenChamberActivePort,
   probeOpenChamberServices,
   fetchOfficialModels,
