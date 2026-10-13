@@ -674,8 +674,8 @@ function Step-SetupCodex {
     if ($st) {
         Write-Host "`n--- 当前 Codex 接入状态 ---" -ForegroundColor Cyan
         Write-Host " • 接入网关: $(if ($st.isBound) { '✔ 已接入 http://127.0.0.1:' + $port + '/v1' } else { '❌ 未接入' })" -ForegroundColor $(if ($st.isBound) { 'Green' } else { 'Yellow' })
-        Write-Host " • 当前生效模型: $($st.currentModel || '未设置')" -ForegroundColor White
-        Write-Host " • 思考推演等级: $($st.currentReasoningEffort || 'high')" -ForegroundColor White
+        Write-Host " • 当前生效模型: $(if ($st.currentModel) { $st.currentModel } else { '未设置' })" -ForegroundColor White
+        Write-Host " • 思考推演等级: $(if ($st.currentReasoningEffort) { $st.currentReasoningEffort } else { 'high' })" -ForegroundColor White
         Write-Host " • 配置目录: $($st.codexDir)" -ForegroundColor DarkGray
         Write-Host " • 安全备份: $(if ($st.hasBackup) { '✔ 原始配置已无损备份 (随时可一键原样还原)' } else { '未生成备份 (接入时将自动原子备份)' })" -ForegroundColor White
     }
@@ -740,7 +740,7 @@ function Step-SetupCodex {
                         $rstRes.messages | ForEach-Object { Write-Host "  • $_" -ForegroundColor DarkGray }
                     }
                 } else {
-                    Write-Host "❌ 还原提示: $($rstRes.message || $rstRes.error)" -ForegroundColor Yellow
+                    Write-Host "❌ 还原提示: $(if ($rstRes.message) { $rstRes.message } else { $rstRes.error })" -ForegroundColor Yellow
                 }
             }
         }

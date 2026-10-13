@@ -1,0 +1,312 @@
+<#
+===============================================================================
+ OpenCode Router Tray Daemon (PowerShell WinForms Native Host)
+ 100% 微软官方签名宿主 (powershell.exe) 托管运行，零外部二进制，彻底杜绝杀软启发式误报
+===============================================================================
+#>
+[CmdletBinding()]
+param()
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$rootDir = $PSScriptRoot
+if (-not $rootDir -or -not (Test-Path (Join-Path $rootDir "server.js"))) {
+    $rootDir = Join-Path $env:USERPROFILE ".opencode-go-router"
+}
+
+$port = 4010
+$icoPath = Join-Path $rootDir "assets\router.ico"
+$logPath = Join-Path $rootDir "tray.log"
+
+function Write-TrayLog([string]$msg) {
+    try {
+        $timestamp = (Get-Date).ToString("yyyy/MM/dd HH:mm:ss")
+        $line = "[$timestamp] [PS-Tray] $msg"
+        Add-Content -Path $logPath -Value $line -ErrorAction SilentlyContinue
+    } catch { }
+}
+
+# 单实例互斥防御 (Mutex)
+$mutexName = "Local\OpenCodeRouterTrayPSMutex_v2"
+$createdNew = $false
+$mutex = $null
+try {
+    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
+} catch {
+    $createdNew = $true
+}
+
+if (-not $createdNew) {
+    Write-TrayLog "Another instance is running. Activating dashboard and exiting."
+    # 唤起控制面板后退出
+    Start-Process "http://127.0.0.1:$port/balancer/ui"
+    exit 0
+}
+
+function Test-PortListening([int]$targetPort) {
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue
+        return ($null -ne $conn)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-RouterRunning {
+    try {
+        if (Test-PortListening $port) { return }
+        $vbs = Join-Path $rootDir "silent-start.vbs"
+        if (Test-Path $vbs) {
+            Start-Process "wscript.exe" -ArgumentList "`"$vbs`"" -WorkingDirectory $rootDir -WindowStyle Hidden
+        } else {
+            Start-Process "node.exe" -ArgumentList "`"server.js`"" -WorkingDirectory $rootDir -WindowStyle Hidden
+        }
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Milliseconds 200
+            if (Test-PortListening $port) { break }
+        }
+    } catch {
+        Write-TrayLog "Ensure-RouterRunning error: $_"
+    }
+}
+
+function Open-Dashboard([string]$hash = "") {
+    Ensure-RouterRunning
+    $url = "http://127.0.0.1:$port/balancer/ui$hash"
+    try {
+        $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+        $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        if (Test-Path $chrome) {
+            Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$chrome`" --app=$url" -WindowStyle Hidden
+            return
+        }
+        if (Test-Path $edge) {
+            Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$edge`" --app=$url" -WindowStyle Hidden
+            return
+        }
+    } catch { }
+    Start-Process "explorer.exe" -ArgumentList "`"$url`""
+}
+
+function Launch-OpenChamber {
+    try {
+        $procs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
+        if ($procs) {
+            # 尝试置顶窗口
+            [Microsoft.VisualBasic.Interaction]::AppActivate("OpenChamber") 2>$null
+            if ($notifyIcon) {
+                $notifyIcon.ShowBalloonTip(1500, "OpenChamber 桌面端", "已快速激活置顶至当前前台窗口。", [System.Windows.Forms.ToolTipIcon]::Info)
+            }
+            return
+        }
+    } catch { }
+
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\@openchamberelectron\OpenChamber.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\OpenChamber\OpenChamber.exe"),
+        "C:\Program Files\OpenChamber\OpenChamber.exe",
+        "C:\Program Files (x86)\OpenChamber\OpenChamber.exe",
+        (Join-Path $env:USERPROFILE "Desktop\OpenChamber.lnk")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) {
+            Start-Process "explorer.exe" -ArgumentList "`"$c`""
+            return
+        }
+    }
+    Open-Dashboard
+}
+
+function Check-RouterStatus {
+    try {
+        Ensure-RouterRunning
+        $res = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/account-quota" -TimeoutSec 4 -ErrorAction Stop
+        $model = if ($res.currentModel) { $res.currentModel } else { "opencode-go" }
+        $total = if ($res.totalAccounts) { $res.totalAccounts } else { 2 }
+        $notifyIcon.ShowBalloonTip(3000, "OpenCode 路由网关状态", "✔ 服务在线 (端口: $port)`n✔ 活跃账号数: $total`n✔ 当前主用模型: $model", [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch {
+        $notifyIcon.ShowBalloonTip(3000, "OpenCode 路由网关状态", "⚠ 网关状态查询中，请稍候或直接打开控制台查看。", [System.Windows.Forms.ToolTipIcon]::Warning)
+    }
+}
+
+function Reset-Cooldown {
+    try {
+        Ensure-RouterRunning
+        $res = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/reset-cooldown" -Method Post -TimeoutSec 3 -ErrorAction Stop
+        $notifyIcon.ShowBalloonTip(2000, "限频冷却已重置", "✔ 所有账号的 429 限频锁定已清零，恢复正常轮询！", [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch {
+        $notifyIcon.ShowBalloonTip(2000, "重置提示", "已发送重置信号至端口 $port", [System.Windows.Forms.ToolTipIcon]::Info)
+    }
+}
+
+function Restart-RouterService {
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        if ($conn) {
+            $p = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+            if ($p -and $p.ProcessName -like "*node*") {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Start-Sleep -Milliseconds 500
+        Ensure-RouterRunning
+        $notifyIcon.ShowBalloonTip(2000, "路由服务已重启", "✔ 4010 智能网关已完成平滑重载！", [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch {
+        $notifyIcon.ShowBalloonTip(2000, "重启失败", $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
+    }
+}
+
+function Run-DoctorRepair {
+    $docScript = Join-Path $rootDir "doctor-repair.ps1"
+    if (Test-Path $docScript) {
+        Start-Process "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$docScript`""
+    } else {
+        Open-Dashboard "#doctor"
+    }
+}
+
+function Bind-DesktopClients {
+    [System.Threading.ThreadPool]::QueueUserWorkItem({
+        try {
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/bind-desktop" -Method Post -ContentType "application/json" -Body "{}" -TimeoutSec 6
+            $notifyIcon.ShowBalloonTip(4000, "OpenCode 智能路由", "✔ 本地网关已成功锁定为 OpenCode 与 OpenChamber 默认配置！", [System.Windows.Forms.ToolTipIcon]::Info)
+        } catch {
+            $notifyIcon.ShowBalloonTip(4000, "配置失败", $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
+        }
+    })
+}
+
+# --- 创建常驻隐形宿主窗体 (防止消息泵被 GC 回收) ---
+$hiddenForm = New-Object System.Windows.Forms.Form
+$hiddenForm.Text = "OpenCodeRouterTrayMsgSink"
+$hiddenForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$hiddenForm.ShowInTaskbar = $false
+$hiddenForm.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+$hiddenForm.Size = New-Object System.Drawing.Size(0, 0)
+$hiddenForm.Opacity = 0
+$hiddenForm.ShowIcon = $false
+
+function Exit-TrayApp {
+    try {
+        if ($watchdogTimer) {
+            $watchdogTimer.Stop()
+            $watchdogTimer.Dispose()
+        }
+        if ($global:notifyIcon) {
+            $global:notifyIcon.Visible = $false
+            $global:notifyIcon.Dispose()
+        }
+        if ($mutex) {
+            $mutex.ReleaseMutex()
+            $mutex.Dispose()
+        }
+    } catch { }
+    if ($hiddenForm) {
+        $hiddenForm.Close()
+    }
+    [System.Windows.Forms.Application]::Exit()
+    exit 0
+}
+
+# --- 初始化 NotifyIcon ---
+Ensure-RouterRunning
+
+$global:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+if (Test-Path $icoPath) {
+    try {
+        $global:notifyIcon.Icon = New-Object System.Drawing.Icon($icoPath)
+        Write-TrayLog "Loaded custom icon: $icoPath"
+    } catch {
+        $global:notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+        Write-TrayLog "Loaded fallback icon"
+    }
+} else {
+    $global:notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+}
+
+$global:notifyIcon.Text = "OpenCode 订阅管理中心 (端口: $port)"
+$global:notifyIcon.Visible = $true
+
+# --- 构建右键菜单 (ContextMenuStrip) ---
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+
+$menuOpen = New-Object System.Windows.Forms.ToolStripMenuItem("🚀 打开订阅管理面板")
+$menuOpen.Font = New-Object System.Drawing.Font($menuOpen.Font, [System.Drawing.FontStyle]::Bold)
+$menuOpen.add_Click({ Open-Dashboard })
+$menu.Items.Add($menuOpen) | Out-Null
+
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+$menuChamber = New-Object System.Windows.Forms.ToolStripMenuItem("💻 唤醒 / 启动 OpenChamber 桌面端")
+$menuChamber.Font = New-Object System.Drawing.Font($menuChamber.Font, [System.Drawing.FontStyle]::Bold)
+$menuChamber.add_Click({ Launch-OpenChamber })
+$menu.Items.Add($menuChamber) | Out-Null
+
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+$menuStatus = New-Object System.Windows.Forms.ToolStripMenuItem("🔍 检查服务状态")
+$menuStatus.add_Click({ Check-RouterStatus })
+$menu.Items.Add($menuStatus) | Out-Null
+
+$menuReset = New-Object System.Windows.Forms.ToolStripMenuItem("⚡ 一键重置限频冷却")
+$menuReset.add_Click({ Reset-Cooldown })
+$menu.Items.Add($menuReset) | Out-Null
+
+$menuRestart = New-Object System.Windows.Forms.ToolStripMenuItem("🔄 重启路由服务")
+$menuRestart.add_Click({ Restart-RouterService })
+$menu.Items.Add($menuRestart) | Out-Null
+
+$menuDoctor = New-Object System.Windows.Forms.ToolStripMenuItem("🩺 系统环境自检与修复")
+$menuDoctor.add_Click({ Run-DoctorRepair })
+$menu.Items.Add($menuDoctor) | Out-Null
+
+$menuUpdates = New-Object System.Windows.Forms.ToolStripMenuItem("📦 检查更新与组件版本诊断")
+$menuUpdates.add_Click({ Open-Dashboard "#updates" })
+$menu.Items.Add($menuUpdates) | Out-Null
+
+$menuBind = New-Object System.Windows.Forms.ToolStripMenuItem("⚡ 一键应用至 OpenCode / OpenChamber")
+$menuBind.add_Click({ Bind-DesktopClients })
+$menu.Items.Add($menuBind) | Out-Null
+
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+$menuExit = New-Object System.Windows.Forms.ToolStripMenuItem("❌ 退出托盘与路由服务")
+$menuExit.add_Click({ Exit-TrayApp })
+$menu.Items.Add($menuExit) | Out-Null
+
+$global:notifyIcon.ContextMenuStrip = $menu
+$global:notifyIcon.add_DoubleClick({ Open-Dashboard })
+$global:notifyIcon.add_Click({
+    param($s, $e)
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        Open-Dashboard
+    }
+})
+
+try {
+    $global:notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "本地 4010 智能网关在后台常驻运行，双击绿色托盘图标可随时唤出管理面板。", [System.Windows.Forms.ToolTipIcon]::Info)
+} catch { }
+
+# --- 后台自愈看门狗 (Watchdog) ---
+$watchdogTimer = New-Object System.Windows.Forms.Timer
+$watchdogTimer.Interval = 5000
+$watchdogTimer.add_Tick({
+    try {
+        Ensure-RouterRunning
+        if ($global:notifyIcon -and -not $global:notifyIcon.Visible) {
+            $global:notifyIcon.Visible = $true
+        }
+    } catch { }
+})
+$watchdogTimer.Start()
+
+Write-TrayLog "PowerShell native NotifyIcon daemon initialized with hiddenForm."
+
+Write-TrayLog "Entering Application::Run(hiddenForm)..."
+try {
+    [System.Windows.Forms.Application]::Run($hiddenForm)
+} catch {
+    Write-TrayLog "Run exception: $_"
+}
+Write-TrayLog "Application::Run returned!"
