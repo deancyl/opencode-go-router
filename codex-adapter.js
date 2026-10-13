@@ -2132,36 +2132,36 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
   filteredLines.push('requires_openai_auth = true');
   filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
 
-  // Only update or append [model_providers.custom] if user explicitly requested custom provider
-  if (provider === 'custom') {
-    let hasCustom = false;
-    inSection = false;
-    for (let i = 0; i < filteredLines.length; i++) {
-      const l = filteredLines[i].trim();
-      if (l === '[model_providers.custom]') {
-        hasCustom = true;
-        inSection = true;
-        continue;
-      }
-      if (inSection) {
-        if (l.startsWith('[')) {
-          inSection = false;
-        } else if (l.startsWith('base_url =')) {
-          filteredLines[i] = `base_url = ${JSON.stringify(routerUrl)}`;
-        } else if (l.startsWith('wire_api =')) {
-          filteredLines[i] = 'wire_api = "responses"';
-        }
+  // Safeguard: Always ensure [model_providers.custom] points to local router as well
+  // This prevents Codex from erroring out with "supported API model names are ... but you passed deepseek-v4.1-flash"
+  // if the user toggles provider back to "custom" in the UI.
+  let hasCustom = false;
+  inSection = false;
+  for (let i = 0; i < filteredLines.length; i++) {
+    const l = filteredLines[i].trim();
+    if (l === '[model_providers.custom]') {
+      hasCustom = true;
+      inSection = true;
+      continue;
+    }
+    if (inSection) {
+      if (l.startsWith('[')) {
+        inSection = false;
+      } else if (l.startsWith('base_url =')) {
+        filteredLines[i] = `base_url = ${JSON.stringify(routerUrl)}`;
+      } else if (l.startsWith('wire_api =')) {
+        filteredLines[i] = 'wire_api = "responses"';
       }
     }
+  }
 
-    if (!hasCustom) {
-      filteredLines.push('');
-      filteredLines.push('[model_providers.custom]');
-      filteredLines.push('name = "custom"');
-      filteredLines.push('wire_api = "responses"');
-      filteredLines.push('requires_openai_auth = true');
-      filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
-    }
+  if (!hasCustom && provider === 'custom') {
+    filteredLines.push('');
+    filteredLines.push('[model_providers.custom]');
+    filteredLines.push('name = "custom"');
+    filteredLines.push('wire_api = "responses"');
+    filteredLines.push('requires_openai_auth = true');
+    filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
   }
 
   // Ensure [desktop] section has localeOverride = "zh-CN"
@@ -2440,13 +2440,21 @@ function bindCodexConfig(options = {}) {
     }
   } catch (e) {}
 
-  const catalogModels = OPENCODE_GO_ALL_MODELS.map(m => ({
-    ...baseTemplate,
-    ...m,
-    shell_type: 'shell_command',
-    visibility: 'list',
-    supported_in_api: true
-  }));
+  const catalogModels = OPENCODE_GO_ALL_MODELS.map(m => {
+    const ctx = m.context_window || 1048576;
+    const compactLimit = Math.floor(ctx * 0.85); // 85% of context window triggers Codex client-side auto-compaction
+    return {
+      ...baseTemplate,
+      ...m,
+      context_window: ctx,
+      max_context_window: ctx,
+      auto_compact_token_limit: compactLimit,
+      effective_context_window_percent: 95,
+      shell_type: 'shell_command',
+      visibility: 'list',
+      supported_in_api: true
+    };
+  });
 
   const catalogFile = path.join(catalogsDir, 'opencode-go-catalog.json');
   fs.writeFileSync(catalogFile, JSON.stringify({ models: catalogModels }, null, 2), 'utf8');
@@ -2461,11 +2469,27 @@ function bindCodexConfig(options = {}) {
         if (Array.isArray(parsed.models)) existingModels = parsed.models;
       } catch (e) {}
     }
-    const newSlugs = new Set(OPENCODE_GO_ALL_MODELS.map(m => m.slug));
-    const retainedModels = existingModels.filter(m => !newSlugs.has(m.slug));
-    const mergedModels = [...OPENCODE_GO_ALL_MODELS, ...retainedModels];
+    const enrichedOpencodeModels = OPENCODE_GO_ALL_MODELS.map(m => {
+      const ctx = m.context_window || 1048576;
+      return {
+        ...baseTemplate,
+        ...m,
+        context_window: ctx,
+        max_context_window: ctx,
+        auto_compact_token_limit: Math.floor(ctx * 0.85),
+        effective_context_window_percent: 95
+      };
+    });
+    const newSlugs = new Set(enrichedOpencodeModels.map(m => m.slug));
+    const retainedModels = existingModels.filter(m => !newSlugs.has(m.slug)).map(m => {
+      if (!m.auto_compact_token_limit && m.context_window) {
+        m.auto_compact_token_limit = Math.floor(m.context_window * 0.85);
+      }
+      return m;
+    });
+    const mergedModels = [...enrichedOpencodeModels, ...retainedModels];
     fs.writeFileSync(modelsPath, JSON.stringify({ models: mergedModels }, null, 2), 'utf8');
-    messages.push(`已同步全量模型至 ${modelsPath} (总计 ${mergedModels.length} 个模型)`);
+    messages.push(`已同步全量模型至 ${modelsPath} (总计 ${mergedModels.length} 个模型，已配置自动切分阈值)`);
   } catch (err) {
     messages.push(`更新 models.json 提醒: ${err.message}`);
   }
