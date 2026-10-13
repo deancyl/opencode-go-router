@@ -9,8 +9,7 @@
 [![Linux](https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(Debian%2CUbuntu%2CfnOS%2CDSM)-orange.svg)](https://kernel.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.5.2](https://img.shields.io/badge/Version-v2.5.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.5.5](https://img.shields.io/badge/Version-v2.5.5-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -444,6 +443,19 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.5.5 (Codex 一键脱钩重启、双轨提供商重定向与上下文自动切分守护)
+- **Codex 桌面客户端一键脱钩重启 (One-Click Decoupled Restart & In-Memory Cache Refresher)**：
+  - **内存缓存刷新与生命周期管理**：深入诊断 Codex 桌面客户端（ChatGPT / UWP 应用）在启动时将 `config.toml` 与 `models.json` 固化缓存至进程内存的底层机制；新增 `/balancer/api/restart-codex` 后端 API 与 Web 控制台专属【🔄 重启 Codex 客户端】按钮；
+  - **智能提示闭环**：在【⚡ 一键接入 Codex】或【⏪ 一键还原原本配置】完成后，自动弹出确认弹窗引导一键重启客户端，彻底消除“接入后没生效 / 仍然使用旧配置”的困惑；
+  - **Windows 脱钩进程安全拉起**：严格遵循 Windows 桌面准则，以 `explorer.exe shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App` 原生脱钩唤醒，零黑框终端、防单实例互斥锁挂起与僵死。
+- **超限上下文自动切分与双轨裁剪引擎 (Context Compaction & Sliding-Window Engine)**：
+  - **Codex 自动压缩阈值注入**：深入排查 `context_length_exceeded`（输入达 152.5 万 tokens 超过 1M 上下文）根因，查明模型元数据中 `auto_compact_token_limit` 为 `null` 导致 Codex 永不触发自动压缩；已在模型清单中强制注入 `auto_compact_token_limit = Math.floor(ctx * 0.85)`（1M 模型设为 891k，2M 模型设为 1.7M），恢复原生滑动切分；
+  - **网关层双保险主动裁剪**：在网关层集成巨型工具输出折叠（单条超过 12,000 字符自动折叠首尾）与前序轮次滑动截断，双轨杜绝上下文溢出。
+- **DeepSeek 专享模型双轨重定向互锁 (Dual-Track Provider Redirection)**：
+  - 彻底根治用户 `~/.codex/config.toml` 中 `model_provider = "custom"` 直连 DeepSeek 官方 API 导致 `The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash` 的致命报错；
+  - 在配置合流与接入中将 `custom` 供应商与 `opencode-go` 供应商的 `base_url` 同步重定向至 4010 本地网关，彻底消灭模型名校验冲突。
+- **全套自动化测试扩展至 66 项 100% 绿灯**。
 
 ### 🚀 v2.5.2 (全量 38 款模型实测排查、协议不兼容与地域限制智能自愈容灾)
 - **OpenCode 官方全量 38 款模型端到端压测与体检排查**：

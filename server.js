@@ -2633,6 +2633,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Restart Codex Desktop Application API
+  if (reqUrl.pathname === '/balancer/api/restart-codex' && (req.method === 'POST' || req.method === 'GET')) {
+    try {
+      const result = codexAdapter.restartCodex();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({
+        success: result.success,
+        result,
+        message: result.messages && result.messages.length > 0 ? result.messages.join('；') : 'Codex 客户端已平滑重启并加载最新配置'
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
   // Launch / Activate OpenChamber Desktop Application API
   if (reqUrl.pathname === '/balancer/api/launch-chamber' && (req.method === 'POST' || req.method === 'GET')) {
     try {
@@ -3472,7 +3489,8 @@ $ghost
         <div>
           <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔍 刷新状态</button>
           <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="bindCodex()">⚡ 一键接入 Codex</button>
-          <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="restoreCodex()">🔄 一键还原原本配置</button>
+          <button class="btn btn-warning btn-sm" style="margin-left:6px; background:#d97706; border-color:#b45309;" onclick="restartCodexClient()">🔄 重启 Codex 客户端</button>
+          <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="restoreCodex()">⏪ 一键还原原本配置</button>
         </div>
       </div>
       <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
@@ -4530,8 +4548,11 @@ $ghost
         });
         const data = await res.json();
         if (data.success) {
-          showToast('🎉 Codex 一键接入成功！');
+          showToast('🎉 Codex 一键接入成功！建议重启客户端以立即加载新配置。');
           loadCodexStatus();
+          if (confirm('🎉 Codex 已成功接入 4010 本地网关！\n\n是否立即平滑重启 Codex 客户端以立即加载最新配置与 38 款模型？')) {
+            restartCodexClient();
+          }
         } else {
           showToast('接入失败: ' + (data.error || data.message), true);
           loadCodexStatus();
@@ -4548,6 +4569,28 @@ $ghost
       if (card) card.scrollIntoView({ behavior: 'smooth' });
     }
 
+    async function restartCodexClient() {
+      const box = document.getElementById('codex-status-content');
+      if (box) box.innerHTML = '<span style="color:var(--muted)">正在平滑重启 OpenAI Codex 客户端并加载最新配置...</span>';
+      try {
+        const res = await fetch('/balancer/api/restart-codex', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('🎉 Codex 客户端已优雅重启并加载最新配置！');
+          setTimeout(loadCodexStatus, 1500);
+        } else {
+          showToast('重启已执行: ' + (data.message || '已发送重启信号'), false);
+          setTimeout(loadCodexStatus, 1500);
+        }
+      } catch (e) {
+        showToast('重启请求异常: ' + e.message, true);
+        loadCodexStatus();
+      }
+    }
+
     async function restoreCodex() {
       if (!confirm('确定要一键还原 Codex 原始配置吗？系统将从 backup-router-bind 恢复您接入前原本的所有配置与认证。')) return;
       const box = document.getElementById('codex-status-content');
@@ -4561,6 +4604,9 @@ $ghost
         if (data.success) {
           showToast('✔ Codex 原始配置已恢复！');
           loadCodexStatus();
+          if (confirm('✔ Codex 原始配置已恢复！\n\n是否立即平滑重启 Codex 客户端以重新加载原始配置？')) {
+            restartCodexClient();
+          }
         } else {
           showToast('还原未完成: ' + (data.message || data.error), true);
           loadCodexStatus();

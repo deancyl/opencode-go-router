@@ -2680,6 +2680,67 @@ function restoreCodexConfig(codexDirOverride = null, options = {}) {
   };
 }
 
+/**
+ * Gracefully terminates running Codex Desktop / CLI daemon processes and relaunches
+ * the Codex desktop client in a decoupled, zero-window manner to load fresh configurations.
+ */
+function restartCodex(options = {}) {
+  const isWin = process.platform === 'win32';
+  const messages = [];
+
+  if (isWin) {
+    try {
+      // 1. Terminate running Codex Desktop / ChatGPT / CLI processes
+      execSync('powershell -NoProfile -Command "Stop-Process -Name ChatGPT, codex, codex-windows-sandbox-service -Force -ErrorAction SilentlyContinue"', { timeout: 10000 });
+      messages.push('已终止旧版 Codex / ChatGPT 运行实例与后台进程');
+    } catch (e) {
+      messages.push(`终止旧进程提醒: ${e.message}`);
+    }
+
+    // 2. Launch fresh detached instance via Windows explorer.exe shell decoupled
+    let launched = false;
+    try {
+      const p1 = 'powershell -NoProfile -Command "Start-Sleep -Milliseconds 600; Start-Process explorer.exe shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App"';
+      const child = require('child_process').spawn('cmd.exe', ['/d', '/c', p1], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      child.unref();
+      launched = true;
+      messages.push('已通过 Windows 原生外壳脱钩唤起全新 Codex 桌面客户端 (OpenAI.Codex)');
+    } catch (err1) {
+      try {
+        const child2 = require('child_process').spawn('cmd.exe', ['/d', '/c', 'codex app'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true
+        });
+        child2.unref();
+        launched = true;
+        messages.push('已通过 `codex app` 命令脱钩唤起客户端');
+      } catch (err2) {
+        messages.push(`唤起 Codex 客户端异常: ${err2.message}`);
+      }
+    }
+
+    return {
+      success: launched,
+      restarted: true,
+      messages
+    };
+  } else {
+    // Linux / macOS
+    try {
+      execSync('pkill -f "codex" || true', { timeout: 5000 });
+      messages.push('已清理旧版 Codex 后台进程');
+      return { success: true, restarted: true, messages };
+    } catch (e) {
+      return { success: false, restarted: false, messages: [e.message] };
+    }
+  }
+}
+
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
   NATIVE_RESPONSES_MODELS,
@@ -2698,5 +2759,6 @@ module.exports = {
   getCodexStatus,
   syncDynamicModels,
   bindCodexConfig,
-  restoreCodexConfig
+  restoreCodexConfig,
+  restartCodex
 };

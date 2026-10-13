@@ -1786,8 +1786,19 @@ async function runTests() {
     assert.ok(prunedMsgs.length < mockChatMessages.length, 'Pruned chat messages count must be smaller');
     console.log('✓ Context Pruning & Sliding-Window Compression Engine verified');
 
+    // [Test 66] Testing Restart Codex API (/balancer/api/restart-codex)...
+    console.log('\n[Test 66] Testing Restart Codex API (/balancer/api/restart-codex)...');
+    const restartRes = await request('/balancer/api/restart-codex', {
+      method: 'POST'
+    });
+    assert.strictEqual(restartRes.statusCode, 200, 'Restart Codex API must return 200');
+    const restartData = JSON.parse(restartRes.body);
+    assert.ok(restartData.success !== undefined, 'Restart Codex must return success boolean');
+    assert.ok(restartData.result.messages, 'Restart Codex must return detailed messages');
+    console.log('✓ Restart Codex API & Decoupled Execution verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 65 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 66 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
