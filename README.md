@@ -97,6 +97,12 @@
    - **OpenChamber 升级联动 Office 离线预览补丁自动重挂载**：
      解决升级 OpenChamber 覆盖前端构建产物导致的 Office 离线预览失效风险，在跨平台升级完成后全自动执行 `patch-openchamber-office.sh` / `patch-openchamber-office.ps1` 重新注入离线解析沙箱，恪守 Air-Gapped 安全红线。
 
+12. **Linux / NAS 真实工作区根回溯、CLI 架构包捆绑与两阶段动态插件安全自愈系统 (Architecture Binary Bundle & Two-Stage Plugin Healing - v2.4.9 重磅增强)**：
+   - **真实宿主项目工作区根回溯 (`getEnclosingProjectRoot`)**：彻底修复在嵌套依赖内执行更新的路径穿透缺陷，当检测到目标位于 `/node_modules/` 内部时，自动截断回溯至外层真实的宿主项目根目录（如 `/vol3/1000/docker/opencode/openchamber`），保障更新上下文与配置规范 100% 正确；
+   - **跨平台 CLI 架构二进制包联合捆绑安装 (`@opencode/cli-${plat}-${arch}`)**：智能探测宿主平台与架构，自动联合捆绑安装对应架构包（如 `@opencode/cli-linux-x64`），让 `postinstall.mjs` 本地直接命中二进制，彻底斩断其脱网裸拉引发的连接超时报错（`npm error code 1 Failed to install OpenCode`）；
+   - **OMO 插件新版本 Bun 动态缓存两阶段补丁闭环 (Two-Stage Plugin V2 Patch Lifecycle)**：针对 OpenCode 2.0 (Bun 引擎) 重启后才异步冷拉取插件到 `~/.cache/opencode/npm/` 的生命周期，自动执行第二阶段延迟安全检测与热重载，确保刚落盘的最新版本插件即时注入 `input.directory` 兼容包装，彻底消灭 `Plugin must export a default definition...` 报错；
+   - **全套自动化测试扩展至 63 项**：全链路严密覆盖跨平台架构捆绑、工作区根目录回溯、两阶段补丁生命周期及 Codex / Doctor 自愈体系，63 项测试 100% 绿灯通过。
+
 ---
 
 ## 二、系统架构
@@ -313,7 +319,7 @@ powershell -ExecutionPolicy Bypass -File .\stop-all.ps1
 
 ## 七、测试与质量保证
 
-本项目配备 18 项端到端单元与集成自动化测试套件：
+本项目配备 **63 项端到端单元与全链路集成自动化测试套件**，全面覆盖 Windows 与 Linux / NAS 各种极端边界条件、安全沙箱与自愈链路：
 
 ```bash
 npm test
@@ -321,25 +327,13 @@ npm test
 node test_router.js
 ```
 
-### 包含测试项：
-1. **[Test 1]** `/health` 健康检查端点测试
-2. **[Test 2]** CORS OPTIONS 跨域预检测试
-3. **[Test 3]** `/status` 状态指标测试
-4. **[Test 4]** 账号负载均衡轮询 (Round-Robin) 测试
-5. **[Test 5]** `x-opencode-session` 会话亲和性锁定测试
-6. **[Test 6]** 上游 429 自动静默故障漂移 (Failover) 与恢复测试
-7. **[Test 7]** `/balancer/api/reset-cooldown` 限频冷却重置 API 测试
-8. **[Test 8]** `/balancer/api/doctor` 智能体检诊断 API 测试
-9. **[Test 9]** 账号池全熔断保护 (Pool-wide 429 Cooldown Protection) 测试
-10. **[Test 10]** 客户端主动断开连接隔离测试 (Client Abort Isolation)
-11. **[Test 11]** 代理响应及错误响应 CORS 标头校验测试
-12. **[Test 12]** `/balancer/api/repair` 自动修复 API 测试
-13. **[Test 13]** `/balancer/api/bind-desktop` 跨平台多生态客户端写入绑定测试
-14. **[Test 14]** UI Password 访问密码安全鉴权门禁拦截与 Bearer Token 访问测试
-15. **[Test 15]** `/balancer/api/open-file` 本地原厂应用程序调用与路径合法性校验测试
-16. **[Test 16]** 5 大核心组件版本检测与破坏性变更兼容性评级诊断测试 (`/balancer/api/updates/check`)
-17. **[Test 17]** 全量组件自动快照创建与安全升级机制测试 (`/balancer/api/updates/apply`)
-18. **[Test 18]** 历史快照秒级灾备回滚与生态数据全量复原测试 (`/balancer/api/updates/rollback`)
+### 覆盖核心测试场景（全量 63 项）：
+- **基础网关与负载均衡 (Test 1 - 14)**：`/health`、CORS OPTIONS、`/status` 指标、双账号轮询、`x-opencode-session` 会话亲和性锁定、429 自动静默转移与冷却重置、智能体检诊断 (`/doctor`)、全熔断保护、客户端主动断开隔离、`/repair` 自愈、多客户端配置写入绑定 (`/bind-desktop`)、安全密码门禁与 Bearer Token 鉴权；
+- **原生文件安全沙箱与灾备更新 (Test 15 - 24)**：`/open-file` 危险扩展名黑名单隔离与 UNC 网络路径阻断、跨平台组件版本检测与兼容性诊断 (`/updates/check`)、全量配置安全快照与更新 (`/updates/apply`)、灾备快照秒级深度还原 (`/updates/rollback`)、NAS 多卷路径探测、前端热补丁 AST 特征提取、POSIX 权限元数据持久化与损坏快照容错；
+- **高并发与协议桥接规范 (Test 25 - 35)**：LRU 会话亲和一致性、JSON 注释清洗与尾逗号规范化、Web 控制台多重鉴权、OMO 模型 Fallback 对齐、OpenChamber 桌面端智能置顶唤醒与多级浏览器容灾；
+- **OpenAI Codex CLI 智能接入与协议互通 (Test 36 - 47)**：Codex 状态查询与模型元数据、一键配置写入与零损备份还原、Responses API <-> ChatCompletions / Anthropic Messages 双向 SSE 流式转换、工具调用 (`tool_calls`) 与深度思考上下文生命周期、端到端桥接代理验证；
+- **平台自适应探测与 OpenCode 2.0+ 配置合流 (Test 48 - 54)**：Windows / Linux NAS (fnOS / Synology / Docker) 多卷自适应感知、单复数 provider 冲突清洗合流、38 款官方模型基准与用户配置无损保留、npm/bun 双轨国内镜像源容灾 (`npmmirror`)、非 root 作用域安装目录寻址；
+- **官方模型动态增量同步与生态自愈 (Test 55 - 63)**：官方 `/models` 接口动态拉取与增量热合并 (`/models/sync`)、OMO 插件版本智能对齐、OMO v2 运行时完整性检测、双轨 Schema 镜像、OpenChamber 端口动态嗅探、配额防抖缓存池与前端轮询调度、OpenCode 2.0 原生智能体 (`agent.goal`, `agent['goal-verify']`) 自动补齐与自愈。
 
 ---
 
@@ -356,47 +350,54 @@ npm run build:exe
 
 ## 九、版本历史与更新记录
 
-### 🚀 v2.1.0 (全链路健壮性增强与生态深度对齐里程碑发布)
-经过 10 个 0.1 级别的微小渐进式敏捷迭代与严密自动化回归验证，全面升级系统跨平台通用性、原生沙箱安全防御与灾备恢复能力：
-- **v2.0.1 安全加固与原生文件执行沙箱防御 (Sandbox Security Hardening)**：
-  - 彻底封堵 `/balancer/api/open-file` 接口的命令注入漏洞，抛弃拼接外壳字符串的 `exec`，改用参数数组隔离的 `spawn`；
-  - 建立严格后缀黑名单防护机制（覆盖 `.exe`, `.bat`, `.cmd`, `.com`, `.vbs`, `.vbe`, `.js`, `.jse`, `.wsf`, `.wsh`, `.msi`, `.ps1`, `.sh`, `.reg`, `.dll`, `.sys`, `.lnk`, `.url`, `.appref-ms` 等），优先拦截并返回 `403 Forbidden`；
-  - 增加 Windows 网络 UNC 共享路径安全阻断（拦截 `\\host\share` 与 `//host`，彻底杜绝 NTLM 凭据外泄攻击）；
-  - 全面支持 `file:///` 本地文件 URL 解析与百分号转义清洗；
-  - 修复 `office-preview-engine.js` 内联字符串拼接在 Windows 反斜杠转义下损坏语法的隐患，全面改用 DOM 原生事件闭包，并动态适配当前局域网访问主机名与 HTTPS 环境跨协议检测。
-- **v2.0.2 跨平台工作区与 NAS / Docker 多卷动态探测 (Multi-Volume Workspace Engine)**：
-  - 消除 Windows 盘符硬编码，引入多驱动器动态探测（`D:\`, `E:\`, `C:\`, 用户目录等）；
-  - 全面支持 Linux / NAS 多卷动态挂载探测（群晖 Synology DSM `/volume1`, `/volume2`, fnOS 飞牛 `/vol1..vol4`, TrueNAS `/mnt/user/appdata` 及 Docker 容器卷）；
-  - `bindDesktopConfig` 与 `setup-linux.sh` 同步覆盖全系列 NAS 卷路径，确保 OpenChamber 配置一键绑定百分之百命中。
-- **v2.0.3 前端热补丁 AST 特征动态匹配与双端容错 (AST Dynamic Patching & Positional CLI)**：
-  - 前端热补丁脚本升级为 AST 正则特征动态提取（`([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary`），从容应对 OpenChamber Web 打包混淆变量名变动；
-  - 修复 Linux / NAS 脚本 `patch-openchamber-office.sh` 位置参数匹配缺陷，支持 `install`、`rollback`、`status` 原生动词与选项双重调用，彻底杜绝还原时错误重复安装的隐患；
-  - `patch-openchamber-office.ps1` 同步支持位置动词参数并对齐全平台候选路径。
-- **v2.0.4 端口冲突自愈与守护看门狗容灾增强 (Port Self-Healing & Daemon Watchdog)**：
-  - 针对 `EADDRINUSE` 错误引入智能端口释放自愈机制，自动发现并清理陈旧孤立残留进程，1 秒内平滑重连；
-  - PowerShell 与 C# 托盘统一使用去重管道（`Select-Object -ExpandProperty OwningProcess -Unique`），消除双栈 IPv4/IPv6 监听下的多进程判定异常；
-  - `stop-all.ps1` 增加对 `OpenCodeRouterTray` 原生进程的强力终止保护，防止托盘看门狗在停止服务后误复活。
-- **v2.0.5 负载均衡器会话亲和与滑动窗口配额监控健全化 (Affinity & Quota Robustness)**：
-  - 引入 LRU 会话淘汰机制（上限 5000 会话），根除长期高频调用可能引发的内存泄露；
-  - 修复全局限频冷却时 `Math.min(...[])` 产生 `Infinity` / `NaN` 的数学边界风险；
-  - 冷却时间输入全链路校验与防越界保护。
-- **v2.0.6 深度配置语法规范化与单复数冲突清洗引擎 (JSON Normalization & Conflict Cleaner)**：
-  - 强化 `stripJsonComments` 引擎，支持智能清除尾部多余逗号 `,(\s*[}\]])` 与复杂多行块级注释；
-  - 清理 `providers['opencode-go']` 冲突时严密保留第三方服务商配置。
-- **v2.0.7 OMO 智能体调度无限制模型 Fallback 路由全链路对齐 (OMO Harmonization)**：
-  - 统一全平台 OMO 默认调度模型模版（`glm-5.3`、`minimax-m3`、`qwen3.7-plus`、`kimi-k3`、`deepseek-v4.1-flash`、`deepseek-v4-pro`）；
-  - 全面清理 `doctor-repair.ps1` 与 `setup-wizard.ps1` 中陈旧残留的 `glm-5.2` 与 `minimax-m2.7`。
-- **v2.0.8 灾备快照文件元数据/权限持久化与损坏快照容错 (Snapshot Metadata & Corruption Tolerance)**：
-  - `createSnapshot` 记录 POSIX mode 权限与文件元数据，`rollbackSnapshot` 在 Linux/macOS 上高保真还原文件权限；
-  - `listSnapshots` 与 `rollbackSnapshot` 增加防御性容错，损坏的快照目录或损坏的 manifest JSON 不会导致服务或面板崩溃。
-- **v2.0.9 Web 控制台 UI 双语优化、端点一键复制、局域网访问 IP 显示与触控适配 (UI Polish & Dual-Track Auth)**：
-  - Web UI 顶栏增加 Base URL 动态展示、一键复制按钮与网络主机指示器（本地监听 vs 局域网/NAS访问）；
-  - 强化前端 fetch 请求中的 Token 与 Cookie 双轨回退机制；
-  - 增加移动端与触控设备自适应媒体查询（响应式断点）。
-- **v2.1.0 自动化测试套件扩充至 34 项全绿验证与二进制编译发布 (v2.1.0 Milestones & 34 Test Suite)**：
-  - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
-  - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
-  - 全量发布说明与文档对齐。
+### 🚀 v2.4.9
+- **彻底根治 Linux / NAS 环境下 OpenCode CLI 升级路径误判与架构二进制包缺失故障**：
+  - **真实宿主工作区根目录回溯与 node_modules 穿透剥离 (`getEnclosingProjectRoot`)**：重构组件路径解析逻辑，当向上寻址宿主项目时，若候选路径命中 `node_modules` 内部（如 `/vol3/.../openchamber/node_modules/@openchamber/web`），强制剥离内部层级并回溯至真实的宿主根目录（`/vol3/.../openchamber`），彻底杜绝在嵌套子依赖内执行 `npm install --prefix` 导致的依赖断层与结构破坏；
+  - **跨平台 CLI 架构二进制包联合捆绑安装 (`@opencode/cli-${plat}-${arch}`)**：针对 `@opencode/cli` 包装器特性，升级引擎自动探测宿主平台与架构（如 `linux-x64`、`windows-x64` 等），自动联装对应架构包（`@opencode/cli@x.y.z @opencode/cli-linux-x64@x.y.z`），使 `postinstall.mjs` 直接在本地精准命中二进制，彻底杜绝其脱离国内镜像源二次裸联网下载引发的超时与中断（消除 `npm error code 1 Failed to install OpenCode`）；
+  - **OMO 插件新版本 Bun 动态缓存两阶段补丁闭环 (Two-Stage Plugin V2 Patch Lifecycle)**：针对 OpenCode 2.0 (Bun 运行时) 在服务重启后才动态拉取新插件到 `~/.cache/opencode/npm/` 的异步时序，更新引擎在重启 2 秒后自动执行第二阶段补丁检测与热重载，确保刚拉取的新版本插件包即时注入 `input.directory` 安全包装器，彻底消灭 `Plugin must export a default definition with an id and an effect or setup function` 报错；
+  - **Linux NAS 实机端到端全绿验证**：飞牛私有云 (fnOS / Debian) 实机端到端升级验证通过，`@opencode/cli` 升至 `2.0.27`，`oh-my-openagent` 升至 `5.1.32`，90 款插件 100% 正常激活并稳定运行。
+
+### 🚀 v2.4.8
+- **修复 Linux / NAS 端“提供商接口”鉴权探测与端口自适应解析 (Provider Integration Probing)**：
+  - **环境感知与密码自适应发现**：在 `updater.js` 中新增 `detectOpenCodeServiceInfo()`，自动识别 Linux / NAS 宿主 systemd 守护服务（`opencode-server.service`、`openchamber.service`）与系统环境变量，动态解析 OpenCode 后端真实监听端口（4096）与 `OPENCODE_PASSWORD` 访问密码；
+  - **鉴权头自动注入与双向容灾**：在自检探针 `probeOpenChamberServices()` 中自动装配 `Authorization: Basic` 认证头，彻底消除 NAS 端因带密保护导致接口返回 401 并误报为 `error` 的假死提示；
+  - **友好状态呈现**：Web 控制台顶栏提供商接口状态卡片精细化呈现探测时延（如 `✔ 68ms`）与鉴权状态指示，消除歧义；
+  - **Linux NAS 实机实测**：飞牛私有云 (fnOS) 实机验证通过，/api/integration 响应 68ms 绿灯，88 款核心插件健康度 100%。
+
+### 🚀 v2.4.7
+- **OpenCode 2.0 原生智能体自动补齐与自愈 (Native Agent Self-Healing)**：
+  - **原生注册 Agent 补全**：在 `updater.js` 的 `harmonizeOpencodeConfig` 中自动检测并补全 OpenCode 2.0 原生 `agent.goal` (mode: `primary`) 与 `agent['goal-verify']` (mode: `subagent`) 配置；
+  - **根除生态识别断层**：彻底解决 OpenChamber 桌面端与 Web 客户端顶部切换到 `goal` 时抛出 `Session.AgentNotFoundError: Agent not found: "goal"` 的报错，使 OpenChamber / OpenCode 2.0 能够原生调度目标智能体；
+  - **用户自定义安全隔离**：严密保留用户在 `opencode.jsonc` 中已有的自定义 Agent Prompt、自定义模型及描述，绝不暴力覆盖已定制项目。
+- **Linux / NAS Bun 运行时模块缓存热重载与守护协同**：
+  - **Bun 动态模块缓存刷新**：针对 OpenCode 2.0 (Bun 引擎) 动态 import ESM 插件常驻内存的问题，在升级关键插件 (OMO, Goal) 或自愈注入智能体声明时，自动平滑重启 `opencode-server.service`（具备 15 秒超时保护），使最新插件包装补丁与智能体配置即时生效；
+  - **零干扰守护机制 (Zero-Disturbance)**：常规路由体检维持无感静默，严格保护运行中的长程任务不受中断。
+- **全套自动化测试扩展至 63 项**：
+  - 新增 `Test 63`，全链路严密覆盖 OpenCode 2.0 原生智能体自愈注入与用户自定义保留逻辑，全套 63 项测试 100% 绿灯通过；
+- **Linux NAS 实机全链路验证**：
+  - 飞牛私有云 (fnOS / Debian) 实机端到端验证通过，9 大智能体就绪（Build, General, Explore, Compaction, Title, Summary, Plan, Goal, Goal-Verify），OpenChamber 交互恢复正常。
+
+### 🚀 v2.4.6
+- **官方配额 (Usage Quota) 定时自动刷新、交互倒计时与智能防抖引擎**：
+  - **自定义多档刷新周期**：在 Web 管理控制台“OpenCode Go 订阅账号列表”标题栏注入现代化控制条，支持切换【关闭】、【15 秒】、【30 秒】、【60 秒 (默认推荐)】、【2 分钟】、【5 分钟】；
+  - **偏好自动记忆与持久化**：刷新间隔偏好自动保存在浏览器的 `localStorage` 中，重新打开或刷新控制台自动继承配置；
+  - **交互式 1 秒步长倒计时徽章（`⏱️ 58s`）**：实时平滑倒计时，支持点击倒计时徽章或【🔄 刷新全部配额】按钮立即全量强制刷新并重置定时器；
+  - **单卡片时间戳与防连点状态指示**：各账号限额卡片实时呈现最新更新时间（如 `11:05:36 更新 (缓存)`），并在刷新中呈现加载中状态防止重复点击；
+  - **首屏静默自动探测与切台挂起**：进入管理面板自动无感探测所有账号额度，结合 Page Visibility API 在切出后台时挂起倒计时，切回前台时若即将超时则自动补查并恢复；
+  - **后端 8 秒防抖内存缓存池 (Rate-Limit Defense)**：在 `server.js` 设立 `upstream + apiKey` 内存缓存池（TTL 8000ms），绝不因自动轮询或多标签页导致上游 429 限流；支持 `force: true` 显式穿透；
+  - **测试覆盖扩充**：新增 `Test 62` 自动化验证防抖缓存、强制穿透与前端定时调度，全套 62 项测试 100% 绿灯通过。
+- **Linux / NAS 组件升级与版本漂移根治 (OMO 5.1.30 同步与兼容)**：
+  - **彻底清除版本硬编码降级漏洞**：重构 `updater.js` 中的 `harmonizeOpencodeConfig`，彻底删除旧版硬编码默认值 `'5.1.29'`，引入“升级目标版本优先 > 磁盘真实安装包版本 > 现有配置继承”动态确定策略，彻底杜绝升级后版本被反向篡改；
+  - **升级后全自动注入 OMO v2 运行时安全兼容包装**：在升级 `oh-my-openagent` 后全自动执行 `patchOmoPluginV2()`，注入 `input.directory` 安全包装器并清除 Effect-TS 死锁，彻底终结升级后插件因缺少目录包装导致崩溃或显示为“未加载状态”的难题；
+  - **双向消除版本漂移 (Drift Auto-Healing)**：在 `detectLocalVersions()` 中以物理磁盘真实安装的包为基准，若检测到 `opencode.jsonc` 中的版本标签落后，自动热对齐更新配置文件，确保 Web 面板诊断与物理机状态 100% 同步。
+
+### 🚀 v2.4.1
+- **彻底根治 OpenChamber Office 离线预览“不解码 DOCX 文件”痛点**：
+  - **AST 级动态精准定位二进制组件**：彻底修复旧版本挂载脚本误匹配到 `Zd=r=>{`（字体文件预览组件）而非 `Xd=r=>{`（真实二进制文件兜底分发组件）的缺陷，通过向前动态回溯 AST 函数入口精确定位目标组件；
+  - **动态 JSX 运行时标识智能适配**：自动探测目标 chunk 中使用的 JSX 运行时标识（如 `n.jsx`），彻底杜绝硬编码未定义标识（`s.jsx`）引发的 ReferenceError 异常；
+  - **DOM 挂载安全沙箱与 React 虚拟节点隔离**：在 `office-preview-engine.js` 中严密校验下载按钮类型（`instanceof Node`），隔离 React VNode 传入 `appendChild` 引发的类型错误，并提供原生安全高保真下载按钮；
+  - **全卷与工作区外路径无阻解析**：注入 `allowOutsideWorkspace=true` 与 `fileInfo.src` 优先读取协议，确保跨工作区及 `_handoff` 目录下文件均可秒级本地高保真渲染；
+  - **体检与自愈管线全链路纳管**：更新 `server.js` 体检自愈（`/balancer/api/repair`）与挂载状态检测，实现 Windows 与 Linux / NAS 全端对齐。
 
 ### 🚀 v2.3.2
 - **网关自愈防护升级与 Linux NAS 更新深度容灾 (Deep Resilient Updater & Self-Healing Guard)**：
@@ -465,6 +466,48 @@ npm run build:exe
   - **5 级无窗口容灾回退**：Edge `--app=` -> Chrome `--app=` -> Windows 默认浏览器 (`UseShellExecute = true`) -> `explorer.exe` 兜底 -> `cmd.exe start` 终极无黑框唤起，确保 100% 能够在桌面弹出管理面板。
 - **自动化测试扩充至 35 项**：新增 Test 35 自动化覆盖桌面端启动契约与多级浏览器探测容灾，全套 35 项测试全绿通过。
 
+### 🚀 v2.1.0 (全链路健壮性增强与生态深度对齐里程碑发布)
+经过 10 个 0.1 级别的微小渐进式敏捷迭代与严密自动化回归验证，全面升级系统跨平台通用性、原生沙箱安全防御与灾备恢复能力：
+- **v2.0.1 安全加固与原生文件执行沙箱防御 (Sandbox Security Hardening)**：
+  - 彻底封堵 `/balancer/api/open-file` 接口的命令注入漏洞，抛弃拼接外壳字符串的 `exec`，改用参数数组隔离的 `spawn`；
+  - 建立严格后缀黑名单防护机制（覆盖 `.exe`, `.bat`, `.cmd`, `.com`, `.vbs`, `.vbe`, `.js`, `.jse`, `.wsf`, `.wsh`, `.msi`, `.ps1`, `.sh`, `.reg`, `.dll`, `.sys`, `.lnk`, `.url`, `.appref-ms` 等），优先拦截并返回 `403 Forbidden`；
+  - 增加 Windows 网络 UNC 共享路径安全阻断（拦截 `\\host\share` 与 `//host`，彻底杜绝 NTLM 凭据外泄攻击）；
+  - 全面支持 `file:///` 本地文件 URL 解析与百分号转义清洗；
+  - 修复 `office-preview-engine.js` 内联字符串拼接在 Windows 反斜杠转义下损坏语法的隐患，全面改用 DOM 原生事件闭包，并动态适配当前局域网访问主机名与 HTTPS 环境跨协议检测。
+- **v2.0.2 跨平台工作区与 NAS / Docker 多卷动态探测 (Multi-Volume Workspace Engine)**：
+  - 消除 Windows 盘符硬编码，引入多驱动器动态探测（`D:\`, `E:\`, `C:\`, 用户目录等）；
+  - 全面支持 Linux / NAS 多卷动态挂载探测（群晖 Synology DSM `/volume1`, `/volume2`, fnOS 飞牛 `/vol1..vol4`, TrueNAS `/mnt/user/appdata` 及 Docker 容器卷）；
+  - `bindDesktopConfig` 与 `setup-linux.sh` 同步覆盖全系列 NAS 卷路径，确保 OpenChamber 配置一键绑定百分之百命中。
+- **v2.0.3 前端热补丁 AST 特征动态匹配与双端容错 (AST Dynamic Patching & Positional CLI)**：
+  - 前端热补丁脚本升级为 AST 正则特征动态提取（`([A-Za-z0-9_$]+)=r=>\{(?:(?!function|[A-Za-z0-9_$]+=r=>).)*?filesView\.artifact\.binary`），从容应对 OpenChamber Web 打包混淆变量名变动；
+  - 修复 Linux / NAS 脚本 `patch-openchamber-office.sh` 位置参数匹配缺陷，支持 `install`、`rollback`、`status` 原生动词与选项双重调用，彻底杜绝还原时错误重复安装的隐患；
+  - `patch-openchamber-office.ps1` 同步支持位置动词参数并对齐全平台候选路径。
+- **v2.0.4 端口冲突自愈与守护看门狗容灾增强 (Port Self-Healing & Daemon Watchdog)**：
+  - 针对 `EADDRINUSE` 错误引入智能端口释放自愈机制，自动发现并清理陈旧孤立残留进程，1 秒内平滑重连；
+  - PowerShell 与 C# 托盘统一使用去重管道（`Select-Object -ExpandProperty OwningProcess -Unique`），消除双栈 IPv4/IPv6 监听下的多进程判定异常；
+  - `stop-all.ps1` 增加对 `OpenCodeRouterTray` 原生进程的强力终止保护，防止托盘看门狗在停止服务后误复活。
+- **v2.0.5 负载均衡器会话亲和与滑动窗口配额监控健全化 (Affinity & Quota Robustness)**：
+  - 引入 LRU 会话淘汰机制（上限 5000 会话），根除长期高频调用可能引发的内存泄露；
+  - 修复全局限频冷却时 `Math.min(...[])` 产生 `Infinity` / `NaN` 的数学边界风险；
+  - 冷却时间输入全链路校验与防越界保护。
+- **v2.0.6 深度配置语法规范化与单复数冲突清洗引擎 (JSON Normalization & Conflict Cleaner)**：
+  - 强化 `stripJsonComments` 引擎，支持智能清除尾部多余逗号 `,(\s*[}\]])` 与复杂多行块级注释；
+  - 清理 `providers['opencode-go']` 冲突时严密保留第三方服务商配置。
+- **v2.0.7 OMO 智能体调度无限制模型 Fallback 路由全链路对齐 (OMO Harmonization)**：
+  - 统一全平台 OMO 默认调度模型模版（`glm-5.3`、`minimax-m3`、`qwen3.7-plus`、`kimi-k3`、`deepseek-v4.1-flash`、`deepseek-v4-pro`）；
+  - 全面清理 `doctor-repair.ps1` 与 `setup-wizard.ps1` 中陈旧残留的 `glm-5.2` 与 `minimax-m2.7`。
+- **v2.0.8 灾备快照文件元数据/权限持久化与损坏快照容错 (Snapshot Metadata & Corruption Tolerance)**：
+  - `createSnapshot` 记录 POSIX mode 权限与文件元数据，`rollbackSnapshot` 在 Linux/macOS 上高保真还原文件权限；
+  - `listSnapshots` 与 `rollbackSnapshot` 增加防御性容错，损坏的快照目录或损坏的 manifest JSON 不会导致服务或面板崩溃。
+- **v2.0.9 Web 控制台 UI 双语优化、端点一键复制、局域网访问 IP 显示与触控适配 (UI Polish & Dual-Track Auth)**：
+  - Web UI 顶栏增加 Base URL 动态展示、一键复制按钮与网络主机指示器（本地监听 vs 局域网/NAS访问）；
+  - 强化前端 fetch 请求中的 Token 与 Cookie 双轨回退机制；
+  - 增加移动端与触控设备自适应媒体查询（响应式断点）。
+- **v2.1.0 自动化测试套件扩充至 34 项全绿验证与二进制编译发布 (v2.1.0 Milestones & 34 Test Suite)**：
+  - `test_router.js` 扩展至 34 项全量自动化测试，覆盖安全沙箱、UNC网络防御、file:///解析、AST正则提取、快照元数据、损坏容灾、会话亲和并发、JSON清洗、全平台多卷候选矩阵与跨组件对齐；
+  - 重新编译 C# 原生托盘程序 `OpenCodeRouterTray.exe` 与向导程序 `OpenCodeWizard.exe`；
+  - 全量发布说明与文档对齐。
+
 ### 🚀 v2.0.0
 - **全套组件一键检测更新与安全升级系统 (One-Click Safe Updater)**：
   - **5 大核心组件全景监控**：一站式检索并比对 `opencode-go-router`、`opencode` CLI、`oh-my-openagent`、`opencode-goal-plugin` 与 `openchamber` 的本地及最新发布版本；
@@ -496,55 +539,6 @@ npm run build:exe
   - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
   - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
 - **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
-
-### 🚀 v2.4.9
-- **彻底根治 Linux / NAS 环境下 OpenCode CLI 升级路径误判与架构二进制包缺失故障**：
-  - **真实宿主工作区根目录回溯与 node_modules 穿透剥离 (`getEnclosingProjectRoot`)**：重构组件路径解析逻辑，当向上寻址宿主项目时，若候选路径命中 `node_modules` 内部（如 `/vol3/.../openchamber/node_modules/@openchamber/web`），强制剥离内部层级并回溯至真实的宿主根目录（`/vol3/.../openchamber`），彻底杜绝在嵌套子依赖内执行 `npm install --prefix` 导致的依赖断层与结构破坏；
-  - **跨平台 CLI 架构二进制包联合捆绑安装 (`@opencode/cli-${plat}-${arch}`)**：针对 `@opencode/cli` 包装器特性，升级引擎自动探测宿主平台与架构（如 `linux-x64`、`windows-x64` 等），自动联装对应架构包（`@opencode/cli@x.y.z @opencode/cli-linux-x64@x.y.z`），使 `postinstall.mjs` 直接在本地精准命中二进制，彻底杜绝其脱离国内镜像源二次裸联网下载引发的超时与中断（消除 `npm error code 1 Failed to install OpenCode`）；
-  - **OMO 插件新版本 Bun 动态缓存两阶段补丁闭环 (Two-Stage Plugin V2 Patch Lifecycle)**：针对 OpenCode 2.0 (Bun 运行时) 在服务重启后才动态拉取新插件到 `~/.cache/opencode/npm/` 的异步时序，更新引擎在重启 2 秒后自动执行第二阶段补丁检测与热重载，确保刚拉取的新版本插件包即时注入 `input.directory` 安全包装器，彻底消灭 `Plugin must export a default definition with an id and an effect or setup function` 报错；
-  - **Linux NAS 实机端到端全绿验证**：飞牛私有云 (fnOS / Debian) 实机端到端升级验证通过，`@opencode/cli` 升至 `2.0.27`，`oh-my-openagent` 升至 `5.1.32`，90 款插件 100% 正常激活并稳定运行。
-
-### 🚀 v2.4.8
-- **修复 Linux / NAS 端“提供商接口”鉴权探测与端口自适应解析 (Provider Integration Probing)**：
-  - **环境感知与密码自适应发现**：在 `updater.js` 中新增 `detectOpenCodeServiceInfo()`，自动识别 Linux / NAS 宿主 systemd 守护服务（`opencode-server.service`、`openchamber.service`）与系统环境变量，动态解析 OpenCode 后端真实监听端口（4096）与 `OPENCODE_PASSWORD` 访问密码；
-  - **鉴权头自动注入与双向容灾**：在自检探针 `probeOpenChamberServices()` 中自动装配 `Authorization: Basic` 认证头，彻底消除 NAS 端因带密保护导致接口返回 401 并误报为 `error` 的假死提示；
-  - **友好状态呈现**：Web 控制台顶栏提供商接口状态卡片精细化呈现探测时延（如 `✔ 68ms`）与鉴权状态指示，消除歧义；
-  - **Linux NAS 实机实测**：飞牛私有云 (fnOS) 实机验证通过，/api/integration 响应 68ms 绿灯，88 款核心插件健康度 100%。
-
-### 🚀 v2.4.7
-- **OpenCode 2.0 原生智能体自动补齐与自愈 (Native Agent Self-Healing)**：
-  - **原生注册 Agent 补全**：在 `updater.js` 的 `harmonizeOpencodeConfig` 中自动检测并补全 OpenCode 2.0 原生 `agent.goal` (mode: `primary`) 与 `agent['goal-verify']` (mode: `subagent`) 配置；
-  - **根除生态识别断层**：彻底解决 OpenChamber 桌面端与 Web 客户端顶部切换到 `goal` 时抛出 `Session.AgentNotFoundError: Agent not found: "goal"` 的报错，使 OpenChamber / OpenCode 2.0 能够原生调度目标智能体；
-  - **用户自定义安全隔离**：严密保留用户在 `opencode.jsonc` 中已有的自定义 Agent Prompt、自定义模型及描述，绝不暴力覆盖已定制项目。
-- **Linux / NAS Bun 运行时模块缓存热重载与守护协同**：
-  - **Bun 动态模块缓存刷新**：针对 OpenCode 2.0 (Bun 引擎) 动态 import ESM 插件常驻内存的问题，在升级关键插件 (OMO, Goal) 或自愈注入智能体声明时，自动平滑重启 `opencode-server.service`（具备 15 秒超时保护），使最新插件包装补丁与智能体配置即时生效；
-  - **零干扰守护机制 (Zero-Disturbance)**：常规路由体检维持无感静默，严格保护运行中的长程任务不受中断。
-- **全套自动化测试扩展至 63 项**：
-  - 新增 `Test 63`，全链路严密覆盖 OpenCode 2.0 原生智能体自愈注入与用户自定义保留逻辑，全套 63 项测试 100% 绿灯通过；
-- **Linux NAS 实机全链路验证**：
-  - 飞牛私有云 (fnOS / Debian) 实机端到端验证通过，9 大智能体就绪（Build, General, Explore, Compaction, Title, Summary, Plan, Goal, Goal-Verify），OpenChamber 交互恢复正常。
-
-### 🚀 v2.4.6
-- **官方配额 (Usage Quota) 定时自动刷新、交互倒计时与智能防抖引擎**：
-  - **自定义多档刷新周期**：在 Web 管理控制台“OpenCode Go 订阅账号列表”标题栏注入现代化控制条，支持切换【关闭】、【15 秒】、【30 秒】、【60 秒 (默认推荐)】、【2 分钟】、【5 分钟】；
-  - **偏好自动记忆与持久化**：刷新间隔偏好自动保存在浏览器的 `localStorage` 中，重新打开或刷新控制台自动继承配置；
-  - **交互式 1 秒步长倒计时徽章（`⏱️ 58s`）**：实时平滑倒计时，支持点击倒计时徽章或【🔄 刷新全部配额】按钮立即全量强制刷新并重置定时器；
-  - **单卡片时间戳与防连点状态指示**：各账号限额卡片实时呈现最新更新时间（如 `11:05:36 更新 (缓存)`），并在刷新中呈现加载中状态防止重复点击；
-  - **首屏静默自动探测与切台挂起**：进入管理面板自动无感探测所有账号额度，结合 Page Visibility API 在切出后台时挂起倒计时，切回前台时若即将超时则自动补查并恢复；
-  - **后端 8 秒防抖内存缓存池 (Rate-Limit Defense)**：在 `server.js` 设立 `upstream + apiKey` 内存缓存池（TTL 8000ms），绝不因自动轮询或多标签页导致上游 429 限流；支持 `force: true` 显式穿透；
-  - **测试覆盖扩充**：新增 `Test 62` 自动化验证防抖缓存、强制穿透与前端定时调度，全套 62 项测试 100% 绿灯通过。
-- **Linux / NAS 组件升级与版本漂移根治 (OMO 5.1.30 同步与兼容)**：
-  - **彻底清除版本硬编码降级漏洞**：重构 `updater.js` 中的 `harmonizeOpencodeConfig`，彻底删除旧版硬编码默认值 `'5.1.29'`，引入“升级目标版本优先 > 磁盘真实安装包版本 > 现有配置继承”动态确定策略，彻底杜绝升级后版本被反向篡改；
-  - **升级后全自动注入 OMO v2 运行时安全兼容包装**：在升级 `oh-my-openagent` 后全自动执行 `patchOmoPluginV2()`，注入 `input.directory` 安全包装器并清除 Effect-TS 死锁，彻底终结升级后插件因缺少目录包装导致崩溃或显示为“未加载状态”的难题；
-  - **双向消除版本漂移 (Drift Auto-Healing)**：在 `detectLocalVersions()` 中以物理磁盘真实安装的包为基准，若检测到 `opencode.jsonc` 中的版本标签落后，自动热对齐更新配置文件，确保 Web 面板诊断与物理机状态 100% 同步。
-
-### 🚀 v2.4.1
-- **彻底根治 OpenChamber Office 离线预览“不解码 DOCX 文件”痛点**：
-  - **AST 级动态精准定位二进制组件**：彻底修复旧版本挂载脚本误匹配到 `Zd=r=>{`（字体文件预览组件）而非 `Xd=r=>{`（真实二进制文件兜底分发组件）的缺陷，通过向前动态回溯 AST 函数入口精确定位目标组件；
-  - **动态 JSX 运行时标识智能适配**：自动探测目标 chunk 中使用的 JSX 运行时标识（如 `n.jsx`），彻底杜绝硬编码未定义标识（`s.jsx`）引发的 ReferenceError 异常；
-  - **DOM 挂载安全沙箱与 React 虚拟节点隔离**：在 `office-preview-engine.js` 中严密校验下载按钮类型（`instanceof Node`），隔离 React VNode 传入 `appendChild` 引发的类型错误，并提供原生安全高保真下载按钮；
-  - **全卷与工作区外路径无阻解析**：注入 `allowOutsideWorkspace=true` 与 `fileInfo.src` 优先读取协议，确保跨工作区及 `_handoff` 目录下文件均可秒级本地高保真渲染；
-  - **体检与自愈管线全链路纳管**：更新 `server.js` 体检自愈（`/balancer/api/repair`）与挂载状态检测，实现 Windows 与 Linux / NAS 全端对齐。
 
 ### 🚀 v1.3.3
 - **深度根治 OpenChamber 桌面端打不开 / 无法启动 / 秒退痛点**：
