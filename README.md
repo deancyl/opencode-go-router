@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version: v2.4.8](https://img.shields.io/badge/Version-v2.4.8-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.4.9](https://img.shields.io/badge/Version-v2.4.9-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -496,6 +496,13 @@ npm run build:exe
   - 一键修复（`/balancer/api/repair` 与 `doctor-repair.ps1 -AutoFix`）自动修补并挂载预览引擎；
   - Web UI 管理控制台顶栏直观呈现 `Office 预览: ✔ 已挂载` 状态指示。
 - **完善自动化测试**：新增 Test 15 验证本地文件原生唤起接口与边界安全校验，测试集扩充至 15 项全绿通过。
+
+### 🚀 v2.4.9
+- **彻底根治 Linux / NAS 环境下 OpenCode CLI 升级路径误判与架构二进制包缺失故障**：
+  - **真实宿主工作区根目录回溯与 node_modules 穿透剥离 (`getEnclosingProjectRoot`)**：重构组件路径解析逻辑，当向上寻址宿主项目时，若候选路径命中 `node_modules` 内部（如 `/vol3/.../openchamber/node_modules/@openchamber/web`），强制剥离内部层级并回溯至真实的宿主根目录（`/vol3/.../openchamber`），彻底杜绝在嵌套子依赖内执行 `npm install --prefix` 导致的依赖断层与结构破坏；
+  - **跨平台 CLI 架构二进制包联合捆绑安装 (`@opencode/cli-${plat}-${arch}`)**：针对 `@opencode/cli` 包装器特性，升级引擎自动探测宿主平台与架构（如 `linux-x64`、`windows-x64` 等），自动联装对应架构包（`@opencode/cli@x.y.z @opencode/cli-linux-x64@x.y.z`），使 `postinstall.mjs` 直接在本地精准命中二进制，彻底杜绝其脱离国内镜像源二次裸联网下载引发的超时与中断（消除 `npm error code 1 Failed to install OpenCode`）；
+  - **OMO 插件新版本 Bun 动态缓存两阶段补丁闭环 (Two-Stage Plugin V2 Patch Lifecycle)**：针对 OpenCode 2.0 (Bun 运行时) 在服务重启后才动态拉取新插件到 `~/.cache/opencode/npm/` 的异步时序，更新引擎在重启 2 秒后自动执行第二阶段补丁检测与热重载，确保刚拉取的新版本插件包即时注入 `input.directory` 安全包装器，彻底消灭 `Plugin must export a default definition with an id and an effect or setup function` 报错；
+  - **Linux NAS 实机端到端全绿验证**：飞牛私有云 (fnOS / Debian) 实机端到端升级验证通过，`@opencode/cli` 升至 `2.0.27`，`oh-my-openagent` 升至 `5.1.32`，90 款插件 100% 正常激活并稳定运行。
 
 ### 🚀 v2.4.8
 - **修复 Linux / NAS 端“提供商接口”鉴权探测与端口自适应解析 (Provider Integration Probing)**：

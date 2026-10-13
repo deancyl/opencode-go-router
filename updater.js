@@ -674,26 +674,35 @@ function findScopedComponentDir(comp, customOverrides = {}) {
   }
 
   if (comp === 'openchamber' || comp === 'opencode') {
+    // Helper to get true project root by stripping any /node_modules/... suffix
+    const getEnclosingProjectRoot = (dir) => {
+      if (!dir) return null;
+      const normalized = path.resolve(dir).replace(/\\/g, '/');
+      const idx = normalized.lastIndexOf('/node_modules');
+      if (idx !== -1) {
+        const root = normalized.slice(0, idx);
+        if (fs.existsSync(path.join(root, 'package.json'))) return path.resolve(root);
+      }
+      return path.resolve(dir);
+    };
+
     // 1. Search candidate openchamber dirs
     const cands = getOpenChamberDistCandidates();
     for (const c of cands) {
-      let cur = c;
-      for (let i = 0; i < 4; i++) {
-        const pkg = path.join(cur, 'package.json');
+      const projRoot = getEnclosingProjectRoot(c);
+      if (projRoot) {
+        const pkg = path.join(projRoot, 'package.json');
         if (fs.existsSync(pkg)) {
           try {
             const raw = fs.readFileSync(pkg, 'utf8');
             if (comp === 'openchamber' && (raw.includes('@openchamber/web') || raw.includes('openchamber'))) {
-              return cur;
+              return projRoot;
             }
             if (comp === 'opencode' && (raw.includes('@opencode/cli') || raw.includes('opencode'))) {
-              return cur;
+              return projRoot;
             }
           } catch (_) {}
         }
-        const parent = path.dirname(cur);
-        if (parent === cur) break;
-        cur = parent;
       }
     }
 
@@ -705,13 +714,9 @@ function findScopedComponentDir(comp, customOverrides = {}) {
         const first = whichOut.split(/\r?\n/)[0].trim();
         if (first && fs.existsSync(first)) {
           const real = fs.realpathSync(first);
-          let cur = path.dirname(real);
-          for (let i = 0; i < 4; i++) {
-            const pkg = path.join(cur, 'package.json');
-            if (fs.existsSync(pkg)) return cur;
-            const parent = path.dirname(cur);
-            if (parent === cur) break;
-            cur = parent;
+          const projRoot = getEnclosingProjectRoot(real);
+          if (projRoot && fs.existsSync(path.join(projRoot, 'package.json'))) {
+            return projRoot;
           }
         }
       }
@@ -1767,7 +1772,14 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
   logs.push(`正在识别运行平台: ${platform.description} (自适应更新引擎模式)...`);
 
   function runNpmInstallWithMirror(pkgName, targetVersion = 'latest', extraArgs = '', compId = null) {
-    const pkgSpec = targetVersion && targetVersion !== 'latest' ? `${pkgName}@${targetVersion}` : `${pkgName}@latest`;
+    let pkgSpec = targetVersion && targetVersion !== 'latest' ? `${pkgName}@${targetVersion}` : `${pkgName}@latest`;
+    if (pkgName === '@opencode/cli') {
+      const plat = process.platform === 'win32' ? 'windows' : (process.platform === 'darwin' ? 'darwin' : 'linux');
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+      const archPkg = `@opencode/cli-${plat}-${arch}`;
+      const archSpec = targetVersion && targetVersion !== 'latest' ? `${archPkg}@${targetVersion}` : `${archPkg}@latest`;
+      pkgSpec = `${pkgSpec} ${archSpec}`;
+    }
     const argStr = extraArgs ? ` ${extraArgs}` : '';
 
     const scopedDir = compId ? findScopedComponentDir(compId, options) : null;
@@ -2106,6 +2118,17 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
             const oRes = runCmd('systemctl --user restart opencode-server.service', 15000);
             if (oRes.success) {
               logs.push('✔ opencode-server.service 已成功热重载');
+              // 若更新了 oh-my-openagent，OpenCode 启动后会异步将新包拉入 ~/.cache/opencode/npm/
+              // 自动执行第二阶段检查，确保刚下载进缓存的新版本同样注入 v2 安全兼容包装
+              if (results['oh-my-openagent'] && results['oh-my-openagent'].success) {
+                await new Promise(r => setTimeout(r, 2000));
+                const secondPatch = patchOmoPluginV2();
+                if (secondPatch.patchedCount > 0) {
+                  logs.push(`✔ 检测到 OpenCode 缓存中新增了插件版本，已自动二次注入安全兼容包装 (补丁数: ${secondPatch.patchedCount})`);
+                  runCmd('systemctl --user restart opencode-server.service', 15000);
+                  logs.push('✔ opencode-server.service 已二次平滑重载以载入最新内存补丁');
+                }
+              }
             } else {
               logs.push(`⚠ opencode-server.service 重载提示: ${oRes.error}`);
             }
