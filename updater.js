@@ -37,14 +37,19 @@ function stripJsonComments(str) {
 
 function parseSemver(v) {
   if (!v) return null;
-  const match = String(v).trim().match(/(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
-  if (!match) return null;
+  const s = String(v).trim().replace(/^[v^~=\s]+/, '');
+  const withoutBuild = s.split('+')[0];
+  const [verPart, ...preParts] = withoutBuild.split('-');
+  const preStr = preParts.length ? preParts.join('-') : null;
+  const nums = verPart.split('.').map(n => parseInt(n, 10));
+  if (!nums.length || nums.some(n => isNaN(n))) return null;
   return {
-    major: parseInt(match[1], 10),
-    minor: parseInt(match[2], 10),
-    patch: parseInt(match[3], 10),
-    prerelease: match[4] || null,
-    raw: match[0]
+    major: nums[0] || 0,
+    minor: nums[1] || 0,
+    patch: nums[2] || 0,
+    preList: preStr ? preStr.split('.') : null,
+    prerelease: preStr,
+    raw: s
   };
 }
 
@@ -57,8 +62,30 @@ function compareSemver(v1, v2) {
   if (p1.major !== p2.major) return p1.major - p2.major;
   if (p1.minor !== p2.minor) return p1.minor - p2.minor;
   if (p1.patch !== p2.patch) return p1.patch - p2.patch;
-  if (p1.prerelease && !p2.prerelease) return -1;
-  if (!p1.prerelease && p2.prerelease) return 1;
+  if (p1.preList && !p2.preList) return -1;
+  if (!p1.preList && p2.preList) return 1;
+  if (p1.preList && p2.preList) {
+    const len = Math.max(p1.preList.length, p2.preList.length);
+    for (let i = 0; i < len; i++) {
+      if (p1.preList[i] === undefined) return -1;
+      if (p2.preList[i] === undefined) return 1;
+      const a = p1.preList[i];
+      const b = p2.preList[i];
+      const aNum = /^\d+$/.test(a);
+      const bNum = /^\d+$/.test(b);
+      if (aNum && bNum) {
+        const diff = parseInt(a, 10) - parseInt(b, 10);
+        if (diff !== 0) return diff;
+      } else if (aNum && !bNum) {
+        return -1;
+      } else if (!aNum && bNum) {
+        return 1;
+      } else {
+        const diff = a.localeCompare(b);
+        if (diff !== 0) return diff;
+      }
+    }
+  }
   return 0;
 }
 
@@ -313,7 +340,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   let existingOmoVer = null;
   for (const item of data.plugin) {
     const str = typeof item === 'string' ? item : (Array.isArray(item) ? item[0] : '');
-    const m = String(str).match(/oh-my-openagent@(\d+\.\d+\.\d+)/);
+    const m = String(str).match(/oh-my-openagent@(?:[v^~])?([0-9A-Za-z.+-]+)/);
     if (m) {
       existingOmoVer = m[1];
       break;
@@ -325,8 +352,10 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   const omoPkgCandidates = [
     path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'package.json'),
     path.join(os.homedir(), '.config', 'opencode', 'oh-my-openagent', 'package.json'),
+    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', 'oh-my-openagent', 'package.json'),
     path.join(os.homedir(), '.local', 'lib', 'node_modules', 'oh-my-openagent', 'package.json'),
     path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'oh-my-openagent', 'package.json'),
+    '/root/.bun/install/global/node_modules/oh-my-openagent/package.json',
     '/usr/local/lib/node_modules/oh-my-openagent/package.json',
     '/usr/lib/node_modules/oh-my-openagent/package.json'
   ];
@@ -2194,15 +2223,19 @@ function getOmoPluginFiles() {
       }
     } catch (_) {}
   }
-  if (process.platform === 'win32') {
-    const globalIdx = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
-    if (fs.existsSync(globalIdx) && !targets.includes(globalIdx)) targets.push(globalIdx);
-  } else {
-    const globalIdx = '/usr/local/lib/node_modules/oh-my-openagent/dist/index.js';
-    if (fs.existsSync(globalIdx) && !targets.includes(globalIdx)) targets.push(globalIdx);
+  const candidateIndexPaths = [
+    path.join(os.homedir(), '.bun', 'install', 'global', 'node_modules', 'oh-my-openagent', 'dist', 'index.js'),
+    path.join(os.homedir(), '.local', 'lib', 'node_modules', 'oh-my-openagent', 'dist', 'index.js'),
+    path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'dist', 'index.js'),
+    path.join(os.homedir(), '.config', 'opencode', 'oh-my-openagent', 'dist', 'index.js'),
+    path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', 'oh-my-openagent', 'dist', 'index.js'),
+    '/root/.bun/install/global/node_modules/oh-my-openagent/dist/index.js',
+    '/usr/local/lib/node_modules/oh-my-openagent/dist/index.js',
+    '/usr/lib/node_modules/oh-my-openagent/dist/index.js'
+  ];
+  for (const c of candidateIndexPaths) {
+    if (fs.existsSync(c) && !targets.includes(c)) targets.push(c);
   }
-  const userLocal = path.join(os.homedir(), '.config', 'opencode', 'node_modules', 'oh-my-openagent', 'dist', 'index.js');
-  if (fs.existsSync(userLocal) && !targets.includes(userLocal)) targets.push(userLocal);
 
   return targets;
 }

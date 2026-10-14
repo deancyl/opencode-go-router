@@ -670,6 +670,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
+  let currentUpstreamRes = null;
 
   const finishRequest = () => {
     if (!requestFinished) {
@@ -686,6 +687,9 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
       }
+      if (currentUpstreamRes && typeof currentUpstreamRes.destroy === 'function' && !currentUpstreamRes.destroyed) {
+        currentUpstreamRes.destroy();
+      }
     }
     finishRequest();
   };
@@ -698,6 +702,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   });
 
   proxyReq.on('response', (upstreamRes) => {
+    currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
     // Check if Rate Limited (429) or Service Unavailable (503)
@@ -782,7 +787,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         const isContextLengthExceeded = statusCode === 400 && (
           errText.includes('context_length_exceeded') || 
           errText.includes('Input too long') || 
-          errText.includes('exceeds the maximum context length')
+          errText.includes('prompt is too long') ||
+          errText.includes('maximum context length') ||
+          errText.includes('exceeds the maximum context length') ||
+          errText.includes('context window') ||
+          errText.includes('too many tokens') ||
+          errText.includes('max_tokens')
         );
 
         if (isContextLengthExceeded) {
@@ -790,10 +800,16 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           console.warn(`[Auto Self-Healing] 模型 "${originalModel}" 触发上下文长度超限 (context_length_exceeded)。网关正在执行智能滑动窗口裁剪自愈...`);
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
+          const beforePrune = JSON.stringify(parsedBody);
           if (Array.isArray(parsedBody.messages)) {
             parsedBody.messages = codexAdapter.pruneChatMessages(parsedBody.messages);
+          } else if (Array.isArray(parsedBody.input)) {
+            parsedBody = codexAdapter.pruneResponsesPayload(parsedBody);
           }
-          if (attemptNumber > 1 && originalModel !== 'kimi-k2.7-code') {
+          const afterPrune = JSON.stringify(parsedBody);
+          const wasPruned = beforePrune !== afterPrune;
+
+          if ((attemptNumber > 1 || !wasPruned) && originalModel !== 'kimi-k2.7-code') {
             console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
             parsedBody.model = 'kimi-k2.7-code';
           }
@@ -946,6 +962,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
+  let currentUpstreamRes = null;
 
   const finishRequest = () => {
     if (!requestFinished) {
@@ -962,6 +979,9 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
       }
+      if (currentUpstreamRes && typeof currentUpstreamRes.destroy === 'function' && !currentUpstreamRes.destroyed) {
+        currentUpstreamRes.destroy();
+      }
     }
     finishRequest();
   };
@@ -974,6 +994,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   });
 
   proxyReq.on('response', (upstreamRes) => {
+    currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
     // 429 / 503 failover
@@ -1023,15 +1044,24 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         const isContextLengthExceeded = statusCode === 400 && (
           errText.includes('context_length_exceeded') || 
           errText.includes('Input too long') || 
-          errText.includes('exceeds the maximum context length')
+          errText.includes('prompt is too long') ||
+          errText.includes('maximum context length') ||
+          errText.includes('exceeds the maximum context length') ||
+          errText.includes('context window') ||
+          errText.includes('too many tokens') ||
+          errText.includes('max_tokens')
         );
 
         if (isContextLengthExceeded && attemptNumber <= config.maxFailoverRetries) {
           console.warn(`[Auto Self-Healing] Codex 请求触发上下文长度超限 (${reqModel}): ${errText.slice(0, 160)}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
+          const beforePrune = JSON.stringify(responsesBody);
           let prunedBody = codexAdapter.pruneResponsesPayload(responsesBody);
-          if (attemptNumber > 1 && reqModel !== 'kimi-k2.7-code') {
+          const afterPrune = JSON.stringify(prunedBody);
+          const wasPruned = beforePrune !== afterPrune;
+
+          if ((attemptNumber > 1 || !wasPruned) && reqModel !== 'kimi-k2.7-code') {
             console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
             prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
           }
@@ -1185,6 +1215,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
+  let currentUpstreamRes = null;
 
   const finishRequest = () => {
     if (!requestFinished) {
@@ -1201,6 +1232,9 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
       }
+      if (currentUpstreamRes && typeof currentUpstreamRes.destroy === 'function' && !currentUpstreamRes.destroyed) {
+        currentUpstreamRes.destroy();
+      }
     }
     finishRequest();
   };
@@ -1213,6 +1247,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   });
 
   proxyReq.on('response', (upstreamRes) => {
+    currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
     // 429 / 503 failover
@@ -1252,13 +1287,42 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     }
 
     if (statusCode !== 200) {
-      responded = true;
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('end', () => {
-        finishRequest();
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
-        const errorBody = Buffer.concat(errChunks);
+        const errText = Buffer.concat(errChunks).toString('utf8');
+        const isContextLengthExceeded = statusCode === 400 && (
+          errText.includes('prompt is too long') ||
+          errText.includes('context_length_exceeded') ||
+          errText.includes('maximum context length') ||
+          errText.includes('exceeds the maximum context length') ||
+          errText.includes('Input too long') ||
+          errText.includes('context window') ||
+          errText.includes('too many tokens') ||
+          errText.includes('max_tokens')
+        );
+
+        if (isContextLengthExceeded && attemptNumber <= config.maxFailoverRetries) {
+          console.warn(`[Auto Self-Healing] Anthropic 请求触发上下文超限 (${reqModel})。网关正在执行智能滑动窗口裁剪自愈...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          const beforePrune = JSON.stringify(responsesBody);
+          let prunedBody = codexAdapter.pruneResponsesPayload(responsesBody);
+          const afterPrune = JSON.stringify(prunedBody);
+          const wasPruned = beforePrune !== afterPrune;
+
+          if ((attemptNumber > 1 || !wasPruned) && reqModel !== 'kimi-k2.7-code') {
+            console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
+            prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
+          }
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds);
+          return;
+        }
+
+        responded = true;
+        finishRequest();
+        const errorBody = Buffer.from(errText, 'utf8');
         const outHeaders = getCorsHeaders(upstreamRes.headers);
         outHeaders['content-length'] = String(errorBody.length);
         clientRes.writeHead(statusCode, outHeaders);
@@ -1482,19 +1546,38 @@ async function runSystemDoctor() {
     report.issues.push({ id: 'opencode_not_found', severity: 'warning', title: 'OpenCode CLI 未检测到', desc: '请通过安装向导安装 @opencode/cli' });
   }
 
-  // 1.5 Check OpenChamber Workstation
+  // 1.5 Check OpenChamber Workstation (Dynamic port detection + Auth discovery)
   try {
-    const chamberCurl = process.platform === 'win32' ? 'curl.exe' : 'curl';
-    const code = execSync(`${chamberCurl} -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://127.0.0.1:3000 || true`, {
-      encoding: 'utf8',
-      timeout: 2500,
-      stdio: ['pipe', 'pipe', 'ignore']
-    }).trim();
-    if (code === '200' || code === '301' || code === '302' || code === '401' || code === '403') {
+    const updaterMod = require('./updater');
+    const serviceInfo = updaterMod.detectOpenCodeServiceInfo();
+    const activePort = serviceInfo.port || 3000;
+    report.openchamber.port = activePort;
+
+    const probeHttp = await new Promise((resolve) => {
+      const probeReq = http.request({
+        hostname: '127.0.0.1',
+        port: activePort,
+        path: '/',
+        method: 'GET',
+        timeout: 1200
+      }, (probeRes) => {
+        resolve({ ok: true, status: probeRes.statusCode });
+      });
+      probeReq.on('error', (err) => resolve({ ok: false, error: err.message }));
+      probeReq.on('timeout', () => { probeReq.destroy(); resolve({ ok: false, error: 'timeout' }); });
+      probeReq.end();
+    });
+
+    if (probeHttp.ok) {
       report.openchamber.reachable = true;
+      if (probeHttp.status === 401) {
+        report.openchamber.authRequired = true;
+      }
     } else if (process.platform === 'linux') {
-      const isActive = execSync('systemctl --user is-active openchamber.service 2>/dev/null || true', { encoding: 'utf8', timeout: 1000 }).trim();
-      if (isActive === 'active') report.openchamber.reachable = true;
+      try {
+        const isActive = execSync('systemctl --user is-active openchamber.service 2>/dev/null || true', { encoding: 'utf8', timeout: 1000 }).trim();
+        if (isActive === 'active') report.openchamber.reachable = true;
+      } catch (_) {}
     }
   } catch (e) {
     report.openchamber.error = e.message;
@@ -1504,6 +1587,7 @@ async function runSystemDoctor() {
   if (process.platform === 'win32') {
     try {
       const psCheck = `
+$ProgressPreference = 'SilentlyContinue'
 $chamberProcs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
 $hasChamber = [bool]$chamberProcs
 $hasWindow = $false
@@ -1524,29 +1608,33 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
   HasManagedOpencode = [bool]$managedOpencode
 } | ConvertTo-Json -Compress
 `;
-      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCheck.replace(/\\r?\\n/g, ' ')}"`, {
+      const enc = Buffer.from(psCheck, 'utf16le').toString('base64');
+      const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
         encoding: 'utf8',
-        timeout: 3000,
+        timeout: 4000,
         stdio: ['pipe', 'pipe', 'ignore']
       }).trim();
       if (out) {
-        const procState = JSON.parse(out);
-        if (procState.HasChamber && !procState.HasWindow) {
-          report.openchamber.ghost = true;
-          report.issues.push({
-            id: 'openchamber_ghost_process',
-            severity: 'high',
-            title: 'OpenChamber 后台无窗口僵死进程死锁单实例锁（导致桌面打不开）',
-            desc: `检测到 ${procState.ChamberCount} 个后台无界面进程霸占 Electron SingleInstanceLock，导致桌面双击图标无法打开或闪退，可一键自动清理释放互斥锁`
-          });
-        }
-        if (!procState.HasChamber && procState.HasManagedOpencode) {
-          report.issues.push({
-            id: 'orphan_opencode_process',
-            severity: 'medium',
-            title: 'OpenCode 孤立后台托管进程残留占用端口',
-            desc: 'OpenChamber 退出后残留孤立 opencode serve 进程占用端口，可一键清理'
-          });
+        const jsonMatch = out.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const procState = JSON.parse(jsonMatch[0]);
+          if (procState.HasChamber && !procState.HasWindow) {
+            report.openchamber.ghost = true;
+            report.issues.push({
+              id: 'openchamber_ghost_process',
+              severity: 'high',
+              title: 'OpenChamber 后台无窗口僵死进程死锁单实例锁（导致桌面打不开）',
+              desc: `检测到 ${procState.ChamberCount} 个后台无界面进程霸占 Electron SingleInstanceLock，导致桌面双击图标无法打开或闪退，可一键自动清理释放互斥锁`
+            });
+          }
+          if (!procState.HasChamber && procState.HasManagedOpencode) {
+            report.issues.push({
+              id: 'orphan_opencode_process',
+              severity: 'medium',
+              title: 'OpenCode 孤立后台托管进程残留占用端口',
+              desc: 'OpenChamber 退出后残留孤立 opencode serve 进程占用端口，可一键清理'
+            });
+          }
         }
       }
     } catch (e) {}
@@ -1900,6 +1988,7 @@ $ARGUMENTS
   if (process.platform === 'win32') {
     try {
       const psCleanup = `
+$ProgressPreference = 'SilentlyContinue'
 $ghostFound = $false
 $chamberProcs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
 if ($chamberProcs) {
@@ -1921,24 +2010,28 @@ $orphanFound = [bool]$orphanProcs
 if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
   if ($orphanProcs) { $orphanProcs | Stop-Process -Force }
 }
-$codeCache = Join-Path $env:APPDATA "OpenChamber\Code Cache"
+$codeCache = Join-Path $env:APPDATA "OpenChamber\\Code Cache"
 if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction SilentlyContinue }
 [PSCustomObject]@{ GhostKilled = $ghostFound; OrphanKilled = $orphanFound } | ConvertTo-Json -Compress
 `;
-      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCleanup.replace(/\\r?\\n/g, ' ')}"`, {
+      const enc = Buffer.from(psCleanup, 'utf16le').toString('base64');
+      const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
         encoding: 'utf8',
-        timeout: 4000,
+        timeout: 5000,
         stdio: ['pipe', 'pipe', 'ignore']
       }).trim();
       if (out) {
-        const res = JSON.parse(out);
-        if (res.GhostKilled) {
-          results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已彻底终止后台僵死进程并释放单实例互斥锁，恢复桌面秒开' });
-        } else {
-          results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已校验单实例互斥锁状态健康（无僵死锁死）' });
-        }
-        if (res.OrphanKilled) {
-          results.push({ item: 'Orphan OpenCode Cleanup', success: true, message: '已清理孤立残留的 OpenCode 托管后台进程' });
+        const jsonMatch = out.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const res = JSON.parse(jsonMatch[0]);
+          if (res.GhostKilled) {
+            results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已彻底终止后台僵死进程并释放单实例互斥锁，恢复桌面秒开' });
+          } else {
+            results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已校验单实例互斥锁状态健康（无僵死锁死）' });
+          }
+          if (res.OrphanKilled) {
+            results.push({ item: 'Orphan OpenCode Cleanup', success: true, message: '已清理孤立残留的 OpenCode 托管后台进程' });
+          }
         }
       }
     } catch (e) {
@@ -2101,7 +2194,12 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     const updater = require('./updater');
     const omoRes = updater.patchOmoPluginV2();
     if (omoRes.patchedCount > 0) {
-      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已成功为 ${omoRes.patchedCount} 处 oh-my-openagent 注入 OpenCode v2 兼容适配桥接（setup/effect 垫片）` });
+      if (process.platform === 'linux') {
+        try {
+          execSync('systemctl --user restart opencode-server.service 2>/dev/null || true', { timeout: 2000 });
+        } catch (_) {}
+      }
+      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已成功为 ${omoRes.patchedCount} 处 oh-my-openagent 注入 OpenCode v2 兼容适配桥接（setup/effect 垫片），并平滑刷新内存缓存` });
     } else if (omoRes.targets > 0) {
       results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已校验 ${omoRes.targets} 处 oh-my-openagent 均具备 OpenCode v2 兼容适配桥接` });
     } else {
@@ -2552,8 +2650,9 @@ const server = http.createServer((req, res) => {
         const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
         const targetUpstream = (payload.upstream || config.upstream).trim();
         let apiKey = (payload.apiKey || '').trim();
-        if (!apiKey && payload.id) {
-          const acc = config.accounts.find(a => a.id === payload.id);
+        const targetAccountId = payload.accountId || payload.account_id || payload.id;
+        if (!apiKey && targetAccountId) {
+          const acc = config.accounts.find(a => a.id === targetAccountId);
           if (acc) apiKey = acc.apiKey.trim();
         }
 
@@ -4129,7 +4228,7 @@ $ghost
     }
 
     function handleQuotaTick() {
-      if (quotaRefreshInterval <= 0) return;
+      if (document.hidden || quotaRefreshInterval <= 0) return;
       quotaCountdown--;
       if (quotaCountdown <= 0) {
         quotaCountdown = quotaRefreshInterval;
@@ -4658,10 +4757,13 @@ $ghost
     fetchConfig();
     fetchStatus();
     loadCodexStatus();
-    setInterval(fetchStatus, 2000);
+    setInterval(() => {
+      if (!document.hidden) fetchStatus();
+    }, 2000);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && quotaRefreshInterval > 0) {
-        if (quotaCountdown <= 3) {
+      if (!document.hidden) {
+        fetchStatus();
+        if (quotaRefreshInterval > 0 && quotaCountdown <= 3) {
           quotaCountdown = quotaRefreshInterval;
           updateQuotaCountdownBadge();
           refreshAllQuotas(true, false);

@@ -1105,7 +1105,12 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
   };
-  clientRes.once('close', cleanup);
+  clientRes.once('close', () => {
+    cleanup();
+    if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
+      upstreamRes.destroy();
+    }
+  });
 
   const closeReasoning = () => {
     if (reasoningStarted && !reasoningCompleted) {
@@ -1766,7 +1771,12 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
   };
-  clientRes.once('close', cleanup);
+  clientRes.once('close', () => {
+    cleanup();
+    if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
+      upstreamRes.destroy();
+    }
+  });
 
   const closeText = () => {
     if (textStarted && !textCompleted) {

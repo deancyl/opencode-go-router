@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { fork } = require('node:child_process');
+const { fork, execSync } = require('node:child_process');
 const codexAdapter = require('./codex-adapter');
 
 function getFreePort() {
@@ -52,6 +52,32 @@ async function runTests() {
     if (req.url === '/v1/messages') {
       if (auth.includes('key-account-1')) account1Calls++;
       else account2Calls++;
+
+      if (session === 'session-anthropic-context-overflow') {
+        let b = [];
+        req.on('data', c => b.push(c));
+        req.on('end', () => {
+          const bodyStr = Buffer.concat(b).toString('utf8');
+          try {
+            const bodyJson = JSON.parse(bodyStr);
+            if (!bodyJson.model.includes('kimi') && bodyStr.length > 500) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'prompt is too long: 250000 tokens > 200000 maximum context length' } }));
+              return;
+            }
+          } catch (_) {}
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'msg_ant_healed',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Anthropic healed after context pruning!' }],
+            model: 'kimi-k2.7-code',
+            usage: { input_tokens: 50, output_tokens: 10 }
+          }));
+        });
+        return;
+      }
 
       if (session === 'session-anthropic-stream') {
         res.writeHead(200, {
@@ -1960,8 +1986,141 @@ async function runTests() {
     assert.ok(reReadConfig.agent['goal-verify'], 'Must have agent.goal-verify injected');
     console.log('✓ Dynamic Version Drift Immunity & Agent Definition verified');
 
+    // [Test 72] Testing Semver 2.0.0 Precedence & Metadata Immunity
+    console.log('\n[Test 72] Testing Semver 2.0.0 Precedence & Metadata Immunity...');
+    assert.ok(updater.compareSemver('5.1.30-beta.2', '5.1.30-beta.1') > 0, 'beta.2 must be greater than beta.1');
+    assert.ok(updater.compareSemver('5.1.30-rc.1', '5.1.30-beta.2') > 0, 'rc.1 must be greater than beta.2');
+    assert.ok(updater.compareSemver('5.1.30', '5.1.30-rc.1') > 0, 'Release 5.1.30 must be greater than rc.1');
+    assert.strictEqual(updater.compareSemver('5.1.30+build.1', '5.1.30'), 0, 'Build metadata must not affect version equality');
+    assert.ok(updater.compareSemver('v5.2', '5.1.99') > 0, 'v5.2 must be greater than 5.1.99');
+    assert.strictEqual(updater.compareSemver('^5.2.0', '5.2.0'), 0, 'Prefix ^ must be safely stripped and compared');
+
+    // Test harmonization with prerelease version preservation
+    const testOmoPrePath = path.join(testConfigDir, 'opencode-prerelease-test.jsonc');
+    fs.writeFileSync(testOmoPrePath, JSON.stringify({
+      plugin: ['oh-my-openagent@5.2.0-rc.1'],
+      provider: {}
+    }, null, 2), 'utf8');
+    const harmResPre = updater.harmonizeOpencodeConfig(testOmoPrePath, routerPort);
+    assert.strictEqual(harmResPre.success, true);
+    const reReadPre = JSON.parse(updater.stripJsonComments(fs.readFileSync(testOmoPrePath, 'utf8')));
+    const preTag = reReadPre.plugin.find(p => typeof p === 'string' && p.startsWith('oh-my-openagent'));
+    assert.strictEqual(preTag, 'oh-my-openagent@5.2.0-rc.1', 'Harmonization must preserve prerelease tags');
+    console.log('✓ Semver 2.0.0 Precedence & Metadata Immunity verified');
+
+    // [Test 73] Testing Doctor Live Diagnostics & PowerShell EncodedCommand Zero-Window Execution
+    console.log('\n[Test 73] Testing Doctor Live Diagnostics & PowerShell EncodedCommand Zero-Window Execution...');
+    const docRes73 = await request('/balancer/api/doctor');
+    assert.strictEqual(docRes73.statusCode, 200, 'Doctor endpoint must return HTTP 200');
+    const docData73 = JSON.parse(docRes73.body);
+    assert.ok(docData73.router, 'Doctor report must include router status');
+    assert.ok(docData73.openchamber, 'Doctor report must include openchamber diagnosis');
+    assert.ok(!docData73.openchamber.error || !docData73.openchamber.error.includes('|| true'), 'Must not fail with Windows cmd || true error');
+
+    if (process.platform === 'win32') {
+      const psTestScript = `
+$ProgressPreference = 'SilentlyContinue'
+[PSCustomObject]@{ Status = 'healthy'; Port = 4010 } | ConvertTo-Json -Compress
+`;
+      const enc = Buffer.from(psTestScript, 'utf16le').toString('base64');
+      const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, { encoding: 'utf8' }).trim();
+      const jsonMatch = out.match(/\{[\s\S]*\}/);
+      assert.ok(jsonMatch, 'PowerShell EncodedCommand must return clean parseable JSON');
+      const parsed = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(parsed.Status, 'healthy');
+      assert.strictEqual(parsed.Port, 4010);
+    }
+    console.log('✓ Doctor Live Diagnostics & PowerShell EncodedCommand Zero-Window Execution verified');
+
+    // [Test 74] Testing Immediate Upstream Socket Destruction on Client Stream Abort across Bridges
+    console.log('\n[Test 74] Testing Immediate Upstream Socket Destruction on Client Stream Abort across Bridges...');
+    const fakeUpstream = new EventEmitter();
+    let upstreamDestroyed = false;
+    fakeUpstream.destroyed = false;
+    fakeUpstream.destroy = () => { upstreamDestroyed = true; fakeUpstream.destroyed = true; };
+
+    const fakeClient = new EventEmitter();
+    fakeClient.writeHead = () => {};
+    fakeClient.write = () => {};
+    fakeClient.end = () => {};
+    fakeClient.writableEnded = false;
+    fakeClient.destroyed = false;
+
+    // Bridge stream call
+    codexAdapter.bridgeResponsesStream(fakeUpstream, fakeClient, 'deepseek-v4.1-flash', 'resp_abort_test', () => {});
+    assert.strictEqual(upstreamDestroyed, false, 'Upstream must not be destroyed before abort');
+
+    // Simulate client abrupt disconnect
+    fakeClient.emit('close');
+    assert.strictEqual(upstreamDestroyed, true, 'Upstream stream must be immediately destroyed when client disconnects to prevent socket/memory leak');
+    console.log('✓ Immediate Upstream Socket Destruction on Client Stream Abort across Bridges verified');
+
+    // [Test 75] Testing Anthropic Bridge Context Length Overflow Auto-Pruning & Self-Healing
+    console.log('\n[Test 75] Testing Anthropic Bridge Context Length Overflow Auto-Pruning & Self-Healing...');
+    const largeContent = 'Repeated context text block for testing context overflow self healing. '.repeat(20);
+    const antResOverflow = await request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-anthropic-context-overflow'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-5-5',
+        messages: [
+          { role: 'user', content: 'Initial message' },
+          { role: 'assistant', content: 'Prior assistant response' },
+          { role: 'user', content: largeContent }
+        ]
+      })
+    });
+    assert.strictEqual(antResOverflow.statusCode, 200, 'Anthropic bridge must automatically recover and return 200 after context overflow');
+    const antData = JSON.parse(antResOverflow.body);
+    assert.ok(antData.content, 'Must have content in response');
+    console.log('✓ Anthropic Bridge Context Length Overflow Auto-Pruning & Self-Healing verified');
+
+    // [Test 76] Testing Page Visibility & Quota Polling Anti-Throttling Guard
+    console.log('\n[Test 76] Testing Page Visibility & Quota Polling Anti-Throttling Guard...');
+    // 1. Test quota cache TTL
+    const initialCalls = quotaUsageCalls;
+    const q1 = await request('/balancer/api/account-quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-2', force: false })
+    });
+    assert.strictEqual(q1.statusCode, 200);
+    const qData1 = JSON.parse(q1.body);
+    assert.strictEqual(qData1.success, true);
+    assert.strictEqual(quotaUsageCalls, initialCalls + 1, 'First quota call should hit upstream');
+
+    // Second call without force should hit memory cache (Rule 7)
+    const q2 = await request('/balancer/api/account-quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-2', force: false })
+    });
+    assert.strictEqual(q2.statusCode, 200);
+    const qData2 = JSON.parse(q2.body);
+    assert.strictEqual(qData2.fromCache, true, 'Second call within TTL must return cached quota');
+    assert.strictEqual(quotaUsageCalls, initialCalls + 1, 'Cached quota call must NOT hit upstream');
+
+    // Third call with force: true must penetrate cache (Rule 7)
+    const q3 = await request('/balancer/api/account-quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-2', force: true })
+    });
+    assert.strictEqual(q3.statusCode, 200);
+    const qData3 = JSON.parse(q3.body);
+    assert.strictEqual(qData3.fromCache, false, 'Forced quota refresh must penetrate cache');
+    assert.strictEqual(quotaUsageCalls, initialCalls + 2, 'Forced quota refresh must hit upstream');
+
+    // Verify start-tray.vbs contains -Silent default argument
+    const startTrayContent = fs.readFileSync(startTrayVbsPath, 'utf8');
+    assert.ok(startTrayContent.includes('-Silent'), 'start-tray.vbs must default to silent mode');
+    console.log('✓ Page Visibility & Quota Polling Anti-Throttling Guard verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 71 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 76 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

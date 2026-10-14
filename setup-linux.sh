@@ -652,7 +652,7 @@ run_doctor() {
           const report = JSON.parse(data);
           console.log("✔ 体检结果: 端口 " + report.router.port + " 状态正常");
           console.log("  - OpenCode CLI: " + (report.opencode.installed ? report.opencode.version : "未检测到"));
-          console.log("  - OpenChamber 工作台: " + (report.openchamber.reachable ? "在线 (Port 3000)" : "未运行/不可达"));
+          console.log("  - OpenChamber 工作台: " + (report.openchamber.reachable ? ("在线 (Port " + (report.openchamber.port || 3000) + (report.openchamber.authRequired ? " / 鉴权保护中" : "") + ")") : "未运行/不可达"));
           console.log("  - 账号数量: " + report.router.accounts.length);
           if (report.issues.length === 0) {
             console.log("🎉 未发现任何异常！");
