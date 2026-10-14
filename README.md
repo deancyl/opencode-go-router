@@ -8,7 +8,7 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com)
 [![Linux](https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(Debian%2CUbuntu%2CfnOS%2CDSM)-orange.svg)](https://kernel.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
-[![Version: v2.5.8](https://img.shields.io/badge/Version-v2.5.8-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.5.9](https://img.shields.io/badge/Version-v2.5.9-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -442,6 +442,16 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.5.9 (Web 控制台模板转义深度修复、Codex 免 ConPTY 唤醒自愈与 77 项全量测试大满贯)
+- **Web 控制台前端模板转义全合规修复 (Template Literal Escaping Self-Healing)**：
+  - 彻底根除在 `server.js` 模板字符串中因 `\n\n` 被 Node 展开为物理换行符引发的浏览器 `SyntaxError: Invalid or unexpected token` 致命缺陷；
+  - 根治前端因脚本解析中断导致的“添加的 key 不见了”、“模型下拉框无法填充选择”、“点击添加订阅账号无反应”三大并发假死现象；
+  - 增加自动化集成测试 `Test 77`，从服务端直出 HTML 中实时提取客户端脚本进行动态编译校验，彻底消灭前端语法回归。
+- **Codex 桌面客户端唤起免 ConPTY 管道破损防御 (Decoupled UWP Launcher & 0x800700e8 Defense)**：
+  - 深入排查 Windows 11 (24H2) 终端宿主将 ConPTY 作为默认终端时，通过 `powershell -NoProfile -Command "Start-Sleep ..."` 异步唤醒 UWP 应用所触发的 `0x800700e8 (ERROR_NO_DATA / 管道正在被关闭)` 启动报错；
+  - 重构唤醒管道：移除控制台 PowerShell 中间层，改用 Node.js 原生非阻塞 `setTimeout(..., 600)` 配合 `explorer.exe shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App` 直连 Windows Shell 唤起，彻底免疫 ConPTY 管道破损与控制台窗口闪烁。
+- **自动化集成测试套件扩充至 77 项 100% 绿灯全通**。
 
 ### 🚀 v2.5.8 (全链路架构深度巡检、Semver 规范防御、流中断安全回收与 76 项测试大满贯)
 - **桌面快捷方式全栈冷启动引导与自愈 (`launch-gui.vbs` & `tray-daemon.ps1` - v2.5.6/v2.5.8)**：

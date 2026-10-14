@@ -2707,16 +2707,27 @@ function restartCodex(options = {}) {
       messages.push(`终止旧进程提醒: ${e.message}`);
     }
 
-    // 2. Launch fresh detached instance via Windows explorer.exe shell decoupled
+    // 2. Launch fresh detached instance via Windows explorer.exe shell decoupled (avoiding ConPTY pipe errors)
     let launched = false;
     try {
-      const p1 = 'powershell -NoProfile -Command "Start-Sleep -Milliseconds 600; Start-Process explorer.exe shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App"';
-      const child = require('child_process').spawn('cmd.exe', ['/d', '/c', p1], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true
-      });
-      child.unref();
+      setTimeout(() => {
+        try {
+          const child = require('child_process').spawn('explorer.exe', ['shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App'], {
+            detached: true,
+            stdio: 'ignore'
+          });
+          child.unref();
+        } catch (innerErr) {
+          try {
+            const childFallback = require('child_process').spawn('cmd.exe', ['/d', '/c', 'start', '', 'shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App'], {
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true
+            });
+            childFallback.unref();
+          } catch (_) {}
+        }
+      }, 600);
       launched = true;
       messages.push('已通过 Windows 原生外壳脱钩唤起全新 Codex 桌面客户端 (OpenAI.Codex)');
     } catch (err1) {

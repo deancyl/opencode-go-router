@@ -4673,7 +4673,7 @@ $ghost
         if (data.success) {
           showToast('🎉 Codex 一键接入成功！建议重启客户端以立即加载新配置。');
           loadCodexStatus();
-          if (confirm('🎉 Codex 已成功接入 4010 本地网关！\n\n是否立即平滑重启 Codex 客户端以立即加载最新配置与 38 款模型？')) {
+          if (confirm('🎉 Codex 已成功接入 4010 本地网关！\\n\\n是否立即平滑重启 Codex 客户端以立即加载最新配置与 38 款模型？')) {
             restartCodexClient();
           }
         } else {
@@ -4727,7 +4727,7 @@ $ghost
         if (data.success) {
           showToast('✔ Codex 原始配置已恢复！');
           loadCodexStatus();
-          if (confirm('✔ Codex 原始配置已恢复！\n\n是否立即平滑重启 Codex 客户端以重新加载原始配置？')) {
+          if (confirm('✔ Codex 原始配置已恢复！\\n\\n是否立即平滑重启 Codex 客户端以重新加载原始配置？')) {
             restartCodexClient();
           }
         } else {

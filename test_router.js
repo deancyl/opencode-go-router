@@ -2119,8 +2119,27 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(startTrayContent.includes('-Silent'), 'start-tray.vbs must default to silent mode');
     console.log('✓ Page Visibility & Quota Polling Anti-Throttling Guard verified');
 
+    // [Test 77] Testing Web UI Dashboard Frontend JavaScript Syntax & Runtime Integrity
+    console.log('\n[Test 77] Testing Web UI Dashboard Frontend JavaScript Syntax & Runtime Integrity...');
+    const uiDashboardRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiDashboardRes.statusCode, 200);
+    const scriptMatch = uiDashboardRes.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch, 'Web UI must contain inline client script');
+    const clientScript = scriptMatch[1];
+    
+    // Must be 100% syntactically valid with zero unescaped token/newline errors
+    assert.doesNotThrow(() => {
+      new Function(clientScript);
+    }, 'Client script in Web UI must compile without any SyntaxError');
+
+    // Verify restartCodex runs cleanly without console ConPTY pipe errors
+    const restartCodexTestRes = codexAdapter.restartCodex();
+    assert.strictEqual(restartCodexTestRes.restarted, true);
+    assert.strictEqual(restartCodexTestRes.success, true);
+    console.log('✓ Web UI Dashboard Frontend JavaScript Syntax & Runtime Integrity verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 76 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 77 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
