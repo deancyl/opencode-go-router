@@ -2149,7 +2149,7 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 78] Testing Empty Stream Disconnection Defense, Dynamic Session Isolation & Zero-Leak Lifecycle
     console.log('\n[Test 78] Testing Empty Stream Disconnection Defense, Dynamic Session Isolation & Zero-Leak Lifecycle...');
 
-    // 1. Dynamic Session ID derivation test suite
+    // 1. Dynamic Session ID derivation test suite (including Codex-native thread metadata)
     assert.strictEqual(
       codexAdapter.extractOrDeriveSessionId({ headers: { 'x-opencode-session': 'custom-session-99' } }),
       'custom-session-99',
@@ -2161,6 +2161,16 @@ $ProgressPreference = 'SilentlyContinue'
       'x-conversation-id must prefix session-conv-'
     );
     assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: { 'x-codex-turn-metadata': '{"thread_id":"01a134c1-9e41-7111-9bae-a1442eab1d9b","session_id":"sess-codex-1"}' } }),
+      'session-codex-01a134c1-9e41-7111-9bae-a1442eab1d9b',
+      'x-codex-turn-metadata must extract thread_id and prefix session-codex-'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: { 'x-codex-parent-thread-id': 'parent-thread-01a1' } }),
+      'session-codex-parent-thread-01a1',
+      'x-codex-parent-thread-id must extract thread and prefix session-codex-'
+    );
+    assert.strictEqual(
       codexAdapter.extractOrDeriveSessionId({ headers: { 'x-request-id': 'req-uuid-123' } }),
       'session-req-req-uuid-123',
       'x-request-id must prefix session-req-'
@@ -2169,6 +2179,16 @@ $ProgressPreference = 'SilentlyContinue'
       codexAdapter.extractOrDeriveSessionId({ headers: {} }, { previous_response_id: 'resp_1791988' }),
       'session-resp-resp_1791988',
       'previous_response_id in body must derive session-resp-'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: {} }, { parent_response_id: 'resp_parent_888' }),
+      'session-resp-resp_parent_888',
+      'parent_response_id in body must derive session-resp-'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: {} }, { thread_id: 'thread_body_777' }),
+      'session-codex-thread_body_777',
+      'thread_id in body must derive session-codex-'
     );
     assert.strictEqual(
       codexAdapter.extractOrDeriveSessionId({ headers: {} }, { conversation_id: 'conv_nested_456' }),
@@ -2209,6 +2229,62 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(failedEvent.data.response.status, 'failed');
     assert.strictEqual(failedEvent.data.response.error.code, 'upstream_stream_empty_truncated');
 
+    // 2b. Upstream explicit 'error' event (socket reset / abort) defense in bridgeResponsesStream
+    const errUpstreamStream = new EventEmitter();
+    const errClientRes = new EventEmitter();
+    errClientRes.writeHead = (status, headers) => { errClientRes.headers = headers; errClientRes.statusCode = status; };
+    const errEmittedEvents = [];
+    errClientRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          errEmittedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    errClientRes.end = () => { errClientRes.emit('finish'); };
+
+    codexAdapter.bridgeResponsesStream(errUpstreamStream, errClientRes, 'deepseek-v4.1-flash', 'resp_err_test_id', () => {});
+    errUpstreamStream.emit('error', new Error('aborted'));
+    const errEventTypes = errEmittedEvents.map(e => e.event);
+    assert.strictEqual(errEventTypes.includes('response.completed'), false, 'Aborted stream must NEVER dispatch response.completed');
+    assert.strictEqual(errEventTypes.includes('response.failed'), true, 'Aborted stream MUST dispatch response.failed');
+    const abortFailedEvent = errEmittedEvents.find(e => e.event === 'response.failed');
+    assert.ok(abortFailedEvent, 'Must have response.failed event on abort');
+    assert.strictEqual(abortFailedEvent.data.response.status, 'failed');
+    assert.ok(abortFailedEvent.data.response.error.message.includes('aborted'));
+
+    // 2c. Reasoning-only truncated stream defense (stream has thinking, but aborts before text/tools)
+    const reasoningUpstreamStream = new EventEmitter();
+    const reasoningClientRes = new EventEmitter();
+    reasoningClientRes.writeHead = (status, headers) => { reasoningClientRes.headers = headers; reasoningClientRes.statusCode = status; };
+    const reasoningEmittedEvents = [];
+    reasoningClientRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          reasoningEmittedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    reasoningClientRes.end = () => { reasoningClientRes.emit('finish'); };
+
+    codexAdapter.bridgeResponsesStream(reasoningUpstreamStream, reasoningClientRes, 'deepseek-v4.1-flash', 'resp_ronly_test_id', () => {});
+    reasoningUpstreamStream.emit('data', Buffer.from('data: {"choices":[{"delta":{"reasoning_content":"Let me analyze this problem..."}}]}\n\n'));
+    reasoningUpstreamStream.emit('end');
+
+    const reasoningEventTypes = reasoningEmittedEvents.map(e => e.event);
+    assert.strictEqual(reasoningEventTypes.includes('response.completed'), false, 'Reasoning-only truncated stream must NEVER dispatch response.completed');
+    assert.strictEqual(reasoningEventTypes.includes('response.failed'), true, 'Reasoning-only truncated stream MUST dispatch response.failed');
+    const reasoningFailedEvent = reasoningEmittedEvents.find(e => e.event === 'response.failed');
+    assert.ok(reasoningFailedEvent, 'Must have response.failed event on reasoning truncation');
+    assert.strictEqual(reasoningFailedEvent.data.response.status, 'failed');
+    assert.strictEqual(reasoningFailedEvent.data.response.error.code, 'upstream_stream_truncated_reasoning_only');
+
     // 3. Empty stream defense in bridgeAnthropicStream
     const emptyAnthropicStream = new EventEmitter();
     const emptyAnthropicRes = new EventEmitter();
@@ -2237,10 +2313,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(anthropicFailed.data.response.status, 'failed');
     assert.strictEqual(anthropicFailed.data.response.error.code, 'upstream_stream_empty_truncated');
 
-    // 4. Verify bindCodexConfig writes stream_idle_timeout_ms and retry parameters
+    // 4. Verify bindCodexConfig writes stream_idle_timeout_ms and retry parameters & hasStreamIdleTimeout detection
     const testDir78 = path.join(os.tmpdir(), 'codex_test_78_' + Date.now());
     fs.mkdirSync(testDir78, { recursive: true });
     try {
+      // Simulate unhardened config
+      fs.writeFileSync(path.join(testDir78, 'config.toml'), 'model = "deepseek-v4.1-flash"\nmodel_provider = "opencode-go"\n\n[model_providers."opencode-go"]\nbase_url = "http://127.0.0.1:' + routerPort + '/v1"\n', 'utf8');
+      const unhardenedStatus = codexAdapter.getCodexStatus(routerPort, testDir78);
+      assert.strictEqual(unhardenedStatus.isBound, true, 'Must detect isBound = true');
+      assert.strictEqual(unhardenedStatus.hasStreamIdleTimeout, false, 'Must detect hasStreamIdleTimeout = false before hardening');
+
       codexAdapter.bindCodexConfig({
         codexDir: testDir78,
         routerPort: routerPort,
@@ -2252,6 +2334,9 @@ $ProgressPreference = 'SilentlyContinue'
       assert.ok(generatedToml.includes('stream_idle_timeout_ms = 300000'), 'config.toml must include stream_idle_timeout_ms = 300000');
       assert.ok(generatedToml.includes('stream_max_retries = 3'), 'config.toml must include stream_max_retries = 3');
       assert.ok(generatedToml.includes('request_max_retries = 3'), 'config.toml must include request_max_retries = 3');
+
+      const hardenedStatus = codexAdapter.getCodexStatus(routerPort, testDir78);
+      assert.strictEqual(hardenedStatus.hasStreamIdleTimeout, true, 'Must detect hasStreamIdleTimeout = true after hardening');
     } finally {
       try { fs.rmSync(testDir78, { recursive: true, force: true }); } catch (e) {}
     }

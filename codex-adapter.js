@@ -1068,11 +1068,86 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const toolCallsMap = new Map(); // index -> { id, name, args, outIdx }
   let collectedUsage = null;
   let buffer = '';
+  let streamFinished = false;
+  let upstreamEnded = false;
+
+  const buildFinalOutput = () => {
+    const finalOutput = [];
+    if (reasoningCompleted || fullReasoning) {
+      finalOutput.push({
+        id: itemIdReasoning,
+        type: 'reasoning',
+        status: 'completed',
+        content: [{ type: 'reasoning_text', text: fullReasoning }]
+      });
+    }
+    if (textStarted || fullText) {
+      finalOutput.push({
+        id: itemIdText,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: fullText, annotations: [], logprobs: [] }]
+      });
+    }
+    for (const rec of toolCallsMap.values()) {
+      finalOutput.push({
+        id: rec.id,
+        type: 'function_call',
+        name: rec.name || 'custom_tool',
+        call_id: rec.id,
+        arguments: rec.args,
+        status: 'completed'
+      });
+    }
+    return finalOutput;
+  };
+
+  const dispatchStreamError = (err, isExplicitError = false, overrideCode = null) => {
+    if (streamFinished || clientRes.writableEnded || clientRes.destroyed) {
+      cleanup();
+      return;
+    }
+    streamFinished = true;
+    closeReasoning();
+    closeText();
+    const finalOutput = buildFinalOutput();
+    const isEmpty = fullText === '' && fullReasoning === '' && toolCallsMap.size === 0;
+    const isReasoningOnly = fullText === '' && toolCallsMap.size === 0 && fullReasoning !== '';
+    const errCode = overrideCode || (isEmpty ? 'upstream_stream_empty_truncated' : (isReasoningOnly ? 'upstream_stream_truncated_reasoning_only' : 'upstream_stream_truncated'));
+    const errMsg = err?.message
+      ? `Upstream stream error: ${err.message}`
+      : (isEmpty ? 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).' : 'Upstream stream disconnected unexpectedly before generating output or tool calls.');
+
+    console.error(`[Bridge Stream Error] ${errMsg} on model "${reqModel}". Dispatching response.failed.`);
+    sendEvent('response.failed', {
+      type: 'response.failed',
+      sequence_number: seq++,
+      response: {
+        id: respId,
+        object: 'response',
+        created_at: Math.floor(Date.now() / 1000),
+        completed_at: Math.floor(Date.now() / 1000),
+        status: 'failed',
+        model: reqModel,
+        error: {
+          type: 'server_error',
+          code: errCode,
+          message: errMsg
+        },
+        output: finalOutput
+      }
+    });
+    cleanup();
+    clientRes.end();
+    if (typeof onFinished === 'function') onFinished();
+  };
 
   // Heartbeat keep-alive & watchdog to prevent stream stalls
   let lastDataTime = Date.now();
   const heartbeatTimer = setInterval(() => {
-    if (clientRes.writableEnded || clientRes.destroyed) {
+    if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
       clearInterval(heartbeatTimer);
       return;
     }
@@ -1080,7 +1155,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   }, 10000);
 
   const stallWatchdog = setInterval(() => {
-    if (clientRes.writableEnded || clientRes.destroyed) {
+    if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
       return;
@@ -1089,28 +1164,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
       console.error(`[Bridge Stream Watchdog] Upstream stalled for >300s on model "${reqModel}". Closing stream with response.failed.`);
-      closeReasoning();
-      closeText();
-      sendEvent('response.failed', {
-        type: 'response.failed',
-        sequence_number: seq++,
-        response: {
-          id: respId,
-          object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
-          completed_at: Math.floor(Date.now() / 1000),
-          status: 'failed',
-          model: reqModel,
-          error: {
-            type: 'server_error',
-            code: 'upstream_stream_timeout',
-            message: 'Upstream stalled for longer than 300s without returning data.'
-          },
-          output: []
-        }
-      });
-      clientRes.end();
-      if (typeof onFinished === 'function') onFinished();
+      dispatchStreamError(new Error('Upstream stalled for longer than 300s without returning data.'), true, 'upstream_stream_timeout');
     }
   }, 5000);
 
@@ -1122,6 +1176,16 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     cleanup();
     if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
       upstreamRes.destroy();
+    }
+  });
+
+  upstreamRes.on('error', (err) => {
+    dispatchStreamError(err, true);
+  });
+
+  upstreamRes.on('close', () => {
+    if (!streamFinished && !upstreamEnded) {
+      dispatchStreamError(new Error('Premature close of upstream response stream'), false);
     }
   });
 
@@ -1360,6 +1424,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   });
 
   upstreamRes.on('end', () => {
+    upstreamEnded = true;
+    if (streamFinished) return;
+
     closeReasoning();
     closeText();
 
@@ -1380,62 +1447,13 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       });
     }
 
-    // Build final output array for response.completed
-    const finalOutput = [];
-    if (reasoningCompleted || fullReasoning) {
-      finalOutput.push({
-        id: itemIdReasoning,
-        type: 'reasoning',
-        status: 'completed',
-        content: [{ type: 'reasoning_text', text: fullReasoning }]
-      });
-    }
-    if (textStarted || fullText) {
-      finalOutput.push({
-        id: itemIdText,
-        type: 'message',
-        status: 'completed',
-        role: 'assistant',
-        phase: 'final_answer',
-        content: [{ type: 'output_text', text: fullText, annotations: [], logprobs: [] }]
-      });
-    }
-    for (const rec of toolCallsMap.values()) {
-      finalOutput.push({
-        id: rec.id,
-        type: 'function_call',
-        name: rec.name || 'custom_tool',
-        call_id: rec.id,
-        arguments: rec.args,
-        status: 'completed'
-      });
-    }
-
-    if (fullText === '' && fullReasoning === '' && toolCallsMap.size === 0) {
-      console.error(`[Bridge Stream Error] Upstream stream disconnected prematurely with zero content on model "${reqModel}". Dispatching response.failed.`);
-      sendEvent('response.failed', {
-        type: 'response.failed',
-        sequence_number: seq++,
-        response: {
-          id: respId,
-          object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
-          completed_at: Math.floor(Date.now() / 1000),
-          status: 'failed',
-          model: reqModel,
-          error: {
-            type: 'server_error',
-            code: 'upstream_stream_empty_truncated',
-            message: 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).'
-          },
-          output: []
-        }
-      });
-      cleanup();
-      clientRes.end();
-      if (typeof onFinished === 'function') onFinished();
+    if (fullText === '' && toolCallsMap.size === 0) {
+      dispatchStreamError(null, false);
       return;
     }
+
+    streamFinished = true;
+    const finalOutput = buildFinalOutput();
 
     const usageObj = normalizeResponsesUsage(
       collectedUsage,
@@ -1524,6 +1542,25 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
         status: 'completed'
       });
     }
+  }
+
+  if (output.length === 0) {
+    return {
+      id: respId,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      completed_at: Math.floor(Date.now() / 1000),
+      status: 'failed',
+      parallel_tool_calls: true,
+      model: reqModel,
+      error: {
+        type: 'server_error',
+        code: 'upstream_stream_empty_truncated',
+        message: 'Upstream returned an empty response with no content or tool calls.'
+      },
+      output: [],
+      usage: normalizeResponsesUsage(chatJson.usage, 1, 1)
+    };
   }
 
   return {
@@ -1763,11 +1800,76 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const toolCallsMap = new Map(); // blockIndex -> { id, name, args, outIdx }
   let collectedUsage = null;
   let buffer = '';
+  let streamFinished = false;
+  let upstreamEnded = false;
+
+  const buildFinalOutput = () => {
+    const finalOutput = [];
+    if (textStarted || fullText) {
+      finalOutput.push({
+        id: itemIdText,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: fullText, annotations: [], logprobs: [] }]
+      });
+    }
+    for (const rec of toolCallsMap.values()) {
+      finalOutput.push({
+        id: rec.id,
+        type: 'function_call',
+        name: rec.name,
+        call_id: rec.id,
+        arguments: rec.args,
+        status: 'completed'
+      });
+    }
+    return finalOutput;
+  };
+
+  const dispatchStreamError = (err, isExplicitError = false, overrideCode = null) => {
+    if (streamFinished || clientRes.writableEnded || clientRes.destroyed) {
+      cleanup();
+      return;
+    }
+    streamFinished = true;
+    closeText();
+    const finalOutput = buildFinalOutput();
+    const isEmpty = fullText === '' && toolCallsMap.size === 0;
+    const errCode = overrideCode || (isEmpty ? 'upstream_stream_empty_truncated' : 'upstream_stream_truncated');
+    const errMsg = err?.message
+      ? `Upstream stream error: ${err.message}`
+      : (isEmpty ? 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).' : 'Upstream stream disconnected unexpectedly before generating output or tool calls.');
+
+    console.error(`[Anthropic Stream Error] ${errMsg} on model "${reqModel}". Dispatching response.failed.`);
+    sendEvent('response.failed', {
+      type: 'response.failed',
+      sequence_number: seq++,
+      response: {
+        id: respId,
+        object: 'response',
+        created_at: Math.floor(Date.now() / 1000),
+        completed_at: Math.floor(Date.now() / 1000),
+        status: 'failed',
+        model: reqModel,
+        error: {
+          type: 'server_error',
+          code: errCode,
+          message: errMsg
+        },
+        output: finalOutput
+      }
+    });
+    cleanup();
+    clientRes.end();
+    if (typeof onFinished === 'function') onFinished();
+  };
 
   // Heartbeat keep-alive & watchdog to prevent stream stalls
   let lastDataTime = Date.now();
   const heartbeatTimer = setInterval(() => {
-    if (clientRes.writableEnded || clientRes.destroyed) {
+    if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
       clearInterval(heartbeatTimer);
       return;
     }
@@ -1775,7 +1877,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   }, 10000);
 
   const stallWatchdog = setInterval(() => {
-    if (clientRes.writableEnded || clientRes.destroyed) {
+    if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
       return;
@@ -1784,27 +1886,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
       console.error(`[Anthropic Stream Watchdog] Upstream stalled for >300s on model "${reqModel}". Closing stream with response.failed.`);
-      closeText();
-      sendEvent('response.failed', {
-        type: 'response.failed',
-        sequence_number: seq++,
-        response: {
-          id: respId,
-          object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
-          completed_at: Math.floor(Date.now() / 1000),
-          status: 'failed',
-          model: reqModel,
-          error: {
-            type: 'server_error',
-            code: 'upstream_stream_timeout',
-            message: 'Upstream stalled for longer than 300s without returning data.'
-          },
-          output: []
-        }
-      });
-      clientRes.end();
-      if (typeof onFinished === 'function') onFinished();
+      dispatchStreamError(new Error('Upstream stalled for longer than 300s without returning data.'), true, 'upstream_stream_timeout');
     }
   }, 5000);
 
@@ -1816,6 +1898,16 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     cleanup();
     if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
       upstreamRes.destroy();
+    }
+  });
+
+  upstreamRes.on('error', (err) => {
+    dispatchStreamError(err, true);
+  });
+
+  upstreamRes.on('close', () => {
+    if (!streamFinished && !upstreamEnded) {
+      dispatchStreamError(new Error('Premature close of upstream response stream'), false);
     }
   });
 
@@ -1965,55 +2057,18 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   });
 
   upstreamRes.on('end', () => {
+    upstreamEnded = true;
+    if (streamFinished) return;
+
     closeText();
 
-    const finalOutput = [];
-    if (textStarted || fullText) {
-      finalOutput.push({
-        id: itemIdText,
-        type: 'message',
-        status: 'completed',
-        role: 'assistant',
-        phase: 'final_answer',
-        content: [{ type: 'output_text', text: fullText, annotations: [], logprobs: [] }]
-      });
-    }
-    for (const rec of toolCallsMap.values()) {
-      finalOutput.push({
-        id: rec.id,
-        type: 'function_call',
-        name: rec.name,
-        call_id: rec.id,
-        arguments: rec.args,
-        status: 'completed'
-      });
-    }
-
     if (fullText === '' && toolCallsMap.size === 0) {
-      console.error(`[Anthropic Stream Error] Upstream stream disconnected prematurely with zero content on model "${reqModel}". Dispatching response.failed.`);
-      sendEvent('response.failed', {
-        type: 'response.failed',
-        sequence_number: seq++,
-        response: {
-          id: respId,
-          object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
-          completed_at: Math.floor(Date.now() / 1000),
-          status: 'failed',
-          model: reqModel,
-          error: {
-            type: 'server_error',
-            code: 'upstream_stream_empty_truncated',
-            message: 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).'
-          },
-          output: []
-        }
-      });
-      cleanup();
-      clientRes.end();
-      if (typeof onFinished === 'function') onFinished();
+      dispatchStreamError(null, false);
       return;
     }
+
+    streamFinished = true;
+    const finalOutput = buildFinalOutput();
 
     const usageObj = normalizeResponsesUsage(
       collectedUsage,
@@ -2092,14 +2147,22 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
   }
 
   if (output.length === 0) {
-    output.push({
-      id: 'msg_' + Date.now(),
-      type: 'message',
-      status: 'completed',
-      role: 'assistant',
-      phase: 'final_answer',
-      content: [{ type: 'output_text', text: '', annotations: [], logprobs: [] }]
-    });
+    return {
+      id: respId,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      completed_at: Math.floor(Date.now() / 1000),
+      status: 'failed',
+      parallel_tool_calls: true,
+      model: reqModel,
+      error: {
+        type: 'server_error',
+        code: 'upstream_stream_empty_truncated',
+        message: 'Upstream returned an empty response with no content or tool calls.'
+      },
+      output: [],
+      usage: normalizeResponsesUsage(anthropicJson.usage, 1, 1)
+    };
   }
 
   return {
@@ -2327,6 +2390,7 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
       const isProviderOpencodeGo = currentProvider === 'opencode-go';
       const isProviderRouterUrl = currentProvider && new RegExp(`\\[model_providers\\.(?:${currentProvider}|"${currentProvider}")\\][^\\[]*base_url\\s*=\\s*["'][^"']*(?:127\\.0\\.0\\.1|localhost):${expectedPort}`, 's').test(raw);
       isBound = Boolean(isProviderOpencodeGo || isProviderRouterUrl);
+      hasStreamIdleTimeout = Boolean(isBound && raw.includes('stream_idle_timeout_ms'));
     } catch (e) {}
   }
 
@@ -2359,6 +2423,7 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     hasConfig,
     configPath,
     isBound,
+    hasStreamIdleTimeout,
     currentModel,
     currentProvider,
     currentReasoningEffort,
@@ -2822,15 +2887,39 @@ function restartCodex(options = {}) {
 }
 
 /**
+ * Safely parses Codex turn metadata string (JSON, URL-encoded, or base64)
+ */
+function parseTurnMetadata(val) {
+  if (!val || typeof val !== 'string') return null;
+  const trimmed = val.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch (_) {}
+  try {
+    const decoded = decodeURIComponent(trimmed);
+    if (decoded !== trimmed) return JSON.parse(decoded);
+  } catch (_) {}
+  try {
+    const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+    if (decoded.startsWith('{') && decoded.endsWith('}')) {
+      return JSON.parse(decoded);
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
  * Dynamically derives an isolated Session ID for upstream OpenCode Go requests.
  * Eliminates concurrent state collision when multiple Codex threads or turns connect.
  * 
  * Precedence:
  * 1. Explicit x-opencode-session or x-session-id request header
  * 2. Explicit x-conversation-id request header
- * 3. Explicit x-request-id or x-client-request-id request header
- * 4. previous_response_id, conversation_id, or session_id in Responses payload body
- * 5. Dynamic auto-isolated session ID per connection/turn fallback
+ * 3. Codex-native turn metadata headers (x-codex-turn-metadata, x-codex-parent-thread-id, x-thread-id)
+ * 4. Explicit x-request-id or x-client-request-id request header
+ * 5. previous_response_id, parent_response_id, thread_id, conversation_id, or session_id in payload body
+ * 6. Dynamic auto-isolated session ID per connection/turn fallback
  */
 function extractOrDeriveSessionId(req, body) {
   // 1. Explicit x-opencode-session / x-session-id
@@ -2846,14 +2935,30 @@ function extractOrDeriveSessionId(req, body) {
     return trimmed.startsWith('session-') ? trimmed : `session-conv-${trimmed}`;
   }
 
-  // 3. Explicit x-request-id / x-client-request-id header
+  // 3. Codex-native turn metadata headers (x-codex-turn-metadata, x-codex-parent-thread-id, x-thread-id)
+  const codexMetaRaw = req?.headers?.['x-codex-turn-metadata'] || req?.headers?.['x-turn-metadata'];
+  if (codexMetaRaw) {
+    const meta = parseTurnMetadata(codexMetaRaw);
+    const threadId = meta?.thread_id || meta?.threadId || meta?.parent_thread_id || meta?.session_id || meta?.sessionId;
+    if (threadId && typeof threadId === 'string' && threadId.trim()) {
+      const trimmed = threadId.trim();
+      return trimmed.startsWith('session-') ? trimmed : `session-codex-${trimmed}`;
+    }
+  }
+  const codexParentThread = req?.headers?.['x-codex-parent-thread-id'] || req?.headers?.['x-thread-id'];
+  if (codexParentThread && typeof codexParentThread === 'string' && codexParentThread.trim()) {
+    const trimmed = codexParentThread.trim();
+    return trimmed.startsWith('session-') ? trimmed : `session-codex-${trimmed}`;
+  }
+
+  // 4. Explicit x-request-id / x-client-request-id header
   const reqIdHeader = req?.headers?.['x-request-id'] || req?.headers?.['x-client-request-id'];
   if (reqIdHeader && typeof reqIdHeader === 'string' && reqIdHeader.trim()) {
     const trimmed = reqIdHeader.trim();
     return trimmed.startsWith('session-') ? trimmed : `session-req-${trimmed}`;
   }
 
-  // 4. previous_response_id / conversation_id in Responses payload body
+  // 5. previous_response_id / parent_response_id / thread_id / conversation_id in Responses payload body
   let parsed = body;
   if (Buffer.isBuffer(body) || typeof body === 'string') {
     if (body.length > 0) {
@@ -2872,9 +2977,33 @@ function extractOrDeriveSessionId(req, body) {
       const prevId = parsed.previous_response_id.trim();
       return prevId.startsWith('session-') ? prevId : `session-resp-${prevId}`;
     }
+    if (parsed.parent_response_id && typeof parsed.parent_response_id === 'string' && parsed.parent_response_id.trim()) {
+      const parentId = parsed.parent_response_id.trim();
+      return parentId.startsWith('session-') ? parentId : `session-resp-${parentId}`;
+    }
+    if (parsed.thread_id && typeof parsed.thread_id === 'string' && parsed.thread_id.trim()) {
+      const tId = parsed.thread_id.trim();
+      return tId.startsWith('session-') ? tId : `session-codex-${tId}`;
+    }
     if (parsed.conversation_id && typeof parsed.conversation_id === 'string' && parsed.conversation_id.trim()) {
       const convId = parsed.conversation_id.trim();
       return convId.startsWith('session-') ? convId : `session-conv-${convId}`;
+    }
+    if (parsed.root_turn_id && typeof parsed.root_turn_id === 'string' && parsed.root_turn_id.trim()) {
+      const rId = parsed.root_turn_id.trim();
+      return rId.startsWith('session-') ? rId : `session-turn-${rId}`;
+    }
+    if (parsed.metadata && typeof parsed.metadata === 'object') {
+      const mThread = parsed.metadata.thread_id || parsed.metadata.threadId || parsed.metadata.session_id;
+      if (mThread && typeof mThread === 'string' && mThread.trim()) {
+        const trimmed = mThread.trim();
+        return trimmed.startsWith('session-') ? trimmed : `session-codex-${trimmed}`;
+      }
+      const mConv = parsed.metadata.conversation_id || parsed.metadata.conversationId;
+      if (mConv && typeof mConv === 'string' && mConv.trim()) {
+        const trimmed = mConv.trim();
+        return trimmed.startsWith('session-') ? trimmed : `session-conv-${trimmed}`;
+      }
     }
     if (parsed.session_id && typeof parsed.session_id === 'string' && parsed.session_id.trim()) {
       const sId = parsed.session_id.trim();
@@ -2882,7 +3011,7 @@ function extractOrDeriveSessionId(req, body) {
     }
   }
 
-  // 5. Fallback: dynamic session isolation per connection/turn to prevent upstream concurrent collision
+  // 6. Fallback: dynamic session isolation per connection/turn to prevent upstream concurrent collision
   return `session-auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 

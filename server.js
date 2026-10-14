@@ -1101,7 +1101,6 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       upstreamRes.on('error', (err) => {
         console.error('[Bridge Stream Error]', err.message);
         finishRequest();
-        if (!clientRes.writableEnded) clientRes.end();
       });
     } else {
       const dataChunks = [];
@@ -1116,7 +1115,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           const headers = getCorsHeaders(upstreamRes.headers);
           headers['content-type'] = 'application/json; charset=utf-8';
           headers['content-length'] = String(outBuf.length);
-          clientRes.writeHead(200, headers);
+          clientRes.writeHead(responsesJson.status === 'failed' ? 502 : 200, headers);
           clientRes.end(outBuf);
         } catch (e) {
           clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1125,7 +1124,16 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       });
       upstreamRes.on('error', (err) => {
         finishRequest();
-        if (!clientRes.writableEnded) clientRes.end();
+        if (!clientRes.writableEnded && !clientRes.destroyed) {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          clientRes.end(JSON.stringify({
+            error: {
+              type: 'server_error',
+              code: 'upstream_stream_error',
+              message: `Upstream error: ${err.message}`
+            }
+          }));
+        }
       });
     }
   });
@@ -1338,7 +1346,6 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       upstreamRes.on('error', (err) => {
         console.error('[Anthropic Stream Error]', err.message);
         finishRequest();
-        if (!clientRes.writableEnded) clientRes.end();
       });
     } else {
       const dataChunks = [];
@@ -1353,7 +1360,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           const headers = getCorsHeaders(upstreamRes.headers);
           headers['content-type'] = 'application/json; charset=utf-8';
           headers['content-length'] = String(outBuf.length);
-          clientRes.writeHead(200, headers);
+          clientRes.writeHead(responsesJson.status === 'failed' ? 502 : 200, headers);
           clientRes.end(outBuf);
         } catch (e) {
           clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1362,7 +1369,16 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       });
       upstreamRes.on('error', (err) => {
         finishRequest();
-        if (!clientRes.writableEnded) clientRes.end();
+        if (!clientRes.writableEnded && !clientRes.destroyed) {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          clientRes.end(JSON.stringify({
+            error: {
+              type: 'server_error',
+              code: 'upstream_stream_error',
+              message: `Upstream error: ${err.message}`
+            }
+          }));
+        }
       });
     }
   });
@@ -1844,6 +1860,13 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
         title: 'OpenAI Codex CLI 尚未接入本地智能网关',
         desc: `检测到本地已安装 Codex CLI (${codexStatus.cliVersion || '已安装'})，可一键接入 OpenCode Go 38 款模型及思考等级映射`
       });
+    } else if (codexStatus.cliInstalled && codexStatus.isBound && !codexStatus.hasStreamIdleTimeout) {
+      report.issues.push({
+        id: 'codex_timeout_unhardened',
+        severity: 'medium',
+        title: 'OpenAI Codex 缺少长思考防断流与智能重试加固配置',
+        desc: '检测到 Codex config.toml 未配置 stream_idle_timeout_ms (5分钟防断流) 或 stream_max_retries，长思考容易偶发断流，可一键加固修复'
+      });
     }
   } catch (e) {}
 
@@ -2085,10 +2108,11 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     results.push({ item: 'Office Preview Engine', success: false, message: '挂载 Office 预览引擎异常: ' + e.message });
   }
 
-  // 8. Auto-bind Codex CLI if installed and not yet bound
+  // 8. Auto-bind Codex CLI if installed and not yet bound or not hardened
   try {
     const codexStatus = codexAdapter.getCodexStatus(config.port);
-    if (codexStatus.cliInstalled && !codexStatus.isBound) {
+    if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
+      const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
       const bindRes = codexAdapter.bindCodexConfig({
         routerPort: config.port,
         routerUrl: `http://127.0.0.1:${config.port}/v1`,
@@ -2099,7 +2123,9 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
       results.push({
         item: 'Codex Integration',
         success: bindRes.success,
-        message: bindRes.success ? '已自动将 OpenAI Codex CLI 接入本地 4010 智能网关（支持全量 38 款模型）' : bindRes.error
+        message: bindRes.success
+          ? (isRehardened ? '已自动加固 OpenAI Codex 5分钟长思考防断流与智能重试机制 (stream_idle_timeout_ms = 300000)' : '已自动将 OpenAI Codex CLI 接入本地 4010 智能网关（支持全量 38 款模型）')
+          : bindRes.error
       });
     }
   } catch (e) {
@@ -4777,8 +4803,15 @@ $ghost
   }
 
   // All other API calls: Proxy to OpenCode Go upstream
-  // All other API calls: Proxy to OpenCode Go upstream
   const chunks = [];
+  req.on('error', err => {
+    if (!res.headersSent) {
+      try {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Client request stream error: ' + err.message, type: 'client_error' } }));
+      } catch (_) {}
+    }
+  });
   req.on('data', chunk => chunks.push(chunk));
   req.on('end', () => {
     const reqBody = Buffer.concat(chunks);
