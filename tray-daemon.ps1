@@ -5,7 +5,9 @@
 ===============================================================================
 #>
 [CmdletBinding()]
-param()
+param(
+    [switch]$Silent
+)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -27,23 +29,6 @@ function Write-TrayLog([string]$msg) {
     } catch { }
 }
 
-# 单实例互斥防御 (Mutex)
-$mutexName = "Local\OpenCodeRouterTrayPSMutex_v2"
-$createdNew = $false
-$mutex = $null
-try {
-    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
-} catch {
-    $createdNew = $true
-}
-
-if (-not $createdNew) {
-    Write-TrayLog "Another instance is running. Activating dashboard and exiting."
-    # 唤起控制面板后退出
-    Start-Process "http://127.0.0.1:$port/balancer/ui"
-    exit 0
-}
-
 function Test-PortListening([int]$targetPort) {
     try {
         $conn = Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue
@@ -56,13 +41,24 @@ function Test-PortListening([int]$targetPort) {
 function Ensure-RouterRunning {
     try {
         if (Test-PortListening $port) { return }
-        $vbs = Join-Path $rootDir "silent-start.vbs"
-        if (Test-Path $vbs) {
-            Start-Process "wscript.exe" -ArgumentList "`"$vbs`"" -WorkingDirectory $rootDir -WindowStyle Hidden
-        } else {
-            Start-Process "node.exe" -ArgumentList "`"server.js`"" -WorkingDirectory $rootDir -WindowStyle Hidden
+        $nodeExe = "node.exe"
+        if (Test-Path "C:\Program Files\nodejs\node.exe") {
+            $nodeExe = "C:\Program Files\nodejs\node.exe"
+        } elseif (Test-Path "$env:LOCALAPPDATA\Programs\node\node.exe") {
+            $nodeExe = "$env:LOCALAPPDATA\Programs\node\node.exe"
         }
-        for ($i = 0; $i -lt 10; $i++) {
+        $serverJs = Join-Path $rootDir "server.js"
+        
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $nodeExe
+        $psi.Arguments = "`"$serverJs`""
+        $psi.WorkingDirectory = $rootDir
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.UseShellExecute = $false
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+
+        for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Milliseconds 200
             if (Test-PortListening $port) { break }
         }
@@ -77,16 +73,45 @@ function Open-Dashboard([string]$hash = "") {
     try {
         $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
         $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        if (-not (Test-Path $edge)) {
+            $edge = "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+        }
         if (Test-Path $chrome) {
-            Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$chrome`" --app=$url" -WindowStyle Hidden
+            Start-Process -FilePath $chrome -ArgumentList "--app=$url"
             return
         }
         if (Test-Path $edge) {
-            Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$edge`" --app=$url" -WindowStyle Hidden
+            Start-Process -FilePath $edge -ArgumentList "--app=$url"
             return
         }
     } catch { }
     Start-Process "explorer.exe" -ArgumentList "`"$url`""
+}
+
+# 单实例互斥防御 (Mutex)
+$mutexName = "Local\OpenCodeRouterTrayPSMutex_v2"
+$createdNew = $false
+$mutex = $null
+try {
+    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
+} catch {
+    $createdNew = $true
+}
+
+if (-not $createdNew) {
+    Write-TrayLog "Another instance is running. Activating dashboard and exiting."
+    if (-not $Silent) {
+        Open-Dashboard
+    }
+    exit 0
+}
+
+# 确保后台路由器运行
+Ensure-RouterRunning
+
+# 如果不是静默启动，唤起独立桌面应用窗口
+if (-not $Silent) {
+    Open-Dashboard
 }
 
 function Launch-OpenChamber {
@@ -213,6 +238,7 @@ function Exit-TrayApp {
 Ensure-RouterRunning
 
 $global:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$notifyIcon = $global:notifyIcon
 if (Test-Path $icoPath) {
     try {
         $global:notifyIcon.Icon = New-Object System.Drawing.Icon($icoPath)
