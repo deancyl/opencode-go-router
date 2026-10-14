@@ -8,8 +8,7 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com)
 [![Linux](https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(Debian%2CUbuntu%2CfnOS%2CDSM)-orange.svg)](https://kernel.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
-[![OpenCode](https://img.shields.io/badge/OpenCode-v2.0%2B-orange.svg)](https://opencode.ai)
-[![Version: v2.5.5](https://img.shields.io/badge/Version-v2.5.5-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.5.8](https://img.shields.io/badge/Version-v2.5.8-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -443,6 +442,21 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.5.8 (全链路架构深度巡检、Semver 规范防御、流中断安全回收与 76 项测试大满贯)
+- **桌面快捷方式全栈冷启动引导与自愈 (`launch-gui.vbs` & `tray-daemon.ps1` - v2.5.6/v2.5.8)**：
+  - **冷启动自愈闭环**：彻底终结双击桌面图标因后台未启动报 `ERR_CONNECTION_REFUSED` 导致“不能直接启动”的痛点；双击优先毫秒级探测 4010 端口，未就绪则 0.5 秒内静默拉起 Node 网关与托盘，再秒级呼出独立桌面 App 窗口；开机启动项自动挂载 `-Silent` 模式；
+  - **快捷方式路径转义防御**：全面修正开机自启快捷方式的参数解析，清除多余反斜杠与空格缺陷。
+- **Semver 2.0.0 规范化高阶比较引擎 (`compareSemver`)**：
+  - 彻底规避简单字符串对比或粗糙正则引发的版本漂移缺陷，完整解析 `major.minor.patch-prerelease+build` 规范；
+  - 正确处理 `v`/`^` 标识、先行版优先级（如 `5.1.30-beta.2` < `5.1.30-rc.1` < `5.1.30`）并忽略构建元数据（`+build`），杜绝合流时意外降级或死循环。
+- **流式请求意外中断底层 Socket 瞬时销毁 (`req.destroy()`)**：
+  - 针对客户端意外刷新或关闭连接的场景，在所有协议桥（OpenAI Responses、ChatCompletions、Anthropic Messages）中增加底层套接字瞬时强制回收机制，杜绝幽灵连接挂死与上游流量泄露。
+- **Anthropic 协议桥超限自适应切分与 2M 跃迁兜底**：
+  - 增强 `prompt is too long` / `maximum context length` 等多厂商错误特征捕获，当滑动窗口裁剪无效时无缝自动跃迁至 2M 模型（`kimi-k2.7-code`），杜绝 400 裸错误透传。
+- **配额接口入参多轨兼容 (`accountId`, `account_id`, `id`)**：
+  - 完美兼容多版本前端传参差异，并强化内存防抖缓存池（8秒 TTL）与 `force: true` 穿透能力。
+- **自动化集成测试套件扩充至 76 项 100% 绿灯全通**。
 
 ### 🚀 v2.5.5 (Codex 一键脱钩重启、双轨提供商重定向与上下文自动切分守护)
 - **Codex 桌面客户端一键脱钩重启 (One-Click Decoupled Restart & In-Memory Cache Refresher)**：
