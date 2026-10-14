@@ -2132,6 +2132,14 @@ $ProgressPreference = 'SilentlyContinue'
       new Function(clientScript);
     }, 'Client script in Web UI must compile without any SyntaxError');
 
+    // Also verify login page script syntax (renderLoginPage)
+    const serverJsSource = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const loginScriptMatch = serverJsSource.match(/function renderLoginPage[\s\S]*?<script>([\s\S]*?)<\/script>/);
+    assert.ok(loginScriptMatch, 'renderLoginPage must contain client script');
+    assert.doesNotThrow(() => {
+      new Function(loginScriptMatch[1]);
+    }, 'Login page script must compile without SyntaxError');
+
     // Verify restartCodex runs cleanly without console ConPTY pipe errors
     const restartCodexTestRes = codexAdapter.restartCodex();
     assert.strictEqual(restartCodexTestRes.restarted, true);
@@ -2146,6 +2154,9 @@ $ProgressPreference = 'SilentlyContinue'
     mockUpstream.close();
     if (fs.existsSync(testConfigFile)) {
       try { fs.unlinkSync(testConfigFile); } catch (e) {}
+    }
+    if (fs.existsSync(testConfigFile + '.bak')) {
+      try { fs.unlinkSync(testConfigFile + '.bak'); } catch (e) {}
     }
     if (fs.existsSync(testConfigDir)) {
       try { fs.rmSync(testConfigDir, { recursive: true, force: true }); } catch (e) {}

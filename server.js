@@ -3713,7 +3713,7 @@ $ghost
   <div id="toast" class="toast"></div>
 
   <script>
-    let currentConfig = null;
+    let currentConfig = { accounts: [] };
     let liveStats = {};
     let accountQuotas = {};
 
