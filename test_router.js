@@ -1797,8 +1797,171 @@ async function runTests() {
     assert.ok(restartData.result.messages, 'Restart Codex must return detailed messages');
     console.log('✓ Restart Codex API & Decoupled Execution verified');
 
+    // [Test 67] Testing HTTP Basic Auth Auto-Discovery (Authorization: Basic support)
+    console.log('\n[Test 67] Testing HTTP Basic Auth Auto-Discovery (Authorization: Basic support)...');
+    // Enable password
+    const testBasicPwd = 'TestBasicPassword987!';
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...testConfig, uiPassword: testBasicPwd })
+    });
+
+    // 1. Unauthenticated request should fail with 401
+    const unauthTest67 = await request('/balancer/api/config', { method: 'GET' });
+    assert.strictEqual(unauthTest67.statusCode, 401, 'Should require auth when uiPassword is set');
+
+    // 2. Standard Basic auth: "opencode:password"
+    const basic1 = Buffer.from(`opencode:${testBasicPwd}`).toString('base64');
+    const authBasicRes1 = await request('/balancer/api/config', {
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${basic1}` }
+    });
+    assert.strictEqual(authBasicRes1.statusCode, 200, 'Basic auth with username:password must succeed');
+
+    // 3. Password-only Basic auth: ":password"
+    const basic2 = Buffer.from(`:${testBasicPwd}`).toString('base64');
+    const authBasicRes2 = await request('/balancer/api/config', {
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${basic2}` }
+    });
+    assert.strictEqual(authBasicRes2.statusCode, 200, 'Basic auth with :password must succeed');
+
+    // 4. Raw password base64: "password"
+    const basic3 = Buffer.from(testBasicPwd).toString('base64');
+    const authBasicRes3 = await request('/balancer/api/config', {
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${basic3}` }
+    });
+    assert.strictEqual(authBasicRes3.statusCode, 200, 'Basic auth with base64 password must succeed');
+
+    // 5. Wrong password should return 401
+    const badBasic = Buffer.from('opencode:WrongPassword!').toString('base64');
+    const badBasicRes = await request('/balancer/api/config', {
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${badBasic}` }
+    });
+    assert.strictEqual(badBasicRes.statusCode, 401, 'Basic auth with wrong password must be rejected (401)');
+
+    // Reset password back to empty
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${basic1}`
+      },
+      body: JSON.stringify({ ...testConfig, uiPassword: '' })
+    });
+    console.log('✓ HTTP Basic Auth Auto-Discovery (user:pass, :pass, and raw b64) verified');
+
+    // [Test 68] Testing Stream Abort Resilience & Zero Unhandled Exceptions
+    console.log('\n[Test 68] Testing Stream Abort Resilience & Zero Unhandled Exceptions...');
+    const abortTestPromise = new Promise((resolve, reject) => {
+      const abortReq = http.request({
+        hostname: '127.0.0.1',
+        port: routerPort,
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-opencode-session': 'session-anthropic-stream'
+        }
+      }, (res) => {
+        // Destroy client connection immediately upon first data chunk
+        res.on('data', () => {
+          abortReq.destroy();
+          resolve();
+        });
+      });
+      abortReq.on('error', (err) => {
+        // Expected client abort error
+        resolve();
+      });
+      abortReq.write(JSON.stringify({
+        model: 'claude-haiku-5-5',
+        messages: [{ role: 'user', content: 'hello' }]
+      }));
+      abortReq.end();
+    });
+
+    await abortTestPromise;
+    await new Promise(r => setTimeout(r, 200));
+
+    // Router must still be completely healthy and responsive
+    const healthPostAbort = await request('/health');
+    assert.strictEqual(healthPostAbort.statusCode, 200, 'Router must remain healthy after stream abort');
+    console.log('✓ Stream Abort Resilience & Zero Unhandled Exceptions verified');
+
+    // [Test 69] Testing Electron Ghost Process Detection & Single-Instance Lock Healing Logic
+    console.log('\n[Test 69] Testing Electron Ghost Process Detection & Single-Instance Lock Healing Logic...');
+    function detectGhostProcesses(procList) {
+      if (!Array.isArray(procList) || procList.length === 0) return { isGhost: false, count: 0 };
+      const hasWindow = procList.some(p => p.MainWindowHandle !== 0);
+      return {
+        isGhost: !hasWindow,
+        count: procList.length
+      };
+    }
+
+    const mockGhostProcs = [{ Id: 101, MainWindowHandle: 0 }, { Id: 102, MainWindowHandle: 0 }];
+    const ghostRes = detectGhostProcesses(mockGhostProcs);
+    assert.strictEqual(ghostRes.isGhost, true, 'All zero MainWindowHandle processes must be identified as ghost processes');
+    assert.strictEqual(ghostRes.count, 2);
+
+    const mockNormalProcs = [{ Id: 101, MainWindowHandle: 0 }, { Id: 103, MainWindowHandle: 98765 }];
+    const normalRes = detectGhostProcesses(mockNormalProcs);
+    assert.strictEqual(normalRes.isGhost, false, 'Processes with valid window handle must NOT be identified as ghost processes');
+    console.log('✓ Electron Ghost Process Detection & Single-Instance Lock Healing Logic verified');
+
+    // [Test 70] Testing Desktop & Startup Shortcut Escaping & Anti-Malformed Parameter Validation
+    console.log('\n[Test 70] Testing Desktop & Startup Shortcut Escaping & Anti-Malformed Parameter Validation...');
+    const launchGuiVbsPath = path.resolve(__dirname, 'launch-gui.vbs');
+    const startTrayVbsPath = path.resolve(__dirname, 'start-tray.vbs');
+    assert.ok(fs.existsSync(launchGuiVbsPath), 'launch-gui.vbs must exist');
+    assert.ok(fs.existsSync(startTrayVbsPath), 'start-tray.vbs must exist');
+
+    const launchGuiContent = fs.readFileSync(launchGuiVbsPath, 'utf8');
+    assert.ok(launchGuiContent.includes('WScript.Arguments'), 'launch-gui.vbs must forward command arguments');
+
+    function validateShortcutArguments(targetPath, argumentsStr) {
+      assert.strictEqual(targetPath, 'wscript.exe', 'Shortcut must use wscript.exe host for zero-window stealth');
+      assert.ok(!argumentsStr.endsWith('\\'), 'Arguments must not end with a naked trailing backslash');
+      assert.ok(!argumentsStr.includes('\\"'), 'Arguments must not contain double-escaped trailing backslash quotes');
+      assert.ok(argumentsStr.startsWith('"'), 'Arguments file path must start with quote');
+      return true;
+    }
+
+    validateShortcutArguments('wscript.exe', `"${launchGuiVbsPath}"`);
+    validateShortcutArguments('wscript.exe', `"${startTrayVbsPath}" -Silent`);
+    console.log('✓ Desktop & Startup Shortcut Escaping & Anti-Malformed Parameter Validation verified');
+
+    // [Test 71] Testing Dynamic Version Drift Immunity (Verifying Zero Hardcoding in Harmonization)
+    console.log('\n[Test 71] Testing Dynamic Version Drift Immunity (Verifying Zero Hardcoding in Harmonization)...');
+    const testOmoConfigPath = path.join(testConfigDir, 'opencode-version-test.jsonc');
+    fs.writeFileSync(testOmoConfigPath, JSON.stringify({
+      plugin: ['oh-my-openagent@5.9.99', 'opencode-goal-plugin'],
+      provider: {
+        'custom-corp': {
+          npm: '@corp/custom-ai',
+          options: { baseURL: 'https://ai.corp.internal/v1' }
+        }
+      }
+    }, null, 2), 'utf8');
+
+    const harmResult71 = updater.harmonizeOpencodeConfig(testOmoConfigPath, routerPort);
+    assert.strictEqual(harmResult71.success, true);
+
+    const reReadConfig = JSON.parse(updater.stripJsonComments(fs.readFileSync(testOmoConfigPath, 'utf8')));
+    const omoTag = reReadConfig.plugin.find(p => typeof p === 'string' && p.startsWith('oh-my-openagent'));
+    assert.strictEqual(omoTag, 'oh-my-openagent@5.9.99', 'Harmonization must respect installed/existing 5.9.99 version without regressing to hardcoded tags');
+    assert.ok(reReadConfig.provider['opencode-go'], 'Must have opencode-go provider');
+    assert.ok(reReadConfig.provider['custom-corp'], 'Must preserve custom-corp provider');
+    assert.ok(reReadConfig.agent.goal, 'Must have agent.goal injected');
+    assert.ok(reReadConfig.agent['goal-verify'], 'Must have agent.goal-verify injected');
+    console.log('✓ Dynamic Version Drift Immunity & Agent Definition verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 66 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 71 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

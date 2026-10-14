@@ -118,12 +118,32 @@ function Launch-OpenChamber {
     try {
         $procs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
         if ($procs) {
-            # 尝试置顶窗口
-            [Microsoft.VisualBasic.Interaction]::AppActivate("OpenChamber") 2>$null
-            if ($notifyIcon) {
-                $notifyIcon.ShowBalloonTip(1500, "OpenChamber 桌面端", "已快速激活置顶至当前前台窗口。", [System.Windows.Forms.ToolTipIcon]::Info)
+            $hasWin = $false
+            foreach ($p in $procs) {
+                if ($p.MainWindowHandle -ne 0) {
+                    $hasWin = $true
+                    break
+                }
             }
-            return
+            if ($hasWin) {
+                [Microsoft.VisualBasic.Interaction]::AppActivate("OpenChamber") 2>$null
+                if ($notifyIcon) {
+                    $notifyIcon.ShowBalloonTip(1500, "OpenChamber 桌面端", "已快速激活置顶至当前前台窗口。", [System.Windows.Forms.ToolTipIcon]::Info)
+                }
+                return
+            } else {
+                # 存在无窗口僵死进程霸占 SingleInstanceLock，强力清理自愈
+                $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+                Get-Process -Name "opencode" -ErrorAction SilentlyContinue | Where-Object {
+                    try {
+                        (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine -like "*serve*--hostname*127.0.0.1*"
+                    } catch { $false }
+                } | Stop-Process -Force -ErrorAction SilentlyContinue
+                if ($notifyIcon) {
+                    $notifyIcon.ShowBalloonTip(2000, "单实例自愈完成", "检测并清理了后台无窗口僵死进程，正在重启 OpenChamber 桌面端...", [System.Windows.Forms.ToolTipIcon]::Info)
+                }
+                Start-Sleep -Milliseconds 600
+            }
         }
     } catch { }
 

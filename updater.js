@@ -342,8 +342,15 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     }
   }
 
-  // 3. 动态确定目标版本：options 优先 > 真实已安装版本 > 现有配置版本 > 5.1.30 兜底
-  const targetOmoVer = options.omoVersion || detectedLocalOmoVer || existingOmoVer || '5.1.30';
+  // 3. 动态确定目标版本：options 优先 > (若磁盘与现有均存在，仅当磁盘版本更高时执行双向对齐，否则保留现有更高版本) > 真实已安装版本 > 现有配置版本 > 5.1.30 兜底
+  let targetOmoVer = options.omoVersion;
+  if (!targetOmoVer) {
+    if (detectedLocalOmoVer && existingOmoVer) {
+      targetOmoVer = compareSemver(detectedLocalOmoVer, existingOmoVer) > 0 ? detectedLocalOmoVer : existingOmoVer;
+    } else {
+      targetOmoVer = detectedLocalOmoVer || existingOmoVer || '5.1.30';
+    }
+  }
   const targetOmoTag = `oh-my-openagent@${targetOmoVer}`;
 
   // 规范化与同步更新 OMO 插件标签

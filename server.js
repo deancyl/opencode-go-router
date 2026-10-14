@@ -825,6 +825,11 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
+    if (clientAborted || clientRes.destroyed || clientRes.writableEnded) {
+      finishRequest();
+      return;
+    }
+
     responded = true;
     clientRes.writeHead(statusCode, getCorsHeaders(upstreamRes.headers));
     upstreamRes.pipe(clientRes);
@@ -1056,6 +1061,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       return;
     }
 
+    if (clientAborted || clientRes.destroyed || clientRes.writableEnded) {
+      finishRequest();
+      return;
+    }
+
     responded = true;
 
     if (isStream) {
@@ -1254,6 +1264,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         clientRes.writeHead(statusCode, outHeaders);
         clientRes.end(errorBody);
       });
+      return;
+    }
+
+    if (clientAborted || clientRes.destroyed || clientRes.writableEnded) {
+      finishRequest();
       return;
     }
 
@@ -2104,11 +2119,20 @@ function isAuthorized(req) {
   const expected = config.uiPassword.trim();
   const expectedB64 = Buffer.from(expected).toString('base64');
 
-  // 1. Authorization header: Bearer <pwd_or_b64>
+  // 1. Authorization header: Bearer <pwd_or_b64> or Basic <base64>
   const authHeader = req.headers['authorization'] || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
     if (token === expected || token === expectedB64) return true;
+  } else if (authHeader.startsWith('Basic ')) {
+    const b64 = authHeader.slice(6).trim();
+    if (b64 === expected || b64 === expectedB64) return true;
+    try {
+      const decoded = Buffer.from(b64, 'base64').toString('utf8');
+      const parts = decoded.split(':');
+      const pass = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
+      if (pass === expected || decoded === expected) return true;
+    } catch (e) {}
   }
 
   // 2. Custom header: x-ui-password or x-router-auth
@@ -2787,7 +2811,7 @@ $ghost
         }
 
         if (process.platform === 'win32') {
-          const child = spawn('cmd.exe', ['/c', 'start', '', filePath], {
+          const child = spawn('explorer.exe', [filePath], {
             windowsHide: true,
             detached: true,
             stdio: 'ignore'

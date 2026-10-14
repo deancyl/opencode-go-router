@@ -186,64 +186,55 @@ function Step-SetupRouter {
     # 同步绑定 OpenCode 主配置文件 ~/.config/opencode/opencode.jsonc
     if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
     try {
-        $ocObj = $null
-        if (Test-Path $opencodeConfigFile) {
-            $ocObj = Get-Content $opencodeConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        } else {
-            $ocObj = [PSCustomObject]@{
-                plugin = @("oh-my-openagent@5.1.24", "opencode-goal-plugin")
-                "`$schema" = "https://opencode.ai/config.json"
-                provider = [PSCustomObject]@{}
-            }
+        $updaterScript = Join-Path $rootDir "updater.js"
+        if (Test-Path $updaterScript) {
+            $escPath = $opencodeConfigFile.Replace('\', '/')
+            node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $port);"
+            Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量 38 款模型、双轨规范与智能体定义就绪)" -ForegroundColor Green
         }
-        # 关键自愈：彻底清理复数 providers 中的冲突项，防止 OpenCode 触发 conflict 导致丢弃本地网关
-        if ($ocObj.PSObject.Properties['providers'] -and $ocObj.providers.PSObject.Properties['opencode-go']) {
-            $ocObj.providers.PSObject.Properties.Remove('opencode-go')
-            if ($ocObj.providers.PSObject.Properties.Count -eq 0) {
-                $ocObj.PSObject.Properties.Remove('providers')
-            }
-        }
-        if (-not $ocObj.provider) {
-            $ocObj | Add-Member -NotePropertyName "provider" -NotePropertyValue (New-Object PSObject)
-        }
-        if ($ocObj.provider.'opencode-go') {
-            $ocObj.provider.'opencode-go'.options.baseURL = "http://127.0.0.1:$port/v1"
-            if (-not $ocObj.provider.'opencode-go'.options.apiKey) {
-                $ocObj.provider.'opencode-go'.options.apiKey = "local-router"
-            }
-        } else {
-            $goProv = [PSCustomObject]@{
-                name = "opencode-go"
-                npm = "@ai-sdk/openai-compatible"
-                options = [PSCustomObject]@{
-                    baseURL = "http://127.0.0.1:$port/v1"
-                    apiKey = "local-router"
-                }
-                models = [PSCustomObject]@{
-                    "kimi-k3" = [PSCustomObject]@{ name = "kimi-k3" }
-                    "qwen3.7-plus" = [PSCustomObject]@{ name = "qwen3.7-plus" }
-                    "deepseek-v4.1-flash" = [PSCustomObject]@{ name = "deepseek-v4.1-flash" }
-                    "deepseek-v4-pro" = [PSCustomObject]@{ name = "deepseek-v4-pro" }
-                    "glm-5.3" = [PSCustomObject]@{ name = "glm-5.3" }
-                    "minimax-m3" = [PSCustomObject]@{ name = "minimax-m3" }
-                }
-            }
-            $ocObj.provider | Add-Member -NotePropertyName "opencode-go" -NotePropertyValue $goProv
-        }
-        Set-Content -Path $opencodeConfigFile -Value ($ocObj | ConvertTo-Json -Depth 15) -Encoding UTF8
-        Write-Host "✔ opencode.jsonc 已自动绑定本地网关 http://127.0.0.1:$port/v1" -ForegroundColor Green
     } catch {
         Write-Host "⚠ opencode.jsonc 网关绑定提醒: $_" -ForegroundColor Yellow
     }
 
+    # 创建/更新桌面与开机自启快捷方式 (Rule 10 全栈自愈)
+    try {
+        $wshell = New-Object -ComObject WScript.Shell
+        $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "OpenCode 智能路由中心.lnk"
+        $startupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) "OpenCodeRouterStartup.lnk"
+        $launchVbs = Join-Path $rootDir "launch-gui.vbs"
+        $trayVbs = Join-Path $rootDir "start-tray.vbs"
+        $ico = Join-Path $rootDir "assets\router.ico"
+
+        $scDesktop = $wshell.CreateShortcut($desktopLnk)
+        $scDesktop.TargetPath = "wscript.exe"
+        $scDesktop.Arguments = "`"$launchVbs`""
+        $scDesktop.WorkingDirectory = $rootDir
+        if (Test-Path $ico) { $scDesktop.IconLocation = "$ico,0" }
+        $scDesktop.Save()
+        Write-Host "✔ 桌面全栈快捷方式已就绪: $desktopLnk" -ForegroundColor Green
+
+        $scStartup = $wshell.CreateShortcut($startupLnk)
+        $scStartup.TargetPath = "wscript.exe"
+        $scStartup.Arguments = "`"$trayVbs`" -Silent"
+        $scStartup.WorkingDirectory = $rootDir
+        if (Test-Path $ico) { $scStartup.IconLocation = "$ico,0" }
+        $scStartup.Save()
+        Write-Host "✔ 开机静默常驻自启项已挂载: $startupLnk" -ForegroundColor Green
+    } catch {
+        Write-Host "ℹ 快捷方式创建提醒: $_" -ForegroundColor DarkGray
+    }
+
     # 静默启动原生托盘与路由服务
     Write-Host "正在启动系统托盘常驻进程与后台智能网关..." -ForegroundColor Yellow
+    $trayVbs = Join-Path $rootDir "start-tray.vbs"
     $trayExe = Join-Path $rootDir "OpenCodeRouterTray.exe"
-    $trayScript = Join-Path $rootDir "tray-runner.ps1"
-    if (Test-Path $trayExe) {
+    if (Test-Path $trayVbs) {
+        Start-Process "wscript.exe" -ArgumentList "`"$trayVbs`"" -WindowStyle Hidden
+    } elseif (Test-Path $trayExe) {
         Start-Process -FilePath $trayExe
     } else {
-        Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$trayScript`"") -WindowStyle Hidden
+        $silentVbs = Join-Path $rootDir "silent-start.vbs"
+        Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
     }
     Start-Sleep -Seconds 2
 
@@ -260,22 +251,17 @@ function Step-SetupRouter {
 function Step-SetupOMO {
     Write-Header "【步骤 3】配置 Oh My OpenAgent (OMO 多智能体调度)"
 
-    # 1. Ensure plugin in opencode.jsonc
+    # 1. Ensure plugin and configuration alignment in opencode.jsonc
     if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
-    
-    $pluginName = "oh-my-openagent@5.1.24"
-    if (Test-Path $opencodeConfigFile) {
-        $oc = Get-Content $opencodeConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        $plugins = [System.Collections.Generic.List[string]]::new()
-        if ($oc.plugin) { foreach ($p in $oc.plugin) { $plugins.Add($p) } }
-        if (-not ($plugins | Where-Object { $_ -like "oh-my-openagent*" })) {
-            $plugins.Add($pluginName)
-            $oc.plugin = $plugins.ToArray()
-            Set-Content -Path $opencodeConfigFile -Value ($oc | ConvertTo-Json -Depth 10) -Encoding UTF8
-            Write-Host "✔ 已在 opencode.jsonc 中注册插件: $pluginName" -ForegroundColor Green
-        } else {
-            Write-Host "✔ OMO 插件已在 opencode.jsonc 中注册" -ForegroundColor Green
+    try {
+        $updaterScript = Join-Path $rootDir "updater.js"
+        if (Test-Path $updaterScript) {
+            $escPath = $opencodeConfigFile.Replace('\', '/')
+            node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $port);"
+            Write-Host "✔ OMO 插件规范与标签已动态双向对齐 (无硬编码版本漂移)" -ForegroundColor Green
         }
+    } catch {
+        Write-Host "ℹ OMO 插件配置提醒: $_" -ForegroundColor DarkGray
     }
 
     # 2. Configure ~/.omo/omo.jsonc

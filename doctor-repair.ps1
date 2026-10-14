@@ -91,43 +91,47 @@ if ($routerConn) {
             })
         }
 
-        # 端到端推理链路轻量探针 (E2E Completion Probe)
-        Write-Host "    - 正在执行端到端轻量推理握手测试..." -ForegroundColor DarkGray
-        try {
-            $probeBody = @{
-                model = "deepseek-v4.1-flash"
-                messages = @(@{ role = "user"; content = "probe" })
-                max_tokens = 2
-            } | ConvertTo-Json
-            $probeResp = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/v1/chat/completions" -Method Post -Body $probeBody -ContentType "application/json" -Headers @{ Authorization = "Bearer local-router" } -TimeoutSec 5
-            if ($probeResp.choices) {
-                Write-Host "    ✔ 端到端推理握手通过！上游模型极速响应" -ForegroundColor Green
-            } else {
-                Write-Host "    ⚠ 上游响应格式异常" -ForegroundColor Yellow
+        if ($rHealth.healthyAccounts -gt 0) {
+            # 端到端推理链路轻量探针 (E2E Completion Probe)
+            Write-Host "    - 正在执行端到端轻量推理握手测试..." -ForegroundColor DarkGray
+            try {
+                $probeBody = @{
+                    model = "deepseek-v4.1-flash"
+                    messages = @(@{ role = "user"; content = "probe" })
+                    max_tokens = 2
+                } | ConvertTo-Json
+                $probeResp = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/v1/chat/completions" -Method Post -Body $probeBody -ContentType "application/json" -Headers @{ Authorization = "Bearer local-router" } -TimeoutSec 5
+                if ($probeResp.choices) {
+                    Write-Host "    ✔ 端到端推理握手通过！上游模型极速响应" -ForegroundColor Green
+                } else {
+                    Write-Host "    ⚠ 上游响应格式异常" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "    ❌ 端到端推理探针失败: $_" -ForegroundColor Red
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "router_probe_failed"
+                    Title = "4010 智能网关上游推理通道不可达或受阻"
+                    Severity = "High"
+                    FixDesc = "重置账号限频冷却并刷新网关通道"
+                })
             }
-        } catch {
-            Write-Host "    ❌ 端到端推理探针失败: $_" -ForegroundColor Red
-            $issuesFound.Add([PSCustomObject]@{
-                Id = "router_probe_failed"
-                Title = "4010 智能网关上游推理通道不可达或受阻"
-                Severity = "High"
-                FixDesc = "重置账号限频冷却并刷新网关通道"
-            })
-        }
 
-        # Codex Responses 协议桥极速握手探针 (Codex Responses Bridge Probe)
-        try {
-            $respBody = @{
-                model = "deepseek-v4.1-flash"
-                input = @("probe")
-                max_output_tokens = 2
-            } | ConvertTo-Json
-            $respProbe = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/v1/responses" -Method Post -Body $respBody -ContentType "application/json" -Headers @{ Authorization = "Bearer local-router" } -TimeoutSec 6
-            if ($respProbe) {
-                Write-Host "    ✔ Codex Responses 协议桥握手通过！极速就绪" -ForegroundColor Green
+            # Codex Responses 协议桥极速握手探针 (Codex Responses Bridge Probe)
+            try {
+                $respBody = @{
+                    model = "deepseek-v4.1-flash"
+                    input = @("probe")
+                    max_output_tokens = 2
+                } | ConvertTo-Json
+                $respProbe = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/v1/responses" -Method Post -Body $respBody -ContentType "application/json" -Headers @{ Authorization = "Bearer local-router" } -TimeoutSec 6
+                if ($respProbe) {
+                    Write-Host "    ✔ Codex Responses 协议桥握手通过！极速就绪" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ Codex Responses 协议桥握手受阻: $_" -ForegroundColor Yellow
             }
-        } catch {
-            Write-Host "    ⚠ Codex Responses 协议桥握手受阻: $_" -ForegroundColor Yellow
+        } else {
+            Write-Host "    ℹ 网关当前未配置有效订阅 API Key，跳过上游推理探针 (可在面板中配置)" -ForegroundColor DarkGray
         }
     } catch {
         Write-Host "    ⚠ 网关响应异常: $_" -ForegroundColor Yellow
@@ -411,6 +415,64 @@ if ($foundDist) {
     }
 }
 
+# 检查 Windows 桌面快捷方式与开机自启项 (Rule 10 冷启动自愈与参数转义规范)
+$desktopPath = [Environment]::GetFolderPath('Desktop')
+$desktopLnk = Join-Path $desktopPath "OpenCode 智能路由中心.lnk"
+$startupPath = [Environment]::GetFolderPath('Startup')
+$startupLnk = Join-Path $startupPath "OpenCodeRouterStartup.lnk"
+
+$wshell = $null
+try { $wshell = New-Object -ComObject WScript.Shell } catch {}
+
+if ($wshell) {
+    if (Test-Path $desktopLnk) {
+        try {
+            $sc = $wshell.CreateShortcut($desktopLnk)
+            $isDirectBrowser = $sc.TargetPath -like "*chrome.exe*" -or $sc.TargetPath -like "*msedge.exe*"
+            $hasBadEscaping = $sc.Arguments -like "*\\`"*" -or $sc.Arguments.EndsWith("\")
+            if ($isDirectBrowser) {
+                Write-Host "  ⚠ 发现桌面快捷方式直连浏览器（冷启动易抛 ERR_CONNECTION_REFUSED）" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "desktop_shortcut_missing"
+                    Title = "桌面快捷方式未指向全栈引导器 (直连浏览器冷启动白屏风险)"
+                    Severity = "Medium"
+                    FixDesc = "重定向为 wscript.exe launch-gui.vbs 毫秒级冷启动自愈"
+                })
+            } elseif ($hasBadEscaping) {
+                Write-Host "  ⚠ 发现桌面快捷方式参数转义存在尾随反斜杠或空格隐患" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "desktop_shortcut_missing"
+                    Title = "桌面快捷方式参数转义格式异常"
+                    Severity = "Low"
+                    FixDesc = "重新对齐快捷方式参数转义与工作目录"
+                })
+            } else {
+                Write-Host "  ✔ 桌面全栈快捷方式已就绪 (指向轻量全栈引导器)" -ForegroundColor Green
+            }
+        } catch {}
+    } else {
+        Write-Host "  ℹ 桌面尚未创建 OpenCode 智能路由中心快捷方式" -ForegroundColor DarkGray
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "desktop_shortcut_missing"
+            Title = "未检测到桌面全栈快捷方式"
+            Severity = "Low"
+            FixDesc = "在桌面自动生成 OpenCode 智能路由中心独立应用快捷方式"
+        })
+    }
+
+    if (Test-Path $startupLnk) {
+        Write-Host "  ✔ 开机自启静默守护项已挂载 (Startup)" -ForegroundColor Green
+    } else {
+        Write-Host "  ℹ 开机自启静默常驻项尚未配置" -ForegroundColor DarkGray
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "startup_shortcut_missing"
+            Title = "未配置开机自启静默常驻项"
+            Severity = "Low"
+            FixDesc = "在开机启动目录挂载 start-tray.vbs -Silent 静默守护项"
+        })
+    }
+}
+
 # ----------------- 7. 检测组件版本更新与生态兼容性诊断 -----------------
 Write-Host "`n[7/8] 检查套件组件版本更新与生态兼容性诊断..." -ForegroundColor Yellow
 $updaterScript = Join-Path $PSScriptRoot "updater.js"
@@ -431,7 +493,7 @@ if (Test-Path $updaterScript) {
                 Write-Host "  ⚠ 检测到组件有更新可用 ($($updateReport.compatibility.summary))" -ForegroundColor Yellow
                 $issuesFound.Add([PSCustomObject]@{
                     Id = "components_update_available"
-                    Title = "存在待更新的套件组件 (如 OMO 5.1.24 或核心引擎)"
+                    Title = "存在待更新的套件组件 (如 OMO 智能体插件或核心引擎)"
                     Severity = "Medium"
                     FixDesc = "在更新管理面板或向导中一键安全更新，保持最新生态适配"
                 })
@@ -582,7 +644,7 @@ foreach ($iss in $issuesFound) {
                 $ocDir = Split-Path $opencodeConfig -Parent
                 if (-not (Test-Path $ocDir)) { New-Item -ItemType Directory -Path $ocDir -Force | Out-Null }
                 $defaultConfig = @{
-                    plugin = @("oh-my-openagent@5.1.24", "opencode-goal-plugin")
+                    plugin = @("oh-my-openagent@5.1.30", "opencode-goal-plugin")
                     "`$schema" = "https://opencode.ai/config.json"
                     model = "opencode-go/deepseek-v4.1-flash"
                     provider = @{
@@ -791,10 +853,15 @@ foreach ($iss in $issuesFound) {
             }
         }
         "router_stopped" {
-            Write-Host " -> 正在静默启动 4010 智能网关..." -ForegroundColor Yellow
+            Write-Host " -> 正在静默启动 4010 智能网关与系统托盘..." -ForegroundColor Yellow
+            $trayVbs = Join-Path $PSScriptRoot "start-tray.vbs"
             $trayExe = Join-Path $PSScriptRoot "OpenCodeRouterTray.exe"
             $vbs = Join-Path $PSScriptRoot "silent-start.vbs"
-            if (Test-Path $trayExe) {
+            if (Test-Path $trayVbs) {
+                Start-Process "wscript.exe" -ArgumentList "`"$trayVbs`" -Silent" -WindowStyle Hidden
+                Start-Sleep -Seconds 1
+                Write-Host "    ✔ 原生托盘与智能网关已在后台静默启动" -ForegroundColor Green
+            } elseif (Test-Path $trayExe) {
                 Start-Process -FilePath $trayExe
                 Start-Sleep -Seconds 1
                 Write-Host "    ✔ 原生托盘与智能网关已无黑框静默启动" -ForegroundColor Green
@@ -855,13 +922,12 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
             Write-Host " -> 提示: OMO 已包含 kimi-k3 与 qwen3.7-plus 路由，若遇区域限制请在界面选用上述模型" -ForegroundColor Cyan
         }
         "components_update_available" {
-            Write-Host " -> 正在自动同步更新 opencode.jsonc 插件版本标签..." -ForegroundColor Yellow
+            Write-Host " -> 正在自动同步更新 opencode.jsonc 插件版本标签与生态配置合流..." -ForegroundColor Yellow
             try {
                 if (Test-Path $opencodeConfig) {
-                    $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8
-                    $fixed = $raw -replace "oh-my-openagent(@\d+\.\d+\.\d+)?", "oh-my-openagent@5.1.24"
-                    Set-Content -Path $opencodeConfig -Value $fixed -Encoding UTF8
-                    Write-Host "    ✔ opencode.jsonc 插件标签已同步更新至 oh-my-openagent@5.1.24" -ForegroundColor Green
+                    $escPath = $opencodeConfig.Replace('\', '/')
+                    node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                    Write-Host "    ✔ opencode.jsonc 插件标签与提供商规范已动态双向对齐 (无硬编码版本漂移)" -ForegroundColor Green
                 }
             } catch {
                 Write-Host "    ⚠ 插件标签更新提示: $_" -ForegroundColor DarkGray
@@ -869,6 +935,44 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
         }
         "components_critical_risk" {
             Write-Host " -> 提示: 存在重大破坏性跨版本更新，建议在 Web 面板 (/balancer/ui) 或 setup-wizard.ps1 [9] 中查看兼容性预警并执行一键升级/回滚" -ForegroundColor Yellow
+        }
+        "desktop_shortcut_missing" {
+            Write-Host " -> 正在创建/修复桌面全栈自愈快捷方式..." -ForegroundColor Yellow
+            try {
+                $wshell = New-Object -ComObject WScript.Shell
+                $desktopPath = [Environment]::GetFolderPath('Desktop')
+                $lnkFile = Join-Path $desktopPath "OpenCode 智能路由中心.lnk"
+                $launchVbs = Join-Path $PSScriptRoot "launch-gui.vbs"
+                $ico = Join-Path $PSScriptRoot "assets\router.ico"
+                $shortcut = $wshell.CreateShortcut($lnkFile)
+                $shortcut.TargetPath = "wscript.exe"
+                $shortcut.Arguments = "`"$launchVbs`""
+                $shortcut.WorkingDirectory = $PSScriptRoot
+                if (Test-Path $ico) { $shortcut.IconLocation = "$ico,0" }
+                $shortcut.Save()
+                Write-Host "    ✔ 桌面快捷方式已创建: $lnkFile (指向轻量全栈引导器，杜绝冷启动白屏)" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 桌面快捷方式创建失败: $_" -ForegroundColor Yellow
+            }
+        }
+        "startup_shortcut_missing" {
+            Write-Host " -> 正在创建/修复开机静默常驻自启项..." -ForegroundColor Yellow
+            try {
+                $wshell = New-Object -ComObject WScript.Shell
+                $startupPath = [Environment]::GetFolderPath('Startup')
+                $lnkFile = Join-Path $startupPath "OpenCodeRouterStartup.lnk"
+                $trayVbs = Join-Path $PSScriptRoot "start-tray.vbs"
+                $ico = Join-Path $PSScriptRoot "assets\router.ico"
+                $shortcut = $wshell.CreateShortcut($lnkFile)
+                $shortcut.TargetPath = "wscript.exe"
+                $shortcut.Arguments = "`"$trayVbs`" -Silent"
+                $shortcut.WorkingDirectory = $PSScriptRoot
+                if (Test-Path $ico) { $shortcut.IconLocation = "$ico,0" }
+                $shortcut.Save()
+                Write-Host "    ✔ 开机自启项已挂载: $lnkFile (内核级静默常驻，参数严格转义)" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 开机自启项创建失败: $_" -ForegroundColor Yellow
+            }
         }
         "codex_not_bound" {
             Write-Host " -> 正在将 OpenAI Codex CLI 接入本地智能网关..." -ForegroundColor Yellow
