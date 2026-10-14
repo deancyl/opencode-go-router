@@ -1085,16 +1085,29 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    if (Date.now() - lastDataTime > 90000) {
+    if (Date.now() - lastDataTime > 300000) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
-      console.error(`[Bridge Stream Watchdog] Upstream stalled for >90s on model "${reqModel}". Closing stream safely.`);
+      console.error(`[Bridge Stream Watchdog] Upstream stalled for >300s on model "${reqModel}". Closing stream with response.failed.`);
       closeReasoning();
       closeText();
-      sendEvent('response.completed', {
-        type: 'response.completed',
+      sendEvent('response.failed', {
+        type: 'response.failed',
         sequence_number: seq++,
-        response: { id: respId, status: 'completed', model: reqModel }
+        response: {
+          id: respId,
+          object: 'response',
+          created_at: Math.floor(Date.now() / 1000),
+          completed_at: Math.floor(Date.now() / 1000),
+          status: 'failed',
+          model: reqModel,
+          error: {
+            type: 'server_error',
+            code: 'upstream_stream_timeout',
+            message: 'Upstream stalled for longer than 300s without returning data.'
+          },
+          output: []
+        }
       });
       clientRes.end();
       if (typeof onFinished === 'function') onFinished();
@@ -1398,15 +1411,30 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       });
     }
 
-    if (finalOutput.length === 0) {
-      finalOutput.push({
-        id: itemIdText,
-        type: 'message',
-        status: 'completed',
-        role: 'assistant',
-        phase: 'final_answer',
-        content: [{ type: 'output_text', text: '', annotations: [], logprobs: [] }]
+    if (fullText === '' && fullReasoning === '' && toolCallsMap.size === 0) {
+      console.error(`[Bridge Stream Error] Upstream stream disconnected prematurely with zero content on model "${reqModel}". Dispatching response.failed.`);
+      sendEvent('response.failed', {
+        type: 'response.failed',
+        sequence_number: seq++,
+        response: {
+          id: respId,
+          object: 'response',
+          created_at: Math.floor(Date.now() / 1000),
+          completed_at: Math.floor(Date.now() / 1000),
+          status: 'failed',
+          model: reqModel,
+          error: {
+            type: 'server_error',
+            code: 'upstream_stream_empty_truncated',
+            message: 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).'
+          },
+          output: []
+        }
       });
+      cleanup();
+      clientRes.end();
+      if (typeof onFinished === 'function') onFinished();
+      return;
     }
 
     const usageObj = normalizeResponsesUsage(
@@ -1752,15 +1780,28 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    if (Date.now() - lastDataTime > 90000) {
+    if (Date.now() - lastDataTime > 300000) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
-      console.error(`[Anthropic Stream Watchdog] Upstream stalled for >90s on model "${reqModel}". Closing stream safely.`);
+      console.error(`[Anthropic Stream Watchdog] Upstream stalled for >300s on model "${reqModel}". Closing stream with response.failed.`);
       closeText();
-      sendEvent('response.completed', {
-        type: 'response.completed',
+      sendEvent('response.failed', {
+        type: 'response.failed',
         sequence_number: seq++,
-        response: { id: respId, status: 'completed', model: reqModel }
+        response: {
+          id: respId,
+          object: 'response',
+          created_at: Math.floor(Date.now() / 1000),
+          completed_at: Math.floor(Date.now() / 1000),
+          status: 'failed',
+          model: reqModel,
+          error: {
+            type: 'server_error',
+            code: 'upstream_stream_timeout',
+            message: 'Upstream stalled for longer than 300s without returning data.'
+          },
+          output: []
+        }
       });
       clientRes.end();
       if (typeof onFinished === 'function') onFinished();
@@ -1948,15 +1989,30 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       });
     }
 
-    if (finalOutput.length === 0) {
-      finalOutput.push({
-        id: itemIdText,
-        type: 'message',
-        status: 'completed',
-        role: 'assistant',
-        phase: 'final_answer',
-        content: [{ type: 'output_text', text: '', annotations: [], logprobs: [] }]
+    if (fullText === '' && toolCallsMap.size === 0) {
+      console.error(`[Anthropic Stream Error] Upstream stream disconnected prematurely with zero content on model "${reqModel}". Dispatching response.failed.`);
+      sendEvent('response.failed', {
+        type: 'response.failed',
+        sequence_number: seq++,
+        response: {
+          id: respId,
+          object: 'response',
+          created_at: Math.floor(Date.now() / 1000),
+          completed_at: Math.floor(Date.now() / 1000),
+          status: 'failed',
+          model: reqModel,
+          error: {
+            type: 'server_error',
+            code: 'upstream_stream_empty_truncated',
+            message: 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).'
+          },
+          output: []
+        }
       });
+      cleanup();
+      clientRes.end();
+      if (typeof onFinished === 'function') onFinished();
+      return;
     }
 
     const usageObj = normalizeResponsesUsage(
@@ -2141,6 +2197,9 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
   filteredLines.push('wire_api = "responses"');
   filteredLines.push('requires_openai_auth = true');
   filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
+  filteredLines.push('stream_idle_timeout_ms = 300000');
+  filteredLines.push('stream_max_retries = 3');
+  filteredLines.push('request_max_retries = 3');
 
   // Safeguard: Always ensure [model_providers.custom] points to local router as well
   // This prevents Codex from erroring out with "supported API model names are ... but you passed deepseek-v4.1-flash"
@@ -2580,7 +2639,7 @@ function restoreCodexConfig(codexDirOverride = null, options = {}) {
           // Thread continuity protection: ensure [model_providers."opencode-go"] stays defined
           // so open/resumed historical threads in ChatGPT/Codex do not throw "Model provider `opencode-go` not found"
           if (preserveCompatibility && !tomlContent.includes('[model_providers."opencode-go"]') && !tomlContent.includes('[model_providers.opencode-go]')) {
-            tomlContent += '\n[model_providers."opencode-go"]\nname = "opencode-go"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "http://127.0.0.1:4010/v1"\n';
+            tomlContent += '\n[model_providers."opencode-go"]\nname = "opencode-go"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "http://127.0.0.1:4010/v1"\nstream_idle_timeout_ms = 300000\nstream_max_retries = 3\nrequest_max_retries = 3\n';
           }
           fs.writeFileSync(configPath, tomlContent, 'utf8');
           messages.push('已还原原始 config.toml' + (preserveCompatibility ? ' (已保留 opencode-go 历史会话兼容声明)' : ''));
@@ -2652,7 +2711,7 @@ function restoreCodexConfig(codexDirOverride = null, options = {}) {
     try {
       let tomlContent = fs.readFileSync(configPath + '.router-bak', 'utf8');
       if (preserveCompatibility && !tomlContent.includes('[model_providers."opencode-go"]') && !tomlContent.includes('[model_providers.opencode-go]')) {
-        tomlContent += '\n[model_providers."opencode-go"]\nname = "opencode-go"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "http://127.0.0.1:4010/v1"\n';
+        tomlContent += '\n[model_providers."opencode-go"]\nname = "opencode-go"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "http://127.0.0.1:4010/v1"\nstream_idle_timeout_ms = 300000\nstream_max_retries = 3\nrequest_max_retries = 3\n';
       }
       fs.writeFileSync(configPath, tomlContent, 'utf8');
       messages.push('已从 .router-bak 还原 config.toml' + (preserveCompatibility ? ' (已保留 opencode-go 历史会话兼容声明)' : ''));
@@ -2762,6 +2821,71 @@ function restartCodex(options = {}) {
   }
 }
 
+/**
+ * Dynamically derives an isolated Session ID for upstream OpenCode Go requests.
+ * Eliminates concurrent state collision when multiple Codex threads or turns connect.
+ * 
+ * Precedence:
+ * 1. Explicit x-opencode-session or x-session-id request header
+ * 2. Explicit x-conversation-id request header
+ * 3. Explicit x-request-id or x-client-request-id request header
+ * 4. previous_response_id, conversation_id, or session_id in Responses payload body
+ * 5. Dynamic auto-isolated session ID per connection/turn fallback
+ */
+function extractOrDeriveSessionId(req, body) {
+  // 1. Explicit x-opencode-session / x-session-id
+  const headerSession = req?.headers?.['x-opencode-session'] || req?.headers?.['x-session-id'];
+  if (headerSession && typeof headerSession === 'string' && headerSession.trim()) {
+    return headerSession.trim();
+  }
+
+  // 2. Explicit x-conversation-id header
+  const convHeader = req?.headers?.['x-conversation-id'];
+  if (convHeader && typeof convHeader === 'string' && convHeader.trim()) {
+    const trimmed = convHeader.trim();
+    return trimmed.startsWith('session-') ? trimmed : `session-conv-${trimmed}`;
+  }
+
+  // 3. Explicit x-request-id / x-client-request-id header
+  const reqIdHeader = req?.headers?.['x-request-id'] || req?.headers?.['x-client-request-id'];
+  if (reqIdHeader && typeof reqIdHeader === 'string' && reqIdHeader.trim()) {
+    const trimmed = reqIdHeader.trim();
+    return trimmed.startsWith('session-') ? trimmed : `session-req-${trimmed}`;
+  }
+
+  // 4. previous_response_id / conversation_id in Responses payload body
+  let parsed = body;
+  if (Buffer.isBuffer(body) || typeof body === 'string') {
+    if (body.length > 0) {
+      try {
+        parsed = JSON.parse(body.toString('utf8'));
+      } catch (e) {
+        parsed = null;
+      }
+    } else {
+      parsed = null;
+    }
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.previous_response_id && typeof parsed.previous_response_id === 'string' && parsed.previous_response_id.trim()) {
+      const prevId = parsed.previous_response_id.trim();
+      return prevId.startsWith('session-') ? prevId : `session-resp-${prevId}`;
+    }
+    if (parsed.conversation_id && typeof parsed.conversation_id === 'string' && parsed.conversation_id.trim()) {
+      const convId = parsed.conversation_id.trim();
+      return convId.startsWith('session-') ? convId : `session-conv-${convId}`;
+    }
+    if (parsed.session_id && typeof parsed.session_id === 'string' && parsed.session_id.trim()) {
+      const sId = parsed.session_id.trim();
+      return sId.startsWith('session-') ? sId : `session-${sId}`;
+    }
+  }
+
+  // 5. Fallback: dynamic session isolation per connection/turn to prevent upstream concurrent collision
+  return `session-auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
   NATIVE_RESPONSES_MODELS,
@@ -2781,5 +2905,6 @@ module.exports = {
   syncDynamicModels,
   bindCodexConfig,
   restoreCodexConfig,
-  restartCodex
+  restartCodex,
+  extractOrDeriveSessionId
 };

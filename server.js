@@ -583,14 +583,8 @@ function getCorsHeaders(upstreamHeaders = {}) {
   return headers;
 }
 
-function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set()) {
+function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
   triedAccountIds.add(account.id);
-  const stat = accountStats.get(account.id);
-  if (stat) {
-    stat.activeRequests += 1;
-    stat.totalRequests += 1;
-    stat.lastUsedAt = Date.now();
-  }
 
   const upstreamUrl = new URL(config.upstream);
   const isHttps = upstreamUrl.protocol === 'https:';
@@ -618,16 +612,25 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     } catch (e) {}
   }
 
+  const sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, parsedBody || reqBody);
+
   const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
   if (isResponsesReq && parsedBody) {
     const reqModel = parsedBody.model || 'deepseek-v4.1-flash';
     if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(reqModel)) {
-      bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+      bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
       return;
     } else if (!codexAdapter.NATIVE_RESPONSES_MODELS.has(reqModel)) {
-      bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+      bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
       return;
     }
+  }
+
+  const stat = accountStats.get(account.id);
+  if (stat) {
+    stat.activeRequests += 1;
+    stat.totalRequests += 1;
+    stat.lastUsedAt = Date.now();
   }
 
   const proxyHeaders = { ...clientReq.headers };
@@ -649,10 +652,6 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     delete proxyHeaders['content-length'];
   }
 
-  let sessionId = clientReq.headers['x-opencode-session'];
-  if (!sessionId || !sessionId.trim()) {
-    sessionId = 'session-opencode-go-default';
-  }
   proxyHeaders['x-opencode-session'] = sessionId;
   proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
 
@@ -735,7 +734,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         if (nextAccount) {
           if (stat) stat.failoverCount += 1;
           console.log(`[Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
-          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds);
+          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         } else {
           const errorBody = Buffer.concat(errorChunks);
           const outHeaders = getCorsHeaders(upstreamRes.headers);
@@ -759,9 +758,9 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
           if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(parsedBody.model)) {
-            bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+            bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
           } else {
-            bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds);
+            bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
           }
         } else {
           finishRequest();
@@ -814,7 +813,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
             parsedBody.model = 'kimi-k2.7-code';
           }
           const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds);
+          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
           return;
         }
 
@@ -827,7 +826,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           clientRes.removeListener('close', clientCloseHandler);
           parsedBody.model = targetFallback;
           const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds);
+          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
           return;
         }
 
@@ -880,7 +879,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       if (nextAccount) {
         if (stat) stat.failoverCount += 1;
         console.log(`[Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
-        sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         return;
       }
     }
@@ -914,7 +913,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   proxyReq.end();
 }
 
-function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set()) {
+function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
   triedAccountIds.add(account.id);
   const stat = accountStats.get(account.id);
   if (stat) {
@@ -935,10 +934,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
   const upstreamChatPath = upstreamPathname + '/chat/completions';
 
-  let sessionId = clientReq.headers['x-opencode-session'];
-  if (!sessionId || !sessionId.trim()) {
-    sessionId = 'session-opencode-go-default';
-  }
+  let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
 
   const proxyHeaders = {
     'content-type': 'application/json',
@@ -1021,7 +1017,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         if (nextAccount) {
           if (stat) stat.failoverCount += 1;
           console.log(`[Bridge Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
-          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         } else {
           const errorBody = Buffer.concat(errorChunks);
           const outHeaders = getCorsHeaders(upstreamRes.headers);
@@ -1065,7 +1061,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
             prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
           }
-          bridgeResponsesToChatRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds);
+          bridgeResponsesToChatRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
           return;
         }
 
@@ -1076,7 +1072,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
           const healedResponsesBody = { ...responsesBody, model: fallbackModel };
-          bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber, triedAccountIds);
+          bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber, triedAccountIds, sessionId);
           return;
         }
 
@@ -1144,7 +1140,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       if (nextAccount) {
         if (stat) stat.failoverCount += 1;
         console.log(`[Bridge Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
-        bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         return;
       }
     }
@@ -1166,7 +1162,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   proxyReq.end();
 }
 
-function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set()) {
+function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
   triedAccountIds.add(account.id);
   const stat = accountStats.get(account.id);
   if (stat) {
@@ -1187,10 +1183,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
   const upstreamMessagesPath = upstreamPathname + '/messages';
 
-  let sessionId = clientReq.headers['x-opencode-session'];
-  if (!sessionId || !sessionId.trim()) {
-    sessionId = 'session-opencode-go-default';
-  }
+  let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
 
   const proxyHeaders = {
     'content-type': 'application/json',
@@ -1274,7 +1267,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         if (nextAccount) {
           if (stat) stat.failoverCount += 1;
           console.log(`[Anthropic Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
-          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         } else {
           const errorBody = Buffer.concat(errorChunks);
           const outHeaders = getCorsHeaders(upstreamRes.headers);
@@ -1316,7 +1309,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
             prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
           }
-          bridgeResponsesToAnthropicRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds);
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
           return;
         }
 
@@ -1384,7 +1377,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       if (nextAccount) {
         if (stat) stat.failoverCount += 1;
         console.log(`[Anthropic Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
-        bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds);
+        bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         return;
       }
     }
@@ -4784,51 +4777,57 @@ $ghost
   }
 
   // All other API calls: Proxy to OpenCode Go upstream
-  const sessionId = req.headers['x-opencode-session'];
-  const account = selectAccount(sessionId);
+  // All other API calls: Proxy to OpenCode Go upstream
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const reqBody = Buffer.concat(chunks);
+    const sessionId = codexAdapter.extractOrDeriveSessionId(req, reqBody);
+    const account = selectAccount(sessionId);
 
-  if (!account) {
-    const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
-    if (enabledAccounts.length > 0) {
-      const now = Date.now();
-      const cooldowns = enabledAccounts.map(a => Math.max(0, (accountStats.get(a.id)?.cooldownUntil || 0) - now));
-      const finiteCooldowns = cooldowns.filter(c => isFinite(c) && c > 0);
-      const minCooldownMs = finiteCooldowns.length > 0 ? Math.min(...finiteCooldowns) : config.defaultCooldownMs;
-      const minCooldownSec = Math.max(1, Math.ceil(minCooldownMs / 1000));
-      res.writeHead(429, {
-        'Content-Type': 'application/json',
-        'Retry-After': String(minCooldownSec),
-        'Access-Control-Allow-Origin': '*'
-      });
+    if (!account) {
+      const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
+      if (enabledAccounts.length > 0) {
+        const now = Date.now();
+        const cooldowns = enabledAccounts.map(a => Math.max(0, (accountStats.get(a.id)?.cooldownUntil || 0) - now));
+        const finiteCooldowns = cooldowns.filter(c => isFinite(c) && c > 0);
+        const minCooldownMs = finiteCooldowns.length > 0 ? Math.min(...finiteCooldowns) : config.defaultCooldownMs;
+        const minCooldownSec = Math.max(1, Math.ceil(minCooldownMs / 1000));
+        res.writeHead(429, {
+          'Content-Type': 'application/json',
+          'Retry-After': String(minCooldownSec),
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({
+          error: {
+            message: `All OpenCode Go accounts in pool are temporarily cooling down due to rate limits. Nearest account recovers in ${minCooldownSec}s.`,
+            type: 'rate_limit_exceeded',
+            code: 'rate_limit_exceeded',
+            retry_after: minCooldownSec
+          }
+        }));
+        return;
+      }
+
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({
         error: {
-          message: `All OpenCode Go accounts in pool are temporarily cooling down due to rate limits. Nearest account recovers in ${minCooldownSec}s.`,
-          type: 'rate_limit_exceeded',
-          code: 'rate_limit_exceeded',
-          retry_after: minCooldownSec
+          message: 'No healthy OpenCode Go accounts configured in pool. Please visit http://127.0.0.1:' + config.port + '/balancer/ui to set up your subscriptions.',
+          type: 'router_no_available_accounts'
         }
       }));
       return;
     }
 
-    res.writeHead(503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify({
-      error: {
-        message: 'No healthy OpenCode Go accounts configured in pool. Please visit http://127.0.0.1:' + config.port + '/balancer/ui to set up your subscriptions.',
-        type: 'router_no_available_accounts'
-      }
-    }));
-    return;
-  }
-
-  // Read request body for proxying
-  const chunks = [];
-  req.on('data', chunk => chunks.push(chunk));
-  req.on('end', () => {
-    const reqBody = Buffer.concat(chunks);
-    sendProxyRequest(req, res, reqBody, account, 1);
+    sendProxyRequest(req, res, reqBody, account, 1, new Set(), sessionId);
   });
 });
+
+// Configure Node HTTP server timeout & keep-alives for resilient long-reasoning streaming
+server.timeout = 0;
+server.requestTimeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 65000;
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {

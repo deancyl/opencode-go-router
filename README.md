@@ -8,7 +8,7 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com)
 [![Linux](https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(Debian%2CUbuntu%2CfnOS%2CDSM)-orange.svg)](https://kernel.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
-[![Version: v2.5.9](https://img.shields.io/badge/Version-v2.5.9-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.6.0](https://img.shields.io/badge/Version-v2.6.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -442,6 +442,21 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.6.0 (Codex 会话动态隔离、空流截断防瞒报与高并发活跃计数零泄漏)
+- **动态会话隔离 (Dynamic Session Isolation)**：
+  - 彻底根除多 Codex 会话因缺失 `x-opencode-session` 全量共享默认 Session 导致上游平台互斥截断（aborted）的并发痛点；
+  - 建立阶梯解析优先级：`x-opencode-session` > `x-conversation-id` > `x-request-id` > Responses 请求体 `previous_response_id` / `conversation_id` > 动态安全隔离 Session ID，实现多线程并发调用互不干扰。
+- **空流截断防瞒报与失败状态派发 (Empty Stream Truncation Defense & `response.failed`)**：
+  - 严禁在上游异常断流且内容全空（`fullText === '' && fullReasoning === '' && toolCallsMap.size === 0`）时强推空内容并伪造 `response.completed`；
+  - 统一规范派发标准 `response.failed` 事件并附带 `upstream_stream_empty_truncated` / `upstream_stream_timeout` 明确原因，让 Codex 状态机感知异常并触发重试机制或真实报错。
+- **活跃请求指标对称核算与泄漏清零 (Active Requests Counter Zero-Leak)**：
+  - 修复 `server.js` 在 Responses 协议桥接（Chat / Anthropic）中重复递增 `activeRequests` 的生命周期缺陷，消除指标单调递增失真。
+- **长推理超时加固与 Node HTTP 原生看门狗配置 (Long-Reasoning Watchdog & HTTP Timeout Hardening)**：
+  - 放宽长推理看门狗 `stallWatchdog` 至 300 秒（5分钟），超时触发时统一发送标准的 `response.failed`；
+  - 在 `server.js` 中显式设置 `server.timeout = 0; server.requestTimeout = 0; server.headersTimeout = 0; server.keepAliveTimeout = 65000;`；
+  - 在 `codex-adapter.js` 的 `bindCodexConfig` 与 Codex 全局 `config.toml` 中自动注入 `stream_idle_timeout_ms = 300000`、`stream_max_retries = 3`、`request_max_retries = 3`。
+- **自动化集成测试套件扩充至 78 项 100% 绿灯全通**。
 
 ### 🚀 v2.5.9 (Web 控制台模板转义深度修复、Codex 免 ConPTY 唤醒自愈与 77 项全量测试大满贯)
 - **Web 控制台前端模板转义全合规修复 (Template Literal Escaping Self-Healing)**：

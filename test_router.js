@@ -2146,8 +2146,143 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(restartCodexTestRes.success, true);
     console.log('✓ Web UI Dashboard Frontend JavaScript Syntax & Runtime Integrity verified');
 
+    // [Test 78] Testing Empty Stream Disconnection Defense, Dynamic Session Isolation & Zero-Leak Lifecycle
+    console.log('\n[Test 78] Testing Empty Stream Disconnection Defense, Dynamic Session Isolation & Zero-Leak Lifecycle...');
+
+    // 1. Dynamic Session ID derivation test suite
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: { 'x-opencode-session': 'custom-session-99' } }),
+      'custom-session-99',
+      'x-opencode-session must take first priority'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: { 'x-conversation-id': '01a134c1-thread' } }),
+      'session-conv-01a134c1-thread',
+      'x-conversation-id must prefix session-conv-'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: { 'x-request-id': 'req-uuid-123' } }),
+      'session-req-req-uuid-123',
+      'x-request-id must prefix session-req-'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: {} }, { previous_response_id: 'resp_1791988' }),
+      'session-resp-resp_1791988',
+      'previous_response_id in body must derive session-resp-'
+    );
+    assert.strictEqual(
+      codexAdapter.extractOrDeriveSessionId({ headers: {} }, { conversation_id: 'conv_nested_456' }),
+      'session-conv-conv_nested_456',
+      'conversation_id in body must derive session-conv-'
+    );
+    const autoSession1 = codexAdapter.extractOrDeriveSessionId({ headers: {} }, {});
+    const autoSession2 = codexAdapter.extractOrDeriveSessionId({ headers: {} }, {});
+    assert.ok(autoSession1.startsWith('session-auto-'), 'Fallback session must start with session-auto-');
+    assert.notStrictEqual(autoSession1, autoSession2, 'Two un-sessioned requests must receive isolated dynamic session IDs');
+
+    // 2. Empty stream defense in bridgeResponsesStream
+    const emptyUpstreamStream = new EventEmitter();
+    const emptyClientRes = new EventEmitter();
+    emptyClientRes.writeHead = (status, headers) => { emptyClientRes.headers = headers; emptyClientRes.statusCode = status; };
+    const emptyEmittedEvents = [];
+    emptyClientRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          emptyEmittedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    emptyClientRes.end = () => { emptyClientRes.emit('finish'); };
+
+    codexAdapter.bridgeResponsesStream(emptyUpstreamStream, emptyClientRes, 'deepseek-v4.1-flash', 'resp_empty_test_id', () => {});
+    // Upstream stream terminates immediately without any content or reasoning
+    emptyUpstreamStream.emit('end');
+
+    const emptyEventTypes = emptyEmittedEvents.map(e => e.event);
+    assert.strictEqual(emptyEventTypes.includes('response.completed'), false, 'Empty stream must NEVER dispatch response.completed');
+    assert.strictEqual(emptyEventTypes.includes('response.failed'), true, 'Empty stream MUST dispatch response.failed');
+    const failedEvent = emptyEmittedEvents.find(e => e.event === 'response.failed');
+    assert.ok(failedEvent, 'Must have response.failed event');
+    assert.strictEqual(failedEvent.data.response.status, 'failed');
+    assert.strictEqual(failedEvent.data.response.error.code, 'upstream_stream_empty_truncated');
+
+    // 3. Empty stream defense in bridgeAnthropicStream
+    const emptyAnthropicStream = new EventEmitter();
+    const emptyAnthropicRes = new EventEmitter();
+    emptyAnthropicRes.writeHead = (status, headers) => { emptyAnthropicRes.headers = headers; emptyAnthropicRes.statusCode = status; };
+    const anthropicEmittedEvents = [];
+    emptyAnthropicRes.write = (chunk) => {
+      const str = chunk.toString();
+      const evMatch = str.match(/event:\s*([^\n]+)/);
+      const dataMatch = str.match(/data:\s*([^\n]+)/);
+      if (evMatch && dataMatch) {
+        try {
+          anthropicEmittedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1].trim()) });
+        } catch (e) {}
+      }
+    };
+    emptyAnthropicRes.end = () => { emptyAnthropicRes.emit('finish'); };
+
+    codexAdapter.bridgeAnthropicStream(emptyAnthropicStream, emptyAnthropicRes, 'claude-haiku-5-5', 'resp_empty_anthropic_id', () => {});
+    emptyAnthropicStream.emit('end');
+
+    const anthropicEventTypes = anthropicEmittedEvents.map(e => e.event);
+    assert.strictEqual(anthropicEventTypes.includes('response.completed'), false, 'Empty Anthropic stream must NEVER dispatch response.completed');
+    assert.strictEqual(anthropicEventTypes.includes('response.failed'), true, 'Empty Anthropic stream MUST dispatch response.failed');
+    const anthropicFailed = anthropicEmittedEvents.find(e => e.event === 'response.failed');
+    assert.ok(anthropicFailed, 'Must have response.failed event');
+    assert.strictEqual(anthropicFailed.data.response.status, 'failed');
+    assert.strictEqual(anthropicFailed.data.response.error.code, 'upstream_stream_empty_truncated');
+
+    // 4. Verify bindCodexConfig writes stream_idle_timeout_ms and retry parameters
+    const testDir78 = path.join(os.tmpdir(), 'codex_test_78_' + Date.now());
+    fs.mkdirSync(testDir78, { recursive: true });
+    try {
+      codexAdapter.bindCodexConfig({
+        codexDir: testDir78,
+        routerPort: routerPort,
+        defaultModel: 'deepseek-v4.1-flash',
+        reasoningEffort: 'xhigh',
+        providerName: 'opencode-go'
+      });
+      const generatedToml = fs.readFileSync(path.join(testDir78, 'config.toml'), 'utf8');
+      assert.ok(generatedToml.includes('stream_idle_timeout_ms = 300000'), 'config.toml must include stream_idle_timeout_ms = 300000');
+      assert.ok(generatedToml.includes('stream_max_retries = 3'), 'config.toml must include stream_max_retries = 3');
+      assert.ok(generatedToml.includes('request_max_retries = 3'), 'config.toml must include request_max_retries = 3');
+    } finally {
+      try { fs.rmSync(testDir78, { recursive: true, force: true }); } catch (e) {}
+    }
+
+    // 5. Verify server.js explicitly configures server timeouts
+    assert.ok(serverJsSource.includes('server.timeout = 0'), 'server.js must set server.timeout = 0');
+    assert.ok(serverJsSource.includes('server.requestTimeout = 0'), 'server.js must set server.requestTimeout = 0');
+    assert.ok(serverJsSource.includes('server.headersTimeout = 0'), 'server.js must set server.headersTimeout = 0');
+    assert.ok(serverJsSource.includes('server.keepAliveTimeout = 65000'), 'server.js must set server.keepAliveTimeout = 65000');
+
+    // 6. Verify activeRequests symmetric accounting and zero leak
+    const statusBefore = await request('/status');
+    const statusBeforeJson = JSON.parse(statusBefore.body);
+    const totalActiveBefore = statusBeforeJson.accounts.reduce((sum, a) => sum + (a.activeRequests || 0), 0);
+
+    const testReqRes = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode-go/deepseek-v4.1-flash', input: 'Ping active request check' })
+    });
+    assert.strictEqual(testReqRes.statusCode, 200);
+
+    const statusAfter = await request('/status');
+    const statusAfterJson = JSON.parse(statusAfter.body);
+    const totalActiveAfter = statusAfterJson.accounts.reduce((sum, a) => sum + (a.activeRequests || 0), 0);
+    assert.strictEqual(totalActiveAfter, totalActiveBefore, 'activeRequests must strictly return to baseline with zero leak');
+
+    console.log('✓ Empty Stream Disconnection Defense, Dynamic Session Isolation & Zero-Leak Lifecycle verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 77 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 78 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
