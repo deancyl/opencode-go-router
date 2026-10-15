@@ -180,6 +180,17 @@ async function runTests() {
       return;
     }
 
+    if (session === 'session-gzip-error') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      res.writeHead(400, {
+        'Content-Type': 'application/json',
+        'Content-Encoding': 'gzip'
+      });
+      res.end('{"model":"novita-deepseek"}');
+      return;
+    }
+
     if (req.url === '/v1/responses') {
       if (auth.includes('key-account-1')) account1Calls++;
       else account2Calls++;
@@ -2521,21 +2532,74 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(anthropicConverted.tools[3].input_schema.type, 'object');
     assert.deepStrictEqual(anthropicConverted.tools[3].input_schema.properties, {});
 
-    // 2. Unit test formatUpstreamErrorResponse
+    // 2. Unit test extractRawToolParams & normalizeToolParameters preservation
+    const toolWithEmptyParams = {
+      name: 'search_tool',
+      parameters: {}, // empty object placeholder
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query']
+      }
+    };
+    const extractedParams = codexAdapter.extractRawToolParams(toolWithEmptyParams);
+    assert.deepStrictEqual(extractedParams, toolWithEmptyParams.inputSchema, 'extractRawToolParams must prioritize candidate with properties over empty {}');
+
+    // Real Codex automation_update tool schema with oneOf and $defs
+    const complexSchema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      oneOf: [
+        { type: 'object', properties: { mode: { type: 'string', const: 'view' } }, required: ['mode'] },
+        { type: 'object', properties: { mode: { type: 'string', const: 'run' } }, required: ['mode'] }
+      ],
+      $defs: {
+        __schema0: { type: 'string' }
+      }
+    };
+    const normalizedComplex = codexAdapter.normalizeToolParameters(complexSchema);
+    assert.strictEqual(normalizedComplex.type, 'object', 'Must enforce type: object for strict upstreams');
+    assert.ok(typeof normalizedComplex.properties === 'object' && !Array.isArray(normalizedComplex.properties), 'Must enforce properties object');
+    assert.strictEqual(normalizedComplex.oneOf.length, 2, 'Must preserve oneOf schema array');
+    assert.ok(normalizedComplex.$defs.__schema0, 'Must preserve $defs metadata');
+
+    // 3. Unit test formatUpstreamErrorResponse comprehensive cases
+    // a) Empty string (0-byte)
     const emptyErr = JSON.parse(codexAdapter.formatUpstreamErrorResponse('', 400));
     assert.strictEqual(emptyErr.error.code, 400);
     assert.strictEqual(emptyErr.error.type, 'upstream_error');
     assert.strictEqual(emptyErr.error.message, '上游推理节点返回空错误 (HTTP 400)，已安全拦截');
 
+    // b) Bare JSON
     const bareErr = JSON.parse(codexAdapter.formatUpstreamErrorResponse('{"model":"deepseek-v4.1-flash"}', 400));
     assert.strictEqual(bareErr.error.code, 400);
     assert.strictEqual(bareErr.error.type, 'upstream_error');
     assert.strictEqual(bareErr.error.message, '上游模型接口返回异常: {"model":"deepseek-v4.1-flash"}');
 
+    // c) Standard error object passthrough
     const standardErrStr = JSON.stringify({ error: { message: 'Upstream rate limit', type: 'rate_limit_error', code: 429 } });
-    assert.strictEqual(codexAdapter.formatUpstreamErrorResponse(standardErrStr, 429), standardErrStr);
+    const standardParsed = JSON.parse(codexAdapter.formatUpstreamErrorResponse(standardErrStr, 429));
+    assert.strictEqual(standardParsed.error.message, 'Upstream rate limit');
 
-    // 3. E2E HTTP Test: Upstream returns 0-byte 400 with text/event-stream
+    // d) String error {"error": "Rate limit reached"} normalized
+    const strErrParsed = JSON.parse(codexAdapter.formatUpstreamErrorResponse('{"error":"Rate limit reached"}', 429));
+    assert.strictEqual(strErrParsed.error.message, 'Rate limit reached', 'Must normalize string error to error.message');
+    assert.strictEqual(strErrParsed.error.code, 429);
+
+    // e) Bare JSON array [{"error":"upstream_timeout"}]
+    const arrayErrParsed = JSON.parse(codexAdapter.formatUpstreamErrorResponse('[{"error":"upstream_timeout"}]', 504));
+    assert.strictEqual(arrayErrParsed.error.code, 504);
+    assert.ok(arrayErrParsed.error.message.includes('upstream_timeout'), 'Must wrap JSON arrays into standard error.message');
+
+    // f) SSE wrapped error (data: {"error":{"message":"SSE error"}}\n\n)
+    const sseErrParsed = JSON.parse(codexAdapter.formatUpstreamErrorResponse('data: {"error":{"message":"SSE error"}}\n\n', 400));
+    assert.strictEqual(sseErrParsed.error.message, 'SSE error', 'Must unwrap SSE payload to clean error message');
+
+    // g) JSON with detail field (e.g. FastAPI / Python gateways)
+    const detailErrParsed = JSON.parse(codexAdapter.formatUpstreamErrorResponse('{"detail":"Authentication credentials missing"}', 401));
+    assert.strictEqual(detailErrParsed.error.code, 401);
+    assert.strictEqual(detailErrParsed.error.message, '上游模型接口返回异常: Authentication credentials missing');
+
+    // 4. E2E HTTP Test: Upstream returns 0-byte 400 with text/event-stream
     const resEmpty400 = await request('/v1/responses', {
       method: 'POST',
       headers: {
@@ -2560,7 +2624,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(parsedEmptyErr.error.type, 'upstream_error');
     assert.strictEqual(parsedEmptyErr.error.message, '上游推理节点返回空错误 (HTTP 400)，已安全拦截');
 
-    // 4. E2E HTTP Test: Upstream returns bare JSON {"model":"deepseek-v4.1-flash"} with 400
+    // 5. E2E HTTP Test: Upstream returns bare JSON {"model":"deepseek-v4.1-flash"} with 400
     const resBare400 = await request('/v1/responses', {
       method: 'POST',
       headers: {
@@ -2584,7 +2648,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(parsedBareErr.error.type, 'upstream_error');
     assert.strictEqual(parsedBareErr.error.message, '上游模型接口返回异常: {"model":"deepseek-v4.1-flash"}');
 
-    // 5. E2E HTTP Test: Standard upstream error passed through correctly
+    // 6. E2E HTTP Test: Standard upstream error passed through correctly
     const resStandard400 = await request('/v1/responses', {
       method: 'POST',
       headers: {
@@ -2601,6 +2665,25 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(resStandard400.statusCode, 400);
     const parsedStandardErr = JSON.parse(resStandard400.body);
     assert.strictEqual(parsedStandardErr.error.message, 'Standard upstream validation failed');
+
+    // 7. E2E HTTP Test: Upstream error with Content-Encoding: gzip has encoding header stripped
+    const resGzip400 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-gzip-error'
+      },
+      body: JSON.stringify({
+        model: 'opencode-go/deepseek-v4.1-flash',
+        session_id: 'session-gzip-error',
+        input: 'Test gzip content-encoding strip'
+      })
+    });
+
+    assert.strictEqual(resGzip400.statusCode, 400);
+    assert.strictEqual(resGzip400.headers['content-encoding'], undefined, 'Must strip content-encoding header on standardized error');
+    const parsedGzipErr = JSON.parse(resGzip400.body);
+    assert.strictEqual(parsedGzipErr.error.message, '上游模型接口返回异常: {"model":"novita-deepseek"}');
 
     console.log('✓ Codex Tools Schema Normalization & Upstream Non-200 Error Sanitization Barrier verified');
 

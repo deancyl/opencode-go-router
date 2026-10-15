@@ -796,7 +796,7 @@ function getCodexConfigDir() {
 /**
  * Normalizes tool parameters to strict JSON Schema object format: { type: 'object', properties: { ... } }
  * Protects against strict upstream validation errors (e.g. novita-deepseek, orcarouter)
- * Supports parameters, inputSchema, input_schema, and handles empty / non-object gracefully.
+ * Preserves all underlying schema definitions (oneOf, anyOf, $defs, required, etc.) while ensuring type: 'object' and properties: {}
  */
 function normalizeToolParameters(rawParams) {
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -805,26 +805,49 @@ function normalizeToolParameters(rawParams) {
   const properties = (rawParams.properties && typeof rawParams.properties === 'object' && !Array.isArray(rawParams.properties))
     ? rawParams.properties
     : {};
-  if (rawParams.type !== 'object') {
-    const res = { type: 'object', properties };
-    if (Array.isArray(rawParams.required)) {
-      res.required = rawParams.required;
-    }
-    return res;
-  }
   return {
     ...rawParams,
+    type: 'object',
     properties
   };
 }
 
 /**
+ * Extracts raw tool parameters candidate from a tool object.
+ * Prioritizes candidates with actual properties/definitions over empty {} placeholders.
+ */
+function extractRawToolParams(t) {
+  if (!t || typeof t !== 'object') return null;
+  const candidates = [
+    t.function?.inputSchema,
+    t.inputSchema,
+    t.function?.parameters,
+    t.parameters,
+    t.function?.input_schema,
+    t.input_schema
+  ];
+  // 1. Prioritize candidate with actual keys (prevents empty {} short-circuiting real schema)
+  for (const c of candidates) {
+    if (c && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length > 0) {
+      return c;
+    }
+  }
+  // 2. Fall back to any defined candidate
+  for (const c of candidates) {
+    if (c !== undefined && c !== null) {
+      return c;
+    }
+  }
+  return null;
+}
+
+/**
  * Cleanses and standardizes upstream non-200 error responses to ensure compliant OpenAI error JSON format.
- * Prevents client crashes when upstream returns 0-byte streams or non-standard bare JSON.
+ * Prevents client crashes when upstream returns 0-byte streams, non-standard bare JSON, bare arrays, or SSE data.
  */
 function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
   const code = typeof statusCode === 'number' && !isNaN(statusCode) ? statusCode : 400;
-  const rawText = typeof rawBodyText === 'string' ? rawBodyText.trim() : (rawBodyText ? String(rawBodyText).trim() : '');
+  let rawText = typeof rawBodyText === 'string' ? rawBodyText.trim() : (rawBodyText ? String(rawBodyText).trim() : '');
 
   // 1. If upstream returns empty body (0 bytes), standardize to OpenAI error format
   if (!rawText) {
@@ -837,15 +860,50 @@ function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
     });
   }
 
-  // 2. If upstream returns JSON
+  // 2. If body is wrapped in SSE format (e.g. data: {...}\n\n), strip SSE prefix
+  if (rawText.startsWith('data:')) {
+    const sseLines = rawText.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('data:') && l.slice(5).trim() !== '[DONE]');
+    if (sseLines.length > 0) {
+      rawText = sseLines[0].slice(5).trim();
+    }
+  }
+
+  // 3. Attempt JSON parse
   try {
     const parsed = JSON.parse(rawText);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      // 2a. If standard {"error": {...}} or {"error": "..."}
-      if (parsed.error !== undefined && parsed.error !== null) {
-        return rawText;
+      // 3a. If error is an object
+      if (parsed.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error)) {
+        if (!parsed.error.message) {
+          parsed.error.message = parsed.error.code ? `Upstream error code: ${parsed.error.code}` : JSON.stringify(parsed.error);
+        }
+        if (!parsed.error.type) parsed.error.type = 'upstream_error';
+        if (parsed.error.code === undefined) parsed.error.code = code;
+        return JSON.stringify(parsed);
       }
-      // 2b. If bare JSON without 'error' field (e.g. {"model":"deepseek-v4.1-flash"})
+      // 3b. If error is a string
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        return JSON.stringify({
+          error: {
+            message: parsed.error,
+            type: 'upstream_error',
+            code: code
+          }
+        });
+      }
+      // 3c. If bare JSON without 'error' field (e.g. {"model":"deepseek-v4.1-flash"} or {"detail":"..."})
+      const fallbackMsg = parsed.detail || parsed.message || rawText;
+      return JSON.stringify({
+        error: {
+          message: `上游模型接口返回异常: ${typeof fallbackMsg === 'string' ? fallbackMsg : JSON.stringify(fallbackMsg)}`,
+          type: 'upstream_error',
+          code: code
+        }
+      });
+    } else {
+      // 3d. If parsed is an Array or primitive
       return JSON.stringify({
         error: {
           message: `上游模型接口返回异常: ${rawText}`,
@@ -855,7 +913,7 @@ function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
       });
     }
   } catch (e) {
-    // 3. If upstream returns non-JSON text / HTML
+    // 4. Non-JSON text / HTML error
     return JSON.stringify({
       error: {
         message: `上游模型接口返回异常: ${rawText}`,
@@ -864,8 +922,6 @@ function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
       }
     });
   }
-
-  return rawText;
 }
 
 /**
@@ -1007,7 +1063,7 @@ function convertResponsesToChatPayload(body) {
     chatPayload.tools = body.tools.map((t, idx) => {
       const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       const description = t.function?.description || t.description || '';
-      const rawParams = t.function?.parameters || t.parameters || t.function?.inputSchema || t.inputSchema || t.function?.input_schema || t.input_schema;
+      const rawParams = extractRawToolParams(t);
       const parameters = normalizeToolParameters(rawParams);
       return {
         type: 'function',
@@ -1783,7 +1839,7 @@ function convertResponsesToAnthropicPayload(body) {
     payload.tools = body.tools.map((t, idx) => {
       const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       const description = t.function?.description || t.description || '';
-      const rawParams = t.function?.parameters || t.parameters || t.function?.inputSchema || t.inputSchema || t.function?.input_schema || t.input_schema;
+      const rawParams = extractRawToolParams(t);
       const inputSchema = normalizeToolParameters(rawParams);
       return {
         name,
@@ -3105,6 +3161,7 @@ module.exports = {
   restoreCodexConfig,
   restartCodex,
   extractOrDeriveSessionId,
+  extractRawToolParams,
   normalizeToolParameters,
   formatUpstreamErrorResponse
 };

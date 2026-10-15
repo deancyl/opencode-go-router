@@ -590,6 +590,7 @@ function sendStandardizedError(clientRes, upstreamRes, statusCode, rawErrText) {
   const outHeaders = getCorsHeaders(upstreamRes ? upstreamRes.headers : {});
   outHeaders['content-type'] = 'application/json; charset=utf-8';
   delete outHeaders['transfer-encoding'];
+  delete outHeaders['content-encoding'];
   outHeaders['content-length'] = String(errorBuf.length);
   clientRes.writeHead(statusCode, outHeaders);
   clientRes.end(errorBuf);
@@ -650,6 +651,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   delete proxyHeaders['connection'];
   delete proxyHeaders['keep-alive'];
   delete proxyHeaders['transfer-encoding'];
+  delete proxyHeaders['accept-encoding'];
   delete proxyHeaders['expect'];
 
   if (!proxyHeaders['user-agent'] || /python|curl|undici|node-fetch/i.test(proxyHeaders['user-agent'])) {
@@ -849,6 +851,11 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     if (statusCode !== 200) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('error', (err) => {
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        finishRequest();
+        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+      });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         finishRequest();
@@ -1042,6 +1049,12 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     if (statusCode !== 200) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('error', (err) => {
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        responded = true;
+        finishRequest();
+        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+      });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
@@ -1294,6 +1307,12 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     if (statusCode !== 200) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('error', (err) => {
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        responded = true;
+        finishRequest();
+        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+      });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
