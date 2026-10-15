@@ -794,6 +794,81 @@ function getCodexConfigDir() {
 }
 
 /**
+ * Normalizes tool parameters to strict JSON Schema object format: { type: 'object', properties: { ... } }
+ * Protects against strict upstream validation errors (e.g. novita-deepseek, orcarouter)
+ * Supports parameters, inputSchema, input_schema, and handles empty / non-object gracefully.
+ */
+function normalizeToolParameters(rawParams) {
+  if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
+    return { type: 'object', properties: {} };
+  }
+  const properties = (rawParams.properties && typeof rawParams.properties === 'object' && !Array.isArray(rawParams.properties))
+    ? rawParams.properties
+    : {};
+  if (rawParams.type !== 'object') {
+    const res = { type: 'object', properties };
+    if (Array.isArray(rawParams.required)) {
+      res.required = rawParams.required;
+    }
+    return res;
+  }
+  return {
+    ...rawParams,
+    properties
+  };
+}
+
+/**
+ * Cleanses and standardizes upstream non-200 error responses to ensure compliant OpenAI error JSON format.
+ * Prevents client crashes when upstream returns 0-byte streams or non-standard bare JSON.
+ */
+function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
+  const code = typeof statusCode === 'number' && !isNaN(statusCode) ? statusCode : 400;
+  const rawText = typeof rawBodyText === 'string' ? rawBodyText.trim() : (rawBodyText ? String(rawBodyText).trim() : '');
+
+  // 1. If upstream returns empty body (0 bytes), standardize to OpenAI error format
+  if (!rawText) {
+    return JSON.stringify({
+      error: {
+        message: `上游推理节点返回空错误 (HTTP ${code})，已安全拦截`,
+        type: 'upstream_error',
+        code: code
+      }
+    });
+  }
+
+  // 2. If upstream returns JSON
+  try {
+    const parsed = JSON.parse(rawText);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // 2a. If standard {"error": {...}} or {"error": "..."}
+      if (parsed.error !== undefined && parsed.error !== null) {
+        return rawText;
+      }
+      // 2b. If bare JSON without 'error' field (e.g. {"model":"deepseek-v4.1-flash"})
+      return JSON.stringify({
+        error: {
+          message: `上游模型接口返回异常: ${rawText}`,
+          type: 'upstream_error',
+          code: code
+        }
+      });
+    }
+  } catch (e) {
+    // 3. If upstream returns non-JSON text / HTML
+    return JSON.stringify({
+      error: {
+        message: `上游模型接口返回异常: ${rawText}`,
+        type: 'upstream_error',
+        code: code
+      }
+    });
+  }
+
+  return rawText;
+}
+
+/**
  * Converts OpenAI Responses API JSON payload to standard OpenAI ChatCompletions JSON payload
  */
 function convertResponsesToChatPayload(body) {
@@ -929,24 +1004,17 @@ function convertResponsesToChatPayload(body) {
 
   // Tools mapping
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    chatPayload.tools = body.tools.map(t => {
-      const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : 'custom_tool');
-      if (t.function) {
-        return {
-          type: 'function',
-          function: {
-            name: toolName,
-            description: t.function.description || t.description || '',
-            parameters: t.function.parameters || t.parameters || {}
-          }
-        };
-      }
+    chatPayload.tools = body.tools.map((t, idx) => {
+      const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
+      const description = t.function?.description || t.description || '';
+      const rawParams = t.function?.parameters || t.parameters || t.function?.inputSchema || t.inputSchema || t.function?.input_schema || t.input_schema;
+      const parameters = normalizeToolParameters(rawParams);
       return {
         type: 'function',
         function: {
           name: toolName,
-          description: t.description || '',
-          parameters: t.parameters || {}
+          description,
+          parameters
         }
       };
     }).filter(t => Boolean(t.function && t.function.name));
@@ -1712,10 +1780,11 @@ function convertResponsesToAnthropicPayload(body) {
   if (body.top_p !== undefined) payload.top_p = body.top_p;
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    payload.tools = body.tools.map(t => {
-      const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : 'custom_tool');
+    payload.tools = body.tools.map((t, idx) => {
+      const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       const description = t.function?.description || t.description || '';
-      const inputSchema = t.function?.parameters || t.parameters || { type: 'object', properties: {} };
+      const rawParams = t.function?.parameters || t.parameters || t.function?.inputSchema || t.inputSchema || t.function?.input_schema || t.input_schema;
+      const inputSchema = normalizeToolParameters(rawParams);
       return {
         name,
         description,
@@ -3035,5 +3104,7 @@ module.exports = {
   bindCodexConfig,
   restoreCodexConfig,
   restartCodex,
-  extractOrDeriveSessionId
+  extractOrDeriveSessionId,
+  normalizeToolParameters,
+  formatUpstreamErrorResponse
 };

@@ -24,7 +24,8 @@ if ($routerConn) {
     } elseif (Test-Path $silentVbs) {
         Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
     } else {
-        Start-Process -FilePath "node.exe" -ArgumentList "`"$serverJs`"" -WorkingDirectory $routerDir -WindowStyle Hidden
+        $logFile = Join-Path $routerDir "router.log"
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"`"`"node.exe`"`" `"`"$serverJs`"`" >> `"`"$logFile`"`" 2>&1`"" -WorkingDirectory $routerDir -WindowStyle Hidden
     }
     Start-Sleep -Seconds 1
     

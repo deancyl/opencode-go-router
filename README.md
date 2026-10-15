@@ -8,7 +8,7 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com)
 [![Linux](https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(Debian%2CUbuntu%2CfnOS%2CDSM)-orange.svg)](https://kernel.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
-[![Version: v2.6.0](https://img.shields.io/badge/Version-v2.6.0-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.6.1](https://img.shields.io/badge/Version-v2.6.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -442,6 +442,22 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.6.1 (Codex 动态工具 Schema 强制规范化、网关错误协议清洗屏障与 79 项测试大满贯)
+- **Codex 动态工具 Schema 全面适配与强制规范化 (Tools Schema Normalization Engine)**：
+  - 全面支持 Responses / MCP 协议规范中的 `inputSchema`、`t.input_schema`、`t.function.inputSchema` 及嵌套 `parameters` 多态提取；
+  - 强制补齐合法 JSON Schema：针对无参工具（如 `apply_patch`、`collaboration`）或空参数对象 `{}`，自动补全规范的 `{ type: 'object', properties: {} }`，彻底根治 novita-deepseek、orcarouter 等严格推理集群因空 Schema 抛出 HTTP 400 崩溃的顽疾；
+  - 补充匿名工具名称自动降级兜底（`custom_tool_${idx}`），杜绝 `name: undefined` 序列化异常。
+- **网关层非 200 错误响应清洗与协议标准化屏障 (Gateway Non-200 Sanitization Barrier)**：
+  - 彻底拦截所有协议桥中上游返回的非 200 响应，强制重置响应头为 `Content-Type: application/json; charset=utf-8`，绝不允许向 Codex 等客户端透传 `text/event-stream` 搭配 400 且 0 字节的畸形空流；
+  - 自动标准化上游错误 Body：
+    - 上游返回 0 字节空流时，标准化为标准 OpenAI 错误：`{"error":{"message":"上游推理节点返回空错误 (HTTP 400)，已安全拦截","type":"upstream_error","code":400}}`，彻底消除 Codex 客户端“空气泡”与 `Task encountered a system error` 状态回退；
+    - 上游返回裸 JSON（如 `{"model":"deepseek-v4.1-flash"}`）且缺失 `error` 字段时，自动装配并包装为合规的 `{"error":{"message":"上游模型接口返回异常: ...","type":"upstream_error","code":400}}`，杜绝客户端红框裸 JSON 报警；
+    - 标准 OpenAI 错误保持原始透传，确保诊断信息高保真直达。
+- **静默启动日志管道可靠追加 (Silent Launcher Log Pipeline)**：
+  - 优化 `silent-start.vbs`、`tray-daemon.ps1` 与 `start-all.ps1`，后台 Node 进程的标准输出与错误无缝重定向并追加至 `router.log`，保证排障追踪不丢失。
+- **自动化集成测试套件扩充至 79 项 100% 绿灯全通**：
+  - 新增 `Test 79` 覆盖工具 Schema 多态提取与规范化、0 字节流拦截标准化以及裸 JSON 包装清洗全链路。
 
 ### 🚀 v2.6.0 (Codex 会话动态隔离、空流截断防瞒报与高并发活跃计数零泄漏)
 - **动态会话隔离 (Dynamic Session Isolation)**：

@@ -15,26 +15,26 @@ $port = 4010
 function Ensure-RouterRunning {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if (-not $conn) {
-        $nodeExe = "C:\Program Files\nodejs\node.exe"
-        if (-not (Test-Path $nodeExe)) {
-            $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
-            if ($nodeCmd) { $nodeExe = $nodeCmd.Source } else { $nodeExe = "node.exe" }
-        }
-        
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $nodeExe
-        $psi.Arguments = "`"$serverScript`""
-        $psi.WorkingDirectory = $rootDir
-        $psi.CreateNoWindow = $true
-        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-        $psi.UseShellExecute = $false
-        try {
-            [System.Diagnostics.Process]::Start($psi) | Out-Null
-        } catch {
-            $silentVbs = Join-Path $rootDir "silent-start.vbs"
-            if (Test-Path $silentVbs) {
-                Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
-            } else {
+        $silentVbs = Join-Path $rootDir "silent-start.vbs"
+        if (Test-Path $silentVbs) {
+            Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
+        } else {
+            $nodeExe = "C:\Program Files\nodejs\node.exe"
+            if (-not (Test-Path $nodeExe)) {
+                $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
+                if ($nodeCmd) { $nodeExe = $nodeCmd.Source } else { $nodeExe = "node.exe" }
+            }
+            $routerLog = Join-Path $rootDir "router.log"
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = "cmd.exe"
+            $psi.Arguments = "/c `"`"`"$nodeExe`"`" `"`"$serverScript`"`" >> `"`"$routerLog`"`" 2>&1`""
+            $psi.WorkingDirectory = $rootDir
+            $psi.CreateNoWindow = $true
+            $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+            $psi.UseShellExecute = $false
+            try {
+                [System.Diagnostics.Process]::Start($psi) | Out-Null
+            } catch {
                 Start-Process -FilePath $nodeExe -ArgumentList "`"$serverScript`"" -WorkingDirectory $rootDir -WindowStyle Hidden
             }
         }

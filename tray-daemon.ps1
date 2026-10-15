@@ -41,22 +41,28 @@ function Test-PortListening([int]$targetPort) {
 function Ensure-RouterRunning {
     try {
         if (Test-PortListening $port) { return }
-        $nodeExe = "node.exe"
-        if (Test-Path "C:\Program Files\nodejs\node.exe") {
-            $nodeExe = "C:\Program Files\nodejs\node.exe"
-        } elseif (Test-Path "$env:LOCALAPPDATA\Programs\node\node.exe") {
-            $nodeExe = "$env:LOCALAPPDATA\Programs\node\node.exe"
+        $silentVbs = Join-Path $rootDir "silent-start.vbs"
+        if (Test-Path $silentVbs) {
+            Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
+        } else {
+            $nodeExe = "node.exe"
+            if (Test-Path "C:\Program Files\nodejs\node.exe") {
+                $nodeExe = "C:\Program Files\nodejs\node.exe"
+            } elseif (Test-Path "$env:LOCALAPPDATA\Programs\node\node.exe") {
+                $nodeExe = "$env:LOCALAPPDATA\Programs\node\node.exe"
+            }
+            $serverJs = Join-Path $rootDir "server.js"
+            $routerLog = Join-Path $rootDir "router.log"
+            
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = "cmd.exe"
+            $psi.Arguments = "/c `"`"`"$nodeExe`"`" `"`"$serverJs`"`" >> `"`"$routerLog`"`" 2>&1`""
+            $psi.WorkingDirectory = $rootDir
+            $psi.CreateNoWindow = $true
+            $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+            $psi.UseShellExecute = $false
+            [System.Diagnostics.Process]::Start($psi) | Out-Null
         }
-        $serverJs = Join-Path $rootDir "server.js"
-        
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $nodeExe
-        $psi.Arguments = "`"$serverJs`""
-        $psi.WorkingDirectory = $rootDir
-        $psi.CreateNoWindow = $true
-        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-        $psi.UseShellExecute = $false
-        [System.Diagnostics.Process]::Start($psi) | Out-Null
 
         for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Milliseconds 200

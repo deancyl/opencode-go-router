@@ -139,6 +139,47 @@ async function runTests() {
       return;
     }
 
+    if (session === 'session-empty-400') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      res.writeHead(400, {
+        'Content-Type': 'text/event-stream',
+        'Content-Length': '0'
+      });
+      res.end();
+      return;
+    }
+
+    if (session === 'session-bare-json-400') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      const bareBody = '{"model":"deepseek-v4.1-flash"}';
+      res.writeHead(400, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(bareBody))
+      });
+      res.end(bareBody);
+      return;
+    }
+
+    if (session === 'session-standard-err-400') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      const errBody = JSON.stringify({
+        error: {
+          message: 'Standard upstream validation failed',
+          type: 'invalid_request_error',
+          code: 400
+        }
+      });
+      res.writeHead(400, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(errBody))
+      });
+      res.end(errBody);
+      return;
+    }
+
     if (req.url === '/v1/responses') {
       if (auth.includes('key-account-1')) account1Calls++;
       else account2Calls++;
@@ -2366,8 +2407,205 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Empty Stream Disconnection Defense, Dynamic Session Isolation & Zero-Leak Lifecycle verified');
 
+    // Test 79: Codex Tools Schema Normalization & Upstream Non-200 Error Sanitization Barrier
+    console.log('\n[Test 79] Testing Codex Tools Schema Normalization & Upstream Non-200 Error Sanitization Barrier...');
+
+    // 1. Tool parameters extraction & normalization verification
+    const sampleTools = [
+      {
+        type: 'function',
+        function: {
+          name: 'codex_app_tool_1',
+          description: 'App tool 1 with inputSchema',
+          inputSchema: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'codex_app_tool_2',
+          description: 'App tool 2 with input_schema',
+          input_schema: {
+            properties: { query: { type: 'string' } }
+          }
+        }
+      },
+      {
+        name: 'top_level_tool',
+        description: 'Responses top level tool with inputSchema',
+        inputSchema: {
+          properties: { count: { type: 'integer' } }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'apply_patch',
+          description: 'Builtin parameterless tool'
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'collaboration',
+          description: 'Builtin tool with empty object parameters',
+          parameters: {}
+        }
+      },
+      {
+        type: 'custom_shell_exec',
+        description: 'Tool without explicit function name',
+        input_schema: {
+          type: 'object',
+          properties: {}
+        }
+      },
+      {
+        parameters: null
+      }
+    ];
+
+    const chatConverted = codexAdapter.convertResponsesToChatPayload({
+      model: 'deepseek-v4.1-flash',
+      input: 'Test tools conversion',
+      tools: sampleTools
+    });
+
+    assert.strictEqual(chatConverted.tools.length, 7, 'All 7 tools must be successfully converted');
+
+    // a) inputSchema tool
+    assert.strictEqual(chatConverted.tools[0].function.name, 'codex_app_tool_1');
+    assert.strictEqual(chatConverted.tools[0].function.parameters.type, 'object');
+    assert.deepStrictEqual(chatConverted.tools[0].function.parameters.properties, { path: { type: 'string' } });
+    assert.deepStrictEqual(chatConverted.tools[0].function.parameters.required, ['path']);
+
+    // b) input_schema tool (missing type: 'object' automatically normalized)
+    assert.strictEqual(chatConverted.tools[1].function.name, 'codex_app_tool_2');
+    assert.strictEqual(chatConverted.tools[1].function.parameters.type, 'object');
+    assert.deepStrictEqual(chatConverted.tools[1].function.parameters.properties, { query: { type: 'string' } });
+
+    // c) top-level inputSchema
+    assert.strictEqual(chatConverted.tools[2].function.name, 'top_level_tool');
+    assert.strictEqual(chatConverted.tools[2].function.parameters.type, 'object');
+    assert.deepStrictEqual(chatConverted.tools[2].function.parameters.properties, { count: { type: 'integer' } });
+
+    // d) parameterless tool (apply_patch)
+    assert.strictEqual(chatConverted.tools[3].function.name, 'apply_patch');
+    assert.strictEqual(chatConverted.tools[3].function.parameters.type, 'object');
+    assert.deepStrictEqual(chatConverted.tools[3].function.parameters.properties, {});
+
+    // e) empty object parameter tool (collaboration)
+    assert.strictEqual(chatConverted.tools[4].function.name, 'collaboration');
+    assert.strictEqual(chatConverted.tools[4].function.parameters.type, 'object');
+    assert.deepStrictEqual(chatConverted.tools[4].function.parameters.properties, {});
+
+    // f) anonymous tool fallback
+    assert.strictEqual(chatConverted.tools[5].function.name, 'custom_shell_exec');
+    assert.strictEqual(chatConverted.tools[5].function.parameters.type, 'object');
+    assert.strictEqual(chatConverted.tools[6].function.name, 'custom_tool_6');
+    assert.strictEqual(chatConverted.tools[6].function.parameters.type, 'object');
+
+    // g) Anthropic Messages bridge tools conversion
+    const anthropicConverted = codexAdapter.convertResponsesToAnthropicPayload({
+      model: 'claude-haiku-5-5',
+      input: 'Test anthropic tools',
+      tools: sampleTools
+    });
+    assert.strictEqual(anthropicConverted.tools.length, 7);
+    assert.strictEqual(anthropicConverted.tools[0].input_schema.type, 'object');
+    assert.strictEqual(anthropicConverted.tools[3].name, 'apply_patch');
+    assert.strictEqual(anthropicConverted.tools[3].input_schema.type, 'object');
+    assert.deepStrictEqual(anthropicConverted.tools[3].input_schema.properties, {});
+
+    // 2. Unit test formatUpstreamErrorResponse
+    const emptyErr = JSON.parse(codexAdapter.formatUpstreamErrorResponse('', 400));
+    assert.strictEqual(emptyErr.error.code, 400);
+    assert.strictEqual(emptyErr.error.type, 'upstream_error');
+    assert.strictEqual(emptyErr.error.message, '上游推理节点返回空错误 (HTTP 400)，已安全拦截');
+
+    const bareErr = JSON.parse(codexAdapter.formatUpstreamErrorResponse('{"model":"deepseek-v4.1-flash"}', 400));
+    assert.strictEqual(bareErr.error.code, 400);
+    assert.strictEqual(bareErr.error.type, 'upstream_error');
+    assert.strictEqual(bareErr.error.message, '上游模型接口返回异常: {"model":"deepseek-v4.1-flash"}');
+
+    const standardErrStr = JSON.stringify({ error: { message: 'Upstream rate limit', type: 'rate_limit_error', code: 429 } });
+    assert.strictEqual(codexAdapter.formatUpstreamErrorResponse(standardErrStr, 429), standardErrStr);
+
+    // 3. E2E HTTP Test: Upstream returns 0-byte 400 with text/event-stream
+    const resEmpty400 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-empty-400'
+      },
+      body: JSON.stringify({
+        model: 'opencode-go/deepseek-v4.1-flash',
+        session_id: 'session-empty-400',
+        input: 'Test 0-byte error recovery'
+      })
+    });
+
+    assert.strictEqual(resEmpty400.statusCode, 400, 'Must return HTTP 400');
+    assert.ok(
+      resEmpty400.headers['content-type'] && resEmpty400.headers['content-type'].includes('application/json'),
+      `Content-Type must be application/json, got ${resEmpty400.headers['content-type']}`
+    );
+    assert.ok(!resEmpty400.headers['content-type'].includes('text/event-stream'), 'Must never pass text/event-stream on 400 error');
+    const parsedEmptyErr = JSON.parse(resEmpty400.body);
+    assert.strictEqual(parsedEmptyErr.error.code, 400);
+    assert.strictEqual(parsedEmptyErr.error.type, 'upstream_error');
+    assert.strictEqual(parsedEmptyErr.error.message, '上游推理节点返回空错误 (HTTP 400)，已安全拦截');
+
+    // 4. E2E HTTP Test: Upstream returns bare JSON {"model":"deepseek-v4.1-flash"} with 400
+    const resBare400 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-bare-json-400'
+      },
+      body: JSON.stringify({
+        model: 'opencode-go/deepseek-v4.1-flash',
+        session_id: 'session-bare-json-400',
+        input: 'Test bare JSON error wrapping'
+      })
+    });
+
+    assert.strictEqual(resBare400.statusCode, 400, 'Must return HTTP 400');
+    assert.ok(
+      resBare400.headers['content-type'] && resBare400.headers['content-type'].includes('application/json'),
+      `Content-Type must be application/json, got ${resBare400.headers['content-type']}`
+    );
+    const parsedBareErr = JSON.parse(resBare400.body);
+    assert.strictEqual(parsedBareErr.error.code, 400);
+    assert.strictEqual(parsedBareErr.error.type, 'upstream_error');
+    assert.strictEqual(parsedBareErr.error.message, '上游模型接口返回异常: {"model":"deepseek-v4.1-flash"}');
+
+    // 5. E2E HTTP Test: Standard upstream error passed through correctly
+    const resStandard400 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-standard-err-400'
+      },
+      body: JSON.stringify({
+        model: 'opencode-go/deepseek-v4.1-flash',
+        session_id: 'session-standard-err-400',
+        input: 'Test standard error passthrough'
+      })
+    });
+
+    assert.strictEqual(resStandard400.statusCode, 400);
+    const parsedStandardErr = JSON.parse(resStandard400.body);
+    assert.strictEqual(parsedStandardErr.error.message, 'Standard upstream validation failed');
+
+    console.log('✓ Codex Tools Schema Normalization & Upstream Non-200 Error Sanitization Barrier verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 78 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 79 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

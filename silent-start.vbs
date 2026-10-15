@@ -12,6 +12,9 @@ ElseIf fso.FileExists(WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%\Programs
     nodeExe = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%\Programs\node\node.exe")
 End If
 
-cmd = Chr(34) & nodeExe & Chr(34) & " " & Chr(34) & serverJs & Chr(34)
+comspec = WshShell.ExpandEnvironmentStrings("%COMSPEC%")
+If comspec = "" Then comspec = "cmd.exe"
+
+cmd = Chr(34) & comspec & Chr(34) & " /c " & Chr(34) & Chr(34) & nodeExe & Chr(34) & " " & Chr(34) & serverJs & Chr(34) & " >> " & Chr(34) & logFile & Chr(34) & " 2>&1" & Chr(34)
 WshShell.CurrentDirectory = rootDir
 WshShell.Run cmd, 0, False

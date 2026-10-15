@@ -583,6 +583,18 @@ function getCorsHeaders(upstreamHeaders = {}) {
   return headers;
 }
 
+function sendStandardizedError(clientRes, upstreamRes, statusCode, rawErrText) {
+  if (clientRes.writableEnded || clientRes.destroyed) return;
+  const formattedText = codexAdapter.formatUpstreamErrorResponse(rawErrText, statusCode);
+  const errorBuf = Buffer.from(formattedText, 'utf8');
+  const outHeaders = getCorsHeaders(upstreamRes ? upstreamRes.headers : {});
+  outHeaders['content-type'] = 'application/json; charset=utf-8';
+  delete outHeaders['transfer-encoding'];
+  outHeaders['content-length'] = String(errorBuf.length);
+  clientRes.writeHead(statusCode, outHeaders);
+  clientRes.end(errorBuf);
+}
+
 function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
   triedAccountIds.add(account.id);
 
@@ -736,11 +748,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           console.log(`[Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         } else {
-          const errorBody = Buffer.concat(errorChunks);
-          const outHeaders = getCorsHeaders(upstreamRes.headers);
-          outHeaders['content-length'] = String(errorBody.length);
-          clientRes.writeHead(statusCode, outHeaders);
-          clientRes.end(errorBody);
+          finishRequest();
+          sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errorChunks).toString('utf8'));
         }
       });
       return;
@@ -764,11 +773,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           }
         } else {
           finishRequest();
-          const outHeaders = getCorsHeaders(upstreamRes.headers);
-          const errorBody = Buffer.from(errText, 'utf8');
-          outHeaders['content-length'] = String(errorBody.length);
-          clientRes.writeHead(statusCode, outHeaders);
-          clientRes.end(errorBody);
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
       return;
@@ -831,17 +836,24 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         }
 
         finishRequest();
-        const outHeaders = getCorsHeaders(upstreamRes.headers);
-        const errorBody = Buffer.from(errText, 'utf8');
-        outHeaders['content-length'] = String(errorBody.length);
-        clientRes.writeHead(statusCode, outHeaders);
-        clientRes.end(errorBody);
+        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
     }
 
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded) {
       finishRequest();
+      return;
+    }
+
+    if (statusCode !== 200) {
+      const errChunks = [];
+      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('end', () => {
+        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+        finishRequest();
+        sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errChunks).toString('utf8'));
+      });
       return;
     }
 
@@ -1019,11 +1031,9 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           console.log(`[Bridge Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         } else {
-          const errorBody = Buffer.concat(errorChunks);
-          const outHeaders = getCorsHeaders(upstreamRes.headers);
-          outHeaders['content-length'] = String(errorBody.length);
-          clientRes.writeHead(statusCode, outHeaders);
-          clientRes.end(errorBody);
+          responded = true;
+          finishRequest();
+          sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errorChunks).toString('utf8'));
         }
       });
       return;
@@ -1078,11 +1088,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
         responded = true;
         finishRequest();
-        const errorBody = Buffer.from(errText, 'utf8');
-        const outHeaders = getCorsHeaders(upstreamRes.headers);
-        outHeaders['content-length'] = String(errorBody.length);
-        clientRes.writeHead(statusCode, outHeaders);
-        clientRes.end(errorBody);
+        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
     }
@@ -1277,11 +1283,9 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           console.log(`[Anthropic Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         } else {
-          const errorBody = Buffer.concat(errorChunks);
-          const outHeaders = getCorsHeaders(upstreamRes.headers);
-          outHeaders['content-length'] = String(errorBody.length);
-          clientRes.writeHead(statusCode, outHeaders);
-          clientRes.end(errorBody);
+          responded = true;
+          finishRequest();
+          sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errorChunks).toString('utf8'));
         }
       });
       return;
@@ -1323,11 +1327,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
         responded = true;
         finishRequest();
-        const errorBody = Buffer.from(errText, 'utf8');
-        const outHeaders = getCorsHeaders(upstreamRes.headers);
-        outHeaders['content-length'] = String(errorBody.length);
-        clientRes.writeHead(statusCode, outHeaders);
-        clientRes.end(errorBody);
+        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
     }
