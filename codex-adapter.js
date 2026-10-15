@@ -2645,6 +2645,8 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
       } catch (_) { return null; }
     })(),
     localeNotice: '已配置简体中文 (localeOverride = "zh-CN")。注意：Codex 桌面端 Web 界面内部汉化受制于官方该版本 Feature Gate (Statsig 72216192) 默认值冲突，官方放量或更新后将自动全面显示中文。',
+    processHealth: checkCodexProcessHealth(),
+    localeCheck: checkCodexLocaleAndEnvironment({ codexDir }),
     availableModels: OPENCODE_GO_ALL_MODELS.map(m => ({
       slug: m.slug,
       display_name: m.display_name,
@@ -3316,6 +3318,427 @@ function extractOrDeriveSessionId(req, body) {
   return `session-auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Checks for Codex / ChatGPT background process suspension or zombie single-instance lock deadlocks.
+ */
+function checkCodexProcessHealth() {
+  if (process.platform !== 'win32') {
+    return { healthy: true, procCount: 0, hasSuspended: false, suspendedCount: 0, hasGhost: false, visibleWindows: 0, wsMb: 0, pids: [] };
+  }
+
+  try {
+    const psScript = `
+Add-Type @'
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public class WinChecker {
+    public delegate bool EnumDesktopWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+    [DllImport("user32.dll")] public static extern bool SetThreadDesktop(IntPtr hDesktop);
+    [DllImport("user32.dll")] public static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumDesktopWindowsProc lpfn, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    public static string Check() {
+        IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
+        if (hDesk != IntPtr.Zero) SetThreadDesktop(hDesk);
+        var pids = new List<uint>();
+        int totalSuspended = 0;
+        long totalWs = 0;
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName("ChatGPT")) {
+            pids.Add((uint)p.Id);
+            totalWs += p.WorkingSet64;
+            foreach (System.Diagnostics.ProcessThread t in p.Threads) {
+                if (t.ThreadState == System.Diagnostics.ThreadState.Wait && t.WaitReason == System.Diagnostics.ThreadWaitReason.Suspended) {
+                    totalSuspended++;
+                }
+            }
+        }
+        int visibleWindows = 0;
+        if (hDesk != IntPtr.Zero && pids.Count > 0) {
+            var pidSet = new HashSet<uint>(pids);
+            EnumDesktopWindows(hDesk, (hWnd, lParam) => {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pidSet.Contains(pid) && IsWindowVisible(hWnd)) {
+                    var sbClass = new StringBuilder(256);
+                    GetClassName(hWnd, sbClass, 256);
+                    if (sbClass.ToString() == "Chrome_WidgetWin_1") {
+                        visibleWindows++;
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        double wsMb = Math.Round((double)totalWs / (1024 * 1024), 1);
+        return string.Format("{0}|{1}|{2}|{3}|{4}", pids.Count, totalSuspended, visibleWindows, wsMb, string.Join(",", pids));
+    }
+}
+'@
+[WinChecker]::Check()
+`;
+    const enc = Buffer.from(psScript, 'utf16le').toString('base64');
+    const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'ignore']
+    }).trim();
+
+    if (out) {
+      const parts = out.split('|');
+      if (parts.length >= 5) {
+        const procCount = parseInt(parts[0], 10) || 0;
+        const suspendedCount = parseInt(parts[1], 10) || 0;
+        const visibleWindows = parseInt(parts[2], 10) || 0;
+        const wsMb = parseFloat(parts[3]) || 0;
+        const pids = parts[4] ? parts[4].split(',').filter(Boolean).map(n => parseInt(n, 10)) : [];
+
+        const hasSuspended = suspendedCount > 0;
+        // Ghost process: processes exist, zero visible windows, and memory is tiny (< 35MB total) indicating stalled UWP lifecycle
+        const hasGhost = procCount > 0 && visibleWindows === 0 && wsMb < 35;
+        const healthy = !hasSuspended && !hasGhost;
+
+        return {
+          healthy,
+          procCount,
+          hasSuspended,
+          suspendedCount,
+          hasGhost,
+          visibleWindows,
+          wsMb,
+          pids
+        };
+      }
+    }
+  } catch (_) {}
+
+  return { healthy: true, procCount: 0, hasSuspended: false, suspendedCount: 0, hasGhost: false, visibleWindows: 0, wsMb: 0, pids: [] };
+}
+
+/**
+ * Automatically resumes suspended threads or terminates zombie SingleInstanceLock holders
+ */
+function resumeOrCleanCodexProcesses() {
+  if (process.platform !== 'win32') {
+    return { success: true, message: '非 Windows 环境无需处理 UWP 挂起锁' };
+  }
+
+  const status = checkCodexProcessHealth();
+  if (status.healthy) {
+    return { success: true, message: 'Codex / ChatGPT 进程状态健康（无挂起及僵死死锁）' };
+  }
+
+  try {
+    const psScript = `
+Add-Type @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public class SuspendedResumer {
+    [DllImport("kernel32.dll")] public static extern IntPtr OpenThread(int dwAccess, bool bInherit, uint id);
+    [DllImport("kernel32.dll")] public static extern uint ResumeThread(IntPtr hThread);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+    public static int ResumeAll() {
+        int count = 0;
+        foreach (var p in Process.GetProcessesByName("ChatGPT")) {
+            foreach (ProcessThread t in p.Threads) {
+                if (t.ThreadState == ThreadState.Wait && t.WaitReason == ThreadWaitReason.Suspended) {
+                    IntPtr h = OpenThread(0x0002, false, (uint)t.Id);
+                    if (h != IntPtr.Zero) {
+                        ResumeThread(h);
+                        CloseHandle(h);
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+}
+'@
+$resumed = [SuspendedResumer]::ResumeAll()
+if ($resumed -eq 0) {
+    Get-Process -Name "ChatGPT" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+Write-Output $resumed
+`;
+    const enc = Buffer.from(psScript, 'utf16le').toString('base64');
+    const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
+      encoding: 'utf8',
+      timeout: 6000,
+      stdio: ['pipe', 'pipe', 'ignore']
+    }).trim();
+
+    const resumedCount = parseInt(out, 10) || 0;
+    if (resumedCount > 0) {
+      return { success: true, resumed: resumedCount, message: `已成功唤醒 ${resumedCount} 个被 Windows PLM 挂起的 ChatGPT 线程，恢复窗口渲染` };
+    } else {
+      return { success: true, killed: true, message: '已安全清理霸占 SingleInstanceLock 互斥锁的无窗口僵死进程，可正常点击桌面图标秒开' };
+    }
+  } catch (err) {
+    return { success: false, error: err.message, message: '自愈挂起/僵死进程失败: ' + err.message };
+  }
+}
+
+/**
+ * Checks Simplified Chinese locale alignment and port conflict immunity for Codex
+ */
+function checkCodexLocaleAndEnvironment(options = {}) {
+  const codexDir = options.codexDir || getCodexConfigDir();
+  const configPath = path.join(codexDir, 'config.toml');
+  const catalogPath = path.join(codexDir, 'model-catalogs', 'opencode-go-catalog.json');
+
+  let hasConfig = fs.existsSync(configPath);
+  let missingDesktopLocale = false;
+  let hasInvalidModelSlug = false;
+  let currentModel = null;
+
+  if (hasConfig) {
+    try {
+      const raw = fs.readFileSync(configPath, 'utf8');
+      const mLocale = raw.match(/localeOverride\s*=\s*["']([^"']+)["']/);
+      if (!mLocale || mLocale[1] !== 'zh-CN') {
+        missingDesktopLocale = true;
+      }
+      const mModel = raw.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+      if (mModel) {
+        currentModel = mModel[1];
+        if (currentModel.includes('[') || currentModel.includes(']') || currentModel.includes(' ')) {
+          hasInvalidModelSlug = true;
+        }
+      }
+    } catch (_) {}
+  }
+
+  let missingChromiumLocale = false;
+  const webviewDir = path.join(
+    process.env.LOCALAPPDATA || '',
+    'Packages',
+    'OpenAI.Codex_2p2nqsd0c76g0',
+    'LocalCache',
+    'Roaming',
+    'Codex',
+    'web',
+    'Codex'
+  );
+  if (fs.existsSync(webviewDir)) {
+    const prefsPath = path.join(webviewDir, 'Default', 'Preferences');
+    if (fs.existsSync(prefsPath)) {
+      try {
+        const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+        if (!prefs.intl || !prefs.intl.accept_languages || !prefs.intl.accept_languages.includes('zh-CN')) {
+          missingChromiumLocale = true;
+        }
+      } catch (_) { missingChromiumLocale = true; }
+    }
+  }
+
+  let missingModelInstructions = false;
+  if (fs.existsSync(catalogPath)) {
+    try {
+      const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+      if (cat.models && cat.models[0]) {
+        const instr = cat.models[0].base_instructions || '';
+        if (!instr.includes('简体中文')) {
+          missingModelInstructions = true;
+        }
+      }
+    } catch (_) {}
+  }
+
+  let hasCodexPlusPortConflict = false;
+  if (process.platform === 'win32') {
+    const codexPlusDir = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Codex++');
+    const watcherLnk = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'CodexPlusPlusWatcher.lnk');
+    const hasCodexPlus = fs.existsSync(codexPlusDir) || fs.existsSync(watcherLnk);
+    if (hasCodexPlus) {
+      const portEnv = process.env.CODEX_PLUS_PROTOCOL_PROXY_PORT;
+      if (!portEnv || portEnv === '4010') {
+        hasCodexPlusPortConflict = true;
+      }
+    }
+  }
+
+  const issues = [];
+  if (missingDesktopLocale) {
+    issues.push('config.toml 缺少 [desktop].localeOverride = "zh-CN"');
+  }
+  if (hasInvalidModelSlug) {
+    issues.push(`config.toml 中的当前模型名称非标准 Slug (${currentModel})，导致界面显示为“自定义”`);
+  }
+  if (missingChromiumLocale) {
+    issues.push('Chromium Webview 本地首选项首选语言未包含 zh-CN');
+  }
+  if (missingModelInstructions) {
+    issues.push('模型元数据目录缺少简体中文思考与回答规范提示词');
+  }
+  if (hasCodexPlusPortConflict) {
+    issues.push('Codex++ 汉化注入工具默认侦听 4010 端口与本地智能网关冲突，导致汉化插件闪退');
+  }
+
+  return {
+    healthy: issues.length === 0,
+    missingDesktopLocale,
+    hasInvalidModelSlug,
+    currentModel,
+    missingChromiumLocale,
+    missingModelInstructions,
+    hasCodexPlusPortConflict,
+    issues
+  };
+}
+
+/**
+ * Automatically repairs Codex locale, Chromium prefs, model slug, instructions and port conflicts
+ */
+function repairCodexLocaleAndEnvironment(options = {}) {
+  const messages = [];
+  const codexDir = options.codexDir || getCodexConfigDir();
+  const configPath = path.join(codexDir, 'config.toml');
+
+  // 1. Repair config.toml
+  if (fs.existsSync(configPath)) {
+    try {
+      let raw = fs.readFileSync(configPath, 'utf8');
+      let changed = false;
+
+      // Fix localeOverride
+      if (!raw.includes('localeOverride = "zh-CN"')) {
+        if (/localeOverride\s*=/.test(raw)) {
+          raw = raw.replace(/localeOverride\s*=\s*["'][^"']+["']/, 'localeOverride = "zh-CN"');
+        } else if (raw.includes('[desktop]')) {
+          raw = raw.replace(/\[desktop\][^\r\n]*/, '$&\nlocaleOverride = "zh-CN"');
+        } else {
+          raw += '\n[desktop]\nlocaleOverride = "zh-CN"\n';
+        }
+        changed = true;
+        messages.push('已在 config.toml 的 [desktop] 节中锁定 localeOverride = "zh-CN"');
+      }
+
+      // Fix model slug if contains brackets or spaces
+      const mModel = raw.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+      if (mModel && (mModel[1].includes('[') || mModel[1].includes(']') || mModel[1].includes(' '))) {
+        raw = raw.replace(/^\s*model\s*=\s*["'][^"']+["']/m, 'model = "deepseek-v4.1-flash"');
+        changed = true;
+        messages.push('已校准 config.toml 中非标准模型名为合法 Slug "deepseek-v4.1-flash"');
+      }
+
+      if (changed) {
+        fs.writeFileSync(configPath, raw, 'utf8');
+      }
+    } catch (e) {
+      messages.push(`修复 config.toml 异常: ${e.message}`);
+    }
+  }
+
+  // 2. Sync Chromium Webview Preferences & Local State
+  try {
+    const webviewDir = path.join(
+      process.env.LOCALAPPDATA || '',
+      'Packages',
+      'OpenAI.Codex_2p2nqsd0c76g0',
+      'LocalCache',
+      'Roaming',
+      'Codex',
+      'web',
+      'Codex'
+    );
+    if (fs.existsSync(webviewDir)) {
+      const prefsPath = path.join(webviewDir, 'Default', 'Preferences');
+      if (fs.existsSync(prefsPath)) {
+        try {
+          const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+          prefs.intl = prefs.intl || {};
+          prefs.intl.selected_languages = 'zh-CN,zh';
+          prefs.intl.accept_languages = 'zh-CN,zh,en-US,en';
+          prefs.spellcheck = prefs.spellcheck || {};
+          prefs.spellcheck.dictionaries = ['zh-CN'];
+          fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf8');
+          messages.push('已同步 Chromium 首选语言为简体中文 (Default/Preferences)');
+        } catch (_) {}
+      }
+
+      const localStatePath = path.join(webviewDir, 'Local State');
+      if (fs.existsSync(localStatePath)) {
+        try {
+          const state = JSON.parse(fs.readFileSync(localStatePath, 'utf8'));
+          state.intl = state.intl || {};
+          state.intl.selected_languages = 'zh-CN,zh';
+          state.intl.accept_languages = 'zh-CN,zh,en-US,en';
+          fs.writeFileSync(localStatePath, JSON.stringify(state, null, 2), 'utf8');
+          messages.push('已同步 Chromium 全局语言为简体中文 (Local State)');
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    messages.push(`Chromium 语言同步提醒: ${err.message}`);
+  }
+
+  // 3. Set CODEX_PLUS_PROTOCOL_PROXY_PORT env var if Codex++ is detected
+  if (process.platform === 'win32') {
+    try {
+      const codexPlusDir = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Codex++');
+      const watcherLnk = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'CodexPlusPlusWatcher.lnk');
+      if (fs.existsSync(codexPlusDir) || fs.existsSync(watcherLnk)) {
+        const curPort = process.env.CODEX_PLUS_PROTOCOL_PROXY_PORT;
+        if (!curPort || curPort === '4010') {
+          process.env.CODEX_PLUS_PROTOCOL_PROXY_PORT = '4019';
+          try {
+            execSync('powershell.exe -NoProfile -Command "[Environment]::SetEnvironmentVariable(\'CODEX_PLUS_PROTOCOL_PROXY_PORT\', \'4019\', \'User\')"', { timeout: 3000, stdio: 'ignore' });
+            messages.push('已将 Codex++ 协议代理端口配置为 4019，彻底消除与 4010 网关冲突闪退');
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 4. Sync models.json & opencode-go-catalog.json base_instructions
+  try {
+    const catalogPath = path.join(codexDir, 'model-catalogs', 'opencode-go-catalog.json');
+    const modelsPath = path.join(codexDir, 'models.json');
+    const chineseNotice = '\n\n# 语言规范\n无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n';
+
+    if (fs.existsSync(catalogPath)) {
+      const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+      let modified = false;
+      if (Array.isArray(cat.models)) {
+        cat.models.forEach(m => {
+          if (!m.base_instructions || !m.base_instructions.includes('简体中文')) {
+            m.base_instructions = (m.base_instructions || '') + chineseNotice;
+            modified = true;
+          }
+        });
+      }
+      if (modified) {
+        fs.writeFileSync(catalogPath, JSON.stringify(cat, null, 2), 'utf8');
+        messages.push('已为 opencode-go-catalog.json 补齐简体中文思考与回答规范');
+      }
+    }
+
+    if (fs.existsSync(modelsPath)) {
+      const mData = JSON.parse(fs.readFileSync(modelsPath, 'utf8'));
+      let modified = false;
+      if (Array.isArray(mData.models)) {
+        mData.models.forEach(m => {
+          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('简体中文'))) {
+            m.base_instructions = (m.base_instructions || '') + chineseNotice;
+            modified = true;
+          }
+        });
+      }
+      if (modified) {
+        fs.writeFileSync(modelsPath, JSON.stringify(mData, null, 2), 'utf8');
+        messages.push('已为 models.json 补齐简体中文思考与回答规范');
+      }
+    }
+  } catch (_) {}
+
+  return { success: true, messages };
+}
+
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
   NATIVE_RESPONSES_MODELS,
@@ -3340,5 +3763,9 @@ module.exports = {
   extractRawToolParams,
   normalizeToolParameters,
   formatUpstreamErrorResponse,
-  sanitizeToolOutput
+  sanitizeToolOutput,
+  checkCodexProcessHealth,
+  resumeOrCleanCodexProcesses,
+  checkCodexLocaleAndEnvironment,
+  repairCodexLocaleAndEnvironment
 };

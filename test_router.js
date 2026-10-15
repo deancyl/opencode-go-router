@@ -2757,8 +2757,52 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Codex Tool Output Image Sanitization & Upstream 400 Empty Stream Self-Healing verified');
 
+    // [Test 81] Testing Codex Process Health, Thread Suspension Diagnostics & Chinese Locale/Environment Self-Healing...
+    console.log('\n[Test 81] Testing Codex Process Health, Thread Suspension Diagnostics & Chinese Locale/Environment Self-Healing...');
+
+    // 1. Process health check unit test
+    const procHealth = codexAdapter.checkCodexProcessHealth();
+    assert.ok(procHealth !== undefined, 'checkCodexProcessHealth must return a result object');
+    assert.ok(typeof procHealth.healthy === 'boolean', 'healthy flag must be boolean');
+    assert.ok(typeof procHealth.procCount === 'number', 'procCount must be a number');
+
+    // 2. Locale and environment diagnostic test
+    const mockCodexDir = path.join(testConfigDir, 'mock-codex-test81');
+    fs.mkdirSync(mockCodexDir, { recursive: true });
+    const mockTomlPath = path.join(mockCodexDir, 'config.toml');
+    // Deliberately write an unhardened config: missing zh-CN localeOverride and invalid display-name model
+    fs.writeFileSync(mockTomlPath, 'model = "DeepSeek-Flash [智能双轨协议桥]"\nmodel_provider = "opencode-go"\n\n[desktop]\nsansFontSize = 14\n', 'utf8');
+
+    const localeCheckBefore = codexAdapter.checkCodexLocaleAndEnvironment({ codexDir: mockCodexDir });
+    assert.strictEqual(localeCheckBefore.healthy, false, 'Mock unaligned config must report healthy: false');
+    assert.ok(localeCheckBefore.missingDesktopLocale, 'Must detect missing desktop locale');
+    assert.ok(localeCheckBefore.hasInvalidModelSlug, 'Must detect invalid model slug');
+    assert.ok(localeCheckBefore.issues.length >= 2, 'Must report specific issues');
+
+    // 3. Auto-Repair execution test
+    const codexLocaleRepairRes = codexAdapter.repairCodexLocaleAndEnvironment({ codexDir: mockCodexDir });
+    assert.strictEqual(codexLocaleRepairRes.success, true, 'repairCodexLocaleAndEnvironment must succeed');
+    assert.ok(codexLocaleRepairRes.messages.length > 0, 'Repair must produce explanatory messages');
+
+    // 4. Verify post-repair integrity
+    const localeCheckAfter = codexAdapter.checkCodexLocaleAndEnvironment({ codexDir: mockCodexDir });
+    assert.strictEqual(localeCheckAfter.missingDesktopLocale, false, 'Desktop locale must be repaired');
+    assert.strictEqual(localeCheckAfter.hasInvalidModelSlug, false, 'Model slug must be normalized');
+    const repairedToml = fs.readFileSync(mockTomlPath, 'utf8');
+    assert.ok(repairedToml.includes('localeOverride = "zh-CN"'), 'repaired config.toml must include localeOverride = "zh-CN"');
+    assert.ok(repairedToml.includes('model = "deepseek-v4.1-flash"'), 'model must be normalized to deepseek-v4.1-flash');
+
+    // 5. Test Doctor API returns new codexProcessHealth and codexLocale fields
+    const docRes81 = await fetch(`http://127.0.0.1:${routerPort}/balancer/api/doctor`);
+    assert.strictEqual(docRes81.status, 200);
+    const docData81 = await docRes81.json();
+    assert.ok(docData81.codexProcessHealth !== undefined, 'report.codexProcessHealth must exist');
+    assert.ok(docData81.codexLocale !== undefined, 'report.codexLocale must exist');
+
+    console.log('✓ Codex Process Health, Thread Suspension Diagnostics & Chinese Locale/Environment Self-Healing verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 80 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 81 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

@@ -1872,7 +1872,7 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     }
   } catch (e) {}
 
-  // 8. Check OpenAI Codex CLI & binding
+  // 8. Check OpenAI Codex CLI, processes, locale and binding
   try {
     const codexStatus = codexAdapter.getCodexStatus(config.port);
     report.codex = codexStatus;
@@ -1889,6 +1889,39 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
         severity: 'medium',
         title: 'OpenAI Codex 缺少长思考防断流与智能重试加固配置',
         desc: '检测到 Codex config.toml 未配置 stream_idle_timeout_ms (5分钟防断流) 或 stream_max_retries，长思考容易偶发断流，可一键加固修复'
+      });
+    }
+
+    // 8.1 Check Codex Process Health (Suspension & SingleInstanceLock Deadlocks)
+    const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
+    report.codexProcessHealth = procHealth;
+    if (procHealth && !procHealth.healthy) {
+      if (procHealth.hasSuspended) {
+        report.issues.push({
+          id: 'codex_process_suspended',
+          severity: 'high',
+          title: 'OpenAI Codex (ChatGPT) 存在被 Windows PLM 挂起的进程（导致桌面打不开或秒退）',
+          desc: `检测到 ${procHealth.suspendedCount} 个处于 Wait:Suspended 挂起状态的 ChatGPT 线程霸占单实例互斥锁，一键修复即可通过 Win32 API 唤醒恢复渲染`
+        });
+      } else if (procHealth.hasGhost) {
+        report.issues.push({
+          id: 'codex_ghost_process',
+          severity: 'high',
+          title: 'OpenAI Codex (ChatGPT) 后台无窗口僵死进程死锁单实例锁',
+          desc: '检测到后台存在无窗口僵死实例霸占 SingleInstanceLock 互斥锁，导致桌面双击图标无法打开或闪退，可一键自动清理释放'
+        });
+      }
+    }
+
+    // 8.2 Check Codex Locale & Environment Alignment
+    const localeCheck = codexStatus.localeCheck || codexAdapter.checkCodexLocaleAndEnvironment();
+    report.codexLocale = localeCheck;
+    if (localeCheck && !localeCheck.healthy && localeCheck.issues.length > 0) {
+      report.issues.push({
+        id: 'codex_locale_misaligned',
+        severity: 'medium',
+        title: 'OpenAI Codex 简体中文语言环境或模型标识未完整对齐（显示为英文或自定义）',
+        desc: `检测到: ${localeCheck.issues.join('；')}，点击一键修复即可锁定中文语言环境并规范模型 Slug`
       });
     }
   } catch (e) {}
@@ -2131,8 +2164,23 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     results.push({ item: 'Office Preview Engine', success: false, message: '挂载 Office 预览引擎异常: ' + e.message });
   }
 
-  // 8. Auto-bind Codex CLI if installed and not yet bound or not hardened
+  // 8. Auto-bind & auto-repair Codex CLI, processes, locale and environment
   try {
+    // 8.1 Repair Codex suspension and ghost processes if any
+    const procRep = codexAdapter.resumeOrCleanCodexProcesses();
+    if (procRep && procRep.resumed) {
+      results.push({ item: 'Codex Process Suspension', success: true, message: procRep.message });
+    } else if (procRep && procRep.killed) {
+      results.push({ item: 'Codex SingleInstanceLock', success: true, message: procRep.message });
+    }
+
+    // 8.2 Repair Codex locale, model slug and port conflicts
+    const locRep = codexAdapter.repairCodexLocaleAndEnvironment();
+    if (locRep && locRep.messages && locRep.messages.length > 0) {
+      results.push({ item: 'Codex Locale & Environment', success: true, message: locRep.messages.join('；') });
+    }
+
+    // 8.3 Auto-bind Codex CLI if installed and not yet bound or not hardened
     const codexStatus = codexAdapter.getCodexStatus(config.port);
     if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
       const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
@@ -2152,7 +2200,7 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
       });
     }
   } catch (e) {
-    results.push({ item: 'Codex Integration', success: false, message: 'Codex 接入修复异常: ' + e.message });
+    results.push({ item: 'Codex Integration', success: false, message: 'Codex 诊断修复异常: ' + e.message });
   }
 
   // 9. Linux NAS: Smoothly reload running user daemon services to load new config
@@ -4113,6 +4161,7 @@ $ghost
             <span><strong>双轨 Schema:</strong> \${doc.dualTrackSchema ? (doc.dualTrackSchema.healthy ? '<span style="color:var(--success)">✔ 镜像正常</span>' : '<span style="color:var(--warning)">⚠ 缺失规范</span>') : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>提供商接口:</strong> \${doc.openchamberProbe && doc.openchamberProbe.integration ? (doc.openchamberProbe.integration.status === 'healthy' ? '<span style="color:var(--success)">✔ ' + doc.openchamberProbe.integration.latencyMs + 'ms' + (doc.openchamberProbe.integration.authRequired ? ' (鉴权)' : '') + '</span>' : (doc.openchamberProbe.integration.status === 'deadlocked' ? '<span style="color:var(--danger)">❌ 死锁挂死</span>' : (doc.openchamberProbe.integration.status === 'unreachable' ? '<span style="color:var(--muted)">未连接</span>' : '<span style="color:var(--warning)">⚠ ' + (doc.openchamberProbe.integration.error || doc.openchamberProbe.integration.status) + '</span>'))) : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
+            <span><strong>OpenAI Codex:</strong> \${doc.codex && doc.codex.isBound ? '<span style="color:var(--success)">✔ 已接入</span>' : '<span style="color:var(--muted)">未接入</span>'}\${doc.codexProcessHealth && !doc.codexProcessHealth.healthy ? ' <span style="color:var(--danger)">(存在挂起/僵死)</span>' : ''}\${doc.codexLocale && !doc.codexLocale.healthy ? ' <span style="color:var(--warning)">(语言未对齐)</span>' : ''}</span>
           </div>
         \`;
         if (doc.issues.length === 0) {

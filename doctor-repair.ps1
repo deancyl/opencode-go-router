@@ -553,6 +553,59 @@ if ($codexVer -or $hasCodexDir) {
             FixDesc = "一键接入本地网关（配置 38 款模型映射、思考等级适配与无损配置备份）"
         })
     }
+
+    # 8.1 检查 Codex 挂起与僵死单实例互斥锁
+    $chatGptProcs = Get-Process -Name "ChatGPT" -ErrorAction SilentlyContinue
+    if ($chatGptProcs) {
+        $suspendedCount = 0
+        foreach ($p in $chatGptProcs) {
+            foreach ($t in $p.Threads) {
+                if ($t.ThreadState -eq [System.Diagnostics.ThreadState]::Wait -and $t.WaitReason -eq [System.Diagnostics.ThreadWaitReason]::Suspended) {
+                    $suspendedCount++
+                }
+            }
+        }
+        if ($suspendedCount -gt 0) {
+            Write-Host "  ❌ 检测到 $suspendedCount 个 ChatGPT 线程被 Windows 挂起，导致单实例死锁打不开！" -ForegroundColor Red
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "codex_process_suspended"
+                Title = "OpenAI Codex 存在被系统挂起的进程（导致桌面打不开或秒退）"
+                Severity = "High"
+                FixDesc = "调用 Win32 ResumeThread 唤醒挂起线程恢复窗口渲染，解除单实例互斥锁"
+            })
+        }
+    }
+
+    # 8.2 检查 Codex 简体中文语言与模型规范
+    if (Test-Path $codexConfig) {
+        $hasZhLocale = $cfgRaw -match 'localeOverride\s*=\s*["'']zh-CN["'']'
+        $hasInvalidModel = $cfgRaw -match '^\s*model\s*=\s*["''][^"'']*(\[|\s)[^"'']*["'']'
+        if (-not $hasZhLocale -or $hasInvalidModel) {
+            Write-Host "  ⚠ Codex 简体中文语言环境或模型标识未完整对齐" -ForegroundColor Yellow
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "codex_locale_misaligned"
+                Title = "OpenAI Codex 简体中文语言环境或模型标识未完整对齐（显示英文或自定义）"
+                Severity = "Medium"
+                FixDesc = "锁定 localeOverride = 'zh-CN'、同步 Chromium 首选项并规范模型 Slug"
+            })
+        }
+    }
+
+    # 8.3 检查 Codex++ 端口冲突
+    $codexPlusDir = "$env:LOCALAPPDATA\Programs\Codex++"
+    $watcherLnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\CodexPlusPlusWatcher.lnk"
+    if ((Test-Path $codexPlusDir) -or (Test-Path $watcherLnk)) {
+        $plusPort = [Environment]::GetEnvironmentVariable('CODEX_PLUS_PROTOCOL_PROXY_PORT', 'User')
+        if (-not $plusPort -or $plusPort -eq "4010") {
+            Write-Host "  ⚠ Codex++ 汉化注入工具默认端口与 4010 网关冲突" -ForegroundColor Yellow
+            $issuesFound.Add([PSCustomObject]@{
+                Id = "codex_plus_port_conflict"
+                Title = "Codex++ 协议代理端口与 4010 网关冲突（导致汉化插件闪退）"
+                Severity = "Medium"
+                FixDesc = "将 CODEX_PLUS_PROTOCOL_PROXY_PORT 配置为 4019，杜绝端口冲突闪退"
+            })
+        }
+    }
 } else {
     Write-Host "  ℹ 未检测到 OpenAI Codex 环境" -ForegroundColor DarkGray
 }
@@ -982,6 +1035,36 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
                 Write-Host "    ✔ OpenAI Codex CLI 已成功接入本地 $routerPort 网关 (全量 38 款模型就绪)" -ForegroundColor Green
             } catch {
                 Write-Host "    ❌ 接入 Codex 失败: $_" -ForegroundColor Red
+            }
+        }
+        "codex_process_suspended" {
+            Write-Host " -> 正在唤醒被挂起的 OpenAI Codex / ChatGPT 线程..." -ForegroundColor Yellow
+            try {
+                $nodeCmd = "const a = require('./codex-adapter'); const r = a.resumeOrCleanCodexProcesses(); console.log(JSON.stringify(r));"
+                $resJson = (& node -e $nodeCmd 2>$null)
+                Write-Host "    ✔ 已唤醒被 Windows 挂起的 ChatGPT 进程，恢复桌面正常打开" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 唤醒挂起进程失败: $_" -ForegroundColor Yellow
+            }
+        }
+        "codex_locale_misaligned" {
+            Write-Host " -> 正在对齐 OpenAI Codex 简体中文语言与模型规范..." -ForegroundColor Yellow
+            try {
+                $nodeCmd = "const a = require('./codex-adapter'); const r = a.repairCodexLocaleAndEnvironment(); console.log(JSON.stringify(r));"
+                $resJson = (& node -e $nodeCmd 2>$null)
+                Write-Host "    ✔ 已锁定简体中文语言环境、同步 Chromium 首选项并规范模型 Slug" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 对齐语言规范失败: $_" -ForegroundColor Yellow
+            }
+        }
+        "codex_plus_port_conflict" {
+            Write-Host " -> 正在配置 Codex++ 专属端口 4019..." -ForegroundColor Yellow
+            try {
+                [Environment]::SetEnvironmentVariable('CODEX_PLUS_PROTOCOL_PROXY_PORT', '4019', 'User')
+                $env:CODEX_PLUS_PROTOCOL_PROXY_PORT = '4019'
+                Write-Host "    ✔ 已将 CODEX_PLUS_PROTOCOL_PROXY_PORT 设为 4019，消除冲突闪退" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 配置端口环境变量失败: $_" -ForegroundColor Yellow
             }
         }
     }
