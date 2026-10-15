@@ -2514,7 +2514,8 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
     if (inSection) {
       if (l.startsWith('[')) {
         inSection = false;
-      } else if (l.startsWith('localeOverride =')) {
+      } else if (l.startsWith('localeOverride =') || l.startsWith('localeOverride=')) {
+        filteredLines[i] = 'localeOverride = "zh-CN"';
         hasLocaleOverride = true;
       }
     }
@@ -2778,12 +2779,18 @@ function bindCodexConfig(options = {}) {
     }
   } catch (e) {}
 
+  let baseInstructions = baseTemplate.base_instructions || '';
+  if (!baseInstructions.includes('简体中文')) {
+    baseInstructions += '\n\n# 语言规范\n无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n';
+  }
+
   const catalogModels = OPENCODE_GO_ALL_MODELS.map(m => {
     const ctx = m.context_window || 1048576;
     const compactLimit = Math.floor(ctx * 0.85); // 85% of context window triggers Codex client-side auto-compaction
     return {
       ...baseTemplate,
       ...m,
+      base_instructions: baseInstructions,
       context_window: ctx,
       max_context_window: ctx,
       auto_compact_token_limit: compactLimit,
@@ -2812,6 +2819,7 @@ function bindCodexConfig(options = {}) {
       return {
         ...baseTemplate,
         ...m,
+        base_instructions: baseInstructions,
         context_window: ctx,
         max_context_window: ctx,
         auto_compact_token_limit: Math.floor(ctx * 0.85),
@@ -2827,7 +2835,7 @@ function bindCodexConfig(options = {}) {
     });
     const mergedModels = [...enrichedOpencodeModels, ...retainedModels];
     fs.writeFileSync(modelsPath, JSON.stringify({ models: mergedModels }, null, 2), 'utf8');
-    messages.push(`已同步全量模型至 ${modelsPath} (总计 ${mergedModels.length} 个模型，已配置自动切分阈值)`);
+    messages.push(`已同步全量模型至 ${modelsPath} (总计 ${mergedModels.length} 个模型，已配置自动切分阈值与中文语言规范)`);
   } catch (err) {
     messages.push(`更新 models.json 提醒: ${err.message}`);
   }
@@ -2867,6 +2875,49 @@ function bindCodexConfig(options = {}) {
   } catch (err) {
     messages.push(`更新 config.toml 失败: ${err.message}`);
     return { success: false, messages, error: err.message };
+  }
+
+  // Step 6: Sync Chromium Webview Preferences & Local State for Chinese UI
+  try {
+    const webviewDir = path.join(
+      process.env.LOCALAPPDATA || '',
+      'Packages',
+      'OpenAI.Codex_2p2nqsd0c76g0',
+      'LocalCache',
+      'Roaming',
+      'Codex',
+      'web',
+      'Codex'
+    );
+    if (fs.existsSync(webviewDir)) {
+      const prefsPath = path.join(webviewDir, 'Default', 'Preferences');
+      if (fs.existsSync(prefsPath)) {
+        try {
+          const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+          prefs.intl = prefs.intl || {};
+          prefs.intl.selected_languages = 'zh-CN,zh';
+          prefs.intl.accept_languages = 'zh-CN,zh,en-US,en';
+          prefs.spellcheck = prefs.spellcheck || {};
+          prefs.spellcheck.dictionaries = ['zh-CN'];
+          fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf8');
+          messages.push('已同步 Chromium 首选语言为简体中文 (Default/Preferences)');
+        } catch (_) {}
+      }
+
+      const localStatePath = path.join(webviewDir, 'Local State');
+      if (fs.existsSync(localStatePath)) {
+        try {
+          const state = JSON.parse(fs.readFileSync(localStatePath, 'utf8'));
+          state.intl = state.intl || {};
+          state.intl.selected_languages = 'zh-CN,zh';
+          state.intl.accept_languages = 'zh-CN,zh,en-US,en';
+          fs.writeFileSync(localStatePath, JSON.stringify(state, null, 2), 'utf8');
+          messages.push('已同步 Chromium 全局语言为简体中文 (Local State)');
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    messages.push(`Chromium 语言同步提醒: ${err.message}`);
   }
 
   return {
@@ -3035,16 +3086,62 @@ function restartCodex(options = {}) {
       messages.push(`终止旧进程提醒: ${e.message}`);
     }
 
-    // 2. Launch fresh detached instance via Windows explorer.exe shell decoupled (avoiding ConPTY pipe errors)
+    // 2. Launch fresh detached instance with anti-suspension watchdog
     let launched = false;
     try {
       setTimeout(() => {
         try {
-          const child = require('child_process').spawn('explorer.exe', ['shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App'], {
-            detached: true,
-            stdio: 'ignore'
-          });
-          child.unref();
+          const desktopLnk = path.join(process.env.USERPROFILE || '', 'Desktop', 'Codex.lnk');
+          let launcherCommand = '';
+          if (fs.existsSync(desktopLnk)) {
+            launcherCommand = `cmd.exe /d /c start "" "${desktopLnk}"`;
+          } else {
+            launcherCommand = 'cmd.exe /d /c start "" "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App"';
+          }
+
+          // Launch detached via cmd start
+          execSync(launcherCommand, { windowsHide: true, timeout: 5000 });
+
+          // Watchdog: detect and automatically resume any suspended ChatGPT threads
+          setTimeout(() => {
+            try {
+              const resumeScript = `
+                $code = @"
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public class SuspendedResumer {
+    [DllImport("kernel32.dll")] public static extern IntPtr OpenThread(int dwAccess, bool bInherit, uint id);
+    [DllImport("kernel32.dll")] public static extern uint ResumeThread(IntPtr hThread);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+    public static void ResumeAll() {
+        foreach (var p in Process.GetProcessesByName("ChatGPT")) {
+            foreach (ProcessThread t in p.Threads) {
+                if (t.ThreadState == ThreadState.Wait && t.WaitReason == ThreadWaitReason.Suspended) {
+                    IntPtr h = OpenThread(0x0002, false, (uint)t.Id);
+                    if (h != IntPtr.Zero) {
+                        ResumeThread(h);
+                        CloseHandle(h);
+                    }
+                }
+            }
+        }
+    }
+}
+"@
+                try {
+                    Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue
+                    [SuspendedResumer]::ResumeAll()
+                } catch {}
+              `;
+              const child = require('child_process').spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', resumeScript], {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true
+              });
+              child.unref();
+            } catch (_) {}
+          }, 800);
         } catch (innerErr) {
           try {
             const childFallback = require('child_process').spawn('cmd.exe', ['/d', '/c', 'start', '', 'shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App'], {
@@ -3055,9 +3152,9 @@ function restartCodex(options = {}) {
             childFallback.unref();
           } catch (_) {}
         }
-      }, 600);
+      }, 500);
       launched = true;
-      messages.push('已通过 Windows 原生外壳脱钩唤起全新 Codex 桌面客户端 (OpenAI.Codex)');
+      messages.push('已通过 Windows 原生外壳脱钩唤起全新 Codex 桌面客户端，并激活挂起自愈守护');
     } catch (err1) {
       try {
         const child2 = require('child_process').spawn('cmd.exe', ['/d', '/c', 'codex app'], {
