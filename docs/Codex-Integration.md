@@ -1,0 +1,79 @@
+# OpenAI Codex CLI 与 ChatGPT 桌面端智能接入 (Codex Integration)
+
+本文档深入介绍如何将 **OpenAI Codex CLI** 与 **ChatGPT 桌面客户端**（Windows UWP 应用）无缝接入 OpenCode Go Router 智能网关。
+
+---
+
+## 🌟 核心特性一览
+
+1. **全量 38 款模型目录直接使用**：  
+   DeepSeek V4.1/Pro、智谱 GLM 5.3 Flash/Plus、月之暗面 Kimi K3/K2.7、MiniMax M3、通义千问 Qwen3.7/Qwen3.8、Claude 3.7 Sonnet、GPT-5.6/6 Luna 等全量可用。
+2. **双向实时流协议转换 (Responses <-> ChatCompletions)**：  
+   Codex 原生使用 OpenAI Responses API 规范，网关自动完成双向 SSE 流转换，支持思维链解包与动态工具调用。
+3. **全谱系思考等级 (Reasoning Effort) 自由调节**：  
+   彻底打破中度思考限制，完整支持 `low`、`medium`、`high`、`xhigh`，充分释放模型长推理与深思能力。
+4. **简体中文语言锁定 (Localization Lock)**：  
+   自动写入 `[desktop].localeOverride = "zh-CN"`，防止接入或更新配置后桌面界面意外漂移为英文。
+5. **Windows PLM 挂起与单实例互斥锁自愈**：  
+   诊断并清除 Windows 进程生命周期管理器（PLM）冻结的后台无窗口挂死实例，杜绝双击客户端无法打开或秒退。
+6. **一键脱钩重启与内存缓存感知**：  
+   消除 Codex 启动时常驻内存的配置缓存，支持一键无黑框脱钩重启生效。
+
+---
+
+## ⚡ 一键接入与还原
+
+### 方式 1：Web 控制台图形界面（最推荐）
+1. 访问控制台：`http://127.0.0.1:4010/balancer/ui`；
+2. 找到 **【🤖 OpenAI Codex CLI 智能接入】** 卡片；
+3. 点击 **【⚡ 一键接入 Codex】**；
+4. 提示接入成功后，点击弹窗中的 **【🔄 重启 Codex 客户端】**；
+5. 若需恢复原始配置，随时点击 **【⏪ 一键还原原本配置】**。
+
+### 方式 2：终端脚本快速操作
+在 Windows PowerShell 中：
+```powershell
+# 运行配置向导并选择 Codex 接入：
+powershell -ExecutionPolicy Bypass -File .\setup-wizard.ps1
+# 输入 10 进入 Codex 接入菜单，按提示执行接入或还原
+```
+
+---
+
+## ⚙️ 配置文件机制说明
+
+执行一键接入时，网关会对 `~/.codex/config.toml` 进行精确管理：
+
+```toml
+model = "opencode-go/deepseek-v4.1-flash"
+model_provider = "opencode-go"
+
+[desktop]
+localeOverride = "zh-CN"
+
+[model_providers."opencode-go"]
+base_url = "http://127.0.0.1:4010/v1"
+wire_api = "responses"
+stream_idle_timeout_ms = 300000
+stream_max_retries = 3
+request_max_retries = 3
+
+[model_providers."custom"]
+base_url = "http://127.0.0.1:4010/v1"
+wire_api = "responses"
+```
+
+- **双轨提供商互锁**：将 `custom` 与 `opencode-go` 的 base_url 均收口至 4010 本地网关，彻底消灭直接打官方时模型白名单不匹配的问题；
+- **长推理超时守护**：注入 `300000ms`（5分钟）流空闲超时，杜绝复杂推理或大工具调用时连接提前断开；
+- **自动上下文切分**：模型元数据中注入 `auto_compact_token_limit = 85%`，杜绝 `context_length_exceeded` 崩溃。
+
+---
+
+## 🩺 常见问题与自愈
+
+### 1. Codex 启动秒退或双击打不开？
+- **原因**：Windows 将先前退出的 Codex 冻结在后台（`MainWindowHandle == 0`），霸占了 Electron/UWP 单实例锁；
+- **自愈**：在 Web 仪表盘点击【一键体检与修复】（Doctor），或运行 `.\doctor-repair.ps1 -AutoFix`，网关将强力清除僵死句柄并脱钩唤醒。
+
+### 2. 界面显示英文？
+- **自愈**：在 Web 控制台点击【⚡ 一键接入 Codex】再次应用，网关会自动补齐 `[desktop].localeOverride = "zh-CN"` 并写入 Chromium 语言覆盖环境，重启后即恢复纯正简体中文。
