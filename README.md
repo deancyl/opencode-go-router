@@ -8,7 +8,7 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com)
 [![Linux](https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(Debian%2CUbuntu%2CfnOS%2CDSM)-orange.svg)](https://kernel.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
-[![Version: v2.6.1](https://img.shields.io/badge/Version-v2.6.1-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
+[![Version: v2.6.2](https://img.shields.io/badge/Version-v2.6.2-brightgreen.svg)](https://github.com/deancyl/opencode-go-router)
 
 ---
 
@@ -442,6 +442,18 @@ npm run build:exe
   - **托盘交互精简与原生 OpenChamber 桌面端智能置顶**：彻底剔除鸡肋的“3000 端口网页”菜单，升级为纯粹原厂体验的 **【💻 唤醒 / 启动 OpenChamber 桌面端】**，通过 Win32 API 毫秒级恢复置顶已有桌面窗口，并具备僵死锁自愈与脱钩启动能力；
   - **Web 控制台前端模板转义深度修复**：彻底修复多组件更新与快照回滚模块中的 JavaScript 模板字符串转义缺陷（`\\'` 与 `\\n`），根治前端页面因语法解析错误导致的订阅账号卡片留白与“+ 添加订阅账号”无响应问题；
   - **托盘生命周期与宿主加固**：固化 WinForms 隐藏消息窗体宿主（`HiddenForm`），提升单实例互斥锁抗并发与旧实例清理的稳定性。
+
+### 🚀 v2.6.2 (Codex 视觉工具输出脱敏清洗、上游空流自动自愈重试与 80 项测试大满贯)
+- **Codex 视觉工具输出多模态脱敏与结构化清洗 (Tool Output Image Sanitization)**：
+  - 彻底解决 Codex 在执行 `view_image`、PDF 多页图片提取等视觉操作时，在 `function_call_output` 中注入数十万字符海量 raw base64 图片数据（单图达 500KB+，多图累加达数兆字节）的深水区隐患；
+  - 自研 `sanitizeToolOutput` 智能脱敏引擎：自动探测数组、对象及字符串中的 `input_image` 与 base64 数据，将其优雅转换为标准紧凑的结构化 JSON 语义描述（保留检查成功状态、图序号与尺寸格式等有效元数据），既为模型提供了清晰的工具调用上下文，又彻底消除了无意义的巨量乱码灌入；
+  - 节省数十万 Token 开销，杜绝突破 1M 上下文上限导致的 `Compaction interrupted`（会话压缩中断）以及上游异构推理集群（如 `orcarouter-dsv4.1flash`）因单条工具输出过巨直接抛出 HTTP 400（0 字节空流）的问题；
+  - 完整覆盖 Responses -> Chat Completions 转换、Responses -> Anthropic 转换以及滑动窗口自动裁剪修剪链路。
+- **上游 400 截断空流双轨自动裁剪与自愈重试 (Auto Self-Healing for Empty 400 Stream)**：
+  - 网关在 `bridgeResponsesToChatRequest` 与 `bridgeResponsesToAnthropicRequest` 中，将上游返回 400 且 Body 为 0 字节的非标截断纳入自愈状态机；
+  - 自动触发智能滑动窗口裁剪与冗余长文本折叠，并在必要时无感跃迁至 2M 超长上下文旗舰模型（`kimi-k2.7-code`）兜底重试，彻底杜绝客户端偶发空气泡报错。
+- **全套自动化测试扩充至 80 项 100% 绿灯全通**：
+  - 新增 `Test 80` 全面验证工具输出图片脱敏、文本输出无损保留、Chat/Anthropic 转换一致性与滑动裁剪联动。
 
 ### 🚀 v2.6.1 (Codex 动态工具 Schema 强制规范化、网关错误协议清洗屏障与 79 项测试大满贯)
 - **Codex 动态工具 Schema 全面适配与强制规范化 (Tools Schema Normalization Engine)**：

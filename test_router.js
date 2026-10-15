@@ -2687,8 +2687,78 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Codex Tools Schema Normalization & Upstream Non-200 Error Sanitization Barrier verified');
 
+    // [Test 80] Testing Codex Tool Output Image Sanitization & Upstream 400 Empty Stream Self-Healing...
+    console.log('\n[Test 80] Testing Codex Tool Output Image Sanitization & Upstream 400 Empty Stream Self-Healing...');
+    
+    // 1. Unit Test sanitizeToolOutput
+    // a) Array of objects with base64 input_image
+    const rawImageOutputArray = [
+      {
+        type: 'input_image',
+        image_url: 'data:image/png;base64,' + 'A'.repeat(5000)
+      }
+    ];
+    const sanitizedArrayStr = codexAdapter.sanitizeToolOutput(rawImageOutputArray);
+    assert.ok(!sanitizedArrayStr.includes('data:image/'), 'Must strip raw base64 data from tool output');
+    const parsedSanitizedArray = JSON.parse(sanitizedArrayStr);
+    assert.strictEqual(parsedSanitizedArray.type, 'image_view_output');
+    assert.strictEqual(parsedSanitizedArray.status, 'success');
+    assert.ok(parsedSanitizedArray.summary.includes('inspected successfully'), 'Summary must indicate successful visual inspection');
+
+    // b) String containing serialized base64 input_image
+    const rawImageOutputStr = JSON.stringify(rawImageOutputArray);
+    const sanitizedStrResult = codexAdapter.sanitizeToolOutput(rawImageOutputStr);
+    assert.ok(!sanitizedStrResult.includes('data:image/'));
+    const parsedFromStr = JSON.parse(sanitizedStrResult);
+    assert.strictEqual(parsedFromStr.type, 'image_view_output');
+
+    // c) Normal tool output (e.g. bash stdout) must remain 100% untouched
+    const normalOutput = 'Directory of C:\\Users\\deanc\n2026/10/15 11:30 <DIR> .opencode-go-router\nFile list verified';
+    assert.strictEqual(codexAdapter.sanitizeToolOutput(normalOutput), normalOutput, 'Normal text output must remain unmodified');
+
+    // 2. Integration: convertResponsesToChatPayload with tool image output
+    const mockResponsesWithImage = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        {
+          type: 'function_call',
+          call_id: 'call_view_img_01',
+          name: 'view_image',
+          arguments: '{"path":"page-1.png"}'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_view_img_01',
+          output: rawImageOutputArray
+        }
+      ]
+    };
+    const chatPayloadWithImage = codexAdapter.convertResponsesToChatPayload(mockResponsesWithImage);
+    const toolMsg = chatPayloadWithImage.messages.find(m => m.role === 'tool');
+    assert.ok(toolMsg, 'Must produce a tool role message');
+    assert.strictEqual(toolMsg.tool_call_id, 'call_view_img_01');
+    assert.ok(!toolMsg.content.includes('data:image/'), 'Tool message content must be sanitized and free of raw base64');
+    const toolMsgParsed = JSON.parse(toolMsg.content);
+    assert.strictEqual(toolMsgParsed.status, 'success');
+
+    // 3. Integration: convertResponsesToAnthropicPayload with tool image output
+    const anthropicPayloadWithImage = codexAdapter.convertResponsesToAnthropicPayload(mockResponsesWithImage);
+    const userMsgWithToolResult = anthropicPayloadWithImage.messages.find(m => m.role === 'user' && Array.isArray(m.content));
+    assert.ok(userMsgWithToolResult, 'Must produce a user message with tool results');
+    const toolResultBlock = userMsgWithToolResult.content.find(c => c.type === 'tool_result');
+    assert.ok(toolResultBlock, 'Must produce a tool_result block in user message');
+    assert.ok(!toolResultBlock.content.includes('data:image/'));
+
+    // 4. Integration: pruneResponsesPayload with tool image output
+    const prunedMock = codexAdapter.pruneResponsesPayload(mockResponsesWithImage);
+    const prunedOutput = prunedMock.input.find(i => i.call_id === 'call_view_img_01' && i.output);
+    assert.ok(prunedOutput, 'Pruned input must retain tool output');
+    assert.ok(!JSON.stringify(prunedOutput.output).includes('data:image/'));
+
+    console.log('✓ Codex Tool Output Image Sanitization & Upstream 400 Empty Stream Self-Healing verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 79 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 80 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

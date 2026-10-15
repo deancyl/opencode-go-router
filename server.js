@@ -1070,9 +1070,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           errText.includes('too many tokens') ||
           errText.includes('max_tokens')
         );
+        const isEmptyStreamError = statusCode === 400 && (!errText || errText.trim().length === 0);
 
-        if (isContextLengthExceeded && attemptNumber <= config.maxFailoverRetries) {
-          console.warn(`[Auto Self-Healing] Codex 请求触发上下文长度超限 (${reqModel}): ${errText.slice(0, 160)}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
+        if ((isContextLengthExceeded || isEmptyStreamError) && attemptNumber <= config.maxFailoverRetries) {
+          const warnReason = isContextLengthExceeded ? `上下文长度超限 (${reqModel}): ${errText.slice(0, 160)}` : `上游空流/尺寸截断拦截 (${reqModel})`;
+          console.warn(`[Auto Self-Healing] Codex 请求触发 ${warnReason}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
           const beforePrune = JSON.stringify(responsesBody);
@@ -1326,9 +1328,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           errText.includes('too many tokens') ||
           errText.includes('max_tokens')
         );
+        const isEmptyStreamError = statusCode === 400 && (!errText || errText.trim().length === 0);
 
-        if (isContextLengthExceeded && attemptNumber <= config.maxFailoverRetries) {
-          console.warn(`[Auto Self-Healing] Anthropic 请求触发上下文超限 (${reqModel})。网关正在执行智能滑动窗口裁剪自愈...`);
+        if ((isContextLengthExceeded || isEmptyStreamError) && attemptNumber <= config.maxFailoverRetries) {
+          const warnReason = isContextLengthExceeded ? `上下文超限 (${reqModel})` : `上游空流/尺寸截断拦截 (${reqModel})`;
+          console.warn(`[Auto Self-Healing] Anthropic 请求触发 ${warnReason}。网关正在执行智能滑动窗口裁剪自愈...`);
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
           const beforePrune = JSON.stringify(responsesBody);
