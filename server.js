@@ -173,6 +173,8 @@ syncAccountStats();
 // Session affinity map: sessionId -> accountId
 const sessionMap = new Map();
 const sessionLastSeen = new Map();
+// Pre-emptive fallback cache: `${sessionId}:${model}` -> fallbackModel (for heterogeneous nodes)
+const sessionModelFallbackCache = new Map();
 
 // Clean up stale sessions periodically (every 10 minutes)
 setInterval(() => {
@@ -181,6 +183,11 @@ setInterval(() => {
     if (now - time > 3600000) { // 1 hour inactivity
       sessionMap.delete(sess);
       sessionLastSeen.delete(sess);
+      for (const key of Array.from(sessionModelFallbackCache.keys())) {
+        if (key.startsWith(`${sess}:`)) {
+          sessionModelFallbackCache.delete(key);
+        }
+      }
     }
   }
 }, 600000);
@@ -849,6 +856,24 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           }
         }
 
+        const isToolCallsMismatch = statusCode === 400 && (
+          errText.includes('must be followed by tool messages responding to each') ||
+          errText.includes('did not have response messages') ||
+          (errText.includes('tool_call_id') && errText.includes('response'))
+        );
+
+        if (isToolCallsMismatch && attemptNumber <= config.maxFailoverRetries) {
+          console.warn(`[Auto Self-Healing] 上游抛出工具回调不匹配错误: ${errText.slice(0, 160)}。网关正在执行消息序列规范化自愈...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          if (Array.isArray(parsedBody.messages)) {
+            parsedBody.messages = codexAdapter.sanitizeAndValidateChatMessages(parsedBody.messages);
+          }
+          const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+          return;
+        }
+
         finishRequest();
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
@@ -957,6 +982,21 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
 
+  let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
+
+  // Pre-emptive model fallback check for heterogeneous upstream nodes
+  if (sessionId && responsesBody && responsesBody.model) {
+    const rawReqModel = responsesBody.model.replace(/^opencode-go\//, '');
+    const cacheKey = `${sessionId}:${rawReqModel}`;
+    if (sessionModelFallbackCache.has(cacheKey)) {
+      const cachedFallback = sessionModelFallbackCache.get(cacheKey);
+      if (cachedFallback && cachedFallback !== rawReqModel) {
+        console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
+        responsesBody = { ...responsesBody, model: cachedFallback };
+      }
+    }
+  }
+
   const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody);
   const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
   const isStream = chatPayload.stream === true;
@@ -964,8 +1004,6 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
   const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
   const upstreamChatPath = upstreamPathname + '/chat/completions';
-
-  let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
 
   const proxyHeaders = {
     'content-type': 'application/json',
@@ -1113,6 +1151,10 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         if ((isProtocolUnsupported || isRegionBlocked || isModelUnsupported) && attemptNumber <= config.maxFailoverRetries) {
           const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText);
           if (fallbackModel && fallbackModel !== reqModel) {
+            if (sessionId && reqModel) {
+              const cleanReq = reqModel.replace(/^opencode-go\//, '');
+              sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, fallbackModel);
+            }
             let reason = isProtocolUnsupported ? '上游协议暂未支持该模型 (ModelProtocolUnsupported)' : '上游地域限制 (Region Blocked)';
             if (isModelUnsupported) reason = '上游节点可用模型限制 (Model Not Supported on Node)';
             console.warn(`[Auto Self-Healing] 模型 "${reqModel}" 触发 ${reason}。网关正在无缝自动挽救并切换至 "${fallbackModel}"...`);
@@ -1122,6 +1164,44 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber + 1, triedAccountIds, sessionId);
             return;
           }
+        }
+
+        const isToolCallsMismatch = statusCode === 400 && (
+          errText.includes('must be followed by tool messages responding to each') ||
+          errText.includes('did not have response messages') ||
+          (errText.includes('tool_call_id') && errText.includes('response'))
+        );
+
+        if (isToolCallsMismatch && attemptNumber <= config.maxFailoverRetries) {
+          console.warn(`[Auto Self-Healing] 上游抛出工具回调不匹配错误: ${errText.slice(0, 160)}。网关正在执行原子工具序列规范化与缺失回复自愈补齐...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+
+          const missingMatch = errText.match(/The following tool_call_ids did not have response messages:\s*([^\n\r.]+)/i);
+          const missingIds = missingMatch ? missingMatch[1].split(',').map(s => s.trim()).filter(Boolean) : [];
+
+          const healedBody = JSON.parse(JSON.stringify(responsesBody));
+          if (Array.isArray(healedBody.input)) {
+            const existingOutputIds = new Set();
+            for (const item of healedBody.input) {
+              if (item && (item.type === 'function_call_output' || item.output !== undefined)) {
+                if (item.call_id) existingOutputIds.add(item.call_id);
+              }
+            }
+            for (const missingId of missingIds) {
+              if (!existingOutputIds.has(missingId)) {
+                healedBody.input.push({
+                  type: 'function_call_output',
+                  call_id: missingId,
+                  output: '{"status":"completed","note":"auto-filled by gateway resilience"}'
+                });
+                existingOutputIds.add(missingId);
+              }
+            }
+          }
+
+          bridgeResponsesToChatRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+          return;
         }
 
         responded = true;

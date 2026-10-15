@@ -198,12 +198,13 @@ async function runTests() {
       req.on('data', chunk => bodyBuf.push(chunk));
       req.on('end', () => {
         let reqModel = '';
+        let parsed = {};
         try {
-          const parsed = JSON.parse(Buffer.concat(bodyBuf).toString('utf8'));
+          parsed = JSON.parse(Buffer.concat(bodyBuf).toString('utf8'));
           reqModel = parsed.model;
         } catch (e) {}
 
-        if (reqModel === 'deepseek-v4.1-flash' || reqModel === 'gpt-6-luna') {
+        if (reqModel === 'deepseek-v4.1-flash' || reqModel === 'gpt-6-luna' || reqModel === 'glm-5.3-flash') {
           const errBody = JSON.stringify({
             error: {
               message: `The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed ${reqModel}. (request_id: 080be93d-9d34-4105-9126-db002f302b4b)`,
@@ -221,7 +222,7 @@ async function runTests() {
         }
 
         // Second attempt: auto-healed to compatible model (e.g. deepseek-flash or deepseek-v4-pro)
-        if (req.url.includes('/chat/completions')) {
+        if (req.url.includes('/chat/completions') && parsed.stream) {
           res.writeHead(200, {
             'Content-Type': 'text/event-stream; charset=utf-8',
             'Cache-Control': 'no-cache',
@@ -234,7 +235,70 @@ async function runTests() {
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: 'resp-healed-model', model: reqModel, choices: [{ message: { content: `Healed to ${reqModel}` } }] }));
+        res.end(JSON.stringify({ id: 'resp-healed-model', model: reqModel, choices: [{ message: { role: 'assistant', content: `Success after self-healing to ${reqModel}!` } }] }));
+      });
+      return;
+    }
+
+    if (session === 'session-tool-calls-mismatch-400') {
+      let bodyBuf = [];
+      req.on('data', chunk => bodyBuf.push(chunk));
+      req.on('end', () => {
+        let parsed = {};
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyBuf).toString('utf8'));
+        } catch (e) {}
+
+        const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+        let hasMismatch = false;
+
+        for (let idx = 0; idx < messages.length; idx++) {
+          const m = messages[idx];
+          if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            const expectedIds = m.tool_calls.map(tc => tc.id);
+            for (let k = 0; k < expectedIds.length; k++) {
+              const nextMsg = messages[idx + 1 + k];
+              if (!nextMsg || nextMsg.role !== 'tool' || nextMsg.tool_call_id !== expectedIds[k]) {
+                hasMismatch = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (hasMismatch) {
+          const errBody = JSON.stringify({
+            error: {
+              message: "Invalid request: an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: view_image:1, view_image:2",
+              type: 'invalid_request_error',
+              code: 'invalid_request_error'
+            }
+          });
+          res.writeHead(400, {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(errBody))
+          });
+          res.end(errBody);
+          return;
+        }
+
+        if (parsed.stream) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          });
+          res.write('data: {"choices":[{"delta":{"content":"Success with perfectly contiguous tool responses!"}}]}\n\n');
+          res.write('data: [DONE]\n\n');
+          res.end();
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'resp-tool-contiguous',
+            model: parsed.model || 'deepseek-v4.1-flash',
+            choices: [{ message: { role: 'assistant', content: 'Success with perfectly contiguous tool responses!' } }]
+          }));
+        }
       });
       return;
     }
@@ -2910,8 +2974,116 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Upstream Supported API Model Names Restriction & Dynamic Fallback Self-Healing verified');
 
+    // [Test 83] Testing Atomic Tool Call Contiguity, Interleaved Developer Notice Deferral & Orphan Self-Healing...
+    console.log('\n[Test 83] Testing Atomic Tool Call Contiguity, Interleaved Developer Notice Deferral & Orphan Self-Healing...');
+
+    // 1. Unit test sanitizeAndValidateChatMessages with interleaved developer notices
+    const dirtyMessages = [
+      { role: 'user', content: 'View images please' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'view_image:0', type: 'function', function: { name: 'view_image', arguments: '{}' } },
+          { id: 'view_image:1', type: 'function', function: { name: 'view_image', arguments: '{}' } },
+          { id: 'view_image:2', type: 'function', function: { name: 'view_image', arguments: '{}' } }
+        ]
+      },
+      { role: 'tool', tool_call_id: 'view_image:0', content: 'Image 0 data' },
+      { role: 'system', content: '<image_resize_notice>Image was resized</image_resize_notice>' }, // Interleaved notice
+      { role: 'tool', tool_call_id: 'view_image:1', content: 'Image 1 data' }
+      // Missing view_image:2
+    ];
+
+    const cleaned = codexAdapter.sanitizeAndValidateChatMessages(dirtyMessages);
+    assert.strictEqual(cleaned[0].role, 'user');
+    assert.strictEqual(cleaned[1].role, 'assistant');
+    assert.strictEqual(cleaned[2].role, 'tool', 'First tool response must immediately follow assistant');
+    assert.strictEqual(cleaned[2].tool_call_id, 'view_image:0');
+    assert.strictEqual(cleaned[3].role, 'tool', 'Second tool response must contiguously follow');
+    assert.strictEqual(cleaned[3].tool_call_id, 'view_image:1');
+    assert.strictEqual(cleaned[4].role, 'tool', 'Missing third tool response must be auto-backfilled');
+    assert.strictEqual(cleaned[4].tool_call_id, 'view_image:2');
+    assert.strictEqual(cleaned[5].role, 'system', 'Interleaved system notice must be deferred after all tool responses');
+    assert.ok(cleaned[5].content.includes('image_resize_notice'));
+
+    // 2. Unit test orphan tool response with no preceding assistant
+    const orphanToolMessages = [
+      { role: 'tool', tool_call_id: 'orphan:99', content: 'Orphan content' },
+      { role: 'user', content: 'Regular query' }
+    ];
+    const cleanedOrphans = codexAdapter.sanitizeAndValidateChatMessages(orphanToolMessages);
+    assert.strictEqual(cleanedOrphans[0].role, 'user', 'Orphan tool response must be safely converted to user message');
+    assert.ok(cleanedOrphans[0].content.includes('Orphan content'));
+
+    // 3. End-to-end integration test via router HTTP port with interleaved developer notice
+    const res83 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-tool-calls-mismatch-400'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        input: [
+          { type: 'message', role: 'user', content: 'Check images' },
+          { type: 'function_call', call_id: 'view_image:1', name: 'view_image', arguments: '{}' },
+          { type: 'function_call', call_id: 'view_image:2', name: 'view_image', arguments: '{}' },
+          { type: 'function_call_output', call_id: 'view_image:1', output: 'Image 1 ok' },
+          { type: 'message', role: 'developer', content: '<image_resize_notice>Image resized</image_resize_notice>' },
+          { type: 'function_call_output', call_id: 'view_image:2', output: 'Image 2 ok' }
+        ]
+      })
+    });
+
+    assert.strictEqual(res83.statusCode, 200, 'Router must seamlessly sanitize and contiguous-order tool calls yielding 200');
+    assert.ok(res83.body.includes('Success with perfectly contiguous tool responses!'), 'Response must confirm contiguous delivery');
+
+    console.log('✓ Atomic Tool Call Contiguity, Interleaved Developer Notice Deferral & Orphan Self-Healing verified');
+
+    // [Test 84] Testing GLM-5.3-Flash Dynamic Fallback & Pre-Emptive Session Memory Hit...
+    console.log('\n[Test 84] Testing GLM-5.3-Flash Dynamic Fallback & Pre-Emptive Session Memory Hit...');
+
+    const glmErrText = 'The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed glm-5.3-flash. (request_id: c086b322-5ada-4bb7-93e5-0ad285563b8e)';
+    const glmResolved = codexAdapter.resolveCompatibleFallbackModel('glm-5.3-flash', glmErrText);
+    assert.strictEqual(glmResolved, 'deepseek-flash', 'glm-5.3-flash must resolve to deepseek-flash on speed tier');
+
+    // Turn 1: glm-5.3-flash encounters 400 restriction and router auto-heals to deepseek-flash
+    const res84Turn1 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-model-restrict-400'
+      },
+      body: JSON.stringify({
+        model: 'glm-5.3-flash',
+        input: [{ type: 'message', role: 'user', content: 'Hello from GLM session turn 1' }]
+      })
+    });
+
+    assert.strictEqual(res84Turn1.statusCode, 200, 'GLM Turn 1 must succeed with 200 via dynamic fallback');
+    assert.ok(res84Turn1.body.includes('Success after self-healing to deepseek-flash'), 'Response must confirm deepseek-flash execution');
+
+    // Turn 2: same session sends glm-5.3-flash again; router pre-emptively falls back without 400 upstream bounce
+    const res84Turn2 = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-model-restrict-400'
+      },
+      body: JSON.stringify({
+        model: 'glm-5.3-flash',
+        input: [{ type: 'message', role: 'user', content: 'Hello from GLM session turn 2' }]
+      })
+    });
+
+    assert.strictEqual(res84Turn2.statusCode, 200, 'GLM Turn 2 must succeed immediately via pre-emptive memory');
+    assert.ok(res84Turn2.body.includes('Success after self-healing to deepseek-flash'), 'Response must confirm pre-emptive execution');
+
+    console.log('✓ GLM-5.3-Flash Dynamic Fallback & Pre-Emptive Session Memory Hit verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 82 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 84 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

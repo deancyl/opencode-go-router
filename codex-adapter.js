@@ -1101,16 +1101,34 @@ function pruneResponsesPayload(body) {
       }
     }
 
-    // 2. Sliding window: if input length > 18, prune intermediate items
+    // 2. Sliding window: if input length > 18, prune intermediate items with turn-boundary safety
     if (input.length > 18) {
       const headItems = input.slice(0, 2);
-      const tailItems = input.slice(-12);
+      let tailStartIndex = Math.max(2, input.length - 12);
+      // Turn-Aware: Never split inside an atomic tool call / tool output sequence
+      while (tailStartIndex < input.length - 2) {
+        const item = input[tailStartIndex];
+        const isToolOutput = item && (
+          item.type === 'function_call_output' ||
+          item.type === 'custom_tool_call_output' ||
+          (item.type && item.type.endsWith('_output')) ||
+          (item.call_id && item.output !== undefined)
+        );
+        const isMiddleToolCall = item && item.type === 'function_call' && tailStartIndex > 0 && input[tailStartIndex - 1]?.type === 'function_call';
+        if (isToolOutput || isMiddleToolCall) {
+          tailStartIndex++;
+        } else {
+          break;
+        }
+      }
+
+      const tailItems = input.slice(tailStartIndex);
       const droppedCount = input.length - headItems.length - tailItems.length;
       if (droppedCount > 0) {
         const notice = {
           type: 'message',
           role: 'system',
-          content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近 12 轮交互上下文，已消除上下文超限。]`
+          content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
         cloned.input = [...headItems, notice, ...tailItems];
       }
@@ -1371,6 +1389,106 @@ function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
 }
 
 /**
+ * Ensures complete compliance with OpenAI API chat completion requirements:
+ * 1. Every assistant message with tool_calls must be immediately and contiguously followed by
+ *    tool messages responding to each tool_call.
+ * 2. Any interleaved non-tool messages (e.g. system notices like <image_resize_notice> or developer messages)
+ *    are deferred to after the entire tool response sequence.
+ * 3. Any orphan tool_calls that lack a matching tool output (e.g. from truncation or cancellation)
+ *    are automatically backfilled with a valid dummy tool response.
+ * 4. Any orphan tool responses that lack a preceding assistant tool_call are converted to user messages
+ *    to prevent upstream 400 'role tool without preceding assistant tool_calls' errors.
+ */
+function sanitizeAndValidateChatMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+
+  const result = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const msg = messages[i];
+
+    if (msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      result.push(msg);
+
+      const expectedIds = msg.tool_calls.map(tc => tc.id).filter(Boolean);
+      const expectedIdSet = new Set(expectedIds);
+      const foundToolMsgs = new Map(); // callId -> toolMsg
+      const interleavedMsgs = [];      // non-tool messages or orphan tool messages
+
+      let j = i + 1;
+      // Scan forward to gather all responding tool messages for this assistant turn
+      while (j < messages.length) {
+        const nextMsg = messages[j];
+        if (!nextMsg) {
+          j++;
+          continue;
+        }
+
+        if (nextMsg.role === 'tool') {
+          const callId = nextMsg.tool_call_id;
+          if (callId && expectedIdSet.has(callId)) {
+            if (!foundToolMsgs.has(callId)) {
+              foundToolMsgs.set(callId, nextMsg);
+            } else {
+              const existing = foundToolMsgs.get(callId);
+              existing.content = (existing.content || '') + '\n' + (nextMsg.content || '');
+            }
+          } else {
+            interleavedMsgs.push(nextMsg);
+          }
+          j++;
+        } else if (nextMsg.role === 'assistant' || nextMsg.role === 'user') {
+          break;
+        } else {
+          interleavedMsgs.push(nextMsg);
+          j++;
+        }
+      }
+
+      // 1. Contiguously append tool responses for every expected tool_call
+      for (const callId of expectedIds) {
+        if (foundToolMsgs.has(callId)) {
+          result.push(foundToolMsgs.get(callId));
+        } else {
+          // Auto-repair missing response to satisfy upstream strict validation
+          result.push({
+            role: 'tool',
+            tool_call_id: callId,
+            content: '[Tool call completed without output]'
+          });
+        }
+      }
+
+      // 2. Safely defer any interleaved non-tool messages after all tool responses
+      for (const interMsg of interleavedMsgs) {
+        if (interMsg.role === 'tool') {
+          result.push({
+            role: 'user',
+            content: `[Tool Output: ${typeof interMsg.content === 'string' ? interMsg.content : JSON.stringify(interMsg.content)}]`
+          });
+        } else {
+          result.push(interMsg);
+        }
+      }
+
+      i = j;
+    } else if (msg && msg.role === 'tool') {
+      result.push({
+        role: 'user',
+        content: `[Tool Output: ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}]`
+      });
+      i++;
+    } else {
+      result.push(msg);
+      i++;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Converts OpenAI Responses API JSON payload to standard OpenAI ChatCompletions JSON payload
  */
 function convertResponsesToChatPayload(body) {
@@ -1483,9 +1601,11 @@ function convertResponsesToChatPayload(body) {
     model = mapped;
   }
 
+  const sanitizedMessages = sanitizeAndValidateChatMessages(messages);
+
   const chatPayload = {
     model,
-    messages,
+    messages: sanitizedMessages,
     stream: body.stream === true
   };
 
@@ -4135,5 +4255,6 @@ module.exports = {
   resumeOrCleanCodexProcesses,
   checkCodexLocaleAndEnvironment,
   repairCodexLocaleAndEnvironment,
-  resolveCompatibleFallbackModel
+  resolveCompatibleFallbackModel,
+  sanitizeAndValidateChatMessages
 };
