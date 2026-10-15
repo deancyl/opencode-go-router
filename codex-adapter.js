@@ -127,9 +127,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: '200万上下文超长文本架构解析与自主探索 Agent 模型（经网关无缝协议桥转换）。',
     default_reasoning_level: 'high',
     supported_reasoning_levels: [
-      { effort: 'low', description: '极速探索' },
-      { effort: 'medium', description: '均衡长文本推理' },
-      { effort: 'high', description: '超长上下文深度推导' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -146,9 +159,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: 'Kimi 专业代码编程专用模型，长文本代码重构专家。',
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
-      { effort: 'low', description: '快速生成' },
-      { effort: 'medium', description: '细致重构' },
-      { effort: 'high', description: '深度优化' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -163,7 +189,20 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'Kimi-K2.6',
     description: 'Kimi 稳健版长上下文基础模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '标准推理' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 1000000,
@@ -197,8 +236,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: '通义千问超大规模旗舰逻辑规划模型。',
     default_reasoning_level: 'high',
     supported_reasoning_levels: [
-      { effort: 'medium', description: '标准深度' },
-      { effort: 'high', description: '全维推导' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -214,9 +267,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: '通义千问最新一代旗舰级认知思考大模型。',
     default_reasoning_level: 'high',
     supported_reasoning_levels: [
-      { effort: 'low', description: '轻量思考' },
-      { effort: 'medium', description: '标准思考' },
-      { effort: 'high', description: '深度推演' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -232,8 +298,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: '通义千问高吞吐低延迟极速代码模型。',
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
-      { effort: 'low', description: '超快响应' },
-      { effort: 'medium', description: '标准平衡' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -248,7 +328,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'Qwen-3.6-Plus',
     description: '通义千问高性价比经典代码重构模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '常规推理' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 524288,
@@ -265,7 +362,8 @@ const OPENCODE_GO_ALL_MODELS = [
     supported_reasoning_levels: [
       { effort: 'low', description: '快速对话与轻量工具调用' },
       { effort: 'medium', description: '平衡模式' },
-      { effort: 'high', description: '深度逻辑链思考' }
+      { effort: 'high', description: '深度逻辑链思考' },
+      { effort: 'xhigh', description: '极高强度深度推理' }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -282,7 +380,9 @@ const OPENCODE_GO_ALL_MODELS = [
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
       { effort: 'low', description: '快速轻量' },
-      { effort: 'medium', description: '常规' }
+      { effort: 'medium', description: '常规' },
+      { effort: 'high', description: '深度思考' },
+      { effort: 'xhigh', description: '超高推理' }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -297,7 +397,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'GLM-5.2',
     description: '智谱高性能平衡版模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '常规' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 524288,
@@ -311,7 +428,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'GLM-5.1',
     description: '智谱稳健工程版模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '常规' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 262144,
@@ -326,9 +460,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: '极高吞吐超长上下文高智商代码生成模型，单批次生成极速。',
     default_reasoning_level: 'high',
     supported_reasoning_levels: [
-      { effort: 'low', description: '快速模式' },
-      { effort: 'medium', description: '标准模式' },
-      { effort: 'high', description: '深度推演模式' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -343,7 +490,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'MiniMax-M2.7',
     description: 'MiniMax 均衡全场景模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '常规' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 524288,
@@ -372,8 +536,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: 'xAI 最新前沿逻辑推导与编程模型（原生 Responses 协议）。',
     default_reasoning_level: 'high',
     supported_reasoning_levels: [
-      { effort: 'low', description: '轻量思考' },
-      { effort: 'high', description: '高深逻辑分析' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -388,7 +566,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'Grok-4.6',
     description: 'xAI 稳健版高级编程分析模型。',
     default_reasoning_level: 'high',
-    supported_reasoning_levels: [{ effort: 'high', description: '深度思考' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 524288,
@@ -403,8 +598,22 @@ const OPENCODE_GO_ALL_MODELS = [
     description: '尖端前沿高级大语言推理模型（原生 Responses 协议支持）。',
     default_reasoning_level: 'high',
     supported_reasoning_levels: [
-      { effort: 'low', description: '快速' },
-      { effort: 'high', description: '高深推理' }
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -419,7 +628,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'GPT-6-Luna',
     description: '下一代前沿大语言推理实验模型。',
     default_reasoning_level: 'high',
-    supported_reasoning_levels: [{ effort: 'high', description: '高深推理' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 1048576,
@@ -447,7 +673,20 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'MiMo-V2.6-Pro',
     description: '旗舰级多模态深度解析模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '标准' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text', 'image'],
     context_window: 524288,
@@ -503,7 +742,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'Hunyuan-HY4-Preview',
     description: '混元最新一代全功能代码大模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '标准' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 524288,
@@ -517,7 +773,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'Hunyuan-HY3',
     description: '混元高性能中文代码模型。',
     default_reasoning_level: 'medium',
-    supported_reasoning_levels: [{ effort: 'medium', description: '标准' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 262144,
@@ -559,7 +832,24 @@ const OPENCODE_GO_ALL_MODELS = [
     display_name: 'Step-5-Preview',
     description: '阶跃星辰高智能逻辑推理模型。',
     default_reasoning_level: 'high',
-    supported_reasoning_levels: [{ effort: 'high', description: '高深推理' }],
+    supported_reasoning_levels: [
+      {
+        "effort": "low",
+        "description": "快速轻量"
+      },
+      {
+        "effort": "medium",
+        "description": "常规平衡"
+      },
+      {
+        "effort": "high",
+        "description": "深度思考"
+      },
+      {
+        "effort": "xhigh",
+        "description": "超高推理"
+      }
+    ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     context_window: 262144,
@@ -690,6 +980,83 @@ const MODEL_COMPATIBILITY_ALIASES = {
   'grok-4.7': 'qwen3.7-max',
   'minimax-m2.7': 'minimax-m3'
 };
+
+/**
+ * Automatically determines the most compatible fallback model when upstream reports
+ * an unsupported model or restricted model list.
+ * e.g. "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash."
+ */
+function resolveCompatibleFallbackModel(reqModel, errText = '') {
+  if (typeof errText !== 'string') errText = '';
+  const cleanReq = (reqModel || '').toLowerCase().trim();
+
+  // 1. Try parsing explicitly listed candidate model names from upstream error
+  const match = errText.match(/supported(?:\s+API)?\s+model\s+names\s+are\s+[:\s]*([^.]+?)(?:,\s*but\s+you\s+passed|\s+but\s+you\s+passed|\.|\(|$)/i);
+  if (match && match[1]) {
+    const candidates = match[1]
+      .split(/[,，]/)
+      .map(s => s.trim().replace(/^['"`\[]+|['"`\]]+$/g, ''))
+      .filter(s => s && /^[a-zA-Z0-9_.-]+$/.test(s) && s.toLowerCase() !== cleanReq);
+
+    if (candidates.length > 0) {
+      // 1.1 Pro/Advanced reasoning models (gpt-*, o1/o3, grok-*, claude-*, deepseek-v4-pro, etc.)
+      const isProOrAdvanced = cleanReq.includes('pro') || cleanReq.includes('max') || cleanReq.includes('luna') || 
+        cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-') || cleanReq.startsWith('claude-');
+      if (isProOrAdvanced) {
+        const proHit = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('max'));
+        if (proHit) return proHit;
+      }
+
+      // 1.2 Speed / Flash models
+      const isFlash = cleanReq.includes('flash') || cleanReq.includes('speed') || cleanReq.includes('mini') || cleanReq.includes('turbo');
+      if (isFlash) {
+        const flashHit = candidates.find(c => c.toLowerCase().includes('flash') || c.toLowerCase().includes('mini'));
+        if (flashHit) return flashHit;
+      }
+
+      // 1.3 Specific keyword match (code, vision, etc.)
+      for (const kw of ['code', 'vision', 'plus', 'preview']) {
+        if (cleanReq.includes(kw)) {
+          const hit = candidates.find(c => c.toLowerCase().includes(kw));
+          if (hit) return hit;
+        }
+      }
+
+      // 1.4 Family prefix match (e.g. deepseek- -> deepseek-)
+      const prefix = cleanReq.split(/[-_.]/)[0];
+      if (prefix && prefix.length > 2) {
+        const familyHit = candidates.find(c => c.toLowerCase().startsWith(prefix));
+        if (familyHit) return familyHit;
+      }
+
+      // 1.5 Prefer pro/flagship if available in candidates, otherwise first candidate
+      const defaultFlagship = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('flash')) || candidates[0];
+      return defaultFlagship;
+    }
+  }
+
+  // 2. Heuristic rules when candidate list is absent from error text
+  if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash') {
+    return 'deepseek-flash';
+  }
+  if (cleanReq === 'deepseek-flash') {
+    return 'deepseek-v4-pro';
+  }
+  if (cleanReq.startsWith('deepseek')) {
+    return 'deepseek-flash';
+  }
+  if (cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-')) {
+    return 'deepseek-v4-pro';
+  }
+  if (cleanReq.startsWith('kimi-')) {
+    return 'kimi-k3';
+  }
+  if (cleanReq.startsWith('qwen')) {
+    return 'qwen3.7-max';
+  }
+
+  return cleanReq === 'deepseek-flash' ? 'deepseek-v4-pro' : 'deepseek-flash';
+}
 
 /**
  * Prunes and compresses an oversized Responses API payload (body.input) to fit within
@@ -3767,5 +4134,6 @@ module.exports = {
   checkCodexProcessHealth,
   resumeOrCleanCodexProcesses,
   checkCodexLocaleAndEnvironment,
-  repairCodexLocaleAndEnvironment
+  repairCodexLocaleAndEnvironment,
+  resolveCompatibleFallbackModel
 };

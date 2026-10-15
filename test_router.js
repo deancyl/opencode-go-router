@@ -191,6 +191,54 @@ async function runTests() {
       return;
     }
 
+    if (session === 'session-model-restrict-400') {
+      if (auth.includes('key-account-1')) account1Calls++;
+      else account2Calls++;
+      let bodyBuf = [];
+      req.on('data', chunk => bodyBuf.push(chunk));
+      req.on('end', () => {
+        let reqModel = '';
+        try {
+          const parsed = JSON.parse(Buffer.concat(bodyBuf).toString('utf8'));
+          reqModel = parsed.model;
+        } catch (e) {}
+
+        if (reqModel === 'deepseek-v4.1-flash' || reqModel === 'gpt-6-luna') {
+          const errBody = JSON.stringify({
+            error: {
+              message: `The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed ${reqModel}. (request_id: 080be93d-9d34-4105-9126-db002f302b4b)`,
+              type: 'invalid_request_error',
+              param: null,
+              code: 'invalid_request_error'
+            }
+          });
+          res.writeHead(400, {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(errBody))
+          });
+          res.end(errBody);
+          return;
+        }
+
+        // Second attempt: auto-healed to compatible model (e.g. deepseek-flash or deepseek-v4-pro)
+        if (req.url.includes('/chat/completions')) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          });
+          res.write(`data: {"choices":[{"delta":{"content":"Success after self-healing to ${reqModel}!"}}]}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 'resp-healed-model', model: reqModel, choices: [{ message: { content: `Healed to ${reqModel}` } }] }));
+      });
+      return;
+    }
+
     if (req.url === '/v1/responses') {
       if (auth.includes('key-account-1')) account1Calls++;
       else account2Calls++;
@@ -2801,8 +2849,69 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Codex Process Health, Thread Suspension Diagnostics & Chinese Locale/Environment Self-Healing verified');
 
+    // [Test 82] Testing Upstream Supported API Model Names Restriction & Dynamic Fallback Self-Healing...
+    console.log('\n[Test 82] Testing Upstream Supported API Model Names Restriction & Dynamic Fallback Self-Healing...');
+
+    // 1. Unit Tests: resolveCompatibleFallbackModel
+    const userErrMsg = 'The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash. (request_id: 080be93d-9d34-4105-9126-db002f302b4b)';
+    const healedModel1 = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', userErrMsg);
+    assert.strictEqual(healedModel1, 'deepseek-flash', 'deepseek-v4.1-flash must heal to deepseek-flash from candidate list');
+
+    const lunaErrMsg = 'The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed gpt-6-luna. (request_id: 080be93d-9d34-4105-9126-db002f302b4b)';
+    const healedModel2 = codexAdapter.resolveCompatibleFallbackModel('gpt-6-luna', lunaErrMsg);
+    assert.strictEqual(healedModel2, 'deepseek-v4-pro', 'gpt-6-luna must heal to deepseek-v4-pro from candidate list');
+
+    const proErrMsg = 'The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4-pro.';
+    const healedModel3 = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4-pro', proErrMsg);
+    assert.strictEqual(healedModel3, 'deepseek-flash', 'deepseek-v4-pro must heal to deepseek-flash if pro itself was rejected');
+
+    const genericFlashFallback = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', 'model_not_found');
+    assert.strictEqual(genericFlashFallback, 'deepseek-flash', 'deepseek-v4.1-flash must fallback to deepseek-flash when no candidates provided');
+
+    const genericGrokFallback = codexAdapter.resolveCompatibleFallbackModel('grok-4.6', 'The model grok-4.6 does not exist');
+    assert.strictEqual(genericGrokFallback, 'deepseek-v4-pro', 'grok-4.6 must fallback to deepseek-v4-pro when no candidates provided');
+
+    // 2. Integration E2E HTTP Test on /v1/responses (Codex Bridge Stream)
+    // Send request with deepseek-v4.1-flash; mock upstream will reject with 400 and userErrMsg on first try,
+    // then router must automatically intercept, parse candidates, heal to deepseek-flash, and succeed with 200 stream!
+    const res82Responses = await request('/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-model-restrict-400'
+      },
+      body: JSON.stringify({
+        model: 'opencode-go/deepseek-v4.1-flash',
+        stream: true,
+        input: 'Recover disguised Linux cat jpg/zip file'
+      })
+    });
+
+    assert.strictEqual(res82Responses.statusCode, 200, 'Responses request must succeed with 200 after router self-healing');
+    assert.ok(res82Responses.headers['content-type'].includes('text/event-stream'), 'Must return text/event-stream');
+    assert.ok(res82Responses.body.includes('Success after self-healing to deepseek-flash'), 'Stream content must contain output from healed deepseek-flash model');
+    assert.ok(res82Responses.body.includes('response.completed'), 'Stream must deliver response.completed event');
+
+    // 3. Integration E2E HTTP Test on /v1/chat/completions (sendProxyRequest Fallback)
+    const res82Chat = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-model-restrict-400'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'Hello standard chat completions' }]
+      })
+    });
+
+    assert.strictEqual(res82Chat.statusCode, 200, 'Chat completions request must succeed with 200 after router self-healing');
+    assert.ok(res82Chat.body.includes('Success after self-healing to deepseek-flash'), 'Chat response must confirm healing to deepseek-flash');
+
+    console.log('✓ Upstream Supported API Model Names Restriction & Dynamic Fallback Self-Healing verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 81 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 82 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

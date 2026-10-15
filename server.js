@@ -781,8 +781,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
-    // Check if Region Blocked (403), Protocol Incompatible (400), or Context Exceeded (400)
-    if ((statusCode === 403 || statusCode === 400) && parsedBody && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
+    // Check if Region Blocked (403), Protocol Incompatible (400), Model Unsupported (400/404), or Context Exceeded (400)
+    if ((statusCode === 403 || statusCode === 400 || statusCode === 404 || statusCode === 422) && parsedBody && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('end', () => {
@@ -790,6 +790,14 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         const errText = Buffer.concat(errChunks).toString('utf8');
         const isRegionBlocked = errText.includes('unsupported_country_region_territory') || errText.includes('territory not supported') || errText.includes('not available in your country');
         const isProtocolUnsupported = statusCode === 400 && (errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses'));
+        const isModelUnsupported = (
+          errText.includes('supported API model names are') ||
+          errText.includes('supported model names are') ||
+          errText.includes('The supported API model names') ||
+          errText.includes('model_not_found') ||
+          errText.includes('is not supported by this model provider') ||
+          (errText.includes('The model') && (errText.includes('does not exist') || errText.includes('not supported')))
+        );
         const isContextLengthExceeded = statusCode === 400 && (
           errText.includes('context_length_exceeded') || 
           errText.includes('Input too long') || 
@@ -824,17 +832,21 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           return;
         }
 
-        if (isRegionBlocked || isProtocolUnsupported) {
-          const reason = isRegionBlocked ? 'OpenAI 地域封锁 (unsupported_country_region_territory)' : '上游协议不兼容 (ModelProtocolUnsupported)';
+        if (isRegionBlocked || isProtocolUnsupported || isModelUnsupported) {
           const originalModel = parsedBody.model || 'unknown';
-          const targetFallback = 'deepseek-v4.1-flash';
-          console.log(`[Auto Self-Healing] 模型 "${originalModel}" 触发 ${reason}。网关正在无缝自动挽救并切至 "${targetFallback}"...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          parsedBody.model = targetFallback;
-          const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
+          const targetFallback = codexAdapter.resolveCompatibleFallbackModel(originalModel, errText);
+          if (targetFallback && targetFallback !== originalModel) {
+            let reason = 'OpenAI 地域封锁 (unsupported_country_region_territory)';
+            if (isProtocolUnsupported) reason = '上游协议不兼容 (ModelProtocolUnsupported)';
+            else if (isModelUnsupported) reason = '上游节点模型限制 (Model Not Supported on Node)';
+            console.log(`[Auto Self-Healing] 模型 "${originalModel}" 触发 ${reason}。网关正在无缝自动挽救并切至 "${targetFallback}"...`);
+            finishRequest();
+            clientRes.removeListener('close', clientCloseHandler);
+            parsedBody.model = targetFallback;
+            const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
         }
 
         finishRequest();
@@ -1060,6 +1072,14 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         const errText = Buffer.concat(errChunks).toString('utf8');
         const isProtocolUnsupported = errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses');
         const isRegionBlocked = errText.includes('not available in your country') || errText.includes('unsupported_country_region_territory');
+        const isModelUnsupported = (
+          errText.includes('supported API model names are') ||
+          errText.includes('supported model names are') ||
+          errText.includes('The supported API model names') ||
+          errText.includes('model_not_found') ||
+          errText.includes('is not supported by this model provider') ||
+          (errText.includes('The model') && (errText.includes('does not exist') || errText.includes('not supported')))
+        );
         const isContextLengthExceeded = statusCode === 400 && (
           errText.includes('context_length_exceeded') || 
           errText.includes('Input too long') || 
@@ -1090,15 +1110,18 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           return;
         }
 
-        if ((isProtocolUnsupported || isRegionBlocked) && reqModel !== 'deepseek-v4.1-flash') {
-          const reason = isProtocolUnsupported ? '上游协议暂未支持该模型 (ModelProtocolUnsupported)' : '上游地域限制 (Region Blocked)';
-          const fallbackModel = 'deepseek-v4.1-flash';
-          console.warn(`[Auto Self-Healing] 模型 "${reqModel}" 触发 ${reason}。网关正在无缝自动挽救并切换至 "${fallbackModel}"...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          const healedResponsesBody = { ...responsesBody, model: fallbackModel };
-          bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber, triedAccountIds, sessionId);
-          return;
+        if ((isProtocolUnsupported || isRegionBlocked || isModelUnsupported) && attemptNumber <= config.maxFailoverRetries) {
+          const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText);
+          if (fallbackModel && fallbackModel !== reqModel) {
+            let reason = isProtocolUnsupported ? '上游协议暂未支持该模型 (ModelProtocolUnsupported)' : '上游地域限制 (Region Blocked)';
+            if (isModelUnsupported) reason = '上游节点可用模型限制 (Model Not Supported on Node)';
+            console.warn(`[Auto Self-Healing] 模型 "${reqModel}" 触发 ${reason}。网关正在无缝自动挽救并切换至 "${fallbackModel}"...`);
+            finishRequest();
+            clientRes.removeListener('close', clientCloseHandler);
+            const healedResponsesBody = { ...responsesBody, model: fallbackModel };
+            bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
         }
 
         responded = true;
@@ -1328,6 +1351,14 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           errText.includes('too many tokens') ||
           errText.includes('max_tokens')
         );
+        const isModelUnsupported = (
+          errText.includes('supported API model names are') ||
+          errText.includes('supported model names are') ||
+          errText.includes('The supported API model names') ||
+          errText.includes('model_not_found') ||
+          errText.includes('is not supported by this model provider') ||
+          (errText.includes('The model') && (errText.includes('does not exist') || errText.includes('not supported')))
+        );
         const isEmptyStreamError = statusCode === 400 && (!errText || errText.trim().length === 0);
 
         if ((isContextLengthExceeded || isEmptyStreamError) && attemptNumber <= config.maxFailoverRetries) {
@@ -1345,6 +1376,16 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
           }
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+          return;
+        }
+
+        if (isModelUnsupported && attemptNumber <= config.maxFailoverRetries) {
+          const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText);
+          console.warn(`[Auto Self-Healing] Anthropic 模型 "${reqModel}" 触发模型限制。网关正在切换至通用协议桥模型 "${fallbackModel}"...`);
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+          const healedResponsesBody = { ...responsesBody, model: fallbackModel };
+          bridgeResponsesToChatRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber + 1, triedAccountIds, sessionId);
           return;
         }
 
@@ -1925,6 +1966,14 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
       });
     }
   } catch (e) {}
+
+  // 8.3 Check Upstream Model Compatibility & Gateway Self-Healing Shield
+  report.modelCompatibilityShield = {
+    status: 'active',
+    supportedDynamicFallback: true,
+    protectedModels: ['deepseek-v4.1-flash', 'deepseek-v4-flash', 'gpt-5.6-luna', 'gpt-6-luna', 'grok-4.6', 'grok-4.7', 'minimax-m2.7'],
+    strategy: 'dynamic_candidate_resolution'
+  };
 
   return report;
 }
@@ -4162,6 +4211,7 @@ $ghost
             <span><strong>提供商接口:</strong> \${doc.openchamberProbe && doc.openchamberProbe.integration ? (doc.openchamberProbe.integration.status === 'healthy' ? '<span style="color:var(--success)">✔ ' + doc.openchamberProbe.integration.latencyMs + 'ms' + (doc.openchamberProbe.integration.authRequired ? ' (鉴权)' : '') + '</span>' : (doc.openchamberProbe.integration.status === 'deadlocked' ? '<span style="color:var(--danger)">❌ 死锁挂死</span>' : (doc.openchamberProbe.integration.status === 'unreachable' ? '<span style="color:var(--muted)">未连接</span>' : '<span style="color:var(--warning)">⚠ ' + (doc.openchamberProbe.integration.error || doc.openchamberProbe.integration.status) + '</span>'))) : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
             <span><strong>OpenAI Codex:</strong> \${doc.codex && doc.codex.isBound ? '<span style="color:var(--success)">✔ 已接入</span>' : '<span style="color:var(--muted)">未接入</span>'}\${doc.codexProcessHealth && !doc.codexProcessHealth.healthy ? ' <span style="color:var(--danger)">(存在挂起/僵死)</span>' : ''}\${doc.codexLocale && !doc.codexLocale.healthy ? ' <span style="color:var(--warning)">(语言未对齐)</span>' : ''}</span>
+            <span><strong>模型自愈屏障:</strong> <span style="color:var(--success)">✔ 异构节点防护</span></span>
           </div>
         \`;
         if (doc.issues.length === 0) {
