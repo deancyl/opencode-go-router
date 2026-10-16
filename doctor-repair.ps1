@@ -130,6 +130,36 @@ if ($routerConn) {
             } catch {
                 Write-Host "    ⚠ Codex Responses 协议桥握手受阻: $_" -ForegroundColor Yellow
             }
+
+            # 上下文优化与 Token 压缩引擎健康度诊断 (Compression Doctor Probe)
+            try {
+                $compHeaders = @{}
+                $routerConfigFile = Join-Path $PSScriptRoot "config.json"
+                if (Test-Path $routerConfigFile) {
+                    try {
+                        $rcfg = Get-Content $routerConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ($rcfg.uiPassword) {
+                            $compToken = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($rcfg.uiPassword))
+                            $compHeaders["Authorization"] = "Bearer $compToken"
+                        }
+                    } catch {}
+                }
+                $compDoc = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/balancer/api/compression/doctor" -Headers $compHeaders -TimeoutSec 5
+                if ($compDoc.healthy) {
+                    Write-Host "    ✔ 上下文压缩与防降智引擎健康自检通过 (RTK/Headroom/CacheAligner/llmtrim 全绿)" -ForegroundColor Green
+                } else {
+                    $unhealthyCount = if ($compDoc.issues) { $compDoc.issues.Count } else { 1 }
+                    Write-Host "    ⚠ 上下文压缩引擎发现 $unhealthyCount 项配置隐患/待优化" -ForegroundColor Yellow
+                    $issuesFound.Add([PSCustomObject]@{
+                        Id = "compression_health_issue"
+                        Title = "上下文优化与 Token 压缩存在 $unhealthyCount 项安全隐患或配置异常"
+                        Severity = "High"
+                        FixDesc = "执行压缩引擎一键自愈，对齐安全基线档并强制开启 Git 冲突豁免与源码 Diff 保护"
+                    })
+                }
+            } catch {
+                Write-Host "    ℹ 压缩引擎健康探测跳过或无需干预: $_" -ForegroundColor DarkGray
+            }
         } else {
             Write-Host "    ℹ 网关当前未配置有效订阅 API Key，跳过上游推理探针 (可在面板中配置)" -ForegroundColor DarkGray
         }
@@ -654,6 +684,31 @@ Write-Host "`n🔧 正在执行一键自动修复..." -ForegroundColor Cyan
 
 foreach ($iss in $issuesFound) {
     switch ($iss.Id) {
+        "compression_health_issue" {
+            Write-Host " -> 正在执行上下文压缩引擎一键自愈与安全配置对齐..." -ForegroundColor Yellow
+            try {
+                $compHeaders = @{ "Content-Type" = "application/json" }
+                $routerConfigFile = Join-Path $PSScriptRoot "config.json"
+                if (Test-Path $routerConfigFile) {
+                    try {
+                        $rcfg = Get-Content $routerConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ($rcfg.uiPassword) {
+                            $compToken = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($rcfg.uiPassword))
+                            $compHeaders["Authorization"] = "Bearer $compToken"
+                        }
+                    } catch {}
+                }
+                $repBody = @{ autoHeal = $true } | ConvertTo-Json
+                $repResp = Invoke-RestMethod -Uri "http://127.0.0.1:$routerPort/balancer/api/compression/repair" -Method Post -Body $repBody -Headers $compHeaders -TimeoutSec 5
+                if ($repResp.success) {
+                    Write-Host "    ✔ 上下文压缩引擎已成功自愈，已开启冲突豁免保护并对齐安全档" -ForegroundColor Green
+                } else {
+                    Write-Host "    ⚠ 自愈接口返回: $($repResp.error)" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "    ⚠ 压缩引擎一键自愈请求失败: $_" -ForegroundColor Red
+            }
+        }
         "dead_port_3001" {
             Write-Host " -> 正在修复旧端口 3001 残留..." -ForegroundColor Yellow
             $raw = Get-Content $opencodeConfig -Raw -Encoding UTF8

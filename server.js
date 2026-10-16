@@ -6319,6 +6319,7 @@ function renderDashboardHtml(config) {
         initQuotaRefreshScheduler();
         refreshAllQuotas(true, false);
         updateWizardStatusBadges();
+        runCompressionDoctorCheck(true);
       } catch (e) {
         showToast('获取配置失败: ' + e.message, true);
       }
@@ -6605,6 +6606,13 @@ function renderDashboardHtml(config) {
 
     function scrollToCompressionCard() {
       const card = document.getElementById('compression-card');
+      const body = document.getElementById('compression-collapse-body');
+      if (body && body.style.display === 'none') {
+        body.style.display = 'block';
+        const toggle = card ? card.querySelector('.collapse-toggle') : null;
+        if (toggle) toggle.innerText = '▼ 收起';
+        try { localStorage.setItem('collapse_compression-collapse-body', 'open'); } catch (_) {}
+      }
       if (card) {
         card.scrollIntoView({ behavior: 'smooth' });
         runCompressionDoctorCheck(false);
@@ -7405,6 +7413,8 @@ function renderDashboardHtml(config) {
       const panel = document.getElementById('comp-doctor-panel');
       const content = document.getElementById('comp-doctor-panel-content');
       const badge = document.getElementById('comp-doctor-status-badge');
+      const btn = document.getElementById('btn-comp-doctor');
+      if (btn) btn.disabled = true;
       if (!silent && panel && content) {
         panel.style.display = 'block';
         content.innerHTML = '<span style="color:var(--primary);">⏳ 正在执行压缩引擎健康体检与防降智审计...</span>';
@@ -7419,6 +7429,8 @@ function renderDashboardHtml(config) {
       } catch (e) {
         if (content) content.innerHTML = '<span style="color:var(--danger);">诊断异常: ' + e.message + '</span>';
         if (!silent) showToast('压缩诊断请求失败: ' + e.message, true);
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 
@@ -7501,6 +7513,11 @@ function renderDashboardHtml(config) {
       if (!confirm('确认执行压缩引擎安全自愈？\\n\\n将自动开启 Git 冲突豁免防御、源码 Diff 完整性保护、修正瘦身门限为安全档 (15,000字符) 并开启真 LRU 守护，杜绝断流与降智隐患。')) {
         return;
       }
+      const btn = document.getElementById('btn-comp-repair');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '🛠️ 自愈中...';
+      }
       try {
         const res = await fetch('/balancer/api/compression/repair', {
           method: 'POST',
@@ -7517,6 +7534,11 @@ function renderDashboardHtml(config) {
         }
       } catch (e) {
         showToast('自愈请求异常: ' + e.message, true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = '🛠️ 一键修复安全配置';
+        }
       }
     }
 

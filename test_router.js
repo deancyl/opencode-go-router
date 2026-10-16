@@ -5353,45 +5353,71 @@ $ProgressPreference = 'SilentlyContinue'
 
     // [Test 130] Testing Protocol & Connection Shield: Empty Output Protection (Anthropic tool_result, Responses, Chat) & Zero 400 Errors
     console.log('\n[Test 130] Testing Protocol & Connection Shield: Empty Output Protection & Zero 400 Errors...');
-    // 1. Anthropic protocol: tool_result must NEVER have empty string content
+    // 1. Anthropic protocol: tool_result must NEVER have empty or whitespace-only content
     const pureAnsiOutput = '\u001b[32m\u001b[0m\r\r';
     const anthropicPayloadWithEmptyTool = {
       model: 'claude-haiku-5-5',
       messages: [
         { role: 'user', content: 'run command' },
         { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'bash', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: pureAnsiOutput }] }
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'call_1', content: pureAnsiOutput },
+            { type: 'tool_result', tool_use_id: 'call_2', content: '   \n\t  ' },
+            { type: 'tool_result', tool_use_id: 'call_3', content: [] },
+            { type: 'tool_result', tool_use_id: 'call_4', content: [null] },
+            { type: 'tool_result', tool_use_id: 'call_5' }
+          ]
+        }
       ]
     };
     const compactedAnthropicShield = contextCompactor.compactAnthropicPayload(anthropicPayloadWithEmptyTool, { enabled: true });
-    const toolResultBlockShield = compactedAnthropicShield.messages[2].content[0];
-    assert.ok(typeof toolResultBlockShield.content === 'string' && toolResultBlockShield.content.length > 0, 'Anthropic tool_result content must NEVER be empty string');
-    assert.strictEqual(toolResultBlockShield.content, '[Empty terminal output]');
+    const toolBlocks = compactedAnthropicShield.messages[2].content;
+    assert.strictEqual(toolBlocks[0].content, '[Empty terminal output]', 'Pure ANSI output must be sanitized to terminal placeholder');
+    assert.strictEqual(toolBlocks[1].content, '[Empty output]', 'Pure whitespace output must be sanitized to safe placeholder');
+    assert.deepStrictEqual(toolBlocks[2].content, [{ type: 'text', text: '[Empty output]' }], 'Empty array must be sanitized to valid text block');
+    assert.deepStrictEqual(toolBlocks[3].content, [{ type: 'text', text: '[Empty output]' }], 'Array of nulls must be sanitized to valid text block');
+    assert.strictEqual(toolBlocks[4].content, '[Empty output]', 'Missing content must be defaulted to safe string');
 
-    // 2. OpenAI Chat completions protocol: tool content must NEVER be empty string
+    // 2. OpenAI Chat completions protocol: tool content must NEVER be empty or whitespace-only
     const chatPayloadWithEmptyTool = {
       model: 'deepseek-v4.1-flash',
       messages: [
         { role: 'user', content: 'test' },
         { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'exec', arguments: '{}' } }] },
-        { role: 'tool', tool_call_id: 'call_2', content: pureAnsiOutput }
+        { role: 'tool', tool_call_id: 'call_2', content: pureAnsiOutput },
+        { role: 'tool', tool_call_id: 'call_3', content: '   \t  ' },
+        { role: 'tool', tool_call_id: 'call_4', content: null },
+        { role: 'tool', tool_call_id: 'call_5', content: [] }
       ]
     };
     const compactedChat = contextCompactor.compactChatPayload(chatPayloadWithEmptyTool, { enabled: true });
-    assert.ok(typeof compactedChat.messages[2].content === 'string' && compactedChat.messages[2].content.length > 0, 'Chat tool content must NEVER be empty string');
     assert.strictEqual(compactedChat.messages[2].content, '[Empty terminal output]');
+    assert.strictEqual(compactedChat.messages[3].content, '[Empty output]');
+    assert.strictEqual(compactedChat.messages[4].content, '[Empty output]');
+    assert.strictEqual(compactedChat.messages[5].content, '[Empty output]');
 
-    // 3. Codex Responses protocol: function_call_output must NEVER be empty string
+    // 3. Codex Responses protocol: function_call_output must NEVER be empty or whitespace-only
     const responsesPayloadWithEmptyTool = {
       model: 'deepseek-v4.1-flash',
       input: [
-        { type: 'function_call', call_id: 'call_3', name: 'exec', arguments: '{}' },
-        { type: 'function_call_output', call_id: 'call_3', output: pureAnsiOutput }
+        { type: 'function_call', call_id: 'call_1', name: 'exec', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'call_1', output: pureAnsiOutput },
+        { type: 'function_call_output', call_id: 'call_2', output: '   \r\n  ' },
+        { type: 'function_call_output', call_id: 'call_3', output: null },
+        { type: 'function_call_output', call_id: 'call_4', output: [] },
+        { type: 'function_call_output', call_id: 'call_5', output: [null] },
+        { type: 'function_call_output', call_id: 'call_6', output: [{ text: '   ' }] }
       ]
     };
     const compactedResponses = contextCompactor.compactResponsesPayload(responsesPayloadWithEmptyTool, { enabled: true });
-    assert.ok(typeof compactedResponses.input[1].output === 'string' && compactedResponses.input[1].output.length > 0, 'Responses function_call_output must NEVER be empty string');
     assert.strictEqual(compactedResponses.input[1].output, '[Empty terminal output]');
+    assert.strictEqual(compactedResponses.input[2].output, '[Empty output]');
+    assert.strictEqual(compactedResponses.input[3].output, '[Empty output]');
+    assert.strictEqual(compactedResponses.input[4].output, '[Empty output]');
+    assert.strictEqual(compactedResponses.input[5].output, '[Empty output]');
+    assert.deepStrictEqual(compactedResponses.input[6].output, [{ text: '[Empty output]' }]);
 
     // 4. Web UI verification for Doctor & Repair controls
     const compUiDoctorRes = await request('/balancer/ui', { method: 'GET' });
@@ -5406,8 +5432,44 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Protocol & Connection Shield: Empty Output Protection & Zero 400 Errors verified');
 
+    // [Test 131] Testing Client Compatibility Degradation, Master Switch Auto-Healing & Language Exception Protection
+    console.log('\n[Test 131] Testing Client Compatibility Degradation, Master Switch Auto-Healing & Language Exception Protection...');
+    // 1. Degradation detection on unsafe settings
+    const degCheck = contextCompactor.checkCompressionHealth({
+      exemptMergeConflicts: false,
+      trueLruRetention: false
+    }, { savedTokens: 500, savedCostUSD: 0.00125, compressionRatio: 22.4 });
+    assert.strictEqual(degCheck.clientsCompatibility.openchamber.status, 'degraded', 'OpenChamber must be flagged as degraded when conflict shield is disabled');
+    assert.strictEqual(degCheck.stats.savedCostUsd, '$0.0013', 'savedCostUsd must be properly formatted string');
+    assert.strictEqual(degCheck.stats.compressionRatio, '22.4%', 'compressionRatio must be properly formatted percentage');
+
+    // 2. Master switch auto-healing from disabled state
+    const healedDisabled = contextCompactor.repairCompressionConfig({ enabled: false }, { autoHeal: true });
+    assert.strictEqual(healedDisabled.repairedConfig.enabled, true, 'autoHeal must restore master switch to enabled');
+    assert.ok(healedDisabled.results.some(r => r.item === 'Master Switch'), 'Repair results must list Master Switch');
+
+    // 3. Language runtime exceptions protection in foldTestPasses
+    const exceptionText = [
+      '✓ test 1 passed',
+      '✓ test 2 passed',
+      '✓ test 3 passed',
+      'TypeError: Cannot read properties of undefined (reading "execute")',
+      '    at Session.run (session.js:45:12)',
+      'NullPointerException: target object reference is null',
+      'panic: runtime error: index out of range [2] with length 2',
+      '✓ test 4 passed',
+      '✓ test 5 passed',
+      '✓ test 6 passed'
+    ].join('\n');
+    const compExceptions = contextCompactor.foldTestPasses(exceptionText);
+    assert.ok(compExceptions.includes('TypeError: Cannot read properties of undefined'), 'TypeError must NEVER be folded');
+    assert.ok(compExceptions.includes('NullPointerException: target object reference is null'), 'NullPointerException must NEVER be folded');
+    assert.ok(compExceptions.includes('panic: runtime error: index out of range'), 'Golang panic must NEVER be folded');
+
+    console.log('✓ Client Compatibility Degradation, Master Switch Auto-Healing & Language Exception Protection verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 130 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 131 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

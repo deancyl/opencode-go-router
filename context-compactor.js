@@ -717,7 +717,8 @@ function foldTestPasses(text, options = {}) {
       if (/[✕✗✖❌]/.test(line)) return false;
       if (/^\s*(?:not ok\b|FAIL\b|FAILED\b|ERROR\b|ERR!|fatal(?:\s+error)?\b|panic\b)/i.test(trimmed)) return false;
       if (/\b(?:AssertionError|Assertion failed)\b/i.test(line) && !/^[✓✔]/.test(trimmed)) return false;
-      if (/^\s*(?:Traceback\b|BUILD FAILED\b)/i.test(trimmed)) return false;
+      if (/\b(?:SyntaxError|TypeError|ReferenceError|RangeError|NullPointerException|Exception in thread)\b/i.test(line)) return false;
+      if (/^\s*(?:Traceback\b|BUILD FAILED\b|panic:)/i.test(trimmed)) return false;
       if (/^\s*at\s+\S+/.test(line) || /^\s*File\s+".*",\s+line\s+\d+/i.test(line) || /:\d+:\d+:\s*(?:error|warning|fatal)/i.test(line) || /error\[E\d+\]/i.test(line)) return false;
       if (/^\s*(?:expected|received)\b/i.test(trimmed)) return false;
       if (/<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|/.test(line)) return false;
@@ -1298,6 +1299,17 @@ function clearSessionMemo(sessionId) {
 }
 
 /**
+ * Ensures a text output or block content is strictly non-empty string.
+ * Prevents whitespace-only or empty strings from causing upstream HTTP 400 (Anthropic/OpenAI) or SSE empty stream aborts.
+ */
+function ensureSafeNonEmptyString(str, fallback = '[Empty output]') {
+  if (typeof str === 'string') {
+    return str.trim().length > 0 ? str : fallback;
+  }
+  return fallback;
+}
+
+/**
  * Perform all enabled text transformations on raw output with pipeline and memoization support.
  * 100% Safe Sandbox Wrapped.
  * @param {string} text
@@ -1404,21 +1416,31 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
       result.messages = result.messages.map(msg => {
         if (!msg) return msg;
         if (msg.role === 'tool' || msg.role === 'function') {
-          if (typeof msg.content === 'string') {
+          if (msg.content === null || msg.content === undefined) {
+            return { ...msg, content: '[Empty output]' };
+          } else if (typeof msg.content === 'string') {
             const compacted = compactText(msg.content, opts, sessionId);
-            const safeContent = (compacted && compacted.trim().length > 0) ? compacted : (msg.content || '[Empty output]');
-            return { ...msg, content: safeContent };
+            return { ...msg, content: ensureSafeNonEmptyString(compacted) };
           } else if (Array.isArray(msg.content)) {
-            return {
-              ...msg,
-              content: msg.content.map(part => {
-                if (part && part.type === 'text' && typeof part.text === 'string') {
-                  const compText = compactText(part.text, opts, sessionId);
-                  return { ...part, text: (compText && compText.trim().length > 0) ? compText : (part.text || '[Empty output]') };
+            let cleaned = msg.content
+              .filter(part => part !== null && part !== undefined)
+              .map(part => {
+                if (typeof part === 'string') {
+                  const compText = compactText(part, opts, sessionId);
+                  return { type: 'text', text: ensureSafeNonEmptyString(compText) };
+                } else if (part && typeof part === 'object') {
+                  if (part.type === 'text' && typeof part.text === 'string') {
+                    const compText = compactText(part.text, opts, sessionId);
+                    return { ...part, text: ensureSafeNonEmptyString(compText) };
+                  }
+                  return part;
                 }
-                return part;
-              })
-            };
+                return { type: 'text', text: '[Empty output]' };
+              });
+            if (cleaned.length === 0) {
+              return { ...msg, content: '[Empty output]' };
+            }
+            return { ...msg, content: cleaned };
           }
         }
         return msg;
@@ -1474,21 +1496,31 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
             ...msg,
             content: msg.content.map(block => {
               if (block && block.type === 'tool_result') {
-                if (typeof block.content === 'string') {
+                if (block.content === null || block.content === undefined) {
+                  return { ...block, content: '[Empty output]' };
+                } else if (typeof block.content === 'string') {
                   const compacted = compactText(block.content, opts, sessionId);
-                  const safeContent = (compacted && compacted.trim().length > 0) ? compacted : (block.content || '[Empty output]');
-                  return { ...block, content: safeContent };
+                  return { ...block, content: ensureSafeNonEmptyString(compacted) };
                 } else if (Array.isArray(block.content)) {
-                  return {
-                    ...block,
-                    content: block.content.map(part => {
-                      if (part && part.type === 'text' && typeof part.text === 'string') {
-                        const compText = compactText(part.text, opts, sessionId);
-                        return { ...part, text: (compText && compText.trim().length > 0) ? compText : (part.text || '[Empty output]') };
+                  let cleaned = block.content
+                    .filter(part => part !== null && part !== undefined)
+                    .map(part => {
+                      if (typeof part === 'string') {
+                        const compText = compactText(part, opts, sessionId);
+                        return { type: 'text', text: ensureSafeNonEmptyString(compText) };
+                      } else if (part && typeof part === 'object') {
+                        if (part.type === 'text' && typeof part.text === 'string') {
+                          const compText = compactText(part.text, opts, sessionId);
+                          return { ...part, text: ensureSafeNonEmptyString(compText) };
+                        }
+                        return part;
                       }
-                      return part;
-                    })
-                  };
+                      return { type: 'text', text: '[Empty output]' };
+                    });
+                  if (cleaned.length === 0) {
+                    cleaned = [{ type: 'text', text: '[Empty output]' }];
+                  }
+                  return { ...block, content: cleaned };
                 }
               }
               return block;
@@ -1544,55 +1576,67 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
       result.input = result.input.map(item => {
         if (!item) return item;
         if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
-          if (typeof item.output === 'string') {
+          if (item.output === null || item.output === undefined) {
+            return { ...item, output: '[Empty output]' };
+          } else if (typeof item.output === 'string') {
             const comp = compactText(item.output, opts, sessionId);
-            const safeOut = (comp && comp.trim().length > 0) ? comp : (item.output || '[Empty output]');
-            return { ...item, output: safeOut };
+            return { ...item, output: ensureSafeNonEmptyString(comp) };
           } else if (Array.isArray(item.output)) {
             // Strictly preserve array structure for multimodal/block outputs
-            const compactedParts = item.output.map(part => {
-              if (typeof part === 'string') {
-                const comp = compactText(part, opts, sessionId);
-                return (comp && comp.trim().length > 0) ? comp : (part || '[Empty output]');
-              } else if (part && typeof part === 'object') {
-                const clonedPart = { ...part };
-                if (typeof clonedPart.text === 'string') {
-                  const comp = compactText(clonedPart.text, opts, sessionId);
-                  clonedPart.text = (comp && comp.trim().length > 0) ? comp : (clonedPart.text || '[Empty output]');
+            let compactedParts = item.output
+              .filter(part => part !== null && part !== undefined)
+              .map(part => {
+                if (typeof part === 'string') {
+                  const comp = compactText(part, opts, sessionId);
+                  return ensureSafeNonEmptyString(comp);
+                } else if (part && typeof part === 'object') {
+                  const clonedPart = { ...part };
+                  if (typeof clonedPart.text === 'string') {
+                    const comp = compactText(clonedPart.text, opts, sessionId);
+                    clonedPart.text = ensureSafeNonEmptyString(comp);
+                  }
+                  if (typeof clonedPart.output === 'string') {
+                    const comp = compactText(clonedPart.output, opts, sessionId);
+                    clonedPart.output = ensureSafeNonEmptyString(comp);
+                  }
+                  return clonedPart;
                 }
-                if (typeof clonedPart.output === 'string') {
-                  const comp = compactText(clonedPart.output, opts, sessionId);
-                  clonedPart.output = (comp && comp.trim().length > 0) ? comp : (clonedPart.output || '[Empty output]');
-                }
-                return clonedPart;
-              }
-              return part;
-            });
+                return part;
+              });
+            if (compactedParts.length === 0) {
+              return { ...item, output: '[Empty output]' };
+            }
             return { ...item, output: compactedParts };
           } else if (item.output && typeof item.output === 'object') {
             const clonedOutput = { ...item.output };
             if (typeof clonedOutput.stdout === 'string') {
-              clonedOutput.stdout = compactText(clonedOutput.stdout, opts, sessionId);
+              clonedOutput.stdout = ensureSafeNonEmptyString(compactText(clonedOutput.stdout, opts, sessionId));
             }
             if (typeof clonedOutput.stderr === 'string') {
-              clonedOutput.stderr = compactText(clonedOutput.stderr, opts, sessionId);
+              clonedOutput.stderr = ensureSafeNonEmptyString(compactText(clonedOutput.stderr, opts, sessionId));
             }
             if (typeof clonedOutput.output === 'string') {
-              clonedOutput.output = compactText(clonedOutput.output, opts, sessionId);
+              clonedOutput.output = ensureSafeNonEmptyString(compactText(clonedOutput.output, opts, sessionId));
             }
             if (typeof clonedOutput.text === 'string') {
-              clonedOutput.text = compactText(clonedOutput.text, opts, sessionId);
+              clonedOutput.text = ensureSafeNonEmptyString(compactText(clonedOutput.text, opts, sessionId));
             }
             if (typeof clonedOutput.content === 'string') {
-              clonedOutput.content = compactText(clonedOutput.content, opts, sessionId);
+              clonedOutput.content = ensureSafeNonEmptyString(compactText(clonedOutput.content, opts, sessionId));
             } else if (Array.isArray(clonedOutput.content)) {
-              clonedOutput.content = clonedOutput.content.map(part => {
-                if (part && typeof part === 'object' && typeof part.text === 'string') {
-                  const comp = compactText(part.text, opts, sessionId);
-                  return { ...part, text: (comp && comp.trim().length > 0) ? comp : (part.text || '[Empty output]') };
-                }
-                return part;
-              });
+              let cleanedContent = clonedOutput.content
+                .filter(part => part !== null && part !== undefined)
+                .map(part => {
+                  if (part && typeof part === 'object' && typeof part.text === 'string') {
+                    const comp = compactText(part.text, opts, sessionId);
+                    return { ...part, text: ensureSafeNonEmptyString(comp) };
+                  }
+                  return part;
+                });
+              if (cleanedContent.length === 0) {
+                cleanedContent = [{ type: 'text', text: '[Empty output]' }];
+              }
+              clonedOutput.content = cleanedContent;
             }
             return { ...item, output: clonedOutput };
           }
@@ -1788,6 +1832,16 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
     }
   };
 
+  if (clientsCompatibility.openchamber.checks.some(c => !c.passed)) {
+    clientsCompatibility.openchamber.status = 'degraded';
+  }
+  if (clientsCompatibility.codex.checks.some(c => !c.passed)) {
+    clientsCompatibility.codex.status = 'degraded';
+  }
+  if (clientsCompatibility.opencode.checks.some(c => !c.passed)) {
+    clientsCompatibility.opencode.status = 'degraded';
+  }
+
   const highIssues = issues.filter(i => i.severity === 'high').length;
   const mediumIssues = issues.filter(i => i.severity === 'medium').length;
   const lowIssues = issues.filter(i => i.severity === 'low').length;
@@ -1802,8 +1856,8 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
     issues,
     stats: {
       savedTokens: stats.savedTokens || 0,
-      savedCostUsd: stats.savedCostUsd || '$0.0000',
-      compressionRatio: stats.compressionRatio || '0.0%',
+      savedCostUsd: (typeof stats.savedCostUSD === 'number' ? `$${stats.savedCostUSD.toFixed(4)}` : (stats.savedCostUsd || '$0.0000')),
+      compressionRatio: (typeof stats.compressionRatio === 'number' ? `${stats.compressionRatio}%` : (stats.compressionRatio || '0.0%')),
       totalOriginalChars: stats.totalOriginalChars || 0,
       totalCompressedChars: stats.totalCompressedChars || 0,
       totalSavedChars: stats.totalSavedChars || 0
@@ -1902,8 +1956,8 @@ function repairCompressionConfig(rawConfig = {}, options = {}) {
     results.push({ item: 'Cache-Zone Memory Flush', success: true, message: '已安全排空会话历史轮次前缀固化缓存池' });
   }
 
-  // 7. Ensure master switch is active if requested or if fixing
-  if (options.enableMaster && !norm.enabled) {
+  // 7. Ensure master switch is active if requested or if auto-healing
+  if ((options.enableMaster || options.autoHeal) && !norm.enabled) {
     norm.enabled = true;
     results.push({ item: 'Master Switch', success: true, message: '已重新开启上下文优化与 Token 压缩总开关' });
   }
