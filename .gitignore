@@ -25,3 +25,7 @@ Desktop.ini
 scripts/
 .opencode/
 OpenCodeRouterTray.exe
+__pycache__/
+nas_ssh_helper.py
+sync_nas.py
+compression-stats.json

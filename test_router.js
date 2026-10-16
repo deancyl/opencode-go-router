@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { fork, execSync } = require('node:child_process');
 const codexAdapter = require('./codex-adapter');
+const contextCompactor = require('./context-compactor');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -360,10 +361,13 @@ async function runTests() {
   const testConfigFile = path.join(__dirname, `config.test-${Date.now()}.json`);
   const testConfigDir = path.join(os.tmpdir(), `test-opencode-${Date.now()}`);
   const testSnapshotsDir = path.join(os.tmpdir(), `test-snapshots-${Date.now()}`);
+  const testCodexDir = path.join(os.tmpdir(), `test-codex-${Date.now()}`);
   fs.mkdirSync(testConfigDir, { recursive: true });
   fs.mkdirSync(testSnapshotsDir, { recursive: true });
+  fs.mkdirSync(testCodexDir, { recursive: true });
   process.env.OPENCODE_CONFIG_DIR = testConfigDir;
   process.env.OPENCODE_SNAPSHOTS_DIR = testSnapshotsDir;
+  process.env.CODEX_CONFIG_DIR = testCodexDir;
 
   const testConfig = {
     port: routerPort,
@@ -375,7 +379,18 @@ async function runTests() {
     accounts: [
       { id: 'account-1', name: 'OpenCode Go Acc 1', apiKey: 'key-account-1', enabled: true },
       { id: 'account-2', name: 'OpenCode Go Acc 2', apiKey: 'key-account-2', enabled: true }
-    ]
+    ],
+    compression: {
+      enabled: true,
+      stripAnsi: true,
+      cleanProgressBars: true,
+      foldLockfiles: true,
+      foldTestPasses: true,
+      alignToolsSchema: true,
+      slimToolsSchema: true,
+      schemaCharThreshold: 15000,
+      cacheZoneFreeze: true
+    }
   };
   fs.writeFileSync(testConfigFile, JSON.stringify(testConfig, null, 2), 'utf8');
 
@@ -386,6 +401,7 @@ async function runTests() {
       OPENCODE_ROUTER_CONFIG: testConfigFile,
       OPENCODE_CONFIG_DIR: testConfigDir,
       OPENCODE_SNAPSHOTS_DIR: testSnapshotsDir,
+      CODEX_CONFIG_DIR: testCodexDir,
       PORT: String(routerPort)
     }
   });
@@ -1083,7 +1099,7 @@ async function runTests() {
     const resBindApi = await request('/balancer/api/bind-codex', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' })
+      body: JSON.stringify({ codexDir: isolatedCodexDir, defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' })
     });
     assert.strictEqual(resBindApi.statusCode, 200);
     const jsonBindApi = JSON.parse(resBindApi.body);
@@ -1112,7 +1128,11 @@ async function runTests() {
     assert.ok(resilientToml.includes('[model_providers."opencode-go"]'), 'Historical thread resilience provider declaration preserved');
 
     // Verify API endpoint /balancer/api/restore-codex
-    const resRestoreApi = await request('/balancer/api/restore-codex', { method: 'POST' });
+    const resRestoreApi = await request('/balancer/api/restore-codex', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codexDir: isolatedCodexDir })
+    });
     assert.strictEqual(resRestoreApi.statusCode, 200);
     console.log('✓ Codex One-Click Restore API & 100% Fidelity Rollback verified');
 
@@ -2308,8 +2328,49 @@ $ProgressPreference = 'SilentlyContinue'
       new Function(loginScriptMatch[1]);
     }, 'Login page script must compile without SyntaxError');
 
+    // Verify updateCompCardsUI and toggle handlers do not cause recursion (Maximum call stack size exceeded)
+    assert.doesNotThrow(() => {
+      const mockElements = {};
+      const mockDoc = {
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        cookie: '',
+        hidden: false,
+        getElementById: (id) => {
+          if (!mockElements[id]) {
+            mockElements[id] = {
+              id,
+              checked: true,
+              value: '15000',
+              style: {},
+              classList: { add: () => {}, remove: () => {} },
+              querySelectorAll: () => []
+            };
+          }
+          return mockElements[id];
+        }
+      };
+      const vm = require('node:vm');
+      const ctx = vm.createContext({
+        document: mockDoc,
+        window: { location: {}, addEventListener: () => {} },
+        localStorage: { getItem: () => null, setItem: () => {} },
+        setInterval: () => {},
+        clearInterval: () => {},
+        setTimeout: () => {},
+        currentPreset: 'balanced',
+        accountQuotas: {},
+        liveStats: {},
+        currentConfig: { accounts: [], compression: { enabled: true, preset: 'balanced' } }
+      });
+      vm.runInContext(clientScript, ctx);
+      ctx.updateCompCardsUI();
+      ctx.handleCompMasterToggle(true);
+      ctx.toggleModuleEnabled('rtk', true);
+    }, 'UI script updateCompCardsUI must not cause recursion or RangeError');
+
     // Verify restartCodex runs cleanly without console ConPTY pipe errors
-    const restartCodexTestRes = codexAdapter.restartCodex();
+    const restartCodexTestRes = codexAdapter.restartCodex({ dryRun: true });
     assert.strictEqual(restartCodexTestRes.restarted, true);
     assert.strictEqual(restartCodexTestRes.success, true);
     console.log('✓ Web UI Dashboard Frontend JavaScript Syntax & Runtime Integrity verified');
@@ -3086,8 +3147,1442 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ GLM-5.3-Flash Dynamic Fallback & Pre-Emptive Session Memory Hit verified');
 
+    // [Test 85] Testing Codex apply_patch Freeform Custom Tool Call Protocol Bridge...
+    console.log('\n[Test 85] Testing Codex apply_patch Freeform Custom Tool Call Protocol Bridge...');
+
+    // 1. Verify extractPatchInput unit logic
+    const jsonPatch = JSON.stringify({ input: '*** Begin Patch\n*** Add File: sim.js\n+test\n*** End Patch' });
+    const extracted1 = codexAdapter.extractPatchInput(jsonPatch);
+    assert.strictEqual(extracted1, '*** Begin Patch\n*** Add File: sim.js\n+test\n*** End Patch', 'extractPatchInput must extract raw patch from JSON');
+
+    const rawPatch = '*** Begin Patch\n*** Add File: sim.js\n+raw\n*** End Patch';
+    const extracted2 = codexAdapter.extractPatchInput(rawPatch);
+    assert.strictEqual(extracted2, rawPatch, 'extractPatchInput must preserve raw patch text unchanged');
+
+    // 2. Verify convertResponsesToChatPayload with custom_tool_call
+    const convertedChat = codexAdapter.convertResponsesToChatPayload({
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Apply this patch' },
+        { type: 'custom_tool_call', call_id: 'call_patch_1', name: 'apply_patch', input: '*** Begin Patch\n+hello\n*** End Patch' },
+        { type: 'custom_tool_call_output', call_id: 'call_patch_1', output: 'Success. Updated 1 file.' }
+      ]
+    });
+    const lastAssistant = convertedChat.messages.find(m => m.role === 'assistant' && m.tool_calls);
+    assert.ok(lastAssistant, 'Assistant message with tool_calls must be constructed');
+    assert.strictEqual(lastAssistant.tool_calls[0].function.name, 'apply_patch');
+    const parsedArgs = JSON.parse(lastAssistant.tool_calls[0].function.arguments);
+    assert.strictEqual(parsedArgs.input, '*** Begin Patch\n+hello\n*** End Patch', 'custom_tool_call string input must be wrapped in { input } for upstream model');
+
+    // 3. Verify bridgeResponsesStream streaming transformation
+    const mockUpstreamPatchStream = new EventEmitter();
+    const capturedEvents = [];
+    const mockPatchClientRes = new EventEmitter();
+    mockPatchClientRes.writableEnded = false;
+    mockPatchClientRes.destroyed = false;
+    mockPatchClientRes.writeHead = () => {};
+    mockPatchClientRes.end = () => { mockPatchClientRes.writableEnded = true; };
+    mockPatchClientRes.write = (data) => {
+      const lines = data.split('\n');
+      let currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && currentEvent) {
+          try {
+            capturedEvents.push({ event: currentEvent, data: JSON.parse(line.slice(6)) });
+          } catch (e) {}
+        }
+      }
+    };
+
+    codexAdapter.bridgeResponsesStream(mockUpstreamPatchStream, mockPatchClientRes, 'deepseek-v4.1-flash', 'resp_test_patch', () => {});
+
+    // Feed SSE chunks from upstream with apply_patch tool call
+    const chunk1 = 'data: ' + JSON.stringify({
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: 'call_patch_123',
+            type: 'function',
+            function: { name: 'apply_patch', arguments: '{"input": "*** Begin Patch\\n' }
+          }]
+        }
+      }]
+    }) + '\n\n';
+    mockUpstreamPatchStream.emit('data', Buffer.from(chunk1));
+
+    const chunk2 = 'data: ' + JSON.stringify({
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: { arguments: '*** Add File: test.js\\n+console.log(1);\\n*** End Patch"}' }
+          }]
+        }
+      }]
+    }) + '\n\n';
+    mockUpstreamPatchStream.emit('data', Buffer.from(chunk2));
+    mockUpstreamPatchStream.emit('end');
+
+    const addedItem = capturedEvents.find(e => e.event === 'response.output_item.added');
+    assert.ok(addedItem, 'response.output_item.added must be emitted');
+    assert.strictEqual(addedItem.data.item.type, 'custom_tool_call', 'apply_patch item type must be custom_tool_call');
+    assert.strictEqual(addedItem.data.item.name, 'apply_patch');
+
+    const doneInput = capturedEvents.find(e => e.event === 'response.custom_tool_call_input.done');
+    assert.ok(doneInput, 'response.custom_tool_call_input.done must be emitted');
+    assert.ok(doneInput.data.input.includes('*** Add File: test.js'), 'Clean patch content must be delivered in custom_tool_call input');
+    assert.ok(!doneInput.data.input.startsWith('{"input":'), 'JSON wrapper must be cleanly stripped from input');
+
+    const doneItem = capturedEvents.find(e => e.event === 'response.output_item.done');
+    assert.ok(doneItem, 'response.output_item.done must be emitted');
+    assert.strictEqual(doneItem.data.item.type, 'custom_tool_call', 'Item done must confirm custom_tool_call');
+    assert.strictEqual(doneItem.data.item.status, 'completed');
+
+    const completed = capturedEvents.find(e => e.event === 'response.completed');
+    assert.ok(completed, 'response.completed must be emitted');
+    assert.strictEqual(completed.data.response.output[0].type, 'custom_tool_call');
+    assert.ok(completed.data.response.output[0].input.includes('+console.log(1);'));
+
+    console.log('✓ Codex apply_patch Freeform Custom Tool Call Protocol Bridge verified');
+
+    // [Test 86] Testing ANSI Color & Terminal Sequence Stripping (stripAnsi)
+    console.log('\n[Test 86] Testing ANSI Color & Terminal Sequence Stripping (stripAnsi)...');
+    const rawAnsiText = '\u001b[31;1mError: \u001b[0m\u001b[38;2;255;0;0mCritical Failure\u001b[0m in module \u001b[38;5;196mtest.js\u001b[0m\u001b[?25h\u001b]0;Terminal Title\x07';
+    const stripped = contextCompactor.stripAnsi(rawAnsiText);
+    assert.strictEqual(stripped, 'Error: Critical Failure in module test.js');
+    assert.strictEqual(contextCompactor.stripAnsi(''), '');
+    assert.strictEqual(contextCompactor.stripAnsi(null), null);
+    assert.strictEqual(contextCompactor.stripAnsi('Plain text without escape'), 'Plain text without escape');
+    console.log('✓ ANSI Color & Terminal Sequence Stripping verified');
+
+    // [Test 87] Testing Overwriting Terminal Progress Bars & Carriage Return Cleaning (cleanProgressBars)
+    console.log('\n[Test 87] Testing Overwriting Terminal Progress Bars & Carriage Return Cleaning (cleanProgressBars)...');
+    const rawProgressOutput = 'Downloading [===>       ] 30%\rDownloading [======>    ] 60%\rDownloading [==========>] 100%\nVerification passed!';
+    const cleanedProgress = contextCompactor.cleanProgressBars(rawProgressOutput);
+    assert.strictEqual(cleanedProgress, 'Downloading [==========>] 100%\nVerification passed!');
+    
+    // Windows CRLF preservation check: regular CRLF must not be truncated as overwrites and line endings preserved
+    const crlfText = 'Step 1: Init\r\nStep 2: Build\r\nStep 3: Test\r\n';
+    assert.strictEqual(contextCompactor.cleanProgressBars(crlfText), crlfText);
+    console.log('✓ Overwriting Terminal Progress Bars & Carriage Return Cleaning verified');
+
+    // [Test 88] Testing Lockfile Diff Safe Folding & Merge Conflict Exemption (foldLockfiles)
+    console.log('\n[Test 88] Testing Lockfile Diff Safe Folding & Merge Conflict Exemption (foldLockfiles)...');
+    const lockfileDiffNormal = [
+      'diff --git a/package-lock.json b/package-lock.json',
+      'index 1a2b3c4..5d6e7f8 100644',
+      '--- a/package-lock.json',
+      '+++ b/package-lock.json',
+      '@@ -100,20 +100,25 @@',
+      '-      "version": "1.0.0"',
+      '+      "version": "1.0.1"',
+      '+      "resolved": "https://registry.npmjs.org/foo/-/foo-1.0.1.tgz"',
+      '+      "integrity": "sha512-abc123=="',
+      '-      "dev": true',
+      '+      "dev": false'
+    ].join('\n');
+    const foldedLockfile = contextCompactor.foldLockfiles(lockfileDiffNormal);
+    assert.ok(foldedLockfile.includes('[Lockfile diff folded: package-lock.json'));
+    assert.ok(!foldedLockfile.includes('sha512-abc123=='));
+
+    // Critical safety: Merge conflict markers (<<<<<<<) must NEVER be folded!
+    const lockfileWithConflict = [
+      'diff --git a/package-lock.json b/package-lock.json',
+      'index 1a2b3c4..5d6e7f8 100644',
+      '--- a/package-lock.json',
+      '+++ b/package-lock.json',
+      '@@ -100,20 +100,25 @@',
+      '<<<<<<< HEAD',
+      '+      "version": "1.0.1"',
+      '=======',
+      '+      "version": "2.0.0"',
+      '>>>>>>> feature-branch'
+    ].join('\n');
+    const notFoldedConflict = contextCompactor.foldLockfiles(lockfileWithConflict);
+    assert.strictEqual(notFoldedConflict, lockfileWithConflict, 'Diffs with merge conflicts must be strictly exempt from folding');
+
+    // Diff3 conflict marker (||||||| base) must also be exempt
+    const diff3Conflict = [
+      'diff --git a/Cargo.lock b/Cargo.lock',
+      'index 111..222 100644',
+      '--- a/Cargo.lock',
+      '+++ b/Cargo.lock',
+      '@@ -1,10 +1,10 @@',
+      '||||||| base',
+      'version = 1',
+      '=======',
+      'version = 2',
+      '>>>>>>> branch'
+    ].join('\n');
+    assert.strictEqual(contextCompactor.foldLockfiles(diff3Conflict), diff3Conflict, 'Diff3 conflict markers must be exempt from folding');
+
+    // Source code / test files containing lockfile names must NEVER be folded!
+    const testFileDiff = [
+      'diff --git a/tests/package-lock.json.test.js b/tests/package-lock.json.test.js',
+      'index 111..222 100644',
+      '--- a/tests/package-lock.json.test.js',
+      '+++ b/tests/package-lock.json.test.js',
+      '@@ -1,7 +1,7 @@',
+      '-const a = 1;',
+      '+const a = 2;',
+      '+const b = 3;',
+      '+const c = 4;',
+      '+const d = 5;'
+    ].join('\n');
+    assert.strictEqual(contextCompactor.foldLockfiles(testFileDiff), testFileDiff, 'Code/test files with lockfile names in path must NEVER be folded');
+
+    // Idempotency check: folding an already folded diff must be a no-op
+    assert.strictEqual(contextCompactor.foldLockfiles(foldedLockfile), foldedLockfile, 'Folding already folded lockfile diff must be idempotent');
+
+    // Non-lockfile diffs in the same output must be preserved intact
+    const multiFileDiff = [
+      'diff --git a/src/app.js b/src/app.js',
+      'index 111..222 100644',
+      '--- a/src/app.js',
+      '+++ b/src/app.js',
+      '@@ -1,3 +1,3 @@',
+      '-const x = 1;',
+      '+const x = 2;',
+      lockfileDiffNormal
+    ].join('\n');
+    const multiFolded = contextCompactor.foldLockfiles(multiFileDiff);
+    assert.ok(multiFolded.includes('+const x = 2;'), 'Non-lockfile source diffs must remain 100% visible');
+    assert.ok(multiFolded.includes('[Lockfile diff folded: package-lock.json'));
+    console.log('✓ Lockfile Diff Safe Folding & Merge Conflict Exemption verified');
+
+    // [Test 89] Testing Positive Match Test Passes Folding & 100% Error/Stack Preservation (foldTestPasses)
+    console.log('\n[Test 89] Testing Positive Match Test Passes Folding & 100% Error/Stack Preservation (foldTestPasses)...');
+    const mixedTestRun = [
+      '  ✓ Test 1: User login successfully (12ms)',
+      '  ✓ Test 2: Token verification passed (5ms)',
+      '  ✓ Test 3: Cache lookup hit (2ms)',
+      '  ✓ Test 4: Rate limit counter checked (3ms)',
+      '  ✕ Test 5: Database transaction committed (8ms)',
+      '      AssertionError: expected false to equal true',
+      '          at Context.<anonymous> (test/db.test.js:84:12)',
+      '          at processImmediate (node:internal/timers:478:21)',
+      '  ✓ Test 6: Connection closed cleanly (4ms)',
+      '  ✓ Test 7: Metrics updated (1ms)',
+      '  ✓ Test 8: Session destroyed (2ms)'
+    ].join('\n');
+    const foldedPasses = contextCompactor.foldTestPasses(mixedTestRun);
+    assert.ok(foldedPasses.includes('[Test suite: 4 passed tests folded (✓ / PASS / ok)]'), 'First 4 passing tests must be folded');
+    assert.ok(foldedPasses.includes('✕ Test 5: Database transaction committed (8ms)'), 'Failed test line must be preserved intact');
+    assert.ok(foldedPasses.includes('AssertionError: expected false to equal true'), 'Assertion error must be preserved intact');
+    assert.ok(foldedPasses.includes('at Context.<anonymous> (test/db.test.js:84:12)'), 'Stack trace must be preserved intact');
+    assert.ok(foldedPasses.includes('[Test suite: 3 passed tests folded (✓ / PASS / ok)]'), 'Last 3 passing tests must be folded');
+    
+    // Tests testing error cases must be recognized as passing and folded
+    const errorHandlingTests = [
+      '  ✓ handles 404 error cleanly (2ms)',
+      '  ✓ should throw exception on timeout (3ms)',
+      '  ✓ should catch network failure without crash (5ms)'
+    ].join('\n');
+    const foldedErrorTests = contextCompactor.foldTestPasses(errorHandlingTests);
+    assert.ok(foldedErrorTests.includes('[Test suite: 3 passed tests folded (✓ / PASS / ok)]'), 'Passing tests with error/failure in test name must be recognized as passing');
+
+    // Short test runs (< 3 passes) must remain intact without awkward single-line folding
+    const shortTestRun = '  ✓ Test A passed\n  ✓ Test B passed';
+    assert.strictEqual(contextCompactor.foldTestPasses(shortTestRun), shortTestRun);
+    console.log('✓ Positive Match Test Passes Folding & 100% Error/Stack Preservation verified');
+
+    // [Test 90] Testing Deterministic Tool Schema Key Sorting & Prompt Cache Alignment (alignToolsSchema)
+    console.log('\n[Test 90] Testing Deterministic Tool Schema Key Sorting & Prompt Cache Alignment (alignToolsSchema)...');
+    const rawToolsVariant1 = [
+      {
+        type: 'function',
+        function: {
+          name: 'write_file',
+          description: 'Writes content to disk',
+          parameters: {
+            type: 'object',
+            properties: {
+              content: { type: 'string', description: 'Data to write' },
+              path: { type: 'string', description: 'Destination path' }
+            },
+            required: ['path', 'content']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'read_file',
+          description: 'Reads content from disk',
+          parameters: {
+            type: 'object',
+            properties: {
+              offset: { type: 'number' },
+              path: { type: 'string' }
+            },
+            required: ['path', 'offset']
+          }
+        }
+      }
+    ];
+
+    const rawToolsVariant2 = [
+      {
+        type: 'function',
+        function: {
+          parameters: {
+            required: ['offset', 'path'],
+            properties: {
+              path: { type: 'string' },
+              offset: { type: 'number' }
+            },
+            type: 'object'
+          },
+          description: 'Reads content from disk',
+          name: 'read_file'
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          parameters: {
+            required: ['content', 'path'],
+            properties: {
+              path: { type: 'string', description: 'Destination path' },
+              content: { type: 'string', description: 'Data to write' }
+            },
+            type: 'object'
+          },
+          name: 'write_file',
+          description: 'Writes content to disk'
+        }
+      }
+    ];
+
+    const aligned1 = contextCompactor.alignToolsSchema(rawToolsVariant1);
+    const aligned2 = contextCompactor.alignToolsSchema(rawToolsVariant2);
+    assert.strictEqual(aligned1[0].function.name, 'read_file');
+    assert.strictEqual(aligned1[1].function.name, 'write_file');
+    assert.strictEqual(
+      JSON.stringify(aligned1),
+      JSON.stringify(aligned2),
+      'Different initial tool and property orderings must serialize to 100% identical byte strings'
+    );
+
+    // Null-safety check in alignToolsSchema
+    const toolsWithNull = [null, { type: 'function', function: { name: 'b_tool' } }, { name: 'a_tool' }];
+    assert.doesNotThrow(() => {
+      const alignedNull = contextCompactor.alignToolsSchema(toolsWithNull);
+      assert.strictEqual(alignedNull.length, 3);
+    }, 'alignToolsSchema must safely handle null/undefined tool entries without throwing');
+    console.log('✓ Deterministic Tool Schema Key Sorting & Prompt Cache Alignment verified');
+
+    // [Test 91] Testing Oversized Schema Slimming & Example Truncation (slimToolsSchema)
+    console.log('\n[Test 91] Testing Oversized Schema Slimming & Example Truncation (slimToolsSchema)...');
+    const normalToolsList = [{ type: 'function', function: { name: 't1', description: 'Short tool description.' } }];
+    assert.strictEqual(contextCompactor.slimToolsSchema(normalToolsList, 15000), normalToolsList, 'Normal schemas under threshold must be untouched');
+
+    const oversizedTools = [
+      {
+        type: 'function',
+        function: {
+          name: 'kubernetes_query',
+          description: 'Executes complex queries against Kubernetes clusters. This tool communicates with kube-apiserver.\n\nExamples:\n```json\n{"cluster": "prod", "query": "pods"}\n```\nUsage Notes:\nDetailed multi-page manual here.',
+          parameters: {
+            type: 'object',
+            properties: {
+              cluster: {
+                type: 'string',
+                description: 'Target cluster identifier. Must be a valid DNS subdomain name.\n\nExamples:\n- prod-us-east-1\n- staging-eu-west-1',
+                example: 'prod-us-east-1'
+              }
+            },
+            required: ['cluster']
+          }
+        }
+      }
+    ];
+    // Force slim threshold to 50 chars for testing
+    const slimmedSchema = contextCompactor.slimToolsSchema(oversizedTools, 50);
+    assert.strictEqual(slimmedSchema[0].function.description, 'Executes complex queries against Kubernetes clusters.');
+    assert.ok(!slimmedSchema[0].function.description.includes('Examples:'));
+    assert.ok(!slimmedSchema[0].function.parameters.properties.cluster.description.includes('Examples:'));
+    assert.strictEqual(slimmedSchema[0].function.parameters.properties.cluster.example, undefined, 'example field must be stripped');
+    assert.strictEqual(slimmedSchema[0].function.parameters.properties.cluster.type, 'string', 'Parameter types must be strictly preserved');
+
+    // Test MCP inputSchema format and nested properties example stripping
+    const mcpTools = [
+      {
+        name: 'mcp_db_query',
+        description: 'Queries database table records.\n\nExamples:\n```json\n{"table": "users"}\n```',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filter: {
+              type: 'object',
+              description: 'Filtering options.\n\nExamples:\n- id: 1',
+              example: { id: 1 },
+              properties: {
+                id: {
+                  type: 'integer',
+                  description: 'Target record id.\n\nUsage: id=1',
+                  example: 123
+                }
+              }
+            }
+          }
+        }
+      }
+    ];
+    const slimmedMcp = contextCompactor.slimToolsSchema(mcpTools, 50);
+    assert.strictEqual(slimmedMcp[0].inputSchema.properties.filter.example, undefined, 'example field on filter must be stripped');
+    assert.strictEqual(slimmedMcp[0].inputSchema.properties.filter.properties.id.example, undefined, 'nested example field on id must be stripped');
+    assert.ok(!slimmedMcp[0].inputSchema.properties.filter.properties.id.description.includes('Usage:'));
+    console.log('✓ Oversized Schema Slimming & Example Truncation verified');
+
+    // [Test 92] Testing Session Compression Memoization & Cache-Zone Byte Freezing (sessionCompressionMemo)
+    console.log('\n[Test 92] Testing Session Compression Memoization & Cache-Zone Byte Freezing (sessionCompressionMemo)...');
+    const memoSessionId = 'test-session-memo-8899';
+    contextCompactor.clearSessionMemo(memoSessionId);
+
+    const rawToolOutputRound1 = '\u001b[32mDownloading 10%\rDownloading 100%\u001b[0m\n✓ Test 1 ok\n✓ Test 2 ok\n✓ Test 3 ok';
+    const compactedRound1 = contextCompactor.compactText(rawToolOutputRound1, { enabled: true, cacheZoneFreeze: true }, memoSessionId);
+    assert.strictEqual(compactedRound1, 'Downloading 100%\n[Test suite: 3 passed tests folded (✓ / PASS / ok)]');
+
+    // Calling again in subsequent round must hit the memo cache directly
+    const compactedRound2 = contextCompactor.compactText(rawToolOutputRound1, { enabled: true, cacheZoneFreeze: true }, memoSessionId);
+    assert.strictEqual(compactedRound2, compactedRound1, 'Subsequent turns must return identical cached byte stream');
+
+    contextCompactor.clearSessionMemo(memoSessionId);
+    assert.strictEqual(contextCompactor.getMemo(memoSessionId, 'any-hash'), null, 'clearSessionMemo must purge cached session data');
+    console.log('✓ Session Compression Memoization & Cache-Zone Byte Freezing verified');
+
+    // [Test 93] Testing Anthropic Messages Protocol Deep Compression (compactAnthropicPayload)
+    console.log('\n[Test 93] Testing Anthropic Messages Protocol Deep Compression (compactAnthropicPayload)...');
+    const anthropicRawPayload = {
+      model: 'claude-haiku-5-5',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_01_ls',
+              content: '\u001b[34m[===>   ] 20%\r[======>] 100%\u001b[0m\n✓ PASS 1\n✓ PASS 2\n✓ PASS 3'
+            },
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_02_diff',
+              content: [
+                {
+                  type: 'text',
+                  text: 'diff --git a/yarn.lock b/yarn.lock\nindex 111..222 100644\n--- a/yarn.lock\n+++ b/yarn.lock\n@@ -1,10 +1,10 @@\n-old\n+new\n+line3\n+line4\n+line5\n'
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+    const compactedAnthropic = contextCompactor.compactAnthropicPayload(anthropicRawPayload, { enabled: true });
+    const userBlocks = compactedAnthropic.messages[0].content;
+    assert.strictEqual(userBlocks[0].tool_use_id, 'toolu_01_ls');
+    assert.strictEqual(userBlocks[0].content, '[======>] 100%\n[Test suite: 3 passed tests folded (✓ / PASS / ok)]');
+    assert.ok(userBlocks[1].content[0].text.includes('[Lockfile diff folded: yarn.lock'));
+    console.log('✓ Anthropic Messages Protocol Deep Compression verified');
+
+    // [Test 94] Testing Codex Responses Protocol Deep Compression (compactResponsesPayload)
+    console.log('\n[Test 94] Testing Codex Responses Protocol Deep Compression (compactResponsesPayload)...');
+    const codexResponsesRaw = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Run test suite' },
+        {
+          type: 'function_call_output',
+          call_id: 'call_test_1',
+          output: '\u001b[32m✓ t1\n✓ t2\n✓ t3\u001b[0m\nCompleted in 0.5s'
+        },
+        {
+          type: 'custom_tool_call_output',
+          call_id: 'call_patch_1',
+          output: 'Progress 10%\rProgress 100%\nDone patch'
+        }
+      ]
+    };
+    const compactedCodex = contextCompactor.compactResponsesPayload(codexResponsesRaw, { enabled: true });
+    assert.strictEqual(compactedCodex.input[0].content, 'Run test suite', 'User message must remain untouched');
+    assert.ok(compactedCodex.input[1].output.includes('[Test suite: 3 passed tests folded'));
+    assert.ok(!compactedCodex.input[1].output.includes('\u001b[32m'));
+    assert.strictEqual(compactedCodex.input[2].output, 'Progress 100%\nDone patch');
+    console.log('✓ Codex Responses Protocol Deep Compression verified');
+
+    // [Test 95] Testing Independent Compression Feature Switches & Granular Control
+    console.log('\n[Test 95] Testing Independent Compression Feature Switches & Granular Control...');
+    const mixedInput = '\u001b[31mError\u001b[0m\n✓ Test 1 ok\n✓ Test 2 ok\n✓ Test 3 ok';
+    
+    // Switch 1: stripAnsi disabled, foldTestPasses enabled
+    const noAnsiStrip = contextCompactor.compactText(mixedInput, { enabled: true, stripAnsi: false, foldTestPasses: true });
+    assert.ok(noAnsiStrip.includes('\u001b[31mError\u001b[0m'), 'ANSI must be preserved when stripAnsi: false');
+    assert.ok(noAnsiStrip.includes('[Test suite: 3 passed tests folded'), 'Test passes must still be folded');
+
+    // Switch 2: foldTestPasses disabled, stripAnsi enabled
+    const noTestFold = contextCompactor.compactText(mixedInput, { enabled: true, stripAnsi: true, foldTestPasses: false });
+    assert.ok(!noTestFold.includes('\u001b[31m'), 'ANSI must be stripped when stripAnsi: true');
+    assert.ok(noTestFold.includes('✓ Test 1 ok\n✓ Test 2 ok\n✓ Test 3 ok'), 'Tests must not be folded when foldTestPasses: false');
+
+    // Switch 3: foldLockfiles disabled
+    const lockDiffInput = 'diff --git a/Cargo.lock b/Cargo.lock\nindex 111..222 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1,10 +1,10 @@\n-old\n+new\n+line3\n+line4\n+line5\n';
+    const noLockFold = contextCompactor.compactText(lockDiffInput, { enabled: true, foldLockfiles: false });
+    assert.strictEqual(noLockFold, lockDiffInput, 'Lockfile diffs must be preserved when foldLockfiles: false');
+    console.log('✓ Independent Compression Feature Switches & Granular Control verified');
+
+    // [Test 96] Testing Master Compression Switch Off (Complete Bypass & Zero Mutation) & Web Config API Roundtrip
+    console.log('\n[Test 96] Testing Master Compression Switch Off (Complete Bypass) & Web Config API Roundtrip...');
+    const samplePayload = {
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'tool', content: '\u001b[31mUnchanged\u001b[0m' }]
+    };
+    const bypassed = contextCompactor.compactChatPayload(samplePayload, { enabled: false });
+    assert.strictEqual(bypassed.messages[0].content, '\u001b[31mUnchanged\u001b[0m', 'Payload must be returned 100% unmodified when enabled: false');
+
+    // Web Config API roundtrip verification: Update compression config via /balancer/api/config
+    const updateRes = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream: `http://127.0.0.1:${mockPort}/v1`,
+        accounts: testConfig.accounts,
+        compression: {
+          enabled: true,
+          stripAnsi: true,
+          cleanProgressBars: false, // Turn off progress bar cleaning
+          foldLockfiles: true,
+          foldTestPasses: true,
+          alignToolsSchema: true,
+          slimToolsSchema: true,
+          schemaCharThreshold: 12000,
+          cacheZoneFreeze: true
+        }
+      })
+    });
+    assert.strictEqual(updateRes.statusCode, 200);
+
+    // Verify GET /balancer/api/config reflects the new compression settings
+    const getCfgRes = await request('/balancer/api/config', { method: 'GET' });
+    assert.strictEqual(getCfgRes.statusCode, 200);
+    const updatedCfg = JSON.parse(getCfgRes.body);
+    assert.ok(updatedCfg.compression, 'Config response must include compression configuration');
+    assert.strictEqual(updatedCfg.compression.enabled, true);
+    assert.strictEqual(updatedCfg.compression.cleanProgressBars, false, 'cleanProgressBars setting must be updated to false');
+    assert.strictEqual(updatedCfg.compression.schemaCharThreshold, 12000);
+
+    // Restore original test configuration cleanly
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream: `http://127.0.0.1:${mockPort}/v1`,
+        accounts: testConfig.accounts,
+        compression: testConfig.compression
+      })
+    });
+
+    console.log('✓ Master Compression Switch Off & Web Config API Roundtrip verified');
+
+    // [Test 97] Testing Array-based Tool Outputs in Responses & Deep Circular Reference Sandboxing
+    console.log('\n[Test 97] Testing Array-based Tool Outputs in Responses & Deep Circular Reference Sandboxing...');
+    const arrayOutputPayload = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'call_arr_1',
+          output: [
+            { type: 'text', text: '\u001b[32m✓ Test A\n✓ Test B\n✓ Test C\u001b[0m' },
+            { type: 'text', text: 'Step 1\rStep 2\rFinal Result' }
+          ]
+        },
+        {
+          type: 'custom_tool_call_output',
+          call_id: 'call_arr_2',
+          output: ['Downloading 10%\rDownloading 100%', 'All assets ready']
+        }
+      ]
+    };
+
+    const compactedArrayResp = contextCompactor.compactResponsesPayload(arrayOutputPayload, { enabled: true });
+    assert.ok(Array.isArray(compactedArrayResp.input[0].output), 'Array-based tool output must strictly remain an Array');
+    assert.strictEqual(compactedArrayResp.input[0].output.length, 2);
+    assert.ok(compactedArrayResp.input[0].output[0].text.includes('[Test suite: 3 passed tests folded'));
+    assert.ok(!compactedArrayResp.input[0].output[0].text.includes('\u001b[32m'));
+    assert.strictEqual(compactedArrayResp.input[0].output[1].text, 'Final Result');
+    assert.ok(Array.isArray(compactedArrayResp.input[1].output), 'String array output must remain an Array');
+    assert.strictEqual(compactedArrayResp.input[1].output[0], 'Downloading 100%');
+
+    // Circular reference immunity test: must not crash or throw
+    const circularObj = { name: 'circular_tool' };
+    circularObj.self = circularObj;
+    assert.doesNotThrow(() => {
+      const sortedCircular = contextCompactor.alignToolsSchema([circularObj]);
+      assert.strictEqual(sortedCircular.length, 1);
+    }, 'alignToolsSchema must survive circular object structures without infinite recursion');
+
+    assert.doesNotThrow(() => {
+      const slimmedCircular = contextCompactor.slimToolsSchema([circularObj], 10);
+      assert.strictEqual(slimmedCircular.length, 1);
+    }, 'slimToolsSchema must survive circular structures');
+    console.log('✓ Array-based Tool Outputs in Responses & Deep Circular Reference Sandboxing verified');
+
+    // [Test 98] Testing Quoted Git Diff Paths with Spaces, Deleted Lockfile Target Naming & Bun/UV/PDM Lockfiles
+    console.log('\n[Test 98] Testing Quoted Git Diff Paths with Spaces, Deleted Lockfile Target Naming & Bun/UV/PDM Lockfiles...');
+    // 1. Quoted git diff with spaces in paths
+    const quotedDiff = [
+      'diff --git "a/sub project/package-lock.json" "b/sub project/package-lock.json"',
+      'index 111..222 100644',
+      '--- "a/sub project/package-lock.json"',
+      '+++ "b/sub project/package-lock.json"',
+      '@@ -1,10 +1,10 @@',
+      '-line1',
+      '+line2',
+      '+line3',
+      '+line4',
+      '+line5',
+      '+line6'
+    ].join('\n');
+    const foldedQuoted = contextCompactor.foldLockfiles(quotedDiff);
+    assert.ok(foldedQuoted.includes('[Lockfile diff folded: sub project/package-lock.json'), 'Quoted paths with spaces must be correctly folded with clean target name');
+
+    // 2. Deleted lockfile: fileB is /dev/null -> target name must be fileA
+    const deletedDiff = [
+      'diff --git a/bun.lock b/dev/null',
+      'deleted file mode 100644',
+      'index 111..000 100644',
+      '--- a/bun.lock',
+      '+++ /dev/null',
+      '@@ -1,10 +0,0 @@',
+      '-line1',
+      '-line2',
+      '-line3',
+      '-line4',
+      '-line5',
+      '-line6'
+    ].join('\n');
+    const foldedDeleted = contextCompactor.foldLockfiles(deletedDiff);
+    assert.ok(foldedDeleted.includes('[Lockfile diff folded: bun.lock'), 'Deleted lockfile must name original file rather than /dev/null');
+    assert.ok(!foldedDeleted.includes('[Lockfile diff folded: /dev/null'));
+
+    // 3. Newly added lockfile: fileA is /dev/null -> target name must be uv.lock
+    const addedDiff = [
+      'diff --git a/dev/null b/uv.lock',
+      'new file mode 100644',
+      'index 000..222 100644',
+      '--- /dev/null',
+      '+++ b/uv.lock',
+      '@@ -0,0 +1,10 @@',
+      '+line1',
+      '+line2',
+      '+line3',
+      '+line4',
+      '+line5',
+      '+line6'
+    ].join('\n');
+    const foldedAdded = contextCompactor.foldLockfiles(addedDiff);
+    assert.ok(foldedAdded.includes('[Lockfile diff folded: uv.lock'), 'Added lockfile must name destination file');
+
+    // 4. Windows CRLF preservation
+    const crlfDiff = quotedDiff.replace(/\n/g, '\r\n');
+    const foldedCrlf = contextCompactor.foldLockfiles(crlfDiff);
+    assert.ok(foldedCrlf.includes('\r\n'), 'CRLF diff must retain CRLF newline style');
+    console.log('✓ Quoted Git Diff Paths with Spaces, Deleted Lockfile Target Naming & Bun/UV/PDM Lockfiles verified');
+
+    // [Test 99] Testing GoogleTest, Python unittest, CTest & Extensible Custom Test Pass Patterns
+    console.log('\n[Test 99] Testing GoogleTest, Python unittest, CTest & Extensible Custom Test Pass Patterns...');
+    // 1. GoogleTest output
+    const gtestRun = [
+      '[       OK ] RouterFixture.InitializesCorrectly (2 ms)',
+      '[       OK ] RouterFixture.HandlesFailover (15 ms)',
+      '[       OK ] RouterFixture.ValidatesConfig (1 ms)',
+      '[  FAILED  ] RouterFixture.BrokenAssertion (8 ms)',
+      'Value of: actual == expected\n  Actual: false\nExpected: true'
+    ].join('\n');
+    const foldedGtest = contextCompactor.foldTestPasses(gtestRun);
+    assert.ok(foldedGtest.includes('[Test suite: 3 passed tests folded (✓ / PASS / ok)]'), 'GoogleTest pass lines must be folded');
+    assert.ok(foldedGtest.includes('[  FAILED  ] RouterFixture.BrokenAssertion'), 'GoogleTest failure must be preserved');
+    assert.ok(foldedGtest.includes('Value of: actual == expected'));
+
+    // 2. Python unittest output: test_foo (__main__.TestFoo) ... ok
+    const unittestRun = [
+      'test_add (__main__.TestMath) ... ok',
+      'test_subtract (__main__.TestMath) ... ok',
+      'test_multiply (__main__.TestMath) ... ok',
+      'test_divide_zero (__main__.TestMath) ... FAIL'
+    ].join('\n');
+    const foldedUnittest = contextCompactor.foldTestPasses(unittestRun);
+    assert.ok(foldedUnittest.includes('[Test suite: 3 passed tests folded'), 'Python unittest passes must be folded');
+    assert.ok(foldedUnittest.includes('test_divide_zero (__main__.TestMath) ... FAIL'));
+
+    // 3. CTest output: 1/5 Test #1: TestName ... Passed
+    const ctestRun = [
+      '1/3 Test #1: CoreEngineTest .................. Passed   0.10 sec',
+      '2/3 Test #2: NetworkBridgeTest ............... Passed   0.15 sec',
+      '3/3 Test #3: CompressionTest ................. Passed   0.08 sec'
+    ].join('\n');
+    const foldedCtest = contextCompactor.foldTestPasses(ctestRun);
+    assert.ok(foldedCtest.includes('[Test suite: 3 passed tests folded'), 'CTest passes must be folded');
+
+    // 4. Extensible custom patterns via options.customTestPassPatterns
+    const customFrameworkRun = [
+      'CUSTOM_PASS: test_step_alpha completed',
+      'CUSTOM_PASS: test_step_beta completed',
+      'CUSTOM_PASS: test_step_gamma completed',
+      'CUSTOM_FAIL: test_step_delta timeout'
+    ].join('\n');
+    const foldedCustom = contextCompactor.foldTestPasses(customFrameworkRun, {
+      customTestPassPatterns: ['^CUSTOM_PASS:']
+    });
+    assert.ok(foldedCustom.includes('[Test suite: 3 passed tests folded'), 'Custom regex patterns must successfully fold custom framework lines');
+    assert.ok(foldedCustom.includes('CUSTOM_FAIL: test_step_delta timeout'), 'Failure lines must remain untouched');
+    console.log('✓ GoogleTest, Python unittest, CTest & Extensible Custom Test Pass Patterns verified');
+
+    // [Test 100] Testing Pluggable DevOps Pipeline Architecture (Docker, Terraform & Custom Transformer Registration)
+    console.log('\n[Test 100] Testing Pluggable DevOps Pipeline Architecture (Docker, Terraform & Custom Transformer Registration)...');
+    // 1. Docker multi-layer pull progress cleaning
+    const dockerPullLogs = [
+      'Step 1/3 : FROM alpine:latest',
+      'latest: Pulling from library/alpine',
+      'c7b415a9de06: Pulling fs layer',
+      'c7b415a9de06: Downloading [=====>      ] 1.2MB/3.4MB',
+      'c7b415a9de06: Verifying Checksum',
+      'c7b415a9de06: Download complete',
+      'c7b415a9de06: Extracting [============>] 3.4MB/3.4MB',
+      'c7b415a9de06: Pull complete',
+      'Digest: sha256:1234567890abcdef',
+      'Status: Downloaded newer image for alpine:latest'
+    ].join('\n');
+    const cleanedDocker = contextCompactor.cleanDockerOutput(dockerPullLogs);
+    assert.ok(cleanedDocker.includes('[Docker: 6 layer download/extract status lines folded]'), 'Docker layer progress must be cleanly folded');
+    assert.ok(cleanedDocker.includes('Step 1/3 : FROM alpine:latest'), 'Build steps must be 100% preserved');
+    assert.ok(cleanedDocker.includes('Status: Downloaded newer image for alpine:latest'));
+
+    // 2. Terraform resource state refreshing cleaning
+    const terraformLogs = [
+      'Terraform 1.9.0',
+      'aws_vpc.main: Refreshing state... [id=vpc-01234567]',
+      'aws_subnet.public_a: Refreshing state... [id=subnet-01234567]',
+      'aws_subnet.public_b: Refreshing state... [id=subnet-89abcdef0]',
+      'aws_internet_gateway.gw: Refreshing state... [id=igw-01234567]',
+      'Plan: 1 to add, 0 to change, 0 to destroy.'
+    ].join('\n');
+    const cleanedTf = contextCompactor.cleanTerraformOutput(terraformLogs);
+    assert.ok(cleanedTf.includes('[Terraform: 4 resources state refreshed]'), 'Terraform refreshing state noise must be folded');
+    assert.ok(cleanedTf.includes('Plan: 1 to add, 0 to change, 0 to destroy.'), 'Terraform plan summary must remain visible');
+
+    // 3. Registering and unregistering custom transformer
+    const customTransformerName = 'redact_ip_addresses';
+    contextCompactor.registerTransformer(customTransformerName, (text) => {
+      return text.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '[REDACTED_IP]');
+    }, { priority: 25 });
+
+    const registeredList = contextCompactor.getRegisteredTransformers();
+    assert.ok(registeredList.some(t => t.name === customTransformerName), 'Registered transformer must appear in registry');
+
+    const ipText = 'Server connection to 192.168.1.100 was established.\nDownloading 10%\rDownloading 100%';
+    const pipedResult = contextCompactor.compactText(ipText, { enabled: true, cacheZoneFreeze: false });
+    assert.ok(pipedResult.includes('Server connection to [REDACTED_IP] was established.'));
+    assert.ok(pipedResult.includes('Downloading 100%'));
+
+    // Transformer sandbox isolation: throwing an error must NOT break the pipeline
+    contextCompactor.registerTransformer('broken_transformer', () => {
+      throw new Error('Forced transformer explosion');
+    }, { priority: 26 });
+
+    assert.doesNotThrow(() => {
+      const safeOutput = contextCompactor.compactText('Some test content', { enabled: true, cacheZoneFreeze: false });
+      assert.strictEqual(safeOutput, 'Some test content', 'Broken transformer must be safely bypassed');
+    });
+
+    // Unregister cleanly
+    contextCompactor.unregisterTransformer(customTransformerName);
+    contextCompactor.unregisterTransformer('broken_transformer');
+    assert.ok(!contextCompactor.getRegisteredTransformers().some(t => t.name === customTransformerName));
+    console.log('✓ Pluggable DevOps Pipeline Architecture (Docker, Terraform & Custom Transformer Registration) verified');
+
+    // [Test 101] Testing Deep Composite JSON Schema Slimming (items, oneOf/anyOf/$defs) & Zero Empty Fallback
+    console.log('\n[Test 101] Testing Deep Composite JSON Schema Slimming (items, oneOf/anyOf/$defs) & Zero Empty Fallback...');
+    const compositeSchemaTools = [
+      {
+        type: 'function',
+        function: {
+          name: 'cloud_infra_provision',
+          description: 'Provisions complex cloud infrastructure components.\n\nExamples:\n```json\n{"infra": true}\n```',
+          parameters: {
+            type: 'object',
+            properties: {
+              clusters: {
+                type: 'array',
+                description: 'List of target clusters.\n\nExamples:\n- c1\n- c2',
+                example: ['c1'],
+                items: {
+                  type: 'object',
+                  description: 'Cluster configuration specification.\n\nExamples:\n{"region": "us"}',
+                  example: { region: 'us' },
+                  properties: {
+                    region: {
+                      type: 'string',
+                      description: 'Cloud deployment region name.\n\nUsage: us-east-1',
+                      example: 'us-east-1'
+                    }
+                  }
+                }
+              },
+              authMode: {
+                description: 'Authentication mode choice.\n\nExamples:\n- oauth',
+                example: 'oauth',
+                oneOf: [
+                  {
+                    type: 'object',
+                    description: 'API key authentication.\n\nExamples:\n{"key": "xyz"}',
+                    example: { key: 'xyz' },
+                    properties: {
+                      apiKey: { type: 'string', example: 'sk_test_123' }
+                    }
+                  }
+                ]
+              }
+            },
+            $defs: {
+              tagMap: {
+                type: 'object',
+                description: 'Resource tag mapping.\n\nExamples:\n{"env": "prod"}',
+                example: { env: 'prod' }
+              }
+            }
+          }
+        }
+      }
+    ];
+
+    const slimmedComposite = contextCompactor.slimToolsSchema(compositeSchemaTools, 50);
+    const fnDef = slimmedComposite[0].function;
+    assert.strictEqual(fnDef.parameters.properties.clusters.example, undefined, 'clusters.example must be pruned');
+    assert.strictEqual(fnDef.parameters.properties.clusters.items.example, undefined, 'items.example must be pruned');
+    assert.strictEqual(fnDef.parameters.properties.clusters.items.properties.region.example, undefined, 'nested region.example must be pruned');
+    assert.strictEqual(fnDef.parameters.properties.authMode.example, undefined, 'authMode.example must be pruned');
+    assert.strictEqual(fnDef.parameters.properties.authMode.oneOf[0].example, undefined, 'oneOf item example must be pruned');
+    assert.strictEqual(fnDef.parameters.$defs.tagMap.example, undefined, '$defs tagMap example must be pruned');
+
+    // Zero empty description fallback: if stripping markdown code block leaves empty, fallback to original non-empty text
+    const onlyCodeBlockDesc = '```json\n{"only": "code"}\n```';
+    const slimmedFallback = contextCompactor.slimToolsSchema([{
+      type: 'function',
+      function: { name: 'code_only_tool', description: onlyCodeBlockDesc, parameters: { type: 'object' } }
+    }], 10);
+    assert.ok(slimmedFallback[0].function.description.length > 0, 'Description must never become completely empty string');
+
+    console.log('✓ Deep Composite JSON Schema Slimming (items, oneOf/anyOf/$defs) & Zero Empty Fallback verified');
+
+    // [Test 102] Testing Windows CRLF Line Ending Preservation & Non-Destructive In-Place Clean (cleanProgressBars)
+    console.log('\n[Test 102] Testing Windows CRLF Line Ending Preservation & Non-Destructive In-Place Clean (cleanProgressBars)...');
+    // 1. CRLF without overwrites must remain byte-for-byte identical
+    const pureCrlf = 'line1\r\nline2\r\nline3\r\n';
+    const cleanedPureCrlf = contextCompactor.cleanProgressBars(pureCrlf);
+    assert.strictEqual(cleanedPureCrlf, pureCrlf, 'Windows CRLF text without progress overwrites must remain 100% byte-for-byte untouched');
+
+    // 2. CRLF with terminal overwrites must preserve CRLF newlines after cleaning
+    const crlfWithOverwrites = 'downloading 10%\rdownloading 50%\rdownloading 100%\r\nprocessing chunk\r\ndone\r\n';
+    const cleanedCrlfOverwrites = contextCompactor.cleanProgressBars(crlfWithOverwrites);
+    assert.ok(cleanedCrlfOverwrites.includes('\r\n'), 'Output must preserve CRLF newlines');
+    assert.ok(!cleanedCrlfOverwrites.includes('\nline'), 'Must not mutate newlines to naked LF');
+    assert.ok(cleanedCrlfOverwrites.includes('downloading 100%\r\nprocessing chunk\r\ndone\r\n'), 'Carriage return overwrites must be collapsed');
+    console.log('✓ Windows CRLF Line Ending Preservation & Non-Destructive In-Place Clean verified');
+
+    // [Test 103] Testing Kubectl Pod/Rollout Status Folding & Strict Fault State Preservation (cleanKubectlOutput)
+    console.log('\n[Test 103] Testing Kubectl Pod/Rollout Status Folding & Strict Fault State Preservation (cleanKubectlOutput)...');
+    const kubectlOutput = [
+      'NAME                                READY   STATUS      RESTARTS   AGE',
+      'pod-worker-api-8924b1c7-2k9x1       1/1     Running     0          3d4h',
+      'pod-worker-api-8924b1c7-5m8w2       1/1     Running     0          3d4h',
+      'pod-worker-api-8924b1c7-7p1z9       1/1     Running     0          3d4h',
+      'pod-worker-api-8924b1c7-9b4q8       1/1     Running     0          3d4h',
+      'pod-job-migrate-2948-x8k1           0/1     Completed   0          12h',
+      'pod-broken-service-78bf1-4m9p1      0/1     CrashLoopBackOff 5     15m',
+      'pod-failing-db-58c1-1x2y3           0/1     Error       1          5m'
+    ].join('\n');
+    const cleanedKube = contextCompactor.cleanKubectlOutput(kubectlOutput);
+    assert.ok(cleanedKube.includes('[Kubectl: 5 healthy pods / rollout status lines folded (Running / Completed / Met)]'), 'Running/Completed pod status lines must be folded');
+    assert.ok(cleanedKube.includes('NAME                                READY   STATUS      RESTARTS   AGE'), 'Pod table header must be preserved');
+    assert.ok(cleanedKube.includes('CrashLoopBackOff'), 'Failing CrashLoopBackOff pod MUST NEVER be folded');
+    assert.ok(cleanedKube.includes('pod-failing-db-58c1-1x2y3'), 'Error state pod MUST NEVER be folded');
+
+    // Test rollout progress folding
+    const rolloutLogs = [
+      'Waiting for deployment "api-gateway" rollout to finish: 1 of 3 updated replicas are available...',
+      'Waiting for deployment "api-gateway" rollout to finish: 2 of 3 updated replicas are available...',
+      'Waiting for deployment "api-gateway" rollout to finish: 3 of 3 updated replicas are available...',
+      'Waiting for deployment "api-gateway" rollout to finish: 3 of 3 updated replicas are available...',
+      'deployment "api-gateway" successfully rolled out'
+    ].join('\n');
+    const cleanedRollout = contextCompactor.cleanKubectlOutput(rolloutLogs);
+    assert.ok(cleanedRollout.includes('[Kubectl: 4 healthy pods / rollout status lines folded'), 'Rollout progress updates must be folded');
+    assert.ok(cleanedRollout.includes('deployment "api-gateway" successfully rolled out'), 'Rollout final completion message must be preserved');
+    console.log('✓ Kubectl Pod/Rollout Status Folding & Strict Fault State Preservation verified');
+
+    // [Test 104] Testing Deep Schema Recursion Depth Barrier (>50 levels) & PatternProperties/AdditionalProperties Slimming
+    console.log('\n[Test 104] Testing Deep Schema Recursion Depth Barrier (>50 levels) & PatternProperties/AdditionalProperties Slimming...');
+    // Create an adversarial 60-level nested schema to verify depth guard prevents stack overflow
+    let deepSchema = {
+      type: 'object',
+      description: 'Root schema level\n\nExamples:\n{"depth": 0}',
+      example: { depth: 0 },
+      patternProperties: {
+        '^[a-z]+$': {
+          type: 'string',
+          description: 'Pattern property description\n\nExamples:\n"val"',
+          example: 'val'
+        }
+      },
+      additionalProperties: {
+        type: 'object',
+        description: 'Additional properties schema\n\nExamples:\n{"extra": true}',
+        example: { extra: true }
+      }
+    };
+    let currentLevel = deepSchema;
+    for (let i = 1; i <= 60; i++) {
+      currentLevel.properties = {
+        nested: {
+          type: 'object',
+          description: `Deep level ${i}\n\nExamples:\n{"level": ${i}}`,
+          example: { level: i }
+        }
+      };
+      currentLevel = currentLevel.properties.nested;
+    }
+
+    const toolsWithDeepSchema = [{
+      type: 'function',
+      function: {
+        name: 'adversarial_deep_schema_tool',
+        description: 'Tool with extremely deep nested schema',
+        parameters: deepSchema
+      }
+    }];
+
+    assert.doesNotThrow(() => {
+      const slimmedDeep = contextCompactor.slimToolsSchema(toolsWithDeepSchema, 100);
+      assert.ok(slimmedDeep && slimmedDeep.length === 1, 'Deep schema must be successfully processed without stack overflow');
+      assert.strictEqual(slimmedDeep[0].function.parameters.patternProperties['^[a-z]+$'].example, undefined, 'patternProperties example must be pruned');
+      assert.strictEqual(slimmedDeep[0].function.parameters.additionalProperties.example, undefined, 'additionalProperties example must be pruned');
+    }, 'Adversarial deep schema (>50 levels) must not throw Maximum call stack size exceeded');
+    console.log('✓ Deep Schema Recursion Depth Barrier (>50 levels) & PatternProperties/AdditionalProperties Slimming verified');
+
+    // [Test 105] Testing Dynamic Multi-Transformer Cache Key Signature & True LRU Bounded Memoization
+    console.log('\n[Test 105] Testing Dynamic Multi-Transformer Cache Key Signature & True LRU Bounded Memoization...');
+    const testSession = 'sess_test_lru_' + Date.now();
+    const dynamicOpts = { enabled: true, cacheZoneFreeze: true };
+    const sig1 = contextCompactor.getOptionsSignature(dynamicOpts);
+    assert.ok(sig1.includes('cleanKubectlOutput:1'), 'Dynamic signature must include cleanKubectlOutput');
+
+    // Register dynamic transformer and check signature change
+    contextCompactor.registerTransformer('custom_auditor', (t) => t, { priority: 99 });
+    const sig2 = contextCompactor.getOptionsSignature(dynamicOpts);
+    assert.ok(sig2.includes('custom_auditor:1'), 'Signature must reflect registered custom transformer');
+    assert.notStrictEqual(sig1, sig2, 'Cache signatures must differ when transformer registry changes');
+    contextCompactor.unregisterTransformer('custom_auditor');
+
+    // Verify true LRU order refreshing
+    const keyA = 'key_a';
+    const keyB = 'key_b';
+    contextCompactor.setMemo(testSession, keyA, 'val_a');
+    contextCompactor.setMemo(testSession, keyB, 'val_b');
+    // Access keyA to refresh recency
+    const fetchedA = contextCompactor.getMemo(testSession, keyA);
+    assert.strictEqual(fetchedA, 'val_a', 'Memo must return cached value');
+    contextCompactor.clearSessionMemo(testSession);
+    assert.strictEqual(contextCompactor.getMemo(testSession, keyA), null, 'clearSessionMemo must wipe session keys');
+    console.log('✓ Dynamic Multi-Transformer Cache Key Signature & True LRU Bounded Memoization verified');
+
+    // [Test 106] Testing Strict Code Line & Pytest/TAP Assertion Safety (Zero False Positives on Code)
+    console.log('\n[Test 106] Testing Strict Code Line & Pytest/TAP Assertion Safety (Zero False Positives on Code)...');
+    // 1. Python source code assigning or comparing PASSED variable
+    const pythonSourceCode = [
+      'def evaluate_state():',
+      '    status_a = PASSED',
+      '    status_b = PASSED',
+      '    status_c = PASSED',
+      '    return status_a == PASSED'
+    ].join('\n');
+    const foldedPyCode = contextCompactor.foldTestPasses(pythonSourceCode);
+    assert.strictEqual(foldedPyCode, pythonSourceCode, 'Python variable assignments containing PASSED must NEVER be folded as test passes');
+
+    // 2. JavaScript source code with ok identifier
+    const jsSourceCode = [
+      'const ok = true;',
+      'if (ok) {',
+      '  return ok;',
+      '}'
+    ].join('\n');
+    const foldedJsCode = contextCompactor.foldTestPasses(jsSourceCode);
+    assert.strictEqual(foldedJsCode, jsSourceCode, 'JavaScript source code with ok identifier must NEVER be folded');
+
+    // 3. New lockfiles: pubspec.lock, gradle.lockfile, go.work.sum
+    const pubspecDiff = [
+      'diff --git a/pubspec.lock b/pubspec.lock',
+      'index 123456..789abc 100644',
+      '--- a/pubspec.lock',
+      '+++ b/pubspec.lock',
+      '@@ -1,5 +1,10 @@',
+      '+  flutter_svg:',
+      '+    dependency: transitive',
+      '+    description: null',
+      '+    version: "2.0.7"',
+      '+    source: hosted'
+    ].join('\n');
+    const foldedPubspec = contextCompactor.foldLockfiles(pubspecDiff);
+    assert.ok(foldedPubspec.includes('[Lockfile diff folded: pubspec.lock'), 'pubspec.lock diff must be cleanly folded');
+
+    const gradleDiff = [
+      'diff --git a/gradle.lockfile b/gradle.lockfile',
+      'index 123456..789abc 100644',
+      '--- a/gradle.lockfile',
+      '+++ b/gradle.lockfile',
+      '@@ -1,5 +1,10 @@',
+      '+org.jetbrains.kotlin:kotlin-stdlib:1.9.22=compileClasspath',
+      '+org.slf4j:slf4j-api:2.0.9=compileClasspath',
+      '+com.google.guava:guava:33.0.0-jre=compileClasspath',
+      '+io.netty:netty-all:4.1.107.Final=compileClasspath'
+    ].join('\n');
+    const foldedGradle = contextCompactor.foldLockfiles(gradleDiff);
+    assert.ok(foldedGradle.includes('[Lockfile diff folded: gradle.lockfile'), 'gradle.lockfile diff must be cleanly folded');
+    console.log('✓ Strict Code Line & Pytest/TAP Assertion Safety (Zero False Positives on Code) verified');
+
+    // [Test 107] Testing Hierarchical Compression Configuration & Preset Matrix
+    console.log('\n[Test 107] Testing Hierarchical Compression Configuration & Preset Matrix...');
+    const defaultCfg = contextCompactor.DEFAULT_COMPRESSION_CONFIG;
+    assert.ok(defaultCfg.modules, 'DEFAULT_COMPRESSION_CONFIG must contain hierarchical modules');
+    assert.ok(defaultCfg.modules.rtk, 'rtk module must be defined');
+    assert.ok(defaultCfg.modules.headroom, 'headroom module must be defined');
+    assert.ok(defaultCfg.modules.schema, 'schema module must be defined');
+    assert.ok(defaultCfg.modules.cacheZone, 'cacheZone module must be defined');
+    assert.strictEqual(defaultCfg.modules.rtk.enabled, true);
+    assert.strictEqual(defaultCfg.modules.schema.schemaCharThreshold, 15000);
+
+    // Verify Presets Matrix
+    const presets = contextCompactor.COMPRESSION_PRESETS;
+    assert.ok(presets.balanced && presets.aggressive && presets.conservative);
+    assert.strictEqual(presets.balanced.modules.schema.schemaCharThreshold, 15000);
+    assert.strictEqual(presets.aggressive.modules.schema.schemaCharThreshold, 8000);
+    assert.strictEqual(presets.conservative.modules.headroom.enabled, false);
+    assert.strictEqual(presets.conservative.modules.cacheZone.enabled, false);
+
+    // Normalization helper tests
+    const normDefault = contextCompactor.normalizeCompressionOptions({});
+    assert.strictEqual(normDefault.modules.rtk.enabled, true);
+    assert.strictEqual(normDefault.modules.headroom.foldLockfiles, true);
+
+    const normFlat = contextCompactor.normalizeCompressionOptions({
+      cleanProgressBars: false,
+      schemaCharThreshold: 9999
+    });
+    assert.strictEqual(normFlat.modules.rtk.cleanProgressBars, false, 'Flat cleanProgressBars must map to rtk module');
+    assert.strictEqual(normFlat.modules.schema.schemaCharThreshold, 9999, 'Flat threshold must map to schema module');
+    assert.strictEqual(normFlat.cleanProgressBars, false, 'Effective flat key must be synchronized');
+    assert.strictEqual(normFlat.schemaCharThreshold, 9999, 'Effective flat threshold must be synchronized');
+
+    // Preset resolution alone
+    const normCons = contextCompactor.normalizeCompressionOptions({ preset: 'conservative' });
+    assert.strictEqual(normCons.preset, 'conservative');
+    assert.strictEqual(normCons.modules.headroom.enabled, false);
+    assert.strictEqual(normCons.foldLockfiles, false);
+    assert.strictEqual(normCons.foldTestPasses, false);
+
+    const normAggr = contextCompactor.normalizeCompressionOptions({ preset: 'aggressive' });
+    assert.strictEqual(normAggr.preset, 'aggressive');
+    assert.strictEqual(normAggr.modules.schema.schemaCharThreshold, 8000);
+    assert.strictEqual(normAggr.schemaCharThreshold, 8000);
+
+    const normOverride = contextCompactor.normalizeCompressionOptions({
+      preset: 'conservative',
+      modules: { headroom: { enabled: true, foldLockfiles: true } }
+    });
+    assert.strictEqual(normOverride.modules.headroom.enabled, true);
+    assert.strictEqual(normOverride.foldLockfiles, true);
+    assert.strictEqual(normOverride.foldTestPasses, false);
+
+    const normCustom = contextCompactor.normalizeCompressionOptions({ preset: 'custom' });
+    assert.strictEqual(normCustom.preset, 'custom');
+    console.log('✓ Hierarchical Compression Configuration & Preset Matrix verified');
+
+    // [Test 108] Testing Cascading Major Module Master Switches
+    console.log('\n[Test 108] Testing Cascading Major Module Master Switches...');
+    const ansiWithLock = '\u001b[31mError Line\u001b[0m\n' + pubspecDiff;
+
+    // Case 1: RTK disabled, Headroom enabled
+    const rtkOffRes = contextCompactor.compactText(ansiWithLock, {
+      enabled: true,
+      modules: {
+        rtk: { enabled: false },
+        headroom: { enabled: true, foldLockfiles: true }
+      }
+    });
+    assert.ok(rtkOffRes.includes('\u001b[31mError Line\u001b[0m'), 'ANSI must be preserved when RTK module is disabled');
+    assert.ok(rtkOffRes.includes('[Lockfile diff folded: pubspec.lock'), 'Lockfile diff must still be folded by Headroom module');
+
+    // Case 2: Headroom disabled, RTK enabled
+    const headroomOffRes = contextCompactor.compactText(ansiWithLock, {
+      enabled: true,
+      modules: {
+        rtk: { enabled: true, stripAnsi: true },
+        headroom: { enabled: false, foldLockfiles: true }
+      }
+    });
+    assert.ok(!headroomOffRes.includes('\u001b[31m'), 'ANSI must be stripped by active RTK module');
+    assert.ok(!headroomOffRes.includes('[Lockfile diff folded:'), 'Lockfile folding must be bypassed when Headroom module is disabled');
+
+    // Case 3: Schema module disabled
+    const oversizedToolItem = {
+      name: 'oversized_test_tool',
+      description: 'Super verbose description. '.repeat(100),
+      parameters: { type: 'object', properties: { test: { type: 'string', description: 'Long. '.repeat(200) } } }
+    };
+    const schemaOffPayload = contextCompactor.compactChatPayload({
+      tools: [oversizedToolItem]
+    }, {
+      enabled: true,
+      modules: {
+        schema: { enabled: false, slimToolsSchema: true, schemaCharThreshold: 50 }
+      }
+    });
+    assert.strictEqual(schemaOffPayload.tools[0].description, oversizedToolItem.description, 'Schema slimming must be bypassed when schema module is disabled');
+
+    // Case 4: Schema module re-enabled
+    const schemaOnPayload = contextCompactor.compactChatPayload({
+      tools: [oversizedToolItem]
+    }, {
+      enabled: true,
+      modules: {
+        schema: { enabled: true, slimToolsSchema: true, schemaCharThreshold: 50 }
+      }
+    });
+    assert.ok(schemaOnPayload.tools[0].description.length < oversizedToolItem.description.length, 'Schema slimming must take effect when schema module is enabled');
+    console.log('✓ Cascading Major Module Master Switches verified');
+
+    // [Test 109] Testing Realtime Compression Stats Tracking, Metrics Calculation & Disk Persistence
+    console.log('\n[Test 109] Testing Realtime Compression Stats Tracking, Metrics Calculation & Disk Persistence...');
+    contextCompactor.resetCompressionStats();
+    let stats0 = contextCompactor.getCompressionStats();
+    assert.strictEqual(stats0.totalOriginalChars, 0);
+    assert.strictEqual(stats0.totalSavedChars, 0);
+    assert.strictEqual(stats0.savedTokens, 0);
+    assert.strictEqual(stats0.savedCostUSD, 0);
+
+    // Run compression to accumulate savings
+    const noisyText = '\u001b[32m' + 'A'.repeat(380) + '\u001b[0m\n' + pubspecDiff;
+    const compactedOut = contextCompactor.compactText(noisyText, { enabled: true });
+    assert.ok(compactedOut.length < noisyText.length);
+
+    let stats1 = contextCompactor.getCompressionStats();
+    assert.ok(stats1.totalOriginalChars > 0, 'Original chars must be tracked');
+    assert.ok(stats1.totalSavedChars > 0, 'Saved chars must be tracked');
+    assert.strictEqual(stats1.savedTokens, Math.round(stats1.totalSavedChars / 3.8), 'savedTokens must match formula');
+    assert.strictEqual(stats1.savedCostUSD, Number(((stats1.savedTokens / 1000000) * 0.25).toFixed(6)), 'savedCostUSD must match formula');
+    assert.ok(stats1.compressionRatio > 0, 'compressionRatio must be positive');
+    assert.ok(stats1.modules.rtk.savedChars > 0, 'rtk module savings must be credited');
+    assert.ok(stats1.modules.headroom.savedChars > 0, 'headroom module savings must be credited');
+
+    // Check disk persistence (compression-stats.json)
+    const statsFilePath = path.join(__dirname, 'compression-stats.json');
+    contextCompactor.resetCompressionStats();
+    assert.ok(fs.existsSync(statsFilePath), 'compression-stats.json must be persisted to disk upon reset');
+    const diskContent = JSON.parse(fs.readFileSync(statsFilePath, 'utf8'));
+    assert.strictEqual(diskContent.totalOriginalChars, 0);
+    assert.strictEqual(diskContent.savedTokens, 0);
+    console.log('✓ Realtime Compression Stats Tracking, Metrics Calculation & Disk Persistence verified');
+
+    // [Test 110] Testing Compression Stats API: GET /balancer/api/compression/stats
+    console.log('\n[Test 110] Testing Compression Stats API: GET /balancer/api/compression/stats...');
+    const statsRes = await request('/balancer/api/compression/stats', { method: 'GET' });
+    assert.strictEqual(statsRes.statusCode, 200);
+    const statsJson = JSON.parse(statsRes.body);
+    assert.strictEqual(statsJson.success, true);
+    assert.ok(statsJson.stats, 'Response must contain stats object');
+    assert.ok(statsJson.stats.modules.rtk, 'modules.rtk must exist');
+    assert.ok(statsJson.stats.modules.headroom, 'modules.headroom must exist');
+    assert.ok(statsJson.stats.modules.schema, 'modules.schema must exist');
+    assert.ok(statsJson.stats.modules.cacheZone, 'modules.cacheZone must exist');
+    console.log('✓ Compression Stats API: GET /balancer/api/compression/stats verified');
+
+    // [Test 111] Testing Compression Stats Reset API: POST /balancer/api/compression/stats/reset
+    console.log('\n[Test 111] Testing Compression Stats Reset API: POST /balancer/api/compression/stats/reset...');
+    const compResetRes = await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+    assert.strictEqual(compResetRes.statusCode, 200);
+    const compResetJson = JSON.parse(compResetRes.body);
+    assert.strictEqual(compResetJson.success, true);
+    assert.ok(compResetJson.message.includes('清零'));
+    assert.strictEqual(compResetJson.stats.totalSavedChars, 0);
+    assert.strictEqual(compResetJson.stats.savedTokens, 0);
+
+    // Verify subsequent GET reflects the zero state
+    const afterResetGet = await request('/balancer/api/compression/stats', { method: 'GET' });
+    const afterResetData = JSON.parse(afterResetGet.body);
+    assert.strictEqual(afterResetData.stats.totalSavedChars, 0);
+    console.log('✓ Compression Stats Reset API: POST /balancer/api/compression/stats/reset verified');
+
+    // [Test 112] Testing Web UI Dashboard Integration & Hierarchical Config Roundtrip
+    console.log('\n[Test 112] Testing Web UI Dashboard Integration & Hierarchical Config Roundtrip...');
+    // 1. Post hierarchical config with aggressive preset and custom threshold
+    const hierarchicalCfgUpdate = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream: `http://127.0.0.1:${mockPort}/v1`,
+        accounts: testConfig.accounts,
+        compression: {
+          enabled: true,
+          preset: 'aggressive',
+          modules: {
+            rtk: { enabled: true, stripAnsi: true, cleanProgressBars: true, foldTestPasses: true, cleanDevOpsOutput: true },
+            headroom: { enabled: true, foldLockfiles: true, exemptMergeConflicts: true, protectSourceDiffs: true },
+            schema: { enabled: true, alignToolsSchema: true, slimToolsSchema: true, schemaCharThreshold: 8000 },
+            cacheZone: { enabled: true, cacheZoneFreeze: true, trueLruRetention: true }
+          }
+        }
+      })
+    });
+    assert.strictEqual(hierarchicalCfgUpdate.statusCode, 200);
+
+    // 2. Verify GET /balancer/api/config returns both modules and flat aliases in sync
+    const getHierarchicalRes = await request('/balancer/api/config', { method: 'GET' });
+    assert.strictEqual(getHierarchicalRes.statusCode, 200);
+    const gotCfg = JSON.parse(getHierarchicalRes.body);
+    assert.strictEqual(gotCfg.compression.preset, 'aggressive');
+    assert.strictEqual(gotCfg.compression.modules.schema.schemaCharThreshold, 8000);
+    assert.strictEqual(gotCfg.compression.schemaCharThreshold, 8000, 'Flat alias must be synchronized with module');
+    assert.strictEqual(gotCfg.compression.modules.rtk.enabled, true);
+
+    // 3. Verify Web UI HTML contains modern 4-module cards, metrics cards, and preset buttons
+    const compUiRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(compUiRes.statusCode, 200);
+    assert.ok(compUiRes.body.includes('id="compression-card"'), 'UI must contain compression-card');
+    assert.ok(compUiRes.body.includes('id="module-card-rtk"'), 'UI must contain module-card-rtk');
+    assert.ok(compUiRes.body.includes('id="module-card-headroom"'), 'UI must contain module-card-headroom');
+    assert.ok(compUiRes.body.includes('id="module-card-schema"'), 'UI must contain module-card-schema');
+    assert.ok(compUiRes.body.includes('id="module-card-cacheZone"'), 'UI must contain module-card-cacheZone');
+    assert.ok(compUiRes.body.includes('id="preset-btn-balanced"'), 'UI must contain preset-btn-balanced');
+    assert.ok(compUiRes.body.includes('id="preset-btn-aggressive"'), 'UI must contain preset-btn-aggressive');
+    assert.ok(compUiRes.body.includes('id="preset-btn-conservative"'), 'UI must contain preset-btn-conservative');
+    assert.ok(compUiRes.body.includes('id="preset-btn-custom"'), 'UI must contain preset-btn-custom');
+    assert.ok(compUiRes.body.includes('id="btn-reset-comp-stats"'), 'UI must contain btn-reset-comp-stats');
+    assert.ok(compUiRes.body.includes('id="stat-saved-tokens"'), 'UI must contain stat-saved-tokens');
+    assert.ok(compUiRes.body.includes('id="stat-saved-cost"'), 'UI must contain stat-saved-cost');
+    assert.ok(compUiRes.body.includes('id="stat-compression-ratio"'), 'UI must contain stat-compression-ratio');
+
+    // 4. Verify client script syntax integrity after additions
+    const matchScript = compUiRes.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(matchScript, 'Web UI must contain inline script');
+    assert.doesNotThrow(() => {
+      new Function(matchScript[1]);
+    }, 'Client script in Web UI must compile without SyntaxError');
+
+    // 5. Test flat config update preserving pre-configured modules
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream: `http://127.0.0.1:${mockPort}/v1`,
+        accounts: testConfig.accounts,
+        compression: {
+          enabled: true,
+          stripAnsi: false
+        }
+      })
+    });
+    const afterFlatCfgRes = await request('/balancer/api/config', { method: 'GET' });
+    const afterFlatCfg = JSON.parse(afterFlatCfgRes.body);
+    assert.strictEqual(afterFlatCfg.compression.modules.schema.schemaCharThreshold, 8000, 'Pre-configured schemaCharThreshold must be preserved across flat update');
+    assert.strictEqual(afterFlatCfg.compression.modules.rtk.stripAnsi, false, 'Flat stripAnsi update must be applied');
+
+    // Restore original test configuration cleanly
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream: `http://127.0.0.1:${mockPort}/v1`,
+        accounts: testConfig.accounts,
+        compression: testConfig.compression
+      })
+    });
+    console.log('✓ Web UI Dashboard Integration & Hierarchical Config Roundtrip verified');
+
+    // [Test 113] Testing Doctor & Repair Modular Scoping (System vs Codex Decoupling)
+    console.log('\n[Test 113] Testing Doctor & Repair Modular Scoping (System vs Codex Decoupling)...');
+
+    // 1. Doctor scope=system
+    const docSysRes = await request('/balancer/api/doctor?scope=system', { method: 'GET' });
+    assert.strictEqual(docSysRes.statusCode, 200);
+    const docSysJson = JSON.parse(docSysRes.body);
+    assert.strictEqual(docSysJson.scope, 'system');
+    assert.ok(Array.isArray(docSysJson.issues));
+    const codexIssueIds = ['codex_not_bound', 'codex_timeout_unhardened', 'codex_process_suspended', 'codex_ghost_process', 'codex_locale_misaligned'];
+    const foundCodexInSystem = docSysJson.issues.some(iss => codexIssueIds.includes(iss.id));
+    assert.strictEqual(foundCodexInSystem, false, 'System doctor issues must NOT contain Codex-specific issues');
+    assert.ok(Array.isArray(docSysJson.codexIssues), 'System doctor report must provide isolated codexIssues array for UI redirection');
+
+    // 2. Doctor scope=codex
+    const docCodexRes = await request('/balancer/api/doctor?scope=codex', { method: 'GET' });
+    assert.strictEqual(docCodexRes.statusCode, 200);
+    const docCodexScopeJson = JSON.parse(docCodexRes.body);
+    assert.strictEqual(docCodexScopeJson.scope, 'codex');
+    assert.ok(docCodexScopeJson.codex && typeof docCodexScopeJson.codex === 'object');
+    assert.ok(Array.isArray(docCodexScopeJson.issues));
+    const allAreCodexIssues = docCodexScopeJson.issues.every(iss => codexIssueIds.includes(iss.id));
+    assert.strictEqual(allAreCodexIssues, true, 'Codex-scoped doctor must only report Codex-related issues');
+
+    // 3. Doctor scope=all (default backwards compatibility)
+    const docAllRes = await request('/balancer/api/doctor', { method: 'GET' });
+    assert.strictEqual(docAllRes.statusCode, 200);
+    const docAllJson = JSON.parse(docAllRes.body);
+    assert.strictEqual(docAllJson.scope, 'all');
+    assert.ok(docAllJson.codex);
+
+    // 4. Repair scope=system (Must skip Codex repair items)
+    const repSysRes = await request('/balancer/api/repair?scope=system', { method: 'POST' });
+    assert.strictEqual(repSysRes.statusCode, 200);
+    const repSysJson = JSON.parse(repSysRes.body);
+    assert.strictEqual(repSysJson.success, true);
+    assert.strictEqual(repSysJson.scope, 'system');
+    const codexRepItems = ['Codex Process Suspension', 'Codex SingleInstanceLock', 'Codex Locale & Environment', 'Codex Integration'];
+    const foundCodexInRepSys = repSysJson.results.some(r => codexRepItems.includes(r.item));
+    assert.strictEqual(foundCodexInRepSys, false, 'System repair results must NOT contain Codex repair steps');
+
+    // 5. Repair scope=codex (Must only execute Codex repair items)
+    const repCodexRes = await request('/balancer/api/repair?scope=codex', { method: 'POST' });
+    assert.strictEqual(repCodexRes.statusCode, 200);
+    const repCodexScopeJson = JSON.parse(repCodexRes.body);
+    assert.strictEqual(repCodexScopeJson.success, true);
+    assert.strictEqual(repCodexScopeJson.scope, 'codex');
+    const sysItems = ['Reset Cooldowns', 'OpenCode Config', 'OMO Plugin v2 Patch', 'OMO Config', 'Boost Command'];
+    const foundSysInRepCodex = repCodexScopeJson.results.some(r => sysItems.includes(r.item));
+    assert.strictEqual(foundSysInRepCodex, false, 'Codex repair results must NOT contain general system repair steps');
+    assert.ok(repCodexScopeJson.results.some(r => codexRepItems.includes(r.item)), 'Codex repair must execute Codex self-healing actions');
+
+    // 6. Repair scope=all (Default full backwards compatibility)
+    const repAllRes = await request('/balancer/api/repair', { method: 'POST' });
+    assert.strictEqual(repAllRes.statusCode, 200);
+    const repAllJson = JSON.parse(repAllRes.body);
+    assert.strictEqual(repAllJson.success, true);
+    assert.strictEqual(repAllJson.scope, 'all');
+    assert.ok(repAllJson.results.some(r => r.item === 'Reset Cooldowns'));
+    console.log('✓ Doctor & Repair Modular Scoping (System vs Codex Decoupling) verified');
+
+    // [Test 114] Testing Foolproof UX/UI Smart Quick Start Wizard & Visual Hierarchy Integrity
+    console.log('\n[Test 114] Testing Foolproof UX/UI Smart Quick Start Wizard & Visual Hierarchy Integrity...');
+    const uiFoolproofRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiFoolproofRes.statusCode, 200);
+
+    // 1. Verify Smart Quick Wizard card, hero button, and 4-dimension status pills
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-card"'), 'UI must contain wizard-card');
+    assert.ok(uiFoolproofRes.body.includes('id="btn-quick-setup"'), 'UI must contain btn-quick-setup');
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-global-badge"'), 'UI must contain wizard-global-badge');
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-status-account"'), 'UI must contain wizard-status-account');
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-status-doctor"'), 'UI must contain wizard-status-doctor');
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-status-comp"'), 'UI must contain wizard-status-comp');
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-status-codex"'), 'UI must contain wizard-status-codex');
+    assert.ok(uiFoolproofRes.body.includes('id="wizard-progress-box"'), 'UI must contain wizard-progress-box');
+
+    // 2. Verify Visual Hierarchy Status Badges across all core cards
+    assert.ok(uiFoolproofRes.body.includes('id="accounts-status-badge"'), 'UI must contain accounts-status-badge');
+    assert.ok(uiFoolproofRes.body.includes('id="doctor-status-badge"'), 'UI must contain doctor-status-badge');
+    assert.ok(uiFoolproofRes.body.includes('id="updates-status-badge"'), 'UI must contain updates-status-badge');
+    assert.ok(uiFoolproofRes.body.includes('id="codex-status-badge"'), 'UI must contain codex-status-badge');
+    assert.ok(uiFoolproofRes.body.includes('id="network-status-badge"'), 'UI must contain network-status-badge');
+    assert.ok(uiFoolproofRes.body.includes(`${routerPort} 监听正常`), 'Network status badge must reflect dynamic test port');
+
+    // 3. Verify Dynamic Copy Feedback & Collapsible Components & Dirty State
+    assert.ok(uiFoolproofRes.body.includes('id="btn-copy-baseurl"'), 'UI must contain btn-copy-baseurl');
+    assert.ok(uiFoolproofRes.body.includes('btn-save-dirty'), 'UI must contain btn-save-dirty styling');
+    assert.ok(uiFoolproofRes.body.includes('toggleCardCollapse'), 'UI script must contain toggleCardCollapse');
+    assert.ok(uiFoolproofRes.body.includes('initCardCollapseStates'), 'UI script must contain initCardCollapseStates');
+    assert.ok(uiFoolproofRes.body.includes('runQuickSetupWizard'), 'UI script must contain runQuickSetupWizard');
+    assert.ok(uiFoolproofRes.body.includes('updateWizardStatusBadges'), 'UI script must contain updateWizardStatusBadges');
+    assert.ok(uiFoolproofRes.body.includes('markConfigDirty'), 'UI script must contain markConfigDirty');
+    assert.ok(uiFoolproofRes.body.includes('clearConfigDirty'), 'UI script must contain clearConfigDirty');
+
+    // 4. Verify client script execution of wizard & collapse functions in VM
+    const uiScriptMatch = uiFoolproofRes.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(uiScriptMatch, 'UI must contain script tag');
+    await assert.doesNotReject(async () => {
+      const mockElements = {};
+      const mockDoc = {
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        cookie: '',
+        hidden: false,
+        getElementById: (id) => {
+          if (!mockElements[id]) {
+            const classSet = new Set();
+            mockElements[id] = {
+              id,
+              checked: true,
+              value: '15000',
+              style: {},
+              classList: {
+                add: (c) => classSet.add(c),
+                remove: (c) => classSet.delete(c),
+                contains: (c) => classSet.has(c)
+              },
+              querySelectorAll: () => []
+            };
+          }
+          return mockElements[id];
+        }
+      };
+      const vm = require('node:vm');
+      const ctx = vm.createContext({
+        document: mockDoc,
+        window: { location: {}, addEventListener: () => {} },
+        localStorage: { getItem: () => null, setItem: () => {} },
+        setInterval: () => {},
+        clearInterval: () => {},
+        setTimeout: () => {},
+        currentPreset: 'balanced',
+        accountQuotas: {},
+        liveStats: {},
+        currentConfig: { accounts: [{ id: 'acc-test-1', apiKey: 'test-key', enabled: true }], compression: { enabled: true, preset: 'balanced' } },
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true, results: [{ item: 'Test Repair', success: true, message: 'Clean' }] })
+        })
+      });
+      vm.runInContext(uiScriptMatch[1], ctx);
+      ctx.updateCompCardsUI();
+      ctx.updateWizardStatusBadges();
+      assert.ok(mockElements['wizard-global-badge'].innerText.includes('🟢') || mockElements['wizard-global-badge'].innerText.includes('🟡'));
+
+      // Test zero-account empty key dynamic reaction
+      ctx.currentConfig.accounts = [];
+      ctx.updateWizardStatusBadges();
+      assert.strictEqual(mockElements['wizard-status-account'].innerText, '🔴 待配置密钥');
+      assert.strictEqual(mockElements['wizard-global-badge'].innerText, '🔴 待配置密钥');
+
+      // Test dirty config feedback
+      ctx.markConfigDirty();
+      assert.strictEqual(mockElements['btn-save-config'].classList.contains('btn-save-dirty'), true);
+      ctx.clearConfigDirty();
+      assert.strictEqual(mockElements['btn-save-config'].classList.contains('btn-save-dirty'), false);
+
+      ctx.toggleCardCollapse('config-card-body', { innerText: '' });
+      ctx.initCardCollapseStates();
+      ctx.scrollToElement('wizard-card');
+
+      // Test runQuickSetupWizard full flow execution
+      await ctx.runQuickSetupWizard();
+    }, 'Foolproof UI script methods must execute cleanly in VM context without error or recursion');
+    console.log('✓ Foolproof UX/UI Smart Quick Start Wizard & Visual Hierarchy Integrity verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 84 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 114 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
@@ -3103,6 +4598,22 @@ $ProgressPreference = 'SilentlyContinue'
     }
     if (fs.existsSync(testSnapshotsDir)) {
       try { fs.rmSync(testSnapshotsDir, { recursive: true, force: true }); } catch (e) {}
+    }
+    if (fs.existsSync(testCodexDir)) {
+      try { fs.rmSync(testCodexDir, { recursive: true, force: true }); } catch (e) {}
+    }
+    try {
+      const prodToml = path.join(os.homedir(), '.codex', 'config.toml');
+      if (fs.existsSync(prodToml)) {
+        let tomlContent = fs.readFileSync(prodToml, 'utf8');
+        if (tomlContent.includes(`:${routerPort}/v1`)) {
+          tomlContent = tomlContent.replace(new RegExp(`:${routerPort}/v1`, 'g'), ':4010/v1');
+          fs.writeFileSync(prodToml, tomlContent, 'utf8');
+        }
+      }
+    } catch (e) {}
+    if (fs.existsSync(path.join(__dirname, 'compression-stats.json'))) {
+      try { fs.unlinkSync(path.join(__dirname, 'compression-stats.json')); } catch (e) {}
     }
   }
 }

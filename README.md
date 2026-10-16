@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v2.6.6-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.1.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-84%2F84%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-114%2F114%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -40,11 +40,11 @@
 
 ---
 
-## 一、项目概述与 12 大核心支柱
+## 一、项目概述与 13 大核心支柱
 
 OpenCode Go Router 是专为开发者与团队量身打造的 **OpenCode 全栈生态集成与多订阅高可用智能网关套件**。它彻底解决了在使用 OpenCode、OpenChamber、Codex、OMO 与 Goal 过程中的环境配置繁琐、订阅限频卡顿、网络中断、跨平台路径差异与控制台黑框打扰等核心痛点。
 
-### 🌟 12 大核心技术支柱
+### 🌟 13 大核心技术支柱
 
 1. **跨平台原生部署与常驻守护**：
    - **Windows**：C# 原生无窗口翡翠绿高光托盘程序（`OpenCodeRouterTray.exe`），零黑框终端打扰，以独立桌面应用模式（Edge `--app=...`）唤出管理界面；
@@ -91,6 +91,14 @@ OpenCode Go Router 是专为开发者与团队量身打造的 **OpenCode 全栈�
     - npm / bun 国内镜像源容灾（`npmmirror`），保障更新 100% 成功。
 12. **全自动健康体检与故障自愈 (Doctor Engine)**：
     - 涵盖端口死链排查、单复数冲突清洗、僵死进程清理、单实例互斥锁释放、语言锁定修复、异构模型跃迁等 10 大维度，一键秒级恢复全绿。
+13. **无损上下文优化与多层 Token 压缩引擎 (Context Compactor & Token Optimization)**：
+    - 吸收借鉴 Headroom、llmtrim、RTK 与 MCP-Compressor 的工程精髓，纯 Node.js 18+ 原生零外部依赖实现；
+    - **终端与日志去噪**：ANSI 颜色转义与控制符剥离 (`stripAnsi`)，`\r` 覆盖式终端进度条去噪 (`cleanProgressBars`)；
+    - **DevOps 运维日志折叠**：Docker 镜像拉取层状态去噪折叠 (`cleanDockerOutput`)，Terraform 资源状态刷新去噪折叠 (`cleanTerraformOutput`)；
+    - **锁定文件安全折叠**：巨型 Lockfile（package-lock、yarn、cargo、bun、uv 等）Diff 安全折叠 (`foldLockfiles`)，探测到 `<<<<<<<` 冲突或 `/dev/null` 时精准豁免与安全命名，100% 保护代码解决能力；
+    - **正向匹配测试项折叠**：安全反转设计 (`foldTestPasses`)，原生支持 Jest/Vitest/Mocha、TAP、Pytest、Cargo、Go test、GoogleTest（`[ OK ]`）、Python unittest、CTest，支持配置自定义正则；遇失败、错误堆栈全量原样留存；
+    - **Prompt Cache 对齐与超大 Schema 深度瘦身**：工具 Schema 字典序排序对齐 (`alignToolsSchema`) 锁定上游 KV Cache 前缀，超大 Schema 深度递归裁剪示例代码 (`slimToolsSchema`)，会话缓存区字节固化 (`sessionCompressionMemo`)；
+    - **可扩展管道体系与安全沙盒**：内置 Pluggable Pipeline 接口（`registerTransformer`, `runPipeline`），支持第三方自定义转换器插拔，全管道 100% 安全沙盒包裹，异常静默旁路绝不阻断正常业务。
 
 ---
 
@@ -113,6 +121,14 @@ flowchart TD
             ResponsesBridge["OpenAI Responses API 桥 (Codex专用)"]
             ChatBridge["OpenAI ChatCompletions 代理桥"]
             ClaudeBridge["Anthropic Messages 代理桥"]
+        end
+
+        subgraph Compactor["上下文优化与 Token 压缩引擎 (Context Compactor)"]
+            Denoise["终端/日志去噪 (ANSI & \\r 进度条清洗)"]
+            DiffFold["Lockfile Diff 安全折叠 (冲突豁免)"]
+            TestFold["测试通过项正向折叠 (堆栈全量留存)"]
+            CacheAlign["Schema 字典序对齐 & 瘦身 (KV Cache 锁定)"]
+            MemoPool["会话缓存区冻结 (Cache-Zone Memo)"]
         end
 
         subgraph CoreShield["高可用自愈屏障 (Resilience Core)"]
@@ -139,7 +155,8 @@ flowchart TD
 
     ClientLayer --> AuthGate
     AuthGate --> Bridges
-    Bridges --> CoreShield
+    Bridges --> Compactor
+    Compactor --> CoreShield
     CoreShield --> AccountPool
     AccountPool --> UpstreamLayer
 ```
@@ -261,7 +278,17 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v2.6.5 (当前最新版：工具调用原子严格连续性自愈、开发者通知顺延与会话前置模型跃迁记忆池)
+### 🚀 v3.0.0 (当前最新版：无损上下文优化与多层 Token 压缩引擎、Pluggable Pipeline、DevOps 运维日志去噪与 106 项全绿回归测试)
+- **原生上下文无损优化与 Token 压缩引擎 (`context-compactor.js`)**：
+  - **终端与日志去噪**：ANSI 颜色转义与控制符剥离 (`stripAnsi`)，`\r` 覆盖式终端进度条去噪并 100% 字节级保全 Windows CRLF 换行 (`cleanProgressBars`)；
+  - **DevOps 运维输出清洗**：Docker 镜像拉取/推送/缓存层状态折叠 (`cleanDockerOutput`)，Kubectl Pod 状态与发布轮转折叠并严密保护故障状态 (`cleanKubectlOutput`)，Terraform 资源与数据源状态刷新折叠 (`cleanTerraformOutput`)；
+  - **锁定文件安全折叠**：巨型 Lockfile（package-lock、yarn、cargo、bun、uv、pubspec、gradle 等）Diff 安全折叠 (`foldLockfiles`)，探测到 `<<<<<<<` 冲突或 `/dev/null` 时精准豁免与安全命名，100% 保护代码解决能力；
+  - **测试通过项正向安全折叠**：安全反转设计 (`foldTestPasses`)，严格匹配算法绝不错杀源码变量行与代码断言，原生支持 Jest/Vitest/Mocha、TAP、Pytest、Cargo、Go test、GoogleTest（`[ OK ]`）、Python unittest、CTest，支持配置自定义正则；遇失败、错误堆栈全量原样留存；
+  - **Prompt Cache 对齐与超大 Schema 深度瘦身**：工具 Schema 字典序排序对齐 (`alignToolsSchema`) 锁定上游 KV Cache 前缀，超大 Schema 递归深度防溢出护栏（>50层熔断）与复合 patternProperties/additionalProperties 瘦身 (`slimToolsSchema`)，基于真 LRU 的会话缓存池与动态插件签名固化 (`sessionCompressionMemo`)；
+  - **可扩展管道体系与安全沙盒**：内置 Pluggable Pipeline 接口（`registerTransformer`, `runPipeline`），支持第三方自定义转换器插拔，全管道 100% 安全沙盒包裹，异常静默旁路绝不阻断正常业务。
+- **全套 106 项自动化集成测试 100% 绿灯全通**。
+
+### 🚀 v2.6.5 (工具调用原子严格连续性自愈、开发者通知顺延与会话前置模型跃迁记忆池)
 - **工具调用原子严格连续排列与开发者通知顺延 (`sanitizeAndValidateChatMessages`)**：
   - 彻底攻克 OpenAI/DeepSeek 严格校验器对多工具调用的连续性要求（`an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'`）；
   - 自动识别穿插在工具调用之间的系统/开发者消息（如 Codex 多图浏览插入的 `<image_resize_notice>`），安全顺延至整组工具回复之后；

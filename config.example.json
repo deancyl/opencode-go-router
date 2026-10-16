@@ -18,5 +18,35 @@
       "apiKey": "",
       "enabled": true
     }
-  ]
+  ],
+  "compression": {
+    "enabled": true,
+    "preset": "balanced",
+    "modules": {
+      "rtk": {
+        "enabled": true,
+        "stripAnsi": true,
+        "cleanProgressBars": true,
+        "foldTestPasses": true,
+        "cleanDevOpsOutput": true
+      },
+      "headroom": {
+        "enabled": true,
+        "foldLockfiles": true,
+        "exemptMergeConflicts": true,
+        "protectSourceDiffs": true
+      },
+      "schema": {
+        "enabled": true,
+        "alignToolsSchema": true,
+        "slimToolsSchema": true,
+        "schemaCharThreshold": 15000
+      },
+      "cacheZone": {
+        "enabled": true,
+        "cacheZoneFreeze": true,
+        "trueLruRetention": true
+      }
+    }
+  }
 }

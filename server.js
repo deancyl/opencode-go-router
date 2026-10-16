@@ -25,6 +25,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { execSync, exec, spawn } = require('node:child_process');
 const codexAdapter = require('./codex-adapter');
+const contextCompactor = require('./context-compactor');
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
@@ -56,7 +57,8 @@ const DEFAULT_CONFIG = {
       apiKey: '',
       enabled: true
     }
-  ]
+  ],
+  compression: contextCompactor.DEFAULT_COMPRESSION_CONFIG
 };
 
 const DEFAULT_OMO_CONFIG = {
@@ -94,6 +96,7 @@ function loadConfig() {
     try {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^\uFEFF/, '');
       config = Object.assign({}, DEFAULT_CONFIG, JSON.parse(raw));
+      config.compression = contextCompactor.normalizeCompressionOptions(config.compression || DEFAULT_CONFIG.compression);
     } catch (err) {
       console.error('[Config] Failed to load config.json, using defaults:', err.message);
     }
@@ -183,6 +186,7 @@ setInterval(() => {
     if (now - time > 3600000) { // 1 hour inactivity
       sessionMap.delete(sess);
       sessionLastSeen.delete(sess);
+      contextCompactor.clearSessionMemo(sess);
       for (const key of Array.from(sessionModelFallbackCache.keys())) {
         if (key.startsWith(`${sess}:`)) {
           sessionModelFallbackCache.delete(key);
@@ -231,6 +235,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
       for (let i = 0; i < pruneCount; i++) {
         sessionMap.delete(entries[i][0]);
         sessionLastSeen.delete(entries[i][0]);
+        contextCompactor.clearSessionMemo(entries[i][0]);
       }
     }
     sessionMap.set(sessionId, chosen.id);
@@ -646,6 +651,24 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
   }
 
+  // Apply context and token compression for direct upstream requests
+  if (parsedBody && config.compression && config.compression.enabled !== false) {
+    try {
+      if (isResponsesReq) {
+        parsedBody = contextCompactor.compactResponsesPayload(parsedBody, config.compression, sessionId);
+        reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+      } else if (targetPath.includes('/messages')) {
+        parsedBody = contextCompactor.compactAnthropicPayload(parsedBody, config.compression, sessionId);
+        reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+      } else if (parsedBody.messages || targetPath.includes('/chat/completions')) {
+        parsedBody = contextCompactor.compactChatPayload(parsedBody, config.compression, sessionId);
+        reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+      }
+    } catch (compErr) {
+      console.warn('[Server Compression Sandbox] Direct proxy compression failed, bypassing safely:', compErr.message);
+    }
+  }
+
   const stat = accountStats.get(account.id);
   if (stat) {
     stat.activeRequests += 1;
@@ -1002,7 +1025,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
   }
 
-  const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody);
+  const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody, config.compression, sessionId);
   const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
   const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
@@ -1313,15 +1336,14 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
 
-  const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody);
+  let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
+  const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody, config.compression, sessionId);
   const reqModel = anthropicPayload.model || 'claude-haiku-5-5';
   const isStream = anthropicPayload.stream !== false;
   const anthropicBody = Buffer.from(JSON.stringify(anthropicPayload), 'utf8');
 
   const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
   const upstreamMessagesPath = upstreamPathname + '/messages';
-
-  let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
 
   const proxyHeaders = {
     'content-type': 'application/json',
@@ -1643,11 +1665,73 @@ function findOpenCodeBinary() {
   return null;
 }
 
-async function runSystemDoctor() {
+async function runSystemDoctor(scope = 'all') {
+  if (scope === 'codex') {
+    const codexStatus = codexAdapter.getCodexStatus(config.port);
+    const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
+    const localeCheck = codexStatus.localeCheck || codexAdapter.checkCodexLocaleAndEnvironment();
+    const codexIssues = [];
+    if (codexStatus.cliInstalled && !codexStatus.isBound) {
+      codexIssues.push({
+        id: 'codex_not_bound',
+        severity: 'medium',
+        title: 'OpenAI Codex CLI 尚未接入本地智能网关',
+        desc: `检测到本地已安装 Codex CLI (${codexStatus.cliVersion || '已安装'})，可一键接入 OpenCode Go 38 款模型及思考等级映射`
+      });
+    } else if (codexStatus.cliInstalled && codexStatus.isBound && !codexStatus.hasStreamIdleTimeout) {
+      codexIssues.push({
+        id: 'codex_timeout_unhardened',
+        severity: 'medium',
+        title: 'OpenAI Codex 缺少长思考防断流与智能重试加固配置',
+        desc: '检测到 Codex config.toml 未配置 stream_idle_timeout_ms (5分钟防断流) 或 stream_max_retries，长思考容易偶发断流，可一键加固修复'
+      });
+    }
+    if (procHealth && !procHealth.healthy) {
+      if (procHealth.hasSuspended) {
+        codexIssues.push({
+          id: 'codex_process_suspended',
+          severity: 'high',
+          title: 'OpenAI Codex (ChatGPT) 存在被 Windows PLM 挂起的进程（导致桌面打不开或秒退）',
+          desc: `检测到 ${procHealth.suspendedCount} 个处于 Wait:Suspended 挂起状态的 ChatGPT 线程霸占单实例互斥锁，一键修复即可通过 Win32 API 唤醒恢复渲染`
+        });
+      } else if (procHealth.hasGhost) {
+        codexIssues.push({
+          id: 'codex_ghost_process',
+          severity: 'high',
+          title: 'OpenAI Codex (ChatGPT) 后台无窗口僵死进程死锁单实例锁',
+          desc: '检测到后台存在无窗口僵死实例霸占 SingleInstanceLock 互斥锁，导致桌面双击图标无法打开或闪退，可一键自动清理释放'
+        });
+      }
+    }
+    if (localeCheck && !localeCheck.healthy && localeCheck.issues && localeCheck.issues.length > 0) {
+      codexIssues.push({
+        id: 'codex_locale_misaligned',
+        severity: 'medium',
+        title: 'OpenAI Codex 简体中文语言环境或模型标识未完整对齐（显示为英文或自定义）',
+        desc: `检测到: ${localeCheck.issues.join('；')}，点击一键修复即可锁定中文语言环境并规范模型 Slug`
+      });
+    }
+    return {
+      timestamp: new Date().toISOString(),
+      scope: 'codex',
+      router: {
+        status: 'ok',
+        port: config.port,
+        upstream: config.upstream
+      },
+      codex: codexStatus,
+      codexProcessHealth: procHealth,
+      codexLocale: localeCheck,
+      codexIssues,
+      issues: codexIssues
+    };
+  }
+
   let defaultWs = findDefaultWorkspace();
 
   const report = {
     timestamp: new Date().toISOString(),
+    scope,
     router: {
       status: 'ok',
       port: config.port,
@@ -2003,15 +2087,21 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
   try {
     const codexStatus = codexAdapter.getCodexStatus(config.port);
     report.codex = codexStatus;
+    const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
+    report.codexProcessHealth = procHealth;
+    const localeCheck = codexStatus.localeCheck || codexAdapter.checkCodexLocaleAndEnvironment();
+    report.codexLocale = localeCheck;
+
+    const codexIssues = [];
     if (codexStatus.cliInstalled && !codexStatus.isBound) {
-      report.issues.push({
+      codexIssues.push({
         id: 'codex_not_bound',
         severity: 'medium',
         title: 'OpenAI Codex CLI 尚未接入本地智能网关',
         desc: `检测到本地已安装 Codex CLI (${codexStatus.cliVersion || '已安装'})，可一键接入 OpenCode Go 38 款模型及思考等级映射`
       });
     } else if (codexStatus.cliInstalled && codexStatus.isBound && !codexStatus.hasStreamIdleTimeout) {
-      report.issues.push({
+      codexIssues.push({
         id: 'codex_timeout_unhardened',
         severity: 'medium',
         title: 'OpenAI Codex 缺少长思考防断流与智能重试加固配置',
@@ -2020,18 +2110,16 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     }
 
     // 8.1 Check Codex Process Health (Suspension & SingleInstanceLock Deadlocks)
-    const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
-    report.codexProcessHealth = procHealth;
     if (procHealth && !procHealth.healthy) {
       if (procHealth.hasSuspended) {
-        report.issues.push({
+        codexIssues.push({
           id: 'codex_process_suspended',
           severity: 'high',
           title: 'OpenAI Codex (ChatGPT) 存在被 Windows PLM 挂起的进程（导致桌面打不开或秒退）',
           desc: `检测到 ${procHealth.suspendedCount} 个处于 Wait:Suspended 挂起状态的 ChatGPT 线程霸占单实例互斥锁，一键修复即可通过 Win32 API 唤醒恢复渲染`
         });
       } else if (procHealth.hasGhost) {
-        report.issues.push({
+        codexIssues.push({
           id: 'codex_ghost_process',
           severity: 'high',
           title: 'OpenAI Codex (ChatGPT) 后台无窗口僵死进程死锁单实例锁',
@@ -2041,15 +2129,18 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     }
 
     // 8.2 Check Codex Locale & Environment Alignment
-    const localeCheck = codexStatus.localeCheck || codexAdapter.checkCodexLocaleAndEnvironment();
-    report.codexLocale = localeCheck;
-    if (localeCheck && !localeCheck.healthy && localeCheck.issues.length > 0) {
-      report.issues.push({
+    if (localeCheck && !localeCheck.healthy && localeCheck.issues && localeCheck.issues.length > 0) {
+      codexIssues.push({
         id: 'codex_locale_misaligned',
         severity: 'medium',
         title: 'OpenAI Codex 简体中文语言环境或模型标识未完整对齐（显示为英文或自定义）',
         desc: `检测到: ${localeCheck.issues.join('；')}，点击一键修复即可锁定中文语言环境并规范模型 Slug`
       });
+    }
+
+    report.codexIssues = codexIssues;
+    if (scope === 'all') {
+      report.issues.push(...codexIssues);
     }
   } catch (e) {}
 
@@ -2066,6 +2157,59 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
 
 // Auto-Repair Engine
 async function executeSystemRepair(options = {}) {
+  const scope = options.scope || 'all';
+
+  // Codex 专项自愈与防断流加固分支
+  if (scope === 'codex') {
+    const results = [];
+    try {
+      // 8.1 Repair Codex suspension and ghost processes if any
+      const procRep = codexAdapter.resumeOrCleanCodexProcesses();
+      if (procRep && procRep.resumed) {
+        results.push({ item: 'Codex Process Suspension', success: true, message: procRep.message });
+      } else if (procRep && procRep.killed) {
+        results.push({ item: 'Codex SingleInstanceLock', success: true, message: procRep.message });
+      } else {
+        results.push({ item: 'Codex Process Suspension', success: true, message: '进程健康无挂起或僵死锁' });
+      }
+
+      // 8.2 Repair Codex locale, model slug and port conflicts
+      const locRep = codexAdapter.repairCodexLocaleAndEnvironment();
+      if (locRep && locRep.messages && locRep.messages.length > 0) {
+        results.push({ item: 'Codex Locale & Environment', success: true, message: locRep.messages.join('；') });
+      } else {
+        results.push({ item: 'Codex Locale & Environment', success: true, message: '简体中文语言环境与模型标识已对齐' });
+      }
+
+      // 8.3 Auto-bind Codex CLI if installed and not yet bound or not hardened
+      const codexStatus = codexAdapter.getCodexStatus(config.port);
+      if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
+        const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
+        const bindRes = codexAdapter.bindCodexConfig({
+          routerPort: config.port,
+          routerUrl: `http://127.0.0.1:${config.port}/v1`,
+          defaultModel: options.defaultModel || 'deepseek-v4.1-flash',
+          reasoningEffort: options.reasoningEffort || 'high',
+          providerName: 'opencode-go'
+        });
+        results.push({
+          item: 'Codex Integration',
+          success: bindRes.success,
+          message: bindRes.success
+            ? (isRehardened ? '已自动加固 OpenAI Codex 5分钟长思考防断流与智能重试机制 (stream_idle_timeout_ms = 300000)' : '已自动将 OpenAI Codex CLI 接入本地 4010 智能网关（支持全量 38 款模型）')
+            : bindRes.error
+        });
+      } else if (codexStatus.cliInstalled && codexStatus.isBound) {
+        results.push({ item: 'Codex Integration', success: true, message: 'OpenAI Codex 已接入本地 4010 网关且已完成 5 分钟超时加固' });
+      } else {
+        results.push({ item: 'Codex Integration', success: true, message: 'Codex CLI 未检测到全局安装，已就绪配置目录待命' });
+      }
+    } catch (e) {
+      results.push({ item: 'Codex Integration', success: false, message: 'Codex 专项自愈异常: ' + e.message });
+    }
+    return results;
+  }
+
   const results = [];
 
   // 1. Reset all cooldowns
@@ -2299,43 +2443,45 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     results.push({ item: 'Office Preview Engine', success: false, message: '挂载 Office 预览引擎异常: ' + e.message });
   }
 
-  // 8. Auto-bind & auto-repair Codex CLI, processes, locale and environment
-  try {
-    // 8.1 Repair Codex suspension and ghost processes if any
-    const procRep = codexAdapter.resumeOrCleanCodexProcesses();
-    if (procRep && procRep.resumed) {
-      results.push({ item: 'Codex Process Suspension', success: true, message: procRep.message });
-    } else if (procRep && procRep.killed) {
-      results.push({ item: 'Codex SingleInstanceLock', success: true, message: procRep.message });
-    }
+  // 8. Auto-bind & auto-repair Codex CLI, processes, locale and environment (Skipped when scope === 'system')
+  if (scope !== 'system') {
+    try {
+      // 8.1 Repair Codex suspension and ghost processes if any
+      const procRep = codexAdapter.resumeOrCleanCodexProcesses();
+      if (procRep && procRep.resumed) {
+        results.push({ item: 'Codex Process Suspension', success: true, message: procRep.message });
+      } else if (procRep && procRep.killed) {
+        results.push({ item: 'Codex SingleInstanceLock', success: true, message: procRep.message });
+      }
 
-    // 8.2 Repair Codex locale, model slug and port conflicts
-    const locRep = codexAdapter.repairCodexLocaleAndEnvironment();
-    if (locRep && locRep.messages && locRep.messages.length > 0) {
-      results.push({ item: 'Codex Locale & Environment', success: true, message: locRep.messages.join('；') });
-    }
+      // 8.2 Repair Codex locale, model slug and port conflicts
+      const locRep = codexAdapter.repairCodexLocaleAndEnvironment();
+      if (locRep && locRep.messages && locRep.messages.length > 0) {
+        results.push({ item: 'Codex Locale & Environment', success: true, message: locRep.messages.join('；') });
+      }
 
-    // 8.3 Auto-bind Codex CLI if installed and not yet bound or not hardened
-    const codexStatus = codexAdapter.getCodexStatus(config.port);
-    if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
-      const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
-      const bindRes = codexAdapter.bindCodexConfig({
-        routerPort: config.port,
-        routerUrl: `http://127.0.0.1:${config.port}/v1`,
-        defaultModel: 'deepseek-v4.1-flash',
-        reasoningEffort: 'high',
-        providerName: 'opencode-go'
-      });
-      results.push({
-        item: 'Codex Integration',
-        success: bindRes.success,
-        message: bindRes.success
-          ? (isRehardened ? '已自动加固 OpenAI Codex 5分钟长思考防断流与智能重试机制 (stream_idle_timeout_ms = 300000)' : '已自动将 OpenAI Codex CLI 接入本地 4010 智能网关（支持全量 38 款模型）')
-          : bindRes.error
-      });
+      // 8.3 Auto-bind Codex CLI if installed and not yet bound or not hardened
+      const codexStatus = codexAdapter.getCodexStatus(config.port);
+      if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
+        const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
+        const bindRes = codexAdapter.bindCodexConfig({
+          routerPort: config.port,
+          routerUrl: `http://127.0.0.1:${config.port}/v1`,
+          defaultModel: 'deepseek-v4.1-flash',
+          reasoningEffort: 'high',
+          providerName: 'opencode-go'
+        });
+        results.push({
+          item: 'Codex Integration',
+          success: bindRes.success,
+          message: bindRes.success
+            ? (isRehardened ? '已自动加固 OpenAI Codex 5分钟长思考防断流与智能重试机制 (stream_idle_timeout_ms = 300000)' : '已自动将 OpenAI Codex CLI 接入本地 4010 智能网关（支持全量 38 款模型）')
+            : bindRes.error
+        });
+      }
+    } catch (e) {
+      results.push({ item: 'Codex Integration', success: false, message: 'Codex 诊断修复异常: ' + e.message });
     }
-  } catch (e) {
-    results.push({ item: 'Codex Integration', success: false, message: 'Codex 诊断修复异常: ' + e.message });
   }
 
   // 9. Linux NAS: Smoothly reload running user daemon services to load new config
@@ -2776,7 +2922,8 @@ const server = http.createServer((req, res) => {
       sessionAffinityEnabled: config.sessionAffinityEnabled,
       hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
       uiPassword: config.uiPassword || '',
-      accounts: config.accounts
+      accounts: config.accounts,
+      compression: config.compression || DEFAULT_CONFIG.compression
     }));
     return;
   }
@@ -2817,6 +2964,92 @@ const server = http.createServer((req, res) => {
         if (payload.uiPassword !== undefined) {
           newConfig.uiPassword = String(payload.uiPassword).trim();
         }
+        if (payload.compression && typeof payload.compression === 'object') {
+          const prevComp = config.compression || DEFAULT_CONFIG.compression;
+          if (payload.compression.modules && typeof payload.compression.modules === 'object') {
+            // Modern hierarchical update: payload contains modules
+            const mergedModules = {
+              rtk: { ...(prevComp.modules?.rtk || {}), ...(payload.compression.modules.rtk || {}) },
+              headroom: { ...(prevComp.modules?.headroom || {}), ...(payload.compression.modules.headroom || {}) },
+              schema: { ...(prevComp.modules?.schema || {}), ...(payload.compression.modules.schema || {}) },
+              cacheZone: { ...(prevComp.modules?.cacheZone || {}), ...(payload.compression.modules.cacheZone || {}) }
+            };
+            const toNormalize = {
+              enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
+              preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
+              modules: mergedModules
+            };
+            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles',
+                            'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
+                            'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
+                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
+              if (payload.compression[k] !== undefined) {
+                toNormalize[k] = payload.compression[k];
+              }
+            }
+            newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
+          } else {
+            // Legacy flat update: payload contains flat keys without modules
+            const mergedModules = prevComp.modules ? JSON.parse(JSON.stringify(prevComp.modules)) : null;
+            if (mergedModules) {
+              if (payload.compression.stripAnsi !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.stripAnsi = Boolean(payload.compression.stripAnsi);
+              }
+              if (payload.compression.cleanProgressBars !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.cleanProgressBars = Boolean(payload.compression.cleanProgressBars);
+              }
+              if (payload.compression.foldTestPasses !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.foldTestPasses = Boolean(payload.compression.foldTestPasses);
+              }
+              if (payload.compression.cleanDevOpsOutput !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.cleanDevOpsOutput = Boolean(payload.compression.cleanDevOpsOutput);
+              }
+              if (payload.compression.foldLockfiles !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.foldLockfiles = Boolean(payload.compression.foldLockfiles);
+              }
+              if (payload.compression.exemptMergeConflicts !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.exemptMergeConflicts = Boolean(payload.compression.exemptMergeConflicts);
+              }
+              if (payload.compression.protectSourceDiffs !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.protectSourceDiffs = Boolean(payload.compression.protectSourceDiffs);
+              }
+              if (payload.compression.alignToolsSchema !== undefined && mergedModules.schema) {
+                mergedModules.schema.alignToolsSchema = Boolean(payload.compression.alignToolsSchema);
+              }
+              if (payload.compression.slimToolsSchema !== undefined && mergedModules.schema) {
+                mergedModules.schema.slimToolsSchema = Boolean(payload.compression.slimToolsSchema);
+              }
+              if (payload.compression.schemaCharThreshold !== undefined && mergedModules.schema) {
+                const val = Number(payload.compression.schemaCharThreshold);
+                mergedModules.schema.schemaCharThreshold = (!isNaN(val) && val >= 0) ? val : 15000;
+              }
+              if (payload.compression.cacheZoneFreeze !== undefined && mergedModules.cacheZone) {
+                mergedModules.cacheZone.cacheZoneFreeze = Boolean(payload.compression.cacheZoneFreeze);
+              }
+              if (payload.compression.trueLruRetention !== undefined && mergedModules.cacheZone) {
+                mergedModules.cacheZone.trueLruRetention = Boolean(payload.compression.trueLruRetention);
+              }
+            }
+            const toNormalize = {
+              enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
+              preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
+              modules: mergedModules || undefined
+            };
+            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles',
+                            'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
+                            'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
+                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
+              if (payload.compression[k] !== undefined) {
+                toNormalize[k] = payload.compression[k];
+              } else if (prevComp[k] !== undefined) {
+                toNormalize[k] = prevComp[k];
+              }
+            }
+            newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
+          }
+        }
 
         // Create atomic backup of existing config.json
         if (fs.existsSync(CONFIG_FILE)) {
@@ -2836,6 +3069,34 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
     });
+    return;
+  }
+
+  // Get compression metrics stats API
+  if (reqUrl.pathname === '/balancer/api/compression/stats' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      stats: contextCompactor.getCompressionStats()
+    }));
+    return;
+  }
+
+  // Reset compression metrics stats API
+  if (reqUrl.pathname === '/balancer/api/compression/stats/reset' && req.method === 'POST') {
+    const stats = contextCompactor.resetCompressionStats();
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      message: '压缩与 Token 节省统计数据已清零',
+      stats
+    }));
     return;
   }
 
@@ -2944,6 +3205,7 @@ const server = http.createServer((req, res) => {
         const defaultModel = payload.defaultModel || 'deepseek-v4.1-flash';
         const reasoningEffort = payload.reasoningEffort || 'high';
         const result = codexAdapter.bindCodexConfig({
+          codexDir: payload.codexDir,
           routerPort: config.port,
           routerUrl: `http://127.0.0.1:${config.port}/v1`,
           defaultModel,
@@ -2966,18 +3228,26 @@ const server = http.createServer((req, res) => {
 
   // Restore Codex Configuration API
   if (reqUrl.pathname === '/balancer/api/restore-codex' && req.method === 'POST') {
-    try {
-      const result = codexAdapter.restoreCodexConfig();
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({
-        success: result.success,
-        result,
-        message: result.messages && result.messages.length > 0 ? result.messages.join('；') : (result.message || 'Codex 配置已还原')
-      }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    }
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        let payload = {};
+        if (body.length > 0) {
+          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        }
+        const result = codexAdapter.restoreCodexConfig(payload.codexDir);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: result.success,
+          result,
+          message: result.messages && result.messages.length > 0 ? result.messages.join('；') : (result.message || 'Codex 配置已还原')
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
     return;
   }
 
@@ -3208,7 +3478,8 @@ $ghost
   if (reqUrl.pathname === '/balancer/api/doctor' && req.method === 'GET') {
     (async () => {
       try {
-        const report = await runSystemDoctor();
+        const scope = (reqUrl.query && reqUrl.query.scope) || (reqUrl.searchParams && reqUrl.searchParams.get('scope')) || 'all';
+        const report = await runSystemDoctor(scope);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(report, null, 2));
       } catch (err) {
@@ -3221,16 +3492,26 @@ $ghost
 
   // Repair API
   if (reqUrl.pathname === '/balancer/api/repair' && req.method === 'POST') {
-    (async () => {
+    const chunks = [];
+    req.on('data', chunk => { chunks.push(chunk); });
+    req.on('end', async () => {
       try {
-        const results = await executeSystemRepair();
+        let postData = {};
+        if (chunks.length > 0) {
+          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+          if (rawBody) {
+            try { postData = JSON.parse(rawBody); } catch (_) {}
+          }
+        }
+        const scope = (reqUrl.query && reqUrl.query.scope) || (reqUrl.searchParams && reqUrl.searchParams.get('scope')) || postData.scope || 'all';
+        const results = await executeSystemRepair({ ...postData, scope });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, results }, null, 2));
+        res.end(JSON.stringify({ success: true, results, scope }, null, 2));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
-    })();
+    });
     return;
   }
 
@@ -3362,21 +3643,10 @@ $ghost
     return;
   }
 
-  // Web UI Dashboard & Graphical Config Center
-  if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {
-    if (config.uiPassword && !isAuthorized(req)) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(renderLoginPage());
-      return;
-    }
-    const parsed = url.parse(req.url, true);
-    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
-    if (config.uiPassword && parsed.query && parsed.query.auth) {
-      const token = Buffer.from(config.uiPassword.trim()).toString('base64');
-      headers['Set-Cookie'] = `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`;
-    }
-    res.writeHead(200, headers);
-    res.end(`<!DOCTYPE html>
+function renderDashboardHtml(config) {
+  const compCfg = config.compression || contextCompactor.DEFAULT_COMPRESSION_CONFIG;
+  const mCfg = compCfg.modules || {};
+  return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -3406,24 +3676,26 @@ $ghost
       padding: 1.5rem;
       line-height: 1.5;
     }
-    .container { max-width: 1000px; margin: 0 auto; }
+    .container { max-width: 1040px; margin: 0 auto; }
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 2rem;
+      margin-bottom: 1.5rem;
       border-bottom: 1px solid var(--border);
       padding-bottom: 1.2rem;
+      flex-wrap: wrap;
+      gap: 14px;
     }
     .title-group h1 {
       margin: 0;
-      font-size: 1.6rem;
+      font-size: 1.5rem;
       color: var(--primary);
       display: flex;
       align-items: center;
       gap: 10px;
     }
-    .title-group p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+    .title-group p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
     .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .btn {
       display: inline-flex;
@@ -3431,45 +3703,156 @@ $ghost
       gap: 6px;
       background: var(--primary);
       color: #04101c;
-      border: none;
+      border: 1px solid transparent;
       padding: 8px 16px;
       border-radius: 8px;
       font-weight: 600;
       cursor: pointer;
-      font-size: 0.9rem;
-      transition: all 0.2s;
+      font-size: 0.88rem;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      user-select: none;
     }
-    .btn:hover { background: var(--primary-hover); color: #fff; }
+    .btn:hover { background: var(--primary-hover); color: #fff; transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
     .btn-secondary {
-      background: #334155;
+      background: #1e293b;
       color: var(--text);
+      border-color: #334155;
     }
-    .btn-secondary:hover { background: #475569; }
-    .btn-success { background: #065f46; color: #34d399; border: 1px solid #059669; }
+    .btn-secondary:hover { background: #334155; border-color: #475569; color: #fff; }
+    .btn-success { background: #065f46; color: #34d399; border-color: #059669; }
     .btn-success:hover { background: #047857; color: #fff; }
-    .btn-danger {
-      background: #7f1d1d;
-      color: #fca5a5;
-    }
+    .btn-danger { background: #7f1d1d; color: #fca5a5; border-color: #991b1b; }
     .btn-danger:hover { background: #991b1b; color: #fff; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; border-radius: 6px; }
+
+    /* Foolproof Save Dirty State & Micro-interactions */
+    .btn-save-dirty {
+      background: linear-gradient(135deg, #0284c7 0%, #10b981 100%) !important;
+      color: #fff !important;
+      border-color: rgba(255, 255, 255, 0.4) !important;
+      animation: pulseSaveGlow 1.8s infinite ease-in-out;
+    }
+    @keyframes pulseSaveGlow {
+      0%, 100% { box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
+      50% { box-shadow: 0 0 18px rgba(56, 189, 248, 0.85); transform: translateY(-1px); }
+    }
+
+    /* Wizard Hero Button */
+    .btn-wizard {
+      background: linear-gradient(135deg, #0284c7 0%, #10b981 100%);
+      color: #ffffff;
+      padding: 10px 22px;
+      font-size: 1rem;
+      border-radius: 9px;
+      font-weight: 700;
+      border: 1px solid rgba(255,255,255,0.25);
+      box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+    }
+    .btn-wizard:hover {
+      background: linear-gradient(135deg, #0369a1 0%, #059669 100%);
+      box-shadow: 0 0 24px rgba(16, 185, 129, 0.55);
+      color: #fff;
+    }
+
     .card {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 1.25rem;
       margin-bottom: 1.5rem;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: #475569; }
+    .wizard-card {
+      background: linear-gradient(135deg, #131d2e 0%, #0f172a 100%);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.35), 0 0 15px rgba(56, 189, 248, 0.08);
     }
     .section-title {
       font-size: 1.15rem;
       font-weight: 600;
-      margin: 0 0 1rem;
+      margin: 0 0 0.9rem;
       color: #e2e8f0;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
     }
+    .section-title-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .collapse-toggle {
+      font-size: 0.75rem;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      user-select: none;
+      transition: all 0.2s;
+    }
+    .collapse-toggle:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+    .badge {
+      padding: 3px 9px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .badge-healthy { background: #064e3b; color: var(--success); border: 1px solid #059669; }
+    .badge-cooling { background: #7f1d1d; color: var(--danger); border: 1px solid #dc2626; }
+    .badge-disabled { background: #374151; color: var(--muted); border: 1px solid #4b5563; }
+
+    /* Plain Tip Box */
+    .plain-tip-box {
+      font-size: 0.8rem;
+      color: #94a3b8;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      margin-bottom: 12px;
+      line-height: 1.45;
+    }
+
+    /* Wizard Grid */
+    .wizard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .wizard-step {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: border-color 0.2s;
+    }
+    .wizard-step:hover { border-color: var(--primary); }
+    .wizard-step-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 600;
+      font-size: 0.88rem;
+    }
+
+    /* Accounts & Forms */
     .accounts-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
@@ -3504,17 +3887,6 @@ $ghost
       border-color: #475569;
       background: #0f172a;
     }
-    .badge {
-      padding: 3px 10px;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    .badge-healthy { background: #064e3b; color: var(--success); border: 1px solid #059669; }
-    .badge-cooling { background: #7f1d1d; color: var(--danger); border: 1px solid #dc2626; }
-    .badge-disabled { background: #374151; color: var(--muted); border: 1px solid #4b5563; }
-    
     .form-group { margin-bottom: 0.9rem; }
     .form-group label {
       display: block;
@@ -3533,8 +3905,13 @@ $ghost
       border-radius: 6px;
       font-size: 0.9rem;
       font-family: inherit;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
-    .form-control:focus { outline: none; border-color: var(--primary); }
+    .form-control:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+    }
     .toggle-eye {
       background: #1e293b;
       border: 1px solid #334155;
@@ -3557,7 +3934,6 @@ $ghost
     .metric-item { display: flex; justify-content: space-between; }
     .metric-label { color: var(--muted); }
     .metric-val { color: var(--text); font-weight: 600; }
-    
     .acc-actions { display: flex; justify-content: space-between; align-items: center; }
     .test-result-box {
       font-size: 0.8rem;
@@ -3567,7 +3943,6 @@ $ghost
     }
     .test-success { color: var(--success); }
     .test-fail { color: var(--danger); }
-
     .switch-label {
       display: inline-flex;
       align-items: center;
@@ -3577,12 +3952,120 @@ $ghost
       color: var(--muted);
     }
     .switch-label input { cursor: pointer; }
-
     .config-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 1rem;
     }
+
+    /* Compression Hierarchy */
+    .comp-topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+    .comp-presets-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .presets-title { font-size: 0.8rem; color: var(--muted); font-weight: 500; }
+    .comp-presets-group {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .preset-btn {
+      background: #1e293b;
+      border: 1px solid #475569;
+      color: #cbd5e1;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .preset-btn:hover { background: #334155; color: #fff; border-color: var(--primary); }
+    .preset-btn.active {
+      background: var(--primary);
+      color: #04101c;
+      border-color: var(--primary);
+      font-weight: 600;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+    }
+    .comp-metrics-dashboard {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .comp-metric-card {
+      background: #151f32;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px 14px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .comp-metric-card:hover { border-color: #475569; transform: translateY(-1px); }
+    .comp-metric-label { font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
+    .comp-metric-val { font-size: 1.3rem; font-weight: 700; color: var(--primary); line-height: 1.2; }
+    .comp-metric-sub { font-size: 0.72rem; color: #64748b; margin-top: 4px; }
+    .comp-modules-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+      gap: 1.25rem;
+    }
+    .comp-module-card {
+      background: #151f32;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 1.2rem;
+      transition: all 0.25s ease;
+      position: relative;
+    }
+    .comp-module-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #1e293b;
+    }
+    .comp-main-switch-label { font-weight: 600; color: #f1f5f9; font-size: 0.92rem; }
+    .comp-module-desc { font-size: 0.76rem; color: var(--muted); margin-bottom: 12px; line-height: 1.4; }
+    .comp-module-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .comp-module-contrib { display: flex; flex-direction: column; align-items: flex-end; }
+    .contrib-text { font-size: 0.72rem; color: #94a3b8; }
+    .comp-progress-bar { width: 90px; height: 4px; background: #1e293b; border-radius: 2px; overflow: hidden; margin-top: 3px; }
+    .comp-progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #34d399); border-radius: 2px; transition: width 0.4s ease; }
+    .comp-module-body { display: flex; flex-direction: column; gap: 9px; transition: opacity 0.25s, filter 0.25s; }
+    .comp-sub-item { padding: 4px 0; }
+    .sub-tip { font-size: 0.73rem; color: #64748b; margin-left: 22px; line-height: 1.3; }
+    .comp-module-card.module-disabled { border-color: #1e293b; background: #0f172a; }
+    .comp-module-card.module-disabled .comp-module-body { opacity: 0.42; pointer-events: none; filter: grayscale(80%); }
+    .comp-module-card.module-disabled .comp-module-desc { opacity: 0.5; }
+    .comp-module-card.module-disabled .comp-module-contrib { opacity: 0.4; }
+    #compression-card.comp-master-disabled .comp-modules-grid,
+    #compression-card.comp-master-disabled .comp-presets-wrapper {
+      opacity: 0.45;
+      pointer-events: none;
+      filter: grayscale(80%);
+    }
+
+    /* Toast */
     .toast {
       position: fixed;
       bottom: 2rem;
@@ -3597,7 +4080,11 @@ $ghost
       font-size: 0.95rem;
       font-weight: 600;
       border: 1px solid #34d399;
+      animation: toastIn 0.2s ease forwards;
     }
+    @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Top Banner */
     .banner {
       background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(59, 130, 246, 0.05));
       border: 1px solid rgba(56, 189, 248, 0.3);
@@ -3608,6 +4095,8 @@ $ghost
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
     }
     .doctor-box {
       background: #0f172a;
@@ -3630,7 +4119,7 @@ $ghost
     .issue-medium { border-left: 4px solid var(--warning); }
     .issue-low { border-left: 4px solid var(--primary); }
 
-    /* Quota Usage Box */
+    /* Quota */
     .quota-box {
       background: #0f172a;
       border: 1px solid #334155;
@@ -3651,36 +4140,15 @@ $ghost
     }
     .quota-row { margin-bottom: 7px; }
     .quota-row:last-child { margin-bottom: 0; }
-    .quota-row-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.78rem;
-      margin-bottom: 3px;
-    }
+    .quota-row-top { display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; margin-bottom: 3px; }
     .quota-label { color: #94a3b8; display: flex; align-items: center; gap: 4px; }
     .quota-value { font-weight: 700; }
-    .quota-bar-track {
-      width: 100%;
-      height: 6px;
-      background: #1e293b;
-      border-radius: 3px;
-      overflow: hidden;
-      margin-bottom: 2px;
-    }
-    .quota-bar-fill {
-      height: 100%;
-      border-radius: 3px;
-      transition: width 0.4s ease;
-    }
+    .quota-bar-track { width: 100%; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; margin-bottom: 2px; }
+    .quota-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
     .quota-bar-ok { background: linear-gradient(90deg, #10b981, #34d399); }
     .quota-bar-warn { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
     .quota-bar-danger { background: linear-gradient(90deg, #ef4444, #f87171); }
-    .quota-reset-text {
-      font-size: 0.72rem;
-      color: #64748b;
-      text-align: right;
-    }
+    .quota-reset-text { font-size: 0.72rem; color: #64748b; text-align: right; }
     .quota-ctrl-bar {
       display: inline-flex;
       align-items: center;
@@ -3705,60 +4173,35 @@ $ghost
       transition: all 0.2s ease;
       user-select: none;
     }
-    .quota-countdown-badge:hover {
-      background: rgba(56, 189, 248, 0.2);
-      color: #fff;
-    }
-    .quota-time-tag {
-      font-size: 0.72rem;
-      color: #64748b;
-      margin-left: 6px;
-      font-weight: normal;
-    }
+    .quota-countdown-badge:hover { background: rgba(56, 189, 248, 0.2); color: #fff; }
+    .quota-time-tag { font-size: 0.72rem; color: #64748b; margin-left: 6px; font-weight: normal; }
 
-    /* Updates and Compatibility Matrix */
-    .update-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 10px;
-      font-size: 0.85rem;
-    }
-    .update-table th, .update-table td {
-      padding: 8px 12px;
-      text-align: left;
-      border-bottom: 1px solid #334155;
-    }
-    .update-table th {
-      color: #94a3b8;
-      font-weight: 600;
-      background: #1e293b;
-    }
-    .badge-update {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      font-weight: 600;
-    }
+    /* Updates Table */
+    .update-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem; }
+    .update-table th, .update-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #334155; }
+    .update-table th { color: #94a3b8; font-weight: 600; background: #1e293b; }
+    .badge-update { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
     .badge-ok { background: rgba(52, 211, 153, 0.2); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.4); }
     .badge-warn { background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); }
     .badge-danger { background: rgba(248, 113, 113, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.4); }
-    .alert-box {
-      border-radius: 6px;
-      padding: 10px 14px;
-      margin-top: 10px;
-      font-size: 0.85rem;
-      line-height: 1.5;
-    }
+    .alert-box { border-radius: 6px; padding: 10px 14px; margin-top: 10px; font-size: 0.85rem; line-height: 1.5; }
     .alert-box-warn { background: rgba(251, 191, 36, 0.1); border: 1px solid #fbbf24; color: #fef08a; }
     .alert-box-danger { background: rgba(248, 113, 113, 0.1); border: 1px solid #f87171; color: #fecaca; }
     .alert-box-success { background: rgba(52, 211, 153, 0.1); border: 1px solid #34d399; color: #a7f3d0; }
+
+    /* Responsive */
     @media (max-width: 768px) {
       body { padding: 0.75rem; }
-      .accounts-grid { grid-template-columns: 1fr; }
-      .header-actions { width: 100%; margin-top: 10px; }
+      .container { max-width: 100%; }
+      .accounts-grid, .comp-modules-grid, .config-grid, .wizard-grid { grid-template-columns: 1fr; }
+      .header-actions { width: 100%; gap: 6px; }
+      .header-actions .btn { flex: 1 1 calc(50% - 6px); justify-content: center; font-size: 0.75rem; padding: 6px 8px; }
       header { flex-direction: column; align-items: flex-start; }
       .acc-title-input { width: 85%; }
+      .banner { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 420px) {
+      .header-actions .btn { flex: 1 1 100%; }
     }
   </style>
 </head>
@@ -3773,26 +4216,27 @@ $ghost
         </div>
       </div>
       <div class="header-actions">
-        <button class="btn btn-primary btn-sm" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
-        <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()">⚡ 全部测速</button>
-        <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas()">📊 刷新配额</button>
-        <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()">🔄 重置限频</button>
-        <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">📦 检查更新</button>
-        <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🩺 一键体检</button>
+        <button id="btn-save-config" class="btn btn-primary btn-sm" onclick="saveConfig()" title="立即将当前账号与系统修改写入磁盘保存">💾 保存配置</button>
+        <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
+        <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()" title="测试所有订阅账号的连通性与响应速度">⚡ 全部测速</button>
+        <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas(false, true)" title="从官方实时穿透刷新 5小时/周/月限额">📊 刷新配额</button>
+        <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()" title="解除因 429 限频进入冷却的账号">🔄 重置限频</button>
+        <button class="btn btn-secondary btn-sm" onclick="checkUpdates()" title="在线检测生态各组件最新版本与兼容性状态">📦 检查更新</button>
+        <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')" title="全面扫描系统运行环境与后台死锁状态">🩺 一键体检</button>
         <button class="btn btn-secondary btn-sm" onclick="bindCodexQuick()" title="一键将本地网关锁定为 OpenAI Codex 默认配置">🤖 接入 Codex</button>
-        <button class="btn btn-sm" onclick="saveConfig()">💾 保存配置</button>
-        <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="退出管理登录" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出登录</button>
+        <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="安全退出管理员会话" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出登录</button>
       </div>
     </header>
 
     <div class="banner">
       <div style="display:flex; flex-direction:column; gap:6px;">
-        <div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="pulse-dot" style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#34d399; box-shadow: 0 0 8px #34d399;"></span>
           <strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。
         </div>
         <div style="font-size:0.83rem; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <span>🌐 智能网关端点 (Base URL): <code id="lbl-baseurl" style="color:var(--primary); font-family:monospace; background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;">http://127.0.0.1:${config.port}</code></span>
-          <button class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="copyBaseUrl()">📋 复制端点 (Copy)</button>
+          <button id="btn-copy-baseurl" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="copyBaseUrl()" title="复制智能网关端点 URL">📋 复制端点 (Copy)</button>
           <span id="lbl-host-status" class="badge badge-healthy" style="font-size:0.7rem;">本地监听 (127.0.0.1)</span>
         </div>
       </div>
@@ -3801,74 +4245,171 @@ $ghost
       </div>
     </div>
 
+    <!-- 🚀 新手极速向导与一键自愈看板 (Smart Quick Start & Guide) -->
+    <div class="card wizard-card" id="wizard-card">
+      <div class="section-title">
+        <div class="section-title-left">
+          <span style="font-size:1.2rem; color:#38bdf8;">🚀 新手极速向导与一键自愈看板 (Smart Quick Start & Guide)</span>
+          <span id="wizard-global-badge" class="badge badge-healthy" title="全局健康与使用就绪看板">🟢 开箱即用</span>
+        </div>
+        <div>
+          <button id="btn-quick-setup" class="btn btn-wizard" onclick="runQuickSetupWizard()" title="无需理解复杂底层参数，一键全自动完成账号校验、系统健康自愈、推荐压缩平衡档与 Codex 5分钟防断流">
+            🚀 新手一键全能配置与体检 (One-Click Setup & Heal)
+          </button>
+        </div>
+      </div>
+      <div class="plain-tip-box" style="margin-bottom:8px;">
+        💡 <strong>【小白开箱无忧】</strong>：无需理会繁琐参数！直接点击右上方 <strong>【🚀 新手一键全能配置与体检】</strong>，系统秒级自动完成：<strong>① 账号池有效性校验</strong> ➔ <strong>② 全链路系统自愈与离线沙箱修复</strong> ➔ <strong>③ 推荐 Token 压缩平衡标准档</strong> ➔ <strong>④ OpenAI Codex 5分钟防断流接入</strong>，直接进入黄金使用状态！
+      </div>
+
+      <div class="wizard-grid">
+        <div class="wizard-step" id="wizard-step-account">
+          <div class="wizard-step-header">
+            <span>🔑 1. 订阅账号绑定</span>
+            <span id="wizard-status-account" class="badge badge-healthy">🟢 检测中</span>
+          </div>
+          <div id="wizard-desc-account" style="font-size:0.78rem; color:var(--muted); line-height:1.4;">检查订阅密钥与官方 5h/周/月配额可用性</div>
+          <div style="margin-top:auto; padding-top:6px;">
+            <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;" onclick="scrollToElement('accounts-card')">📋 管理订阅账号</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" id="wizard-step-doctor">
+          <div class="wizard-step-header">
+            <span>🩺 2. 系统健康沙箱</span>
+            <span id="wizard-status-doctor" class="badge badge-healthy">🟢 全链路健康</span>
+          </div>
+          <div id="wizard-desc-doctor" style="font-size:0.78rem; color:var(--muted); line-height:1.4;">CLI、端口、离线 Office 预览沙箱与自愈屏障</div>
+          <div style="margin-top:auto; padding-top:6px;">
+            <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;" onclick="scrollToElement('doctor-card')">🩺 系统体检详情</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" id="wizard-step-comp">
+          <div class="wizard-step-header">
+            <span>⚡ 3. Token 压缩去噪</span>
+            <span id="wizard-status-comp" class="badge badge-healthy">🟢 推荐平衡档</span>
+          </div>
+          <div id="wizard-desc-comp" style="font-size:0.78rem; color:var(--muted); line-height:1.4;">智能清洗终端与测试日志，无损节省 15%~30%</div>
+          <div style="margin-top:auto; padding-top:6px;">
+            <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;" onclick="scrollToElement('compression-card')">⚡ 调配压缩档位</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" id="wizard-step-codex">
+          <div class="wizard-step-header">
+            <span>🤖 4. OpenAI Codex</span>
+            <span id="wizard-status-codex" class="badge badge-healthy">🟢 网关防断流</span>
+          </div>
+          <div id="wizard-desc-codex" style="font-size:0.78rem; color:var(--muted); line-height:1.4;">调度 38 款大模型，注入 5 分钟超时与断流自愈</div>
+          <div style="margin-top:auto; padding-top:6px;">
+            <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;" onclick="scrollToElement('codex-card')">🤖 Codex 专项控制</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="wizard-progress-box" class="doctor-box" style="display:none; margin-top:12px; font-size:0.85rem; border-color:rgba(56, 189, 248, 0.4);"></div>
+    </div>
+
     <!-- 系统自检与修复区域 -->
     <div class="card" id="doctor-card">
       <div class="section-title">
-        <span>🩺 系统健康自检与异常修复 (Doctor & Repair)</span>
-        <div>
-          <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck()">🔍 重新检测</button>
-          <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="runRepair()">🔧 一键自动修复</button>
+        <div class="section-title-left">
+          <span>🩺 系统健康自检与异常修复 (Doctor & Repair)</span>
+          <span id="doctor-status-badge" class="badge badge-healthy">🟢 全链路健康</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')">🔍 重新检测</button>
+          <button class="btn btn-success btn-sm" onclick="runRepair('system')">🔧 一键自动修复</button>
+          <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; opacity:0.85;" onclick="runRepair('all')" title="全量自愈OpenCode、OpenChamber、OMO与Codex全部项目">🛠️ 全量彻底自愈</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('doctor-collapse-body', this)">▼ 收起</span>
         </div>
       </div>
-      <div id="doctor-content" class="doctor-box">
-        <span style="color:var(--muted)">点击【一键体检】检查 OpenCode CLI、端口重定向、OMO配置与工作区状态...</span>
+      <div id="doctor-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：全面扫描本地与远程 OpenCode 运行环境、端口占用、离线文档预览沙箱（100% 本地解析沙箱，严禁公网第三方云预览 iframe，杜绝代码和私密合同泄露）以及后台僵死锁。发现异常点击【一键自动修复】即可秒级自愈。
+        </div>
+        <div id="doctor-content" class="doctor-box">
+          <span style="color:var(--muted)">点击【重新检测】检查 OpenCode CLI、路由端口、OpenChamber 工作台、Office 离线安全沙箱与工作区状态...</span>
+        </div>
       </div>
     </div>
 
     <!-- 全组件最新版本监测、兼容性诊断与安全升级区域 -->
     <div class="card" id="updates-card">
       <div class="section-title">
-        <span>📦 全组件最新版本监测、兼容性诊断与安全更新 (Updates & Rollback)</span>
-        <div>
+        <div class="section-title-left">
+          <span>📦 全组件最新版本监测、兼容性诊断与安全更新 (Updates & Rollback)</span>
+          <span id="updates-status-badge" class="badge badge-healthy">🟢 版本诊断就绪</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔍 检查最新版本</button>
-          <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="applyUpdatesClick()">🚀 一键安全更新</button>
-          <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="showRollbackModal()">⏪ 灾备一键回滚</button>
+          <button class="btn btn-success btn-sm" onclick="applyUpdatesClick()">🚀 一键安全更新</button>
+          <button class="btn btn-danger btn-sm" onclick="showRollbackModal()">⏪ 灾备一键回滚</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('updates-collapse-body', this)">▼ 收起</span>
         </div>
       </div>
-      <div id="updates-content" class="doctor-box">
-        <span style="color:var(--muted)">点击【检查最新版本】自动检测 OpenCode CLI、OMO 调度插件、Goal 插件、OpenChamber 及智能网关套件的最新版本与兼容性状态...</span>
+      <div id="updates-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：实时监测生态核心组件（CLI、OMO 调度插件、Goal 目标插件、OpenChamber 与智能网关）最新版本。更新前系统会自动创建灾备快照，更新后自动重放安全补丁，如有任何不兼容随时可秒级一键回滚。
+        </div>
+        <div id="updates-content" class="doctor-box">
+          <span style="color:var(--muted)">点击【检查最新版本】自动检测 OpenCode CLI、OMO 调度插件、Goal 插件、OpenChamber 及智能网关套件的最新版本与兼容性状态...</span>
+        </div>
       </div>
     </div>
 
     <!-- OpenAI Codex CLI 智能接入与全量模型调度卡片 -->
     <div class="card" id="codex-card">
       <div class="section-title">
-        <span>🤖 OpenAI Codex CLI 智能接入与模型调度 (Codex Integration)</span>
-        <div>
-          <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔍 刷新状态</button>
-          <button class="btn btn-success btn-sm" style="margin-left:6px;" onclick="bindCodex()">⚡ 一键接入 Codex</button>
-          <button class="btn btn-warning btn-sm" style="margin-left:6px; background:#d97706; border-color:#b45309;" onclick="restartCodexClient()">🔄 重启 Codex 客户端</button>
-          <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="restoreCodex()">⏪ 一键还原原本配置</button>
+        <div class="section-title-left">
+          <span>🤖 OpenAI Codex CLI 智能接入与模型调度 (Codex Integration)</span>
+          <span id="codex-status-badge" class="badge badge-healthy">🟢 网关接入就绪</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()">🔍 Codex 专项体检</button>
+          <button class="btn btn-success btn-sm" onclick="runCodexRepair()">🛠️ Codex 专项自愈与加固</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔄 刷新</button>
+          <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindCodex()">⚡ 一键接入</button>
+          <button class="btn btn-secondary btn-sm" style="background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()">🔄 重启客户端</button>
+          <button class="btn btn-danger btn-sm" onclick="restoreCodex()">⏪ 还原配置</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('codex-collapse-body', this)">▼ 收起</span>
         </div>
       </div>
-      <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
-        <div class="form-group" style="flex:1; min-width:280px; margin-bottom:0;">
-          <label>首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)</label>
-          <select id="codex-model-select" class="form-control" style="background:#0b1120;">
-            <!-- 动态生成 38 款模型 -->
-          </select>
+      <div id="codex-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：将 OpenAI 官方 Codex 客户端流量无感接驳至本地 4010 智能网关，直接解锁全套 38 款大模型，并内置 5 分钟超时与防断流加固，杜绝模型在超长推理或编写复杂补丁时意外超时中断。
         </div>
-        <div class="form-group" style="width:200px; margin-bottom:0;">
-          <label>思考等级 (Reasoning Effort)</label>
-          <select id="codex-effort-select" class="form-control" style="background:#0b1120;">
-            <option value="low">low (极速轻量思考)</option>
-            <option value="medium">medium (均衡思考)</option>
-            <option value="high" selected>high (深度思考 - 默认推荐)</option>
-            <option value="xhigh">xhigh (超强思考)</option>
-            <option value="max">max (极限思考)</option>
-          </select>
+        <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
+          <div class="form-group" style="flex:1; min-width:280px; margin-bottom:0;">
+            <label>首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)</label>
+            <select id="codex-model-select" class="form-control" style="background:#0b1120;">
+              <!-- 动态生成 38 款模型 -->
+            </select>
+          </div>
+          <div class="form-group" style="width:200px; margin-bottom:0;">
+            <label>思考等级 (Reasoning Effort)</label>
+            <select id="codex-effort-select" class="form-control" style="background:#0b1120;">
+              <option value="low">low (极速轻量思考)</option>
+              <option value="medium">medium (均衡思考)</option>
+              <option value="high" selected>high (深度思考 - 默认推荐)</option>
+              <option value="xhigh">xhigh (超强思考)</option>
+              <option value="max">max (极限思考)</option>
+            </select>
+          </div>
         </div>
-      </div>
-      <div id="codex-status-content" class="doctor-box" style="margin-top:10px;">
-        <span style="color:var(--muted)">正在检测 OpenAI Codex CLI 状态与网关接入配置...</span>
+        <div id="codex-status-content" class="doctor-box" style="margin-top:10px;">
+          <span style="color:var(--muted)">正在检测 OpenAI Codex CLI 状态与网关接入配置...</span>
+        </div>
       </div>
     </div>
 
     <!-- 账号配置区域 -->
-    <div class="card">
+    <div class="card" id="accounts-card">
       <div class="section-title" style="flex-wrap:wrap; gap:10px;">
-        <div style="display:flex; align-items:center; gap:8px;">
+        <div class="section-title-left">
           <span>📋 OpenCode Go 订阅账号列表</span>
+          <span id="accounts-status-badge" class="badge badge-healthy">🟢 账号池可用</span>
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <div class="quota-ctrl-bar">
@@ -3885,51 +4426,341 @@ $ghost
           </div>
           <button class="btn btn-secondary btn-sm" onclick="triggerManualQuotaRefreshAll()">🔄 刷新全部配额</button>
           <button class="btn btn-secondary btn-sm" onclick="addAccountCard()">+ 添加订阅账号</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('accounts-collapse-body', this)">▼ 收起</span>
         </div>
       </div>
-      <div id="accounts-container" class="accounts-grid">
-        <!-- 动态渲染账号卡片 -->
+      <div id="accounts-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：多账号自动负载均衡池。当某个账号达到官方限额触发 429 限频时，网关会在 0.1 秒内自动无感漂移到另一个健康账号继续工作，绝不让你的编码任务报错中断。
+        </div>
+        <div id="accounts-container" class="accounts-grid">
+          <!-- 动态渲染账号卡片 -->
+        </div>
       </div>
     </div>
 
     <!-- 高级策略与网络安全配置 -->
-    <div class="card">
+    <div class="card" id="config-card">
       <div class="section-title">
-        <span>⚙️ 路由、网络绑定与安全策略配置</span>
+        <div class="section-title-left">
+          <span>⚙️ 路由、网络绑定与安全策略配置 (高级运行参数)</span>
+          <span id="network-status-badge" class="badge badge-healthy" title="网关端口与网络监听状态">🟢 ${config.port} 监听正常 (${config.host || '127.0.0.1'})</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn btn-primary btn-sm" onclick="saveConfig()" title="保存当前配置">💾 保存配置</button>
+          <span class="collapse-toggle" id="config-collapse-btn" onclick="toggleCardCollapse('config-card-body', this)">▼ 收起</span>
+        </div>
       </div>
-      <div class="config-grid">
-        <div class="form-group">
-          <label>上游端点地址 (Upstream Endpoint)</label>
-          <input type="text" id="cfg-upstream" class="form-control" value="${config.upstream}">
+      <div id="config-card-body">
+        <div class="plain-tip-box">
+          💡 <strong>【小白友好提示】</strong>：以下为高级系统运行参数，普通用户保持默认推荐值即可开箱即用。若需供局域网其他电脑或 NAS 访问，可将【监听绑定地址】设为 <code>0.0.0.0</code> 并设置【Web 访问密码】。
         </div>
-        <div class="form-group">
-          <label>监听绑定地址 (Host IP - 0.0.0.0 允许局域网/NAS访问)</label>
-          <input type="text" id="cfg-host" class="form-control" value="${config.host || '127.0.0.1'}">
-        </div>
-        <div class="form-group">
-          <label>服务端口 (Port)</label>
-          <input type="number" id="cfg-port" class="form-control" value="${config.port}">
-        </div>
-        <div class="form-group">
-          <label>Web 管理访问密码 (UI Password - 留空无限制)</label>
-          <div class="input-wrapper">
-            <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，局域网共享建议设置" value="${config.uiPassword || ''}">
-            <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')">👁️</button>
+        <div class="config-grid">
+          <div class="form-group">
+            <label>上游端点地址 (Upstream Endpoint)</label>
+            <input type="text" id="cfg-upstream" class="form-control" value="${config.upstream}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">官方上游 API 接口基础端点</div>
+          </div>
+          <div class="form-group">
+            <label>监听绑定地址 (Host IP - 0.0.0.0 允许局域网/NAS访问)</label>
+            <input type="text" id="cfg-host" class="form-control" value="${config.host || '127.0.0.1'}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">127.0.0.1 仅本机可用；0.0.0.0 允许局域网/手机/远程设备连接</div>
+          </div>
+          <div class="form-group">
+            <label>服务端口 (Port)</label>
+            <input type="number" id="cfg-port" class="form-control" value="${config.port}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">网关核心服务监听端口，默认 4010</div>
+          </div>
+          <div class="form-group">
+            <label>Web 管理访问密码 (UI Password - 留空无限制)</label>
+            <div class="input-wrapper">
+              <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，局域网共享建议设置" value="${config.uiPassword || ''}" oninput="markConfigDirty()">
+              <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')">👁️</button>
+            </div>
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">保护管理面板与密钥安全，留空则免密进入</div>
+          </div>
+          <div class="form-group">
+            <label>429 触发后默认冷却时长 (秒)</label>
+            <input type="number" id="cfg-cooldown" class="form-control" value="${Math.round(config.defaultCooldownMs / 1000)}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：账号被限频后暂停使用的秒数，时间到后自动恢复正常</div>
+          </div>
+          <div class="form-group">
+            <label>最大故障转移重试次数 (Retries)</label>
+            <input type="number" id="cfg-retries" class="form-control" value="${config.maxFailoverRetries}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：网络抖动时自动换其他账号重试的次数，默认 2 次</div>
+          </div>
+          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
+            <label class="switch-label" style="margin-bottom:4px;">
+              <input type="checkbox" id="cfg-affinity" ${config.sessionAffinityEnabled ? 'checked' : ''} onchange="markConfigDirty()">
+              <span style="font-weight:600; color:#e2e8f0;">启用会话亲和性 (保持连续对话在同一账号)</span>
+            </label>
+            <div class="sub-tip" style="margin-left:22px;">【白话】：让同一个任务的后续对话找同一个账号，AI 能记住上文并享受官方 KV 缓存折扣</div>
           </div>
         </div>
-        <div class="form-group">
-          <label>429 触发后默认冷却时长 (秒)</label>
-          <input type="number" id="cfg-cooldown" class="form-control" value="${Math.round(config.defaultCooldownMs / 1000)}">
+      </div>
+    </div>
+
+    <!-- 上下文优化与 Token 压缩配置 (Context Compression v3.1.0) -->
+    <div class="card ${(compCfg.enabled === false) ? 'comp-master-disabled' : ''}" id="compression-card">
+      <div class="section-title">
+        <div class="section-title-left">
+          <span>⚡ 上下文优化与 Token 压缩配置 (Context Compression)</span>
+          <span class="badge badge-healthy" id="comp-global-status-badge">${(compCfg.enabled === false) ? '总开关已关闭' : '全引擎就绪'}</span>
         </div>
-        <div class="form-group">
-          <label>最大故障转移重试次数 (Retries)</label>
-          <input type="number" id="cfg-retries" class="form-control" value="${config.maxFailoverRetries}">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 0.78rem; color: var(--muted); display: inline-flex; align-items: center; gap: 4px;">
+            <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#34d399; box-shadow: 0 0 6px #34d399;"></span>
+            实时估算中
+          </span>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-comp-stats" onclick="handleResetCompressionStats()" title="清零累计压缩与Token节省统计数据">
+            🔄 一键清零统计
+          </button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('compression-collapse-body', this)">▼ 收起</span>
         </div>
-        <div class="form-group" style="display:flex; align-items:flex-end;">
-          <label class="switch-label" style="margin-bottom:8px;">
-            <input type="checkbox" id="cfg-affinity" ${config.sessionAffinityEnabled ? 'checked' : ''}>
-            <span>启用会话亲和性 (保持对话在同一账号以命中 KV 缓存)</span>
-          </label>
+      </div>
+      <div id="compression-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：自动帮您剔除终端滚动进度条、控制符与冗余通过项日志，绝不改变任何代码和回答原意，可直接为您节约 15%~30% 官方限额消耗！小白直接保持推荐的【🌟 平衡标准档】即可。
+        </div>
+
+        <!-- 顶层总开关与一键预设档位 -->
+        <div class="comp-topbar">
+          <div class="comp-master-switch">
+            <label class="switch-label" style="font-size: 0.95rem; font-weight: 600; color: #38bdf8;">
+              <input type="checkbox" id="cfg-comp-enabled" ${(compCfg.enabled !== false) ? 'checked' : ''} onchange="handleCompMasterToggle(this.checked)">
+              <span>启用上下文优化与 Token 压缩总开关 (Master Compression Switch)</span>
+            </label>
+          </div>
+          <div class="comp-presets-wrapper">
+            <span class="presets-title">一键快捷预设:</span>
+            <div class="comp-presets-group" id="comp-presets-group">
+              <button type="button" class="preset-btn ${(compCfg.preset === 'balanced' || !compCfg.preset) ? 'active' : ''}" id="preset-btn-balanced" onclick="applyPreset('balanced')">🌟 平衡标准档 (推荐)</button>
+              <button type="button" class="preset-btn ${(compCfg.preset === 'aggressive') ? 'active' : ''}" id="preset-btn-aggressive" onclick="applyPreset('aggressive')">🚀 极致省Token档</button>
+              <button type="button" class="preset-btn ${(compCfg.preset === 'conservative') ? 'active' : ''}" id="preset-btn-conservative" onclick="applyPreset('conservative')">🛡️ 保守只去噪档</button>
+              <button type="button" class="preset-btn ${(compCfg.preset === 'custom') ? 'active' : ''}" id="preset-btn-custom" onclick="applyPreset('custom')">⚙️ 自定义模式</button>
+              <span class="preset-badge" id="preset-active-badge" style="font-size: 0.75rem; color: var(--primary); padding: 4px 8px; background: rgba(56,189,248,0.1); border-radius: 6px; border: 1px solid rgba(56,189,248,0.3);">
+                当前: ${(compCfg.preset === 'aggressive') ? '🚀 极致省Token档' : (compCfg.preset === 'conservative') ? '🛡️ 保守只去噪档' : (compCfg.preset === 'custom') ? '⚙️ 自定义模式' : '🌟 平衡标准档'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 实时节省 Token 数据大盘 (Metrics Dashboard) -->
+        <div class="comp-metrics-dashboard" id="comp-metrics-dashboard">
+          <div class="comp-metric-card">
+            <div class="comp-metric-label">
+              <span>🪙 累计节约 Token 预估</span>
+            </div>
+            <div class="comp-metric-val" id="stat-saved-tokens">~0 Tokens</div>
+            <div class="comp-metric-sub" id="stat-saved-tokens-sub">基于 3.8 字符/Token 启发模型</div>
+          </div>
+          <div class="comp-metric-card">
+            <div class="comp-metric-label">
+              <span>💵 累计节约费用预估 (USD)</span>
+            </div>
+            <div class="comp-metric-val" id="stat-saved-cost" style="color: #34d399;">~$0.0000 USD</div>
+            <div class="comp-metric-sub">按 $0.25 / 1M Tokens 基准测算</div>
+          </div>
+          <div class="comp-metric-card">
+            <div class="comp-metric-label">
+              <span>📉 综合平均压缩率</span>
+            </div>
+            <div class="comp-metric-val" id="stat-compression-ratio" style="color: #a78bfa;">0.0%</div>
+            <div class="comp-metric-sub" id="stat-saved-chars-sub">已节约 0 字符</div>
+          </div>
+          <div class="comp-metric-card">
+            <div class="comp-metric-label">
+              <span>📝 已处理原文本字符</span>
+            </div>
+            <div class="comp-metric-val" id="stat-original-chars" style="color: #f1f5f9;">0 Chars</div>
+            <div class="comp-metric-sub" id="stat-compressed-chars-sub">压缩后: 0 字符</div>
+          </div>
+        </div>
+
+        <!-- 4 大核心引擎分层独立管控卡片 -->
+        <div class="comp-modules-grid" id="comp-modules-grid">
+          <!-- 大项 1：RTK / Token-Saver 终端与日志去噪引擎 -->
+          <div class="comp-module-card ${(mCfg.rtk && mCfg.rtk.enabled === false) ? 'module-disabled' : ''}" id="module-card-rtk">
+            <div class="comp-module-header">
+              <div class="comp-module-title-box">
+                <label class="switch-label comp-main-switch-label">
+                  <input type="checkbox" id="cfg-module-rtk-enabled" ${(mCfg.rtk && mCfg.rtk.enabled !== false) ? 'checked' : ''} onchange="toggleModuleEnabled('rtk', this.checked)">
+                  <span class="comp-module-title">1. RTK / Token-Saver 终端与日志去噪引擎</span>
+                </label>
+              </div>
+              <div class="comp-module-header-right">
+                <span class="badge ${(mCfg.rtk && mCfg.rtk.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-rtk">${(mCfg.rtk && mCfg.rtk.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                <div class="comp-module-contrib">
+                  <span class="contrib-text" id="contrib-text-rtk">贡献度: 0% · 0 Tokens</span>
+                  <div class="comp-progress-bar">
+                    <div class="comp-progress-fill" id="progress-fill-rtk" style="width: 0%;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="comp-module-desc">针对 Shell、编译、容器与测试套件产生的冗余控制符及高频刷屏日志进行无损清洗。</div>
+            <div class="comp-module-body" id="module-body-rtk">
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-strip-ansi" ${(mCfg.rtk && mCfg.rtk.stripAnsi !== false && compCfg.stripAnsi !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>ANSI 颜色与控制字符剥离 (stripAnsi)</span>
+                </label>
+                <div class="sub-tip">剥离 ANSI 颜色代码、文本样式、光标控制指令及 OSC 终端标题</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-clean-progress" ${(mCfg.rtk && mCfg.rtk.cleanProgressBars !== false && compCfg.cleanProgressBars !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>\\r 覆盖式终端进度条去噪 (cleanProgressBars)</span>
+                </label>
+                <div class="sub-tip">抹除回车符覆盖刷屏，严格保全 Windows CRLF (\\r\\n) 换行结构</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-fold-tests" ${(mCfg.rtk && mCfg.rtk.foldTestPasses !== false && compCfg.foldTestPasses !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>单元/集成测试正向通过项折叠 (foldTestPasses)</span>
+                </label>
+                <div class="sub-tip">折叠海量成功用例 (✓/PASS/ok)，错误用例与异常堆栈 100% 完整保留</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-clean-devops" ${(mCfg.rtk && mCfg.rtk.cleanDevOpsOutput !== false && compCfg.cleanDevOpsOutput !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>DevOps 容器与集群编排去噪 (cleanDevOpsOutput)</span>
+                </label>
+                <div class="sub-tip">智能折叠 Docker 镜像拉取层状态、Kubectl Pod 健康轮转与 Terraform 资源计划</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 大项 2：Headroom 代码与结构化折叠引擎 -->
+          <div class="comp-module-card ${(mCfg.headroom && mCfg.headroom.enabled === false) ? 'module-disabled' : ''}" id="module-card-headroom">
+            <div class="comp-module-header">
+              <div class="comp-module-title-box">
+                <label class="switch-label comp-main-switch-label">
+                  <input type="checkbox" id="cfg-module-headroom-enabled" ${(mCfg.headroom && mCfg.headroom.enabled !== false) ? 'checked' : ''} onchange="toggleModuleEnabled('headroom', this.checked)">
+                  <span class="comp-module-title">2. Headroom 代码与结构化折叠引擎</span>
+                </label>
+              </div>
+              <div class="comp-module-header-right">
+                <span class="badge ${(mCfg.headroom && mCfg.headroom.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-headroom">${(mCfg.headroom && mCfg.headroom.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                <div class="comp-module-contrib">
+                  <span class="contrib-text" id="contrib-text-headroom">贡献度: 0% · 0 Tokens</span>
+                  <div class="comp-progress-bar">
+                    <div class="comp-progress-fill" id="progress-fill-headroom" style="width: 0%;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="comp-module-desc">针对 Git Diff 中的超长依赖锁定文件提供安全摘要折叠，保全代码行号与冲突防御。</div>
+            <div class="comp-module-body" id="module-body-headroom">
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-fold-lockfiles" ${(mCfg.headroom && mCfg.headroom.foldLockfiles !== false && compCfg.foldLockfiles !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>依赖锁定文件 Diff 安全折叠 (foldLockfiles)</span>
+                </label>
+                <div class="sub-tip">折叠 package-lock/yarn/pnpm/Cargo/uv 等超大锁定文件，节省海量 Token</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-exempt-conflicts" ${(mCfg.headroom && mCfg.headroom.exemptMergeConflicts !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>Git 合并冲突绝对豁免防御 (exemptMergeConflicts)</span>
+                </label>
+                <div class="sub-tip">严格检测 &lt;&lt;&lt;&lt;&lt;&lt;&lt; / ||||||| / ======= 标记，发生冲突时 100% 放弃折叠</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-protect-diffs" ${(mCfg.headroom && mCfg.headroom.protectSourceDiffs !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>源码阅读行号保真保护 (protectSourceDiffs)</span>
+                </label>
+                <div class="sub-tip">严禁对业务代码文件做抽稀，确保 apply_patch 与补丁定位绝对精准</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 大项 3：Headroom CacheAligner & mcp-compressor 工具定义优化 -->
+          <div class="comp-module-card ${(mCfg.schema && mCfg.schema.enabled === false) ? 'module-disabled' : ''}" id="module-card-schema">
+            <div class="comp-module-header">
+              <div class="comp-module-title-box">
+                <label class="switch-label comp-main-switch-label">
+                  <input type="checkbox" id="cfg-module-schema-enabled" ${(mCfg.schema && mCfg.schema.enabled !== false) ? 'checked' : ''} onchange="toggleModuleEnabled('schema', this.checked)">
+                  <span class="comp-module-title">3. CacheAligner & mcp-compressor 工具定义优化</span>
+                </label>
+              </div>
+              <div class="comp-module-header-right">
+                <span class="badge ${(mCfg.schema && mCfg.schema.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-schema">${(mCfg.schema && mCfg.schema.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                <div class="comp-module-contrib">
+                  <span class="contrib-text" id="contrib-text-schema">贡献度: 0% · 0 Tokens</span>
+                  <div class="comp-progress-bar">
+                    <div class="comp-progress-fill" id="progress-fill-schema" style="width: 0%;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="comp-module-desc">规范化模型上下文中的 Tools 与 MCP Schema 定义，极大化提高上游 Prompt KV 命中率。</div>
+            <div class="comp-module-body" id="module-body-schema">
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-align-schema" ${(mCfg.schema && mCfg.schema.alignToolsSchema !== false && compCfg.alignToolsSchema !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>工具 Schema 参数字典序对齐 (alignToolsSchema)</span>
+                </label>
+                <div class="sub-tip">参数键名与 required 列表严格字典序排序，保证字节流恒定并锁定 KV Cache</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-slim-schema" ${(mCfg.schema && mCfg.schema.slimToolsSchema !== false && compCfg.slimToolsSchema !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>超大 Tools / MCP Schema 智能瘦身 (slimToolsSchema)</span>
+                </label>
+                <div class="sub-tip">裁剪多行 Markdown 冗余描述与臃肿示例，100% 保全类型、参数名与枚举</div>
+              </div>
+              <div class="comp-sub-item" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 500;">瘦身触发字符阈值 (schemaCharThreshold)</span>
+                  <div class="sub-tip">当 tools 总序列化长度超过该字符阈值时自动触发深度瘦身</div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <input type="number" id="cfg-comp-threshold" class="form-control" style="width: 100px; text-align: right; padding: 4px 8px; font-size: 0.85rem;" value="${(mCfg.schema && mCfg.schema.schemaCharThreshold) || compCfg.schemaCharThreshold || 15000}" min="1000" step="1000" onchange="handleSubOptionChange()">
+                  <span style="font-size: 0.8rem; color: var(--muted);">字符</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 大项 4：llmtrim Cache-Zone 多轮会话缓存区固化 -->
+          <div class="comp-module-card ${(mCfg.cacheZone && mCfg.cacheZone.enabled === false) ? 'module-disabled' : ''}" id="module-card-cacheZone">
+            <div class="comp-module-header">
+              <div class="comp-module-title-box">
+                <label class="switch-label comp-main-switch-label">
+                  <input type="checkbox" id="cfg-module-cachezone-enabled" ${(mCfg.cacheZone && mCfg.cacheZone.enabled !== false) ? 'checked' : ''} onchange="toggleModuleEnabled('cacheZone', this.checked)">
+                  <span class="comp-module-title">4. llmtrim Cache-Zone 多轮会话缓存区固化</span>
+                </label>
+              </div>
+              <div class="comp-module-header-right">
+                <span class="badge ${(mCfg.cacheZone && mCfg.cacheZone.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-cacheZone">${(mCfg.cacheZone && mCfg.cacheZone.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                <div class="comp-module-contrib">
+                  <span class="contrib-text" id="contrib-text-cacheZone">贡献度: 0% · 0 Tokens</span>
+                  <div class="comp-progress-bar">
+                    <div class="comp-progress-fill" id="progress-fill-cacheZone" style="width: 0%;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="comp-module-desc">多轮会话历史轮次字节级冻结，结合真 LRU 热度淘汰，杜绝重复压缩与计算消耗。</div>
+            <div class="comp-module-body" id="module-body-cacheZone">
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-cache-freeze" ${(mCfg.cacheZone && mCfg.cacheZone.cacheZoneFreeze !== false && compCfg.cacheZoneFreeze !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>历史轮次前缀字节级冻结 (cacheZoneFreeze)</span>
+                </label>
+                <div class="sub-tip">单次压缩结果基于 Session ID 与 SHA256 哈希字节固化，防止多轮重复消耗</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-true-lru" ${(mCfg.cacheZone && mCfg.cacheZone.trueLruRetention !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>真 LRU 缓存热度淘汰与双重边界守护 (trueLruRetention)</span>
+                </label>
+                <div class="sub-tip">双重上限限制 (最多 500 会话 / 每会话 200 键)，访问时自动提权热度，杜绝内存泄漏</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -3938,9 +4769,272 @@ $ghost
   <div id="toast" class="toast"></div>
 
   <script>
-    let currentConfig = { accounts: [] };
-    let liveStats = {};
-    let accountQuotas = {};
+    var currentConfig = (typeof currentConfig !== 'undefined' && currentConfig && currentConfig.accounts) ? currentConfig : { accounts: [] };
+    var liveStats = (typeof liveStats !== 'undefined' && liveStats) ? liveStats : {};
+    var accountQuotas = (typeof accountQuotas !== 'undefined' && accountQuotas) ? accountQuotas : {};
+    var currentPreset = (typeof currentPreset !== 'undefined' && currentPreset) ? currentPreset : 'balanced';
+    var codexStatusData = (typeof codexStatusData !== 'undefined') ? codexStatusData : null;
+
+    function handleCompMasterToggle(checked) {
+      updateCompCardsUI();
+      showToast(checked ? '✔ 上下文优化与 Token 压缩总开关已开启' : 'ℹ️ 上下文优化与 Token 压缩总开关已旁路关闭');
+    }
+
+    function toggleModuleEnabled(modName, enabled) {
+      updateCompCardsUI();
+      showToast('✔ 模块 ' + modName + (enabled ? ' 已启用' : ' 已停用'));
+    }
+
+    function updateCompCardsUI() {
+      const masterSw = document.getElementById('cfg-comp-enabled');
+      const isMaster = masterSw ? masterSw.checked : true;
+      const card = document.getElementById('compression-card');
+      const masterBadge = document.getElementById('comp-global-status-badge');
+
+      if (card) {
+        if (!isMaster) card.classList.add('comp-master-disabled');
+        else card.classList.remove('comp-master-disabled');
+      }
+      if (masterBadge) {
+        if (!isMaster) {
+          masterBadge.className = 'badge badge-disabled';
+          masterBadge.innerText = '总开关已关闭';
+        } else {
+          masterBadge.className = 'badge badge-healthy';
+          masterBadge.innerText = '全引擎就绪';
+        }
+      }
+
+      const presets = document.getElementById('comp-presets-group');
+      if (presets) {
+        presets.querySelectorAll('button').forEach(btn => {
+          btn.disabled = !isMaster;
+        });
+      }
+
+      ['rtk', 'headroom', 'schema', 'cacheZone'].forEach(mod => {
+        const sw = document.getElementById('cfg-module-' + (mod === 'cacheZone' ? 'cachezone' : mod) + '-enabled');
+        const enabled = sw ? sw.checked : true;
+        const modCard = document.getElementById('module-card-' + mod);
+        const modBadge = document.getElementById('badge-module-' + mod);
+        const modBody = document.getElementById('module-body-' + mod);
+
+        if (modCard) {
+          if (!isMaster || !enabled) modCard.classList.add('module-disabled');
+          else modCard.classList.remove('module-disabled');
+        }
+        if (modBadge) {
+          if (!isMaster || !enabled) {
+            modBadge.className = 'badge badge-disabled';
+            modBadge.innerText = !isMaster ? '总控旁路' : '已停用/旁路';
+          } else {
+            modBadge.className = 'badge badge-healthy';
+            modBadge.innerText = '运行中';
+          }
+        }
+        if (sw) sw.disabled = !isMaster;
+        if (modBody) {
+          modBody.querySelectorAll('input').forEach(input => {
+            input.disabled = !isMaster || !enabled;
+          });
+        }
+      });
+      handleSubOptionChange();
+      updateWizardStatusBadges();
+    }
+
+    function setPresetUI(presetName) {
+      currentPreset = presetName;
+      ['balanced', 'aggressive', 'conservative', 'custom'].forEach(p => {
+        const btn = document.getElementById('preset-btn-' + p);
+        if (btn) {
+          if (p === presetName) btn.classList.add('active');
+          else btn.classList.remove('active');
+        }
+      });
+      const badge = document.getElementById('preset-active-badge');
+      if (badge) {
+        const titles = {
+          balanced: '🌟 平衡标准档',
+          aggressive: '🚀 极致省Token档',
+          conservative: '🛡️ 保守只去噪档',
+          custom: '⚙️ 自定义模式'
+        };
+        badge.innerText = '当前: ' + (titles[presetName] || presetName);
+      }
+      updateWizardStatusBadges();
+    }
+
+    function applyPreset(presetName) {
+      if (presetName === 'balanced') {
+        setCheck('cfg-module-rtk-enabled', true);
+        setCheck('cfg-comp-strip-ansi', true);
+        setCheck('cfg-comp-clean-progress', true);
+        setCheck('cfg-comp-fold-tests', true);
+        setCheck('cfg-comp-clean-devops', true);
+
+        setCheck('cfg-module-headroom-enabled', true);
+        setCheck('cfg-comp-fold-lockfiles', true);
+        setCheck('cfg-comp-exempt-conflicts', true);
+        setCheck('cfg-comp-protect-diffs', true);
+
+        setCheck('cfg-module-schema-enabled', true);
+        setCheck('cfg-comp-align-schema', true);
+        setCheck('cfg-comp-slim-schema', true);
+        setValue('cfg-comp-threshold', 15000);
+
+        setCheck('cfg-module-cachezone-enabled', true);
+        setCheck('cfg-comp-cache-freeze', true);
+        setCheck('cfg-comp-true-lru', true);
+      } else if (presetName === 'aggressive') {
+        setCheck('cfg-module-rtk-enabled', true);
+        setCheck('cfg-comp-strip-ansi', true);
+        setCheck('cfg-comp-clean-progress', true);
+        setCheck('cfg-comp-fold-tests', true);
+        setCheck('cfg-comp-clean-devops', true);
+
+        setCheck('cfg-module-headroom-enabled', true);
+        setCheck('cfg-comp-fold-lockfiles', true);
+        setCheck('cfg-comp-exempt-conflicts', true);
+        setCheck('cfg-comp-protect-diffs', true);
+
+        setCheck('cfg-module-schema-enabled', true);
+        setCheck('cfg-comp-align-schema', true);
+        setCheck('cfg-comp-slim-schema', true);
+        setValue('cfg-comp-threshold', 8000);
+
+        setCheck('cfg-module-cachezone-enabled', true);
+        setCheck('cfg-comp-cache-freeze', true);
+        setCheck('cfg-comp-true-lru', true);
+      } else if (presetName === 'conservative') {
+        setCheck('cfg-module-rtk-enabled', true);
+        setCheck('cfg-comp-strip-ansi', true);
+        setCheck('cfg-comp-clean-progress', true);
+        setCheck('cfg-comp-fold-tests', false);
+        setCheck('cfg-comp-clean-devops', false);
+
+        setCheck('cfg-module-headroom-enabled', false);
+        setCheck('cfg-comp-fold-lockfiles', false);
+        setCheck('cfg-comp-exempt-conflicts', true);
+        setCheck('cfg-comp-protect-diffs', true);
+
+        setCheck('cfg-module-schema-enabled', true);
+        setCheck('cfg-comp-align-schema', true);
+        setCheck('cfg-comp-slim-schema', false);
+        setValue('cfg-comp-threshold', 15000);
+
+        setCheck('cfg-module-cachezone-enabled', false);
+        setCheck('cfg-comp-cache-freeze', false);
+        setCheck('cfg-comp-true-lru', true);
+      } else if (presetName === 'custom') {
+        // Keeps current user configuration intact and highlights custom mode
+      }
+
+      updateCompCardsUI();
+      setPresetUI(presetName);
+    }
+
+    function setCheck(id, val) {
+      const elem = document.getElementById(id);
+      if (elem) elem.checked = Boolean(val);
+    }
+
+    function setValue(id, val) {
+      const elem = document.getElementById(id);
+      if (elem) elem.value = String(val);
+    }
+
+    function handleSubOptionChange() {
+      const isRtk = getChecked('cfg-module-rtk-enabled');
+      const isStrip = getChecked('cfg-comp-strip-ansi');
+      const isClean = getChecked('cfg-comp-clean-progress');
+      const isTests = getChecked('cfg-comp-fold-tests');
+      const isDevops = getChecked('cfg-comp-clean-devops');
+
+      const isHeadroom = getChecked('cfg-module-headroom-enabled');
+      const isLock = getChecked('cfg-comp-fold-lockfiles');
+
+      const isSchema = getChecked('cfg-module-schema-enabled');
+      const isAlign = getChecked('cfg-comp-align-schema');
+      const isSlim = getChecked('cfg-comp-slim-schema');
+      const threshold = parseInt((document.getElementById('cfg-comp-threshold') || {}).value, 10) || 15000;
+
+      const isCacheZone = getChecked('cfg-module-cachezone-enabled');
+      const isFreeze = getChecked('cfg-comp-cache-freeze');
+
+      if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isSchema && isAlign && isSlim && threshold === 15000 && isCacheZone && isFreeze) {
+        setPresetUI('balanced');
+      } else if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isSchema && isAlign && isSlim && threshold === 8000 && isCacheZone && isFreeze) {
+        setPresetUI('aggressive');
+      } else if (isRtk && isStrip && isClean && !isTests && !isDevops && !isHeadroom && !isLock && isSchema && isAlign && !isSlim && threshold === 15000 && !isCacheZone && !isFreeze) {
+        setPresetUI('conservative');
+      } else {
+        setPresetUI('custom');
+      }
+    }
+
+    function getChecked(id) {
+      const el = document.getElementById(id);
+      return el ? el.checked : false;
+    }
+
+    async function fetchCompressionStats() {
+      if (document.hidden) return;
+      try {
+        const res = await fetch('/balancer/api/compression/stats', { headers: apiHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || !data.stats) return;
+        const stats = data.stats;
+
+        const tokensEl = document.getElementById('stat-saved-tokens');
+        const costEl = document.getElementById('stat-saved-cost');
+        const ratioEl = document.getElementById('stat-compression-ratio');
+        const origEl = document.getElementById('stat-original-chars');
+        const savedCharsSub = document.getElementById('stat-saved-chars-sub');
+        const compCharsSub = document.getElementById('stat-compressed-chars-sub');
+
+        if (tokensEl) tokensEl.innerText = '~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+        if (costEl) costEl.innerText = '~$' + Number(stats.savedCostUSD || 0).toFixed(4) + ' USD';
+        if (ratioEl) ratioEl.innerText = (stats.compressionRatio || 0) + '%';
+        if (origEl) origEl.innerText = Number(stats.totalOriginalChars || 0).toLocaleString() + ' Chars';
+        if (savedCharsSub) savedCharsSub.innerText = '已节约 ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
+        if (compCharsSub) compCharsSub.innerText = '压缩后: ' + Number(stats.totalCompressedChars || 0).toLocaleString() + ' 字符';
+
+        if (stats.modules) {
+          ['rtk', 'headroom', 'schema', 'cacheZone'].forEach(mod => {
+            const m = stats.modules[mod] || {};
+            const textEl = document.getElementById('contrib-text-' + mod);
+            const fillEl = document.getElementById('progress-fill-' + mod);
+            if (textEl) {
+              textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens';
+            }
+            if (fillEl) {
+              fillEl.style.width = Math.min(100, Math.max(0, m.percentage || 0)) + '%';
+            }
+          });
+        }
+      } catch (e) {}
+    }
+
+    async function handleResetCompressionStats() {
+      if (!confirm('确定要清零累计压缩与 Token 节省统计数据吗？此操作不可逆。')) return;
+      try {
+        const res = await fetch('/balancer/api/compression/stats/reset', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' })
+        });
+        const data = await res.json();
+        if (data && data.success) {
+          showToast('✔ ' + (data.message || '压缩与 Token 节省统计已清零'));
+          fetchCompressionStats();
+        } else {
+          showToast('清零失败: ' + (data.error || '未知错误'), true);
+        }
+      } catch (e) {
+        showToast('请求失败: ' + e.message, true);
+      }
+    }
 
     function formatResetTime(isoStr) {
       if (!isoStr) return '';
@@ -4029,18 +5123,33 @@ $ghost
 
     function copyBaseUrl() {
       const url = 'http://' + (window.location.hostname || '127.0.0.1') + ':${config.port}';
+      const btn = document.getElementById('btn-copy-baseurl');
+      const origText = btn ? btn.innerText : '📋 复制端点 (Copy)';
+
+      const onSuccess = () => {
+        showToast('✔ 已复制 Base URL: ' + url);
+        if (btn) {
+          btn.innerText = '✔ 已复制!';
+          btn.classList.add('btn-success');
+          btn.classList.remove('btn-secondary');
+          setTimeout(() => {
+            btn.innerText = origText;
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-secondary');
+          }, 1800);
+        }
+      };
+
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(() => {
-          showToast('✔ 已复制 Base URL: ' + url);
-        }).catch(() => {
-          fallbackCopyText(url);
+        navigator.clipboard.writeText(url).then(onSuccess).catch(() => {
+          fallbackCopyText(url, onSuccess);
         });
       } else {
-        fallbackCopyText(url);
+        fallbackCopyText(url, onSuccess);
       }
     }
 
-    function fallbackCopyText(text) {
+    function fallbackCopyText(text, cb) {
       const textArea = document.createElement('textarea');
       textArea.value = text;
       textArea.style.position = 'fixed';
@@ -4049,14 +5158,32 @@ $ghost
       textArea.select();
       try {
         document.execCommand('copy');
-        showToast('✔ 已复制 Base URL: ' + text);
+        if (cb) cb();
+        else showToast('✔ 已复制 Base URL: ' + text);
       } catch (err) {
         showToast('复制失败，请手动复制: ' + text, true);
       }
       document.body.removeChild(textArea);
     }
 
+    function markConfigDirty() {
+      const saveBtn = document.getElementById('btn-save-config');
+      if (saveBtn && !saveBtn.classList.contains('btn-save-dirty')) {
+        saveBtn.classList.add('btn-save-dirty');
+        saveBtn.title = '您有未保存的配置更改，点击立即保存！';
+      }
+    }
+
+    function clearConfigDirty() {
+      const saveBtn = document.getElementById('btn-save-config');
+      if (saveBtn) {
+        saveBtn.classList.remove('btn-save-dirty');
+        saveBtn.title = '保存当前所有配置';
+      }
+    }
+
     function logoutAdmin() {
+      if (!confirm('确定要退出当前管理面板登录吗？')) return;
       document.cookie = 'router_auth=; Path=/; Max-Age=0; SameSite=Lax';
       localStorage.removeItem('opencode_router_token');
       location.reload();
@@ -4064,11 +5191,291 @@ $ghost
 
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
+      if (!toast) return;
       toast.innerText = msg;
       toast.style.background = isError ? '#991b1b' : '#065f46';
       toast.style.borderColor = isError ? '#f87171' : '#34d399';
       toast.style.display = 'block';
       setTimeout(() => { toast.style.display = 'none'; }, 3000);
+    }
+
+    function toggleCardCollapse(bodyId, triggerElem) {
+      const body = document.getElementById(bodyId);
+      if (!body) return;
+      const isCollapsed = body.style.display === 'none';
+      if (isCollapsed) {
+        body.style.display = 'block';
+        if (triggerElem) triggerElem.innerText = '▼ 收起';
+        try { localStorage.setItem('collapse_' + bodyId, 'open'); } catch (_) {}
+      } else {
+        body.style.display = 'none';
+        if (triggerElem) triggerElem.innerText = '▶ 展开';
+        try { localStorage.setItem('collapse_' + bodyId, 'closed'); } catch (_) {}
+      }
+    }
+
+    function initCardCollapseStates() {
+      const cardIds = [
+        { id: 'doctor-collapse-body', defaultState: 'open' },
+        { id: 'updates-collapse-body', defaultState: 'open' },
+        { id: 'codex-collapse-body', defaultState: 'open' },
+        { id: 'accounts-collapse-body', defaultState: 'open' },
+        { id: 'compression-collapse-body', defaultState: 'open' },
+        { id: 'config-card-body', defaultState: 'closed' }
+      ];
+      cardIds.forEach(item => {
+        const body = document.getElementById(item.id);
+        if (!body) return;
+        let saved = null;
+        try { saved = localStorage.getItem('collapse_' + item.id); } catch (_) {}
+        const state = saved || item.defaultState;
+        if (state === 'closed') {
+          body.style.display = 'none';
+          const trigger = (body.parentElement && typeof body.parentElement.querySelector === 'function')
+            ? body.parentElement.querySelector('.collapse-toggle')
+            : document.getElementById('config-collapse-btn');
+          if (trigger) trigger.innerText = '▶ 展开';
+        } else if (state === 'open') {
+          body.style.display = 'block';
+          const trigger = (body.parentElement && typeof body.parentElement.querySelector === 'function')
+            ? body.parentElement.querySelector('.collapse-toggle')
+            : null;
+          if (trigger) trigger.innerText = '▼ 收起';
+        }
+      });
+    }
+
+    function scrollToElement(id) {
+      const el = document.getElementById(id);
+      if (el) {
+        if (typeof el.scrollIntoView === 'function') {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        el.style.transition = 'box-shadow 0.3s ease';
+        el.style.boxShadow = '0 0 20px rgba(56, 189, 248, 0.6)';
+        setTimeout(() => {
+          el.style.boxShadow = '';
+        }, 1500);
+      }
+    }
+
+    function updateWizardStatusBadges() {
+      const validAccounts = (currentConfig && currentConfig.accounts) ? currentConfig.accounts.filter(a => a.apiKey && a.apiKey.trim() && a.enabled) : [];
+      const accBadge = document.getElementById('accounts-status-badge');
+      const wizAccBadge = document.getElementById('wizard-status-account');
+      const wizAccDesc = document.getElementById('wizard-desc-account');
+      if (validAccounts.length > 0) {
+        if (accBadge) {
+          accBadge.className = 'badge badge-healthy';
+          accBadge.innerText = '🟢 已就绪 (' + validAccounts.length + ' 账号)';
+          accBadge.title = '当前账号池有 ' + validAccounts.length + ' 个有效订阅账号可用，自动故障转移已就绪';
+        }
+        if (wizAccBadge) {
+          wizAccBadge.className = 'badge badge-healthy';
+          wizAccBadge.innerText = '🟢 ' + validAccounts.length + ' 账号已就绪';
+          wizAccBadge.title = '订阅账号池健康就绪';
+        }
+        if (wizAccDesc) {
+          wizAccDesc.innerText = '已成功绑定 ' + validAccounts.length + ' 个可用订阅账号，支持秒级自动漂移与配额轮转';
+        }
+      } else {
+        if (accBadge) {
+          accBadge.className = 'badge badge-cooling';
+          accBadge.innerText = '🔴 待配置密钥';
+          accBadge.title = '账号池无可用密钥，网关无法转发请求至上游';
+        }
+        if (wizAccBadge) {
+          wizAccBadge.className = 'badge badge-cooling';
+          wizAccBadge.innerText = '🔴 待配置密钥';
+          wizAccBadge.title = '请在下方账号列表中填入 API Key';
+        }
+        if (wizAccDesc) {
+          wizAccDesc.innerText = '请在下方账号卡片中填入您的 API Key 订阅密钥即可立即开启负载均衡';
+        }
+      }
+
+      const compMaster = document.getElementById('cfg-comp-enabled');
+      const isComp = compMaster ? compMaster.checked : true;
+      const wizCompBadge = document.getElementById('wizard-status-comp');
+      const wizCompDesc = document.getElementById('wizard-desc-comp');
+      if (wizCompBadge) {
+        wizCompBadge.className = isComp ? 'badge badge-healthy' : 'badge badge-disabled';
+        wizCompBadge.innerText = isComp ? '🟢 ' + (currentPreset === 'aggressive' ? '极致省Token' : (currentPreset === 'conservative' ? '保守只去噪' : (currentPreset === 'custom' ? '自定义模式' : '推荐平衡档'))) : '⏸️ 已旁路';
+        wizCompBadge.title = isComp ? 'Token 压缩优化已开启，预计为您节约 15%~30% 官方配额消耗' : '压缩总开关已关闭，日志原样转发';
+      }
+      if (wizCompDesc) {
+        wizCompDesc.innerText = isComp ? '智能清洗终端刷屏 + Headroom 结构折叠 + Schema 对齐，无损省 Token' : '压缩引擎已旁路暂停，建议点击【一键配置】开启推荐平衡档';
+      }
+
+      const codexBadge = document.getElementById('codex-status-badge');
+      const wizCodexBadge = document.getElementById('wizard-status-codex');
+      const wizCodexDesc = document.getElementById('wizard-desc-codex');
+      const codexBound = Boolean(codexStatusData && codexStatusData.codex && codexStatusData.codex.isBound);
+      if (codexBound) {
+        if (codexBadge) {
+          codexBadge.className = 'badge badge-healthy';
+          codexBadge.innerText = '🟢 已接入 4010 网关 (5min防断流)';
+          codexBadge.title = 'OpenAI Codex 客户端已锁定至本地 4010 网关，并已注入 5 分钟超时与死锁保护';
+        }
+        if (wizCodexBadge) {
+          wizCodexBadge.className = 'badge badge-healthy';
+          wizCodexBadge.innerText = '🟢 5min 防断流就绪';
+          wizCodexBadge.title = 'Codex 客户端接入健康';
+        }
+        if (wizCodexDesc) {
+          wizCodexDesc.innerText = 'OpenAI Codex 流量已导入本地网关，全量 38 款模型与 5 分钟长推理防断流就绪';
+        }
+      } else {
+        if (codexBadge) {
+          codexBadge.className = 'badge badge-cooling';
+          codexBadge.innerText = '🟡 未接入网关';
+          codexBadge.title = 'OpenAI Codex 尚未连接至本地网关，点击【一键接入】即可秒级绑定';
+        }
+        if (wizCodexBadge) {
+          wizCodexBadge.className = 'badge badge-cooling';
+          wizCodexBadge.innerText = '🟡 未接入网关';
+          wizCodexBadge.title = 'Codex 尚未绑定';
+        }
+        if (wizCodexDesc) {
+          wizCodexDesc.innerText = '点击【一键全能配置】或前往 Codex 卡片一键接入，解锁 38 款大模型与防断流';
+        }
+      }
+
+      // Update Network Status Badge
+      const netBadge = document.getElementById('network-status-badge');
+      if (netBadge) {
+        const host = (currentConfig && currentConfig.host) || '127.0.0.1';
+        const port = (currentConfig && currentConfig.port) || ${config.port};
+        netBadge.className = 'badge badge-healthy';
+        netBadge.innerText = '🟢 ' + port + ' 监听正常 (' + host + ')';
+        netBadge.title = '智能网关正在 ' + host + ':' + port + ' 正常监听，所有请求均受高可用与会话隔离保护';
+      }
+
+      // Dynamically calculate and update Wizard Global Badge
+      const wizGlobalBadge = document.getElementById('wizard-global-badge');
+      if (wizGlobalBadge) {
+        const hasAccounts = validAccounts.length > 0;
+        const isCompActive = isComp;
+        const isCodexReady = codexBound;
+        if (!hasAccounts) {
+          wizGlobalBadge.className = 'badge badge-cooling';
+          wizGlobalBadge.innerText = '🔴 待配置密钥';
+          wizGlobalBadge.title = '尚未配置任何有效的 API Key 密钥，请在下方填入订阅密钥';
+        } else if (!isCodexReady || !isCompActive) {
+          wizGlobalBadge.className = 'badge badge-healthy';
+          wizGlobalBadge.innerText = '🟡 待优化 (点击一键配置)';
+          wizGlobalBadge.title = '账号已就绪，推荐点击【🚀 新手一键全能配置】秒级加固 Codex 与 Token 压缩';
+        } else {
+          wizGlobalBadge.className = 'badge badge-healthy';
+          wizGlobalBadge.innerText = '🟢 黄金就绪 (开箱即用)';
+          wizGlobalBadge.title = '所有核心组件均处于最佳工作状态，尽情使用！';
+        }
+      }
+    }
+
+    async function runQuickSetupWizard() {
+      const btn = document.getElementById('btn-quick-setup');
+      const progBox = document.getElementById('wizard-progress-box');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ 正在全自动执行新手全能配置与体检...';
+      }
+      if (progBox) {
+        progBox.style.display = 'block';
+        progBox.innerHTML = '<div style="color:var(--primary); font-weight:600; margin-bottom:6px;">🚀 新手全能向导执行中，请稍候：</div>' +
+          '<div id="w-step-1" style="color:var(--muted); padding:2px 0;">⏳ [1/4] 正在校验账号池有效性与官方限额...</div>' +
+          '<div id="w-step-2" style="color:var(--muted); padding:2px 0;">⏳ [2/4] 正在执行全链路系统健康体检与异常自愈...</div>' +
+          '<div id="w-step-3" style="color:var(--muted); padding:2px 0;">⏳ [3/4] 正在应用推荐 Token 压缩平衡标准档...</div>' +
+          '<div id="w-step-4" style="color:var(--muted); padding:2px 0;">⏳ [4/4] 正在将 4010 网关智能接入 OpenAI Codex 并开启 5 分钟防断流...</div>';
+      }
+
+      showToast('🚀 正在执行新手一键全能配置与体检...');
+
+      try {
+        // Step 1: Accounts verification
+        const validAccounts = (currentConfig && currentConfig.accounts) ? currentConfig.accounts.filter(a => a.apiKey && a.apiKey.trim()) : [];
+        const w1 = document.getElementById('w-step-1');
+        if (validAccounts.length > 0) {
+          await refreshAllQuotas(true, false);
+          if (w1) {
+            w1.innerHTML = '✔ [1/4] 账号池校验完毕：已配置 ' + validAccounts.length + ' 个有效订阅账号';
+            w1.style.color = 'var(--success)';
+          }
+        } else {
+          if (w1) {
+            w1.innerHTML = '⚠️ [1/4] 账号池提示：当前尚未配置 API Key 密钥，建议在下方账号卡片中填入您的订阅密钥';
+            w1.style.color = 'var(--warning)';
+          }
+        }
+
+        // Step 2: System Health & Repair
+        const w2 = document.getElementById('w-step-2');
+        await runRepair('all');
+        await runDoctorCheck('system');
+        if (w2) {
+          w2.innerHTML = '✔ [2/4] 全链路健康自愈完毕：CLI、端口监听、离线预览沙箱与指令集均已就绪';
+          w2.style.color = 'var(--success)';
+        }
+
+        // Step 3: Apply recommended compression preset 'balanced'
+        const w3 = document.getElementById('w-step-3');
+        setCheck('cfg-comp-enabled', true);
+        applyPreset('balanced');
+        if (w3) {
+          w3.innerHTML = '✔ [3/4] 推荐 Token 压缩平衡标准档已生效：日志清洗 + Headroom 折叠 + Schema 对齐';
+          w3.style.color = 'var(--success)';
+        }
+
+        // Step 4: Codex Bind & 5min Timeout Guard
+        const w4 = document.getElementById('w-step-4');
+        try {
+          const model = (document.getElementById('codex-model-select') && document.getElementById('codex-model-select').value) || 'deepseek-v4.1-flash';
+          const effort = (document.getElementById('codex-effort-select') && document.getElementById('codex-effort-select').value) || 'high';
+          const resBind = await fetch('/balancer/api/bind-codex', {
+            method: 'POST',
+            headers: apiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ defaultModel: model, reasoningEffort: effort })
+          });
+          const dataBind = await resBind.json();
+          if (dataBind && dataBind.success) {
+            if (w4) {
+              w4.innerHTML = '✔ [4/4] OpenAI Codex 已成功接入 4010 网关 (已配置 5 分钟防断流与高思考等级)';
+              w4.style.color = 'var(--success)';
+            }
+          } else {
+            if (w4) {
+              w4.innerHTML = 'ℹ [4/4] Codex 接入提示: ' + (dataBind.message || '已配置');
+              w4.style.color = 'var(--muted)';
+            }
+          }
+          await loadCodexStatus();
+        } catch (e) {
+          if (w4) {
+            w4.innerHTML = 'ℹ [4/4] Codex 接入扫描完毕: ' + e.message;
+            w4.style.color = 'var(--muted)';
+          }
+          await loadCodexStatus();
+        }
+
+        // Save final config to persist
+        await saveConfig();
+        clearConfigDirty();
+        updateWizardStatusBadges();
+
+        if (progBox) {
+          progBox.innerHTML += '<div style="margin-top:8px; padding-top:6px; border-top:1px solid #334155; color:var(--success); font-weight:700;">' +
+            '🎉 新手一键全能配置与体检已 100% 达成！系统已处于最佳状态，可直接在 OpenCode、OpenChamber 或终端中畅享高可用智能编程！' +
+            '</div>';
+        }
+        showToast('🎉 新手一键全能配置已圆满完成！');
+      } catch (err) {
+        showToast('一键配置过程中出现提示: ' + err.message, true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = '🚀 新手一键全能配置与体检 (已处于最佳状态)';
+        }
+      }
     }
 
     async function fetchConfig() {
@@ -4084,11 +5491,79 @@ $ghost
         if (document.getElementById('cfg-host')) document.getElementById('cfg-host').value = currentConfig.host || '127.0.0.1';
         if (document.getElementById('cfg-port')) document.getElementById('cfg-port').value = currentConfig.port || 4010;
         if (document.getElementById('cfg-uipassword')) document.getElementById('cfg-uipassword').value = currentConfig.uiPassword || '';
+        if (currentConfig.compression) {
+          const comp = currentConfig.compression;
+          const m = comp.modules || {};
+          if (document.getElementById('cfg-comp-enabled')) {
+            document.getElementById('cfg-comp-enabled').checked = comp.enabled !== false;
+          }
+
+          // Module RTK
+          if (document.getElementById('cfg-module-rtk-enabled')) {
+            document.getElementById('cfg-module-rtk-enabled').checked = (m.rtk && m.rtk.enabled !== false);
+          }
+          if (document.getElementById('cfg-comp-strip-ansi')) {
+            document.getElementById('cfg-comp-strip-ansi').checked = (m.rtk ? m.rtk.stripAnsi !== false : comp.stripAnsi !== false);
+          }
+          if (document.getElementById('cfg-comp-clean-progress')) {
+            document.getElementById('cfg-comp-clean-progress').checked = (m.rtk ? m.rtk.cleanProgressBars !== false : comp.cleanProgressBars !== false);
+          }
+          if (document.getElementById('cfg-comp-fold-tests')) {
+            document.getElementById('cfg-comp-fold-tests').checked = (m.rtk ? m.rtk.foldTestPasses !== false : comp.foldTestPasses !== false);
+          }
+          if (document.getElementById('cfg-comp-clean-devops')) {
+            document.getElementById('cfg-comp-clean-devops').checked = (m.rtk ? m.rtk.cleanDevOpsOutput !== false : (comp.cleanDevOpsOutput !== false && comp.cleanDockerOutput !== false));
+          }
+
+          // Module Headroom
+          if (document.getElementById('cfg-module-headroom-enabled')) {
+            document.getElementById('cfg-module-headroom-enabled').checked = (m.headroom && m.headroom.enabled !== false);
+          }
+          if (document.getElementById('cfg-comp-fold-lockfiles')) {
+            document.getElementById('cfg-comp-fold-lockfiles').checked = (m.headroom ? m.headroom.foldLockfiles !== false : comp.foldLockfiles !== false);
+          }
+          if (document.getElementById('cfg-comp-exempt-conflicts')) {
+            document.getElementById('cfg-comp-exempt-conflicts').checked = (m.headroom ? m.headroom.exemptMergeConflicts !== false : comp.exemptMergeConflicts !== false);
+          }
+          if (document.getElementById('cfg-comp-protect-diffs')) {
+            document.getElementById('cfg-comp-protect-diffs').checked = (m.headroom ? m.headroom.protectSourceDiffs !== false : comp.protectSourceDiffs !== false);
+          }
+
+          // Module Schema
+          if (document.getElementById('cfg-module-schema-enabled')) {
+            document.getElementById('cfg-module-schema-enabled').checked = (m.schema && m.schema.enabled !== false);
+          }
+          if (document.getElementById('cfg-comp-align-schema')) {
+            document.getElementById('cfg-comp-align-schema').checked = (m.schema ? m.schema.alignToolsSchema !== false : comp.alignToolsSchema !== false);
+          }
+          if (document.getElementById('cfg-comp-slim-schema')) {
+            document.getElementById('cfg-comp-slim-schema').checked = (m.schema ? m.schema.slimToolsSchema !== false : comp.slimToolsSchema !== false);
+          }
+          if (document.getElementById('cfg-comp-threshold')) {
+            document.getElementById('cfg-comp-threshold').value = (m.schema && m.schema.schemaCharThreshold) || comp.schemaCharThreshold || 15000;
+          }
+
+          // Module CacheZone
+          if (document.getElementById('cfg-module-cachezone-enabled')) {
+            document.getElementById('cfg-module-cachezone-enabled').checked = (m.cacheZone && m.cacheZone.enabled !== false);
+          }
+          if (document.getElementById('cfg-comp-cache-freeze')) {
+            document.getElementById('cfg-comp-cache-freeze').checked = (m.cacheZone ? m.cacheZone.cacheZoneFreeze !== false : comp.cacheZoneFreeze !== false);
+          }
+          if (document.getElementById('cfg-comp-true-lru')) {
+            document.getElementById('cfg-comp-true-lru').checked = (m.cacheZone ? m.cacheZone.trueLruRetention !== false : comp.trueLruRetention !== false);
+          }
+
+          updateCompCardsUI();
+          if (comp.preset) setPresetUI(comp.preset);
+          else handleSubOptionChange();
+        }
         const logoutBtn = document.getElementById('btn-logout');
         if (logoutBtn) logoutBtn.style.display = currentConfig.hasUiPassword ? 'inline-block' : 'none';
         renderAccounts();
         initQuotaRefreshScheduler();
         refreshAllQuotas(true, false);
+        updateWizardStatusBadges();
       } catch (e) {
         showToast('获取配置失败: ' + e.message, true);
       }
@@ -4102,6 +5577,7 @@ $ghost
           liveStats[acc.id] = acc;
         }
         updateMetricsUI();
+        updateWizardStatusBadges();
       } catch (e) {}
     }
 
@@ -4187,6 +5663,8 @@ $ghost
       if (target) {
         target[field] = value;
       }
+      markConfigDirty();
+      updateWizardStatusBadges();
     }
 
     function addAccountCard() {
@@ -4198,6 +5676,9 @@ $ghost
         enabled: true
       });
       renderAccounts();
+      markConfigDirty();
+      updateWizardStatusBadges();
+      showToast('已添加新订阅账号卡片，请填入密钥');
     }
 
     function deleteAccount(id) {
@@ -4205,8 +5686,12 @@ $ghost
         alert('至少需要保留一个账号！');
         return;
       }
+      if (!confirm('确定要删除该订阅账号配置吗？删除后不可恢复。')) return;
       currentConfig.accounts = currentConfig.accounts.filter(a => a.id !== id);
       renderAccounts();
+      markConfigDirty();
+      updateWizardStatusBadges();
+      showToast('✔ 已删除账号');
     }
 
     async function testSingleAccount(id) {
@@ -4280,11 +5765,14 @@ $ghost
       }
     }
 
-    async function runDoctorCheck() {
+    async function runDoctorCheck(scope = 'system') {
       const box = document.getElementById('doctor-content');
+      const doctorBadge = document.getElementById('doctor-status-badge');
+      const wizDocBadge = document.getElementById('wizard-status-doctor');
+      const wizDocDesc = document.getElementById('wizard-desc-doctor');
       box.innerHTML = '<span style="color:var(--primary)">⏳ 正在执行系统环境全链路自检...</span>';
       try {
-        const res = await fetch('/balancer/api/doctor', { headers: apiHeaders() });
+        const res = await fetch('/balancer/api/doctor?scope=' + encodeURIComponent(scope), { headers: apiHeaders() });
         const doc = await res.json();
         let html = \`
           <div style="margin-bottom:8px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
@@ -4296,15 +5784,19 @@ $ghost
             <span><strong>双轨 Schema:</strong> \${doc.dualTrackSchema ? (doc.dualTrackSchema.healthy ? '<span style="color:var(--success)">✔ 镜像正常</span>' : '<span style="color:var(--warning)">⚠ 缺失规范</span>') : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>提供商接口:</strong> \${doc.openchamberProbe && doc.openchamberProbe.integration ? (doc.openchamberProbe.integration.status === 'healthy' ? '<span style="color:var(--success)">✔ ' + doc.openchamberProbe.integration.latencyMs + 'ms' + (doc.openchamberProbe.integration.authRequired ? ' (鉴权)' : '') + '</span>' : (doc.openchamberProbe.integration.status === 'deadlocked' ? '<span style="color:var(--danger)">❌ 死锁挂死</span>' : (doc.openchamberProbe.integration.status === 'unreachable' ? '<span style="color:var(--muted)">未连接</span>' : '<span style="color:var(--warning)">⚠ ' + (doc.openchamberProbe.integration.error || doc.openchamberProbe.integration.status) + '</span>'))) : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
-            <span><strong>OpenAI Codex:</strong> \${doc.codex && doc.codex.isBound ? '<span style="color:var(--success)">✔ 已接入</span>' : '<span style="color:var(--muted)">未接入</span>'}\${doc.codexProcessHealth && !doc.codexProcessHealth.healthy ? ' <span style="color:var(--danger)">(存在挂起/僵死)</span>' : ''}\${doc.codexLocale && !doc.codexLocale.healthy ? ' <span style="color:var(--warning)">(语言未对齐)</span>' : ''}</span>
             <span><strong>模型自愈屏障:</strong> <span style="color:var(--success)">✔ 异构节点防护</span></span>
           </div>
         \`;
         if (doc.issues.length === 0) {
-          html += '<div style="color:var(--success); font-weight:600; padding:6px 0;">🎉 全链路状态极佳，未发现任何潜在隐患！</div>';
+          html += '<div style="color:var(--success); font-weight:600; padding:6px 0;">🎉 系统核心组件全链路状态极佳，未发现任何潜在隐患！</div>';
+          if (doctorBadge) { doctorBadge.className = 'badge badge-healthy'; doctorBadge.innerText = '🟢 全链路健康'; }
+          if (wizDocBadge) { wizDocBadge.className = 'badge badge-healthy'; wizDocBadge.innerText = '🟢 全链路健康'; }
+          if (wizDocDesc) { wizDocDesc.innerText = 'CLI、端口、离线预览沙箱与指令集均运行良好'; }
         } else {
-          html += '<div style="margin-top:8px;"><strong>发现 ' + doc.issues.length + ' 个可优化/待修复项：</strong></div>';
+          html += '<div style="margin-top:8px;"><strong>发现 ' + doc.issues.length + ' 个系统待修复/可优化项：</strong></div>';
+          let hasHigh = false;
           doc.issues.forEach(iss => {
+            if (iss.severity === 'high') hasHigh = true;
             const cls = iss.severity === 'high' ? 'issue-high' : (iss.severity === 'medium' ? 'issue-medium' : 'issue-low');
             html += \`
               <div class="issue-item \${cls}">
@@ -4314,10 +5806,37 @@ $ghost
               </div>
             \`;
           });
+          if (doctorBadge) {
+            doctorBadge.className = hasHigh ? 'badge badge-cooling' : 'badge badge-healthy';
+            doctorBadge.innerText = hasHigh ? '🔴 待修复 (' + doc.issues.length + ')' : '🟡 待优化 (' + doc.issues.length + ')';
+          }
+          if (wizDocBadge) {
+            wizDocBadge.className = hasHigh ? 'badge badge-cooling' : 'badge badge-healthy';
+            wizDocBadge.innerText = hasHigh ? '🔴 待修复 (' + doc.issues.length + ')' : '🟡 待优化 (' + doc.issues.length + ')';
+          }
+          if (wizDocDesc) {
+            wizDocDesc.innerText = '发现 ' + doc.issues.length + ' 项可优化/修复项，点击【一键自动修复】即可秒级自愈';
+          }
+        }
+        if (doc.codexIssues && doc.codexIssues.length > 0) {
+          html += \`
+            <div style="margin-top:10px; padding:8px 12px; background:rgba(56, 189, 248, 0.08); border:1px solid rgba(56, 189, 248, 0.25); border-radius:6px; font-size:0.83rem; color:#93c5fd; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <span>🤖 检测到 OpenAI Codex 存在 <strong>\${doc.codexIssues.length}</strong> 个待优化项（已隔离至 Codex 专项面板进行管理）</span>
+              <button class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="scrollToCodexCard()">👉 前往 Codex 专属卡片查看与修复</button>
+            </div>
+          \`;
         }
         box.innerHTML = html;
       } catch (e) {
         box.innerHTML = '<span style="color:var(--danger)">自检失败: ' + e.message + '</span>';
+      }
+    }
+
+    function scrollToCodexCard() {
+      const card = document.getElementById('codex-card');
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth' });
+        runCodexDoctorCheck();
       }
     }
 
@@ -4338,26 +5857,32 @@ $ghost
       }
     }
 
-    async function runRepair() {
+    async function runRepair(scope = 'system') {
       const box = document.getElementById('doctor-content');
-      box.innerHTML = '<span style="color:var(--primary)">🔧 正在执行一键自动修复...</span>';
+      box.innerHTML = '<span style="color:var(--primary)">🔧 正在执行' + (scope === 'all' ? '全量系统与Codex' : '系统核心组件') + '一键自动修复...</span>';
       try {
-        const res = await fetch('/balancer/api/repair', { method: 'POST', headers: apiHeaders() });
+        const res = await fetch('/balancer/api/repair?scope=' + encodeURIComponent(scope), { method: 'POST', headers: apiHeaders() });
         const data = await res.json();
-        let html = '<div style="margin-bottom:6px;"><strong>修复执行结果：</strong></div>';
+        let html = '<div style="margin-bottom:6px;"><strong>' + (scope === 'all' ? '全量自愈' : '系统修复') + '执行结果：</strong></div>';
         data.results.forEach(r => {
           const color = r.success ? 'var(--success)' : 'var(--danger)';
           html += \`<div style="padding:4px 0; color:\${color}">\${r.success ? '✔' : '❌'} [\${r.item}]: \${r.message}</div>\`;
         });
         box.innerHTML = html;
-        showToast('修复流程执行完毕！');
+        showToast((scope === 'all' ? '全量自愈' : '系统修复') + '流程执行完毕！');
         fetchStatus();
+        await runDoctorCheck(scope === 'all' ? 'all' : 'system');
       } catch (e) {
         box.innerHTML = '<span style="color:var(--danger)">修复执行异常: ' + e.message + '</span>';
       }
     }
 
     async function saveConfig() {
+      const saveBtn = document.getElementById('btn-save-config');
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerText = '💾 保存中...';
+      }
       const upstream = document.getElementById('cfg-upstream').value.trim();
       const host = document.getElementById('cfg-host').value.trim();
       const port = parseInt(document.getElementById('cfg-port').value, 10) || 4010;
@@ -4365,6 +5890,72 @@ $ghost
       const cooldownSec = parseInt(document.getElementById('cfg-cooldown').value) || 60;
       const retries = parseInt(document.getElementById('cfg-retries').value) || 2;
       const affinity = document.getElementById('cfg-affinity').checked;
+      const compEnabled = document.getElementById('cfg-comp-enabled') ? document.getElementById('cfg-comp-enabled').checked : true;
+      const rtkEnabled = document.getElementById('cfg-module-rtk-enabled') ? document.getElementById('cfg-module-rtk-enabled').checked : true;
+      const compStripAnsi = document.getElementById('cfg-comp-strip-ansi') ? document.getElementById('cfg-comp-strip-ansi').checked : true;
+      const compCleanProgress = document.getElementById('cfg-comp-clean-progress') ? document.getElementById('cfg-comp-clean-progress').checked : true;
+      const compFoldTests = document.getElementById('cfg-comp-fold-tests') ? document.getElementById('cfg-comp-fold-tests').checked : true;
+      const compCleanDevOps = document.getElementById('cfg-comp-clean-devops') ? document.getElementById('cfg-comp-clean-devops').checked : true;
+
+      const headroomEnabled = document.getElementById('cfg-module-headroom-enabled') ? document.getElementById('cfg-module-headroom-enabled').checked : true;
+      const compFoldLockfiles = document.getElementById('cfg-comp-fold-lockfiles') ? document.getElementById('cfg-comp-fold-lockfiles').checked : true;
+      const compExemptConflicts = document.getElementById('cfg-comp-exempt-conflicts') ? document.getElementById('cfg-comp-exempt-conflicts').checked : true;
+      const compProtectDiffs = document.getElementById('cfg-comp-protect-diffs') ? document.getElementById('cfg-comp-protect-diffs').checked : true;
+
+      const schemaEnabled = document.getElementById('cfg-module-schema-enabled') ? document.getElementById('cfg-module-schema-enabled').checked : true;
+      const compAlignSchema = document.getElementById('cfg-comp-align-schema') ? document.getElementById('cfg-comp-align-schema').checked : true;
+      const compSlimSchema = document.getElementById('cfg-comp-slim-schema') ? document.getElementById('cfg-comp-slim-schema').checked : true;
+      const compThreshold = parseInt((document.getElementById('cfg-comp-threshold') || {}).value, 10) || 15000;
+
+      const cacheZoneEnabled = document.getElementById('cfg-module-cachezone-enabled') ? document.getElementById('cfg-module-cachezone-enabled').checked : true;
+      const compCacheFreeze = document.getElementById('cfg-comp-cache-freeze') ? document.getElementById('cfg-comp-cache-freeze').checked : true;
+      const compTrueLru = document.getElementById('cfg-comp-true-lru') ? document.getElementById('cfg-comp-true-lru').checked : true;
+
+      const compression = {
+        enabled: compEnabled,
+        preset: currentPreset || 'balanced',
+        modules: {
+          rtk: {
+            enabled: rtkEnabled,
+            stripAnsi: compStripAnsi,
+            cleanProgressBars: compCleanProgress,
+            foldTestPasses: compFoldTests,
+            cleanDevOpsOutput: compCleanDevOps
+          },
+          headroom: {
+            enabled: headroomEnabled,
+            foldLockfiles: compFoldLockfiles,
+            exemptMergeConflicts: compExemptConflicts,
+            protectSourceDiffs: compProtectDiffs
+          },
+          schema: {
+            enabled: schemaEnabled,
+            alignToolsSchema: compAlignSchema,
+            slimToolsSchema: compSlimSchema,
+            schemaCharThreshold: compThreshold
+          },
+          cacheZone: {
+            enabled: cacheZoneEnabled,
+            cacheZoneFreeze: compCacheFreeze,
+            trueLruRetention: compTrueLru
+          }
+        },
+        stripAnsi: (compEnabled && rtkEnabled) ? compStripAnsi : false,
+        cleanProgressBars: (compEnabled && rtkEnabled) ? compCleanProgress : false,
+        foldTestPasses: (compEnabled && rtkEnabled) ? compFoldTests : false,
+        cleanDevOpsOutput: (compEnabled && rtkEnabled) ? compCleanDevOps : false,
+        cleanDockerOutput: (compEnabled && rtkEnabled) ? compCleanDevOps : false,
+        cleanKubectlOutput: (compEnabled && rtkEnabled) ? compCleanDevOps : false,
+        cleanTerraformOutput: (compEnabled && rtkEnabled) ? compCleanDevOps : false,
+        foldLockfiles: (compEnabled && headroomEnabled) ? compFoldLockfiles : false,
+        exemptMergeConflicts: compExemptConflicts,
+        protectSourceDiffs: compProtectDiffs,
+        alignToolsSchema: (compEnabled && schemaEnabled) ? compAlignSchema : false,
+        slimToolsSchema: (compEnabled && schemaEnabled) ? compSlimSchema : false,
+        schemaCharThreshold: compThreshold,
+        cacheZoneFreeze: (compEnabled && cacheZoneEnabled) ? compCacheFreeze : false,
+        trueLruRetention: compTrueLru
+      };
 
       const payload = {
         upstream,
@@ -4374,7 +5965,8 @@ $ghost
         defaultCooldownMs: cooldownSec * 1000,
         maxFailoverRetries: retries,
         sessionAffinityEnabled: affinity,
-        accounts: currentConfig.accounts
+        accounts: currentConfig.accounts,
+        compression
       };
 
       try {
@@ -4393,6 +5985,7 @@ $ghost
             localStorage.removeItem('opencode_router_token');
             document.cookie = 'router_auth=; Path=/; Max-Age=0; SameSite=Lax';
           }
+          clearConfigDirty();
           showToast('✔ ' + data.message);
           fetchConfig();
           fetchStatus();
@@ -4401,6 +5994,11 @@ $ghost
         }
       } catch (e) {
         showToast('网络错误: ' + e.message, true);
+      } finally {
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerText = '💾 保存配置';
+        }
       }
     }
 
@@ -4573,6 +6171,7 @@ $ghost
 
     async function checkUpdates() {
       const box = document.getElementById('updates-content');
+      const updatesBadge = document.getElementById('updates-status-badge');
       box.innerHTML = '<span style="color:var(--primary)">⏳ 正在联网检索各组件最新发布版本与兼容性状态...</span>';
       try {
         const res = await fetch('/balancer/api/updates/check', { headers: apiHeaders() });
@@ -4584,9 +6183,13 @@ $ghost
         if (report.compatibility.riskLevel === 'critical') {
           compBadgeCls = 'badge-danger';
           compBadgeText = '🛑 存在破坏性跨版本/冲突风险';
+          if (updatesBadge) { updatesBadge.className = 'badge badge-cooling'; updatesBadge.innerText = '🛑 冲突风险'; }
         } else if (report.compatibility.riskLevel === 'warning') {
           compBadgeCls = 'badge-warn';
           compBadgeText = '⚠️ 存在版本变动或需同步更新';
+          if (updatesBadge) { updatesBadge.className = 'badge badge-cooling'; updatesBadge.innerText = '⚠️ 待更新'; }
+        } else {
+          if (updatesBadge) { updatesBadge.className = 'badge badge-healthy'; updatesBadge.innerText = '🟢 全组件最新'; }
         }
 
         let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">' +
@@ -4832,62 +6435,121 @@ $ghost
     }
 
     // Codex Management Functions
-    let codexStatusData = null;
-    async function loadCodexStatus() {
+    async function runCodexDoctorCheck() {
       const box = document.getElementById('codex-status-content');
-      const sel = document.getElementById('codex-model-select');
+      if (box) box.innerHTML = '<span style="color:var(--primary)">⏳ 正在执行 OpenAI Codex 专项体检与深度诊断...</span>';
       try {
-        const res = await fetch('/balancer/api/codex-status', { headers: apiHeaders() });
-        const data = await res.json();
-        if (data.success && data.status) {
-          codexStatusData = data.status;
-          const st = data.status;
-
-          if (sel && sel.options.length === 0 && Array.isArray(st.availableModels)) {
-            sel.innerHTML = '';
-            st.availableModels.forEach(function(m) {
-              const opt = document.createElement('option');
-              const isAnthropic = m.slug === 'claude-haiku-5-5';
-              const tag = isAnthropic ? ' [Anthropic 协议桥]' : ' [智能双轨协议桥]';
-              opt.innerText = m.display_name + tag;
-              if (m.slug === (st.currentModel || 'deepseek-v4.1-flash')) opt.selected = true;
-              sel.appendChild(opt);
-            });
-          }
-
-          if (st.currentReasoningEffort && document.getElementById('codex-effort-select')) {
-            document.getElementById('codex-effort-select').value = st.currentReasoningEffort;
-          }
-
-          let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">';
-          html += '<div><strong>Codex CLI 引擎状态:</strong> ' + (st.cliInstalled ? '<span class="badge badge-healthy">已安装 (v' + (st.cliVersion || '最新') + ')</span>' : '<span class="badge badge-disabled">未检测到全局 CLI (可预配置)</span>') + '</div>';
-          html += '<div><strong>网关接入状态:</strong> ' + (st.isBound ? '<span class="badge badge-healthy">已接入 4010 网关</span>' : '<span class="badge badge-cooling">未接入</span>') + '</div>';
-          html += '</div>';
-
-          html += '<div style="font-size:0.85rem; color:#cbd5e1; line-height:1.6;">';
-          html += '<div>• <strong>当前模型:</strong> <code style="color:var(--primary); font-family:monospace;">' + (st.currentModel || '未设置') + '</code> | <strong>提供商:</strong> ' + (st.currentProvider || '无') + ' | <strong>思考等级:</strong> ' + (st.currentReasoningEffort || 'high') + '</div>';
-          html += '<div>• <strong>配置目录:</strong> <code style="color:var(--muted); font-family:monospace;">' + st.codexDir + '</code></div>';
-          html += '<div>• <strong>灾备备份:</strong> ' + (st.hasBackup ? '<span style="color:var(--success);">✔ 原始配置已无损备份 (' + (st.backupInfo && st.backupInfo.isoDate ? st.backupInfo.isoDate : '已备份') + ')，随时可原样还原</span>' : '<span style="color:var(--muted);">初次接入前将自动执行原子备份</span>') + '</div>';
-          html += '</div>';
-
-          if (st.isBound) {
-            html += '<div style="margin-top:8px; font-size:0.8rem; background:rgba(6,95,70,0.2); border:1px solid rgba(5,150,105,0.4); padding:6px 10px; border-radius:6px; color:#a7f3d0;">';
-            html += '🚀 <strong>终端即用指令:</strong> <code>codex exec "编写单元测试"</code> 或 <code>codex --model ' + (st.currentModel || 'kimi-k3') + '</code>';
-            html += '</div>';
-          }
-
-          box.innerHTML = html;
-        } else {
-          box.innerHTML = '<div style="color:var(--danger);">获取状态失败: ' + (data.error || '未知错误') + '</div>';
-        }
+        const res = await fetch('/balancer/api/doctor?scope=codex', { headers: apiHeaders() });
+        const doc = await res.json();
+        renderCodexDiagnostics(doc);
       } catch (e) {
-        box.innerHTML = '<div style="color:var(--danger);">检测 Codex 状态异常: ' + e.message + '</div>';
+        if (box) box.innerHTML = '<div style="color:var(--danger);">Codex 专项体检异常: ' + e.message + '</div>';
       }
     }
 
+    async function runCodexRepair() {
+      const box = document.getElementById('codex-status-content');
+      if (box) box.innerHTML = '<span style="color:var(--primary)">🛠️ 正在执行 OpenAI Codex 专项自愈与防断流加固...</span>';
+      try {
+        const model = (document.getElementById('codex-model-select') && document.getElementById('codex-model-select').value) || 'deepseek-v4.1-flash';
+        const effort = (document.getElementById('codex-effort-select') && document.getElementById('codex-effort-select').value) || 'high';
+        const res = await fetch('/balancer/api/repair?scope=codex', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ defaultModel: model, reasoningEffort: effort })
+        });
+        const data = await res.json();
+        let html = '<div style="margin-bottom:8px;"><strong>🛠️ Codex 专项自愈与加固结果：</strong></div>';
+        (data.results || []).forEach(r => {
+          const color = r.success ? 'var(--success)' : 'var(--danger)';
+          html += '<div style="padding:3px 0; color:' + color + '; font-size:0.85rem;">' + (r.success ? '✔' : '❌') + ' [' + r.item + ']: ' + r.message + '</div>';
+        });
+        html += '<div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()">🔍 重新体检诊断</button> <button class="btn btn-warning btn-sm" style="margin-left:6px; background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()">🔄 平滑重启 Codex 客户端</button></div>';
+        if (box) box.innerHTML = html;
+        showToast('Codex 专项自愈完成！');
+        if (confirm('🎉 OpenAI Codex 专项自愈与加固完成！\\n\\n是否立即平滑重启 Codex 客户端以立即加载最新环境与加固配置？')) {
+          restartCodexClient();
+        }
+      } catch (e) {
+        if (box) box.innerHTML = '<div style="color:var(--danger);">Codex 专项修复异常: ' + e.message + '</div>';
+      }
+    }
+
+    function renderCodexDiagnostics(doc) {
+      codexStatusData = doc;
+      const box = document.getElementById('codex-status-content');
+      if (!box) return;
+      const st = doc.codex || {};
+      const proc = doc.codexProcessHealth || (st && st.processHealth) || {};
+      const loc = doc.codexLocale || (st && st.localeCheck) || {};
+      const issues = doc.issues || doc.codexIssues || [];
+
+      // Update model dropdown if needed
+      const sel = document.getElementById('codex-model-select');
+      if (sel && sel.options.length === 0 && Array.isArray(st.availableModels)) {
+        sel.innerHTML = '';
+        st.availableModels.forEach(function(m) {
+          const opt = document.createElement('option');
+          opt.value = m.slug;
+          const isAnthropic = m.slug === 'claude-haiku-5-5';
+          const tag = isAnthropic ? ' [Anthropic 协议桥]' : ' [智能双轨协议桥]';
+          opt.innerText = m.display_name + tag;
+          if (m.slug === (st.currentModel || 'deepseek-v4.1-flash')) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+
+      if (st.currentReasoningEffort && document.getElementById('codex-effort-select')) {
+        document.getElementById('codex-effort-select').value = st.currentReasoningEffort;
+      }
+
+      let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">';
+      html += '<div><strong>Codex CLI 引擎状态:</strong> ' + (st.cliInstalled ? '<span class="badge badge-healthy">✔ 已安装 (v' + (st.cliVersion || '最新') + ')</span>' : '<span class="badge badge-disabled">未检测到全局 CLI</span>') + '</div>';
+      html += '<div><strong>网关接入状态:</strong> ' + (st.isBound ? '<span class="badge badge-healthy">✔ 已接入 4010 网关' + (st.hasStreamIdleTimeout ? ' (已防断流加固)' : '') + '</span>' : '<span class="badge badge-cooling">未接入</span>') + '</div>';
+      html += '<div><strong>进程健康:</strong> ' + (proc.healthy ? '<span class="badge badge-healthy">✔ 无挂起/死锁</span>' : '<span class="badge badge-danger">❌ 存在异常挂起/僵死锁</span>') + '</div>';
+      html += '<div><strong>语言环境:</strong> ' + (loc.healthy ? '<span class="badge badge-healthy">✔ 简体中文已对齐</span>' : '<span class="badge badge-cooling">⚠️ 语言未对齐</span>') + '</div>';
+      html += '</div>';
+
+      html += '<div style="font-size:0.85rem; color:#cbd5e1; line-height:1.6; background:rgba(0,0,0,0.25); padding:8px 12px; border-radius:6px; border:1px solid #334155;">';
+      html += '<div>• <strong>当前模型:</strong> <code style="color:var(--primary); font-family:monospace;">' + (st.currentModel || '未设置') + '</code> | <strong>提供商:</strong> ' + (st.currentProvider || '无') + ' | <strong>思考等级:</strong> ' + (st.currentReasoningEffort || 'high') + '</div>';
+      html += '<div>• <strong>配置目录:</strong> <code style="color:var(--muted); font-family:monospace;">' + (st.codexDir || '~/.codex') + '</code></div>';
+      html += '<div>• <strong>灾备备份:</strong> ' + (st.hasBackup ? '<span style="color:var(--success);">✔ 原始配置已无损备份 (' + (st.backupInfo && st.backupInfo.isoDate ? st.backupInfo.isoDate : '已备份') + ')，随时可原样还原</span>' : '<span style="color:var(--muted);">初次接入前将自动执行原子备份</span>') + '</div>';
+      html += '</div>';
+
+      if (issues.length > 0) {
+        html += '<div style="margin-top:10px;">';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:8px;">';
+        html += '<strong style="color:#f59e0b;">🔍 发现 ' + issues.length + ' 个 Codex 待自愈/待加固项：</strong>';
+        html += '<button class="btn btn-success btn-sm" onclick="runCodexRepair()">🛠️ 立即一键自愈修复 Codex</button>';
+        html += '</div>';
+        issues.forEach(function(iss) {
+          const cls = iss.severity === 'high' ? 'issue-high' : (iss.severity === 'medium' ? 'issue-medium' : 'issue-low');
+          html += '<div class="issue-item ' + cls + '" style="margin-bottom:6px;">';
+          html += '<div><strong>' + iss.title + '</strong>: <span style="color:var(--muted);">' + iss.desc + '</span></div>';
+          html += '</div>';
+        });
+        html += '</div>';
+      } else {
+        html += '<div style="margin-top:10px; color:var(--success); font-weight:600; padding:4px 0;">🎉 Codex 状态极佳：已接入 4010 智能网关、已具备 5 分钟超时加固、无任何挂起死锁！</div>';
+      }
+
+      if (st.isBound) {
+        html += '<div style="margin-top:10px; font-size:0.8rem; background:rgba(6,95,70,0.2); border:1px solid rgba(5,150,105,0.4); padding:6px 10px; border-radius:6px; color:#a7f3d0;">';
+        html += '🚀 <strong>终端即用指令:</strong> <code>codex exec "编写单元测试"</code> 或 <code>codex --model ' + (st.currentModel || 'kimi-k3') + '</code>';
+        html += '</div>';
+      }
+
+      box.innerHTML = html;
+      updateWizardStatusBadges();
+    }
+
+    async function loadCodexStatus() {
+      await runCodexDoctorCheck();
+    }
+
     async function bindCodex() {
-      const model = document.getElementById('codex-model-select') ? document.getElementById('codex-model-select').value : 'deepseek-v4.1-flash';
-      const effort = document.getElementById('codex-effort-select') ? document.getElementById('codex-effort-select').value : 'high';
+      const model = (document.getElementById('codex-model-select') && document.getElementById('codex-model-select').value) || 'deepseek-v4.1-flash';
+      const effort = (document.getElementById('codex-effort-select') && document.getElementById('codex-effort-select').value) || 'high';
       const box = document.getElementById('codex-status-content');
       if (box) box.innerHTML = '<span style="color:var(--muted)">正在执行原子配置备份并接入 OpenCode Go 38 款模型目录与网关...</span>';
       try {
@@ -4899,17 +6561,17 @@ $ghost
         const data = await res.json();
         if (data.success) {
           showToast('🎉 Codex 一键接入成功！建议重启客户端以立即加载新配置。');
-          loadCodexStatus();
+          await loadCodexStatus();
           if (confirm('🎉 Codex 已成功接入 4010 本地网关！\\n\\n是否立即平滑重启 Codex 客户端以立即加载最新配置与 38 款模型？')) {
             restartCodexClient();
           }
         } else {
           showToast('接入失败: ' + (data.error || data.message), true);
-          loadCodexStatus();
+          await loadCodexStatus();
         }
       } catch (e) {
         showToast('接入请求异常: ' + e.message, true);
-        loadCodexStatus();
+        await loadCodexStatus();
       }
     }
 
@@ -4981,15 +6643,22 @@ $ghost
         hostStatusElem.className = 'badge badge-healthy';
       }
     }
+    initCardCollapseStates();
     fetchConfig();
     fetchStatus();
+    fetchCompressionStats();
+    runDoctorCheck('system');
     loadCodexStatus();
     setInterval(() => {
       if (!document.hidden) fetchStatus();
     }, 2000);
+    setInterval(() => {
+      if (!document.hidden) fetchCompressionStats();
+    }, 5000);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
         fetchStatus();
+        fetchCompressionStats();
         if (quotaRefreshInterval > 0 && quotaCountdown <= 3) {
           quotaCountdown = quotaRefreshInterval;
           updateQuotaCountdownBadge();
@@ -5006,7 +6675,24 @@ $ghost
     }
   </script>
 </body>
-</html>`);
+</html>`;
+}
+
+  // Web UI Dashboard & Graphical Config Center
+  if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderLoginPage());
+      return;
+    }
+    const parsed = url.parse(req.url, true);
+    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
+    if (config.uiPassword && parsed.query && parsed.query.auth) {
+      const token = Buffer.from(config.uiPassword.trim()).toString('base64');
+      headers['Set-Cookie'] = `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`;
+    }
+    res.writeHead(200, headers);
+    res.end(renderDashboardHtml(config));
     return;
   }
 

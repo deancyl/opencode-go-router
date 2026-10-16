@@ -27,7 +27,8 @@ OpenCode Go Router 在 `4010` 端口上暴露了完备的 RESTful API 与反向�
 | `/balancer/api/updates/check` | GET | 是 | 检查 5 大组件最新版本与破坏性兼容性评级 |
 | `/balancer/api/updates/apply` | POST | 是 | 执行指定或全量组件安全更新（升级前自动打快照） |
 | `/balancer/api/updates/rollback` | POST | 是 | 执行指定历史快照的秒级无损回滚 |
-| `/balancer/api/updates/snapshots` | GET | 是 | 列出所有本地历史灾备快照清单 |
+| `/balancer/api/compression/stats` | GET | 是 | 获取实时压缩指标大盘数据（累计节约 Token、费用预估、压缩率及各模块贡献度） |
+| `/balancer/api/compression/stats/reset` | POST | 是 | 一键清零累计 Token 压缩与节省指标统计数据并原子写盘 |
 | `/balancer/api/auth/login` | POST | 否 | 控制台密码登录（颁发安全 Cookie 与 Token） |
 | `/balancer/api/auth/logout` | POST | 否 | 注销登录并清除凭证 |
 
@@ -37,7 +38,7 @@ OpenCode Go Router 在 `4010` 端口上暴露了完备的 RESTful API 与反向�
 
 | 代理端点 | 目标协议 | 特性与治理机制 |
 | :--- | :--- | :--- |
-| `/v1/chat/completions` | OpenAI ChatCompletions | 双账号轮询、429 故障转移、会话亲和性、流式 SSE 保活 |
-| `/v1/responses` | OpenAI Responses (Codex) | 双向流式转换、思考等级映射、动态会话隔离、模型跃迁自愈 |
-| `/v1/messages` | Anthropic Messages | Claude 格式自动转接、超长上下文切分与 2M 跃迁兜底 |
-| `/v1/*` | 其他透传 API | 标准 OpenAI 兼容代理，全预检 CORS 支持 |
+| `/v1/chat/completions` | OpenAI ChatCompletions | 双账号轮询、429 故障转移、会话亲和性、上下文 Token 压缩 (Compactor)、流式 SSE 保活 |
+| `/v1/responses` | OpenAI Responses (Codex) | 双向流式转换、思考等级映射、动态会话隔离、上下文 Token 压缩、模型跃迁自愈 |
+| `/v1/messages` | Anthropic Messages | Claude 格式自动转接、tool_result 深度压缩、超长上下文切分与 2M 跃迁兜底 |
+| `/v1/*` | 其他透传 API | 标准 OpenAI 兼容代理，全预检 CORS 支持与动态 Token 优化 |

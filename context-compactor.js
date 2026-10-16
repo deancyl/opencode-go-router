@@ -1,0 +1,1608 @@
+/**
+ * OpenCode Go Router - Context Compactor & Token Optimization Engine
+ * Ultra-low overhead, 100% Node.js native zero dependencies.
+ *
+ * Implements deterministic lossless/reversible compression across 5 key dimensions:
+ * 1. CLI/Tool Output Denoising:
+ *    - stripAnsi: Strip ANSI color codes, text formatting, cursor controls, OSC sequences
+ *    - cleanProgressBars: Wipe \r overwrite spam while strictly preserving \r\n line endings
+ *    - cleanDockerOutput: Fold repetitive multi-layer container pull/push download status
+ *    - cleanTerraformOutput: Fold repetitive resource state refreshing logs
+ * 2. Diff Noise Folding:
+ *    - foldLockfiles: Safe folding for giant lockfile diffs (package-lock, yarn, cargo, bun, uv, etc.)
+ *      CRITICAL SAFETY: Detects <<<<<<< merge conflict markers and NEVER folds conflicted diffs
+ * 3. Positive Test Passes Folding:
+ *    - foldTestPasses: Positive matching inversion - folds explicit passing blocks (✓, PASS, ok, [OK])
+ *      CRITICAL SAFETY: 100% preserves failures, errors, assertion diffs, and full stack traces
+ *      EXTENSIBILITY: Supports custom regex patterns via options.customTestPassPatterns
+ * 4. CacheAligner & Tools Schema Optimization:
+ *    - alignToolsSchema: Lexicographical key & array sorting to lock Prompt Cache (KV Cache)
+ *    - slimToolsSchema: Deep composite schema trimming (> 15,000 chars) by pruning markdown examples
+ * 5. Cache-Zone Memoization:
+ *    - sessionCompressionMemo: Freezes historic round byte-streams by session & sha256 hash + opts signature
+ * 6. Pluggable Pipeline Architecture:
+ *    - registerTransformer / unregisterTransformer / runPipeline for third-party & user extensions
+ *    - 100% safe-sandboxed execution: Any transformer exception is isolated with zero request impact
+ */
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const DEFAULT_COMPRESSION_CONFIG = {
+  enabled: true,
+  preset: 'balanced',
+  stripAnsi: true,
+  cleanProgressBars: true,
+  cleanDockerOutput: true,
+  cleanTerraformOutput: true,
+  cleanKubectlOutput: true,
+  cleanDevOpsOutput: true,
+  foldLockfiles: true,
+  exemptMergeConflicts: true,
+  protectSourceDiffs: true,
+  foldTestPasses: true,
+  alignToolsSchema: true,
+  slimToolsSchema: true,
+  schemaCharThreshold: 15000,
+  cacheZoneFreeze: true,
+  trueLruRetention: true,
+  customTestPassPatterns: [],
+  modules: {
+    rtk: {
+      enabled: true,
+      stripAnsi: true,
+      cleanProgressBars: true,
+      foldTestPasses: true,
+      cleanDevOpsOutput: true
+    },
+    headroom: {
+      enabled: true,
+      foldLockfiles: true,
+      exemptMergeConflicts: true,
+      protectSourceDiffs: true
+    },
+    schema: {
+      enabled: true,
+      alignToolsSchema: true,
+      slimToolsSchema: true,
+      schemaCharThreshold: 15000
+    },
+    cacheZone: {
+      enabled: true,
+      cacheZoneFreeze: true,
+      trueLruRetention: true
+    }
+  }
+};
+
+const COMPRESSION_PRESETS = {
+  balanced: {
+    enabled: true,
+    preset: 'balanced',
+    modules: {
+      rtk: {
+        enabled: true,
+        stripAnsi: true,
+        cleanProgressBars: true,
+        foldTestPasses: true,
+        cleanDevOpsOutput: true
+      },
+      headroom: {
+        enabled: true,
+        foldLockfiles: true,
+        exemptMergeConflicts: true,
+        protectSourceDiffs: true
+      },
+      schema: {
+        enabled: true,
+        alignToolsSchema: true,
+        slimToolsSchema: true,
+        schemaCharThreshold: 15000
+      },
+      cacheZone: {
+        enabled: true,
+        cacheZoneFreeze: true,
+        trueLruRetention: true
+      }
+    }
+  },
+  aggressive: {
+    enabled: true,
+    preset: 'aggressive',
+    modules: {
+      rtk: {
+        enabled: true,
+        stripAnsi: true,
+        cleanProgressBars: true,
+        foldTestPasses: true,
+        cleanDevOpsOutput: true
+      },
+      headroom: {
+        enabled: true,
+        foldLockfiles: true,
+        exemptMergeConflicts: true,
+        protectSourceDiffs: true
+      },
+      schema: {
+        enabled: true,
+        alignToolsSchema: true,
+        slimToolsSchema: true,
+        schemaCharThreshold: 8000
+      },
+      cacheZone: {
+        enabled: true,
+        cacheZoneFreeze: true,
+        trueLruRetention: true
+      }
+    }
+  },
+  conservative: {
+    enabled: true,
+    preset: 'conservative',
+    modules: {
+      rtk: {
+        enabled: true,
+        stripAnsi: true,
+        cleanProgressBars: true,
+        foldTestPasses: false,
+        cleanDevOpsOutput: false
+      },
+      headroom: {
+        enabled: false,
+        foldLockfiles: false,
+        exemptMergeConflicts: true,
+        protectSourceDiffs: true
+      },
+      schema: {
+        enabled: true,
+        alignToolsSchema: true,
+        slimToolsSchema: false,
+        schemaCharThreshold: 15000
+      },
+      cacheZone: {
+        enabled: false,
+        cacheZoneFreeze: false,
+        trueLruRetention: true
+      }
+    }
+  }
+};
+
+/**
+ * Normalizes compression options, bridging hierarchical modules and flat legacy keys.
+ * Accurately derives effective switches while preserving original module configurations.
+ */
+function normalizeCompressionOptions(input = {}) {
+  if (!input || typeof input !== 'object') {
+    return JSON.parse(JSON.stringify(DEFAULT_COMPRESSION_CONFIG));
+  }
+
+  const result = JSON.parse(JSON.stringify(DEFAULT_COMPRESSION_CONFIG));
+
+  const presetKey = (input.preset && typeof input.preset === 'string') ? input.preset : null;
+  const presetConfig = presetKey ? COMPRESSION_PRESETS[presetKey] : null;
+
+  if (presetConfig && presetConfig.modules) {
+    result.preset = presetKey;
+    for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone']) {
+      if (presetConfig.modules[modKey]) {
+        Object.assign(result.modules[modKey], presetConfig.modules[modKey]);
+      }
+    }
+  } else if (input.preset !== undefined) {
+    result.preset = String(input.preset);
+  }
+
+  if (input.enabled !== undefined) {
+    result.enabled = Boolean(input.enabled);
+  }
+
+  // 1. If nested modules structure is supplied, deeply merge it
+  if (input.modules && typeof input.modules === 'object') {
+    const m = input.modules;
+    if (m.rtk && typeof m.rtk === 'object') {
+      if (m.rtk.enabled !== undefined) result.modules.rtk.enabled = Boolean(m.rtk.enabled);
+      if (m.rtk.stripAnsi !== undefined) result.modules.rtk.stripAnsi = Boolean(m.rtk.stripAnsi);
+      if (m.rtk.cleanProgressBars !== undefined) result.modules.rtk.cleanProgressBars = Boolean(m.rtk.cleanProgressBars);
+      if (m.rtk.foldTestPasses !== undefined) result.modules.rtk.foldTestPasses = Boolean(m.rtk.foldTestPasses);
+      if (m.rtk.cleanDevOpsOutput !== undefined) result.modules.rtk.cleanDevOpsOutput = Boolean(m.rtk.cleanDevOpsOutput);
+    }
+    if (m.headroom && typeof m.headroom === 'object') {
+      if (m.headroom.enabled !== undefined) result.modules.headroom.enabled = Boolean(m.headroom.enabled);
+      if (m.headroom.foldLockfiles !== undefined) result.modules.headroom.foldLockfiles = Boolean(m.headroom.foldLockfiles);
+      if (m.headroom.exemptMergeConflicts !== undefined) result.modules.headroom.exemptMergeConflicts = Boolean(m.headroom.exemptMergeConflicts);
+      if (m.headroom.protectSourceDiffs !== undefined) result.modules.headroom.protectSourceDiffs = Boolean(m.headroom.protectSourceDiffs);
+    }
+    if (m.schema && typeof m.schema === 'object') {
+      if (m.schema.enabled !== undefined) result.modules.schema.enabled = Boolean(m.schema.enabled);
+      if (m.schema.alignToolsSchema !== undefined) result.modules.schema.alignToolsSchema = Boolean(m.schema.alignToolsSchema);
+      if (m.schema.slimToolsSchema !== undefined) result.modules.schema.slimToolsSchema = Boolean(m.schema.slimToolsSchema);
+      if (m.schema.schemaCharThreshold !== undefined) {
+        const val = Number(m.schema.schemaCharThreshold);
+        result.modules.schema.schemaCharThreshold = (!isNaN(val) && val >= 0) ? val : 15000;
+      }
+    }
+    if (m.cacheZone && typeof m.cacheZone === 'object') {
+      if (m.cacheZone.enabled !== undefined) result.modules.cacheZone.enabled = Boolean(m.cacheZone.enabled);
+      if (m.cacheZone.cacheZoneFreeze !== undefined) result.modules.cacheZone.cacheZoneFreeze = Boolean(m.cacheZone.cacheZoneFreeze);
+      if (m.cacheZone.trueLruRetention !== undefined) result.modules.cacheZone.trueLruRetention = Boolean(m.cacheZone.trueLruRetention);
+    }
+  }
+
+  // 2. Mirror explicit flat keys into the modules structure (backward compatibility)
+  // Only override if the nested module did not explicitly define the corresponding key
+  const mInput = (input.modules && typeof input.modules === 'object') ? input.modules : null;
+  const hasModRtk = mInput && mInput.rtk && typeof mInput.rtk === 'object';
+  const hasModHeadroom = mInput && mInput.headroom && typeof mInput.headroom === 'object';
+  const hasModSchema = mInput && mInput.schema && typeof mInput.schema === 'object';
+  const hasModCacheZone = mInput && mInput.cacheZone && typeof mInput.cacheZone === 'object';
+
+  if (input.stripAnsi !== undefined && (!hasModRtk || mInput.rtk.stripAnsi === undefined)) {
+    result.modules.rtk.stripAnsi = Boolean(input.stripAnsi);
+  }
+  if (input.cleanProgressBars !== undefined && (!hasModRtk || mInput.rtk.cleanProgressBars === undefined)) {
+    result.modules.rtk.cleanProgressBars = Boolean(input.cleanProgressBars);
+  }
+  if (input.foldTestPasses !== undefined && (!hasModRtk || mInput.rtk.foldTestPasses === undefined)) {
+    result.modules.rtk.foldTestPasses = Boolean(input.foldTestPasses);
+  }
+  if (input.cleanDevOpsOutput !== undefined && (!hasModRtk || mInput.rtk.cleanDevOpsOutput === undefined)) {
+    result.modules.rtk.cleanDevOpsOutput = Boolean(input.cleanDevOpsOutput);
+  } else if ((!hasModRtk || mInput.rtk.cleanDevOpsOutput === undefined) &&
+             (input.cleanDockerOutput !== undefined || input.cleanKubectlOutput !== undefined || input.cleanTerraformOutput !== undefined)) {
+    const dVal = (input.cleanDockerOutput !== undefined ? Boolean(input.cleanDockerOutput) : true) &&
+                 (input.cleanKubectlOutput !== undefined ? Boolean(input.cleanKubectlOutput) : true) &&
+                 (input.cleanTerraformOutput !== undefined ? Boolean(input.cleanTerraformOutput) : true);
+    result.modules.rtk.cleanDevOpsOutput = dVal;
+  }
+  if (input.foldLockfiles !== undefined && (!hasModHeadroom || mInput.headroom.foldLockfiles === undefined)) {
+    result.modules.headroom.foldLockfiles = Boolean(input.foldLockfiles);
+  }
+  if (input.exemptMergeConflicts !== undefined && (!hasModHeadroom || mInput.headroom.exemptMergeConflicts === undefined)) {
+    result.modules.headroom.exemptMergeConflicts = Boolean(input.exemptMergeConflicts);
+  }
+  if (input.protectSourceDiffs !== undefined && (!hasModHeadroom || mInput.headroom.protectSourceDiffs === undefined)) {
+    result.modules.headroom.protectSourceDiffs = Boolean(input.protectSourceDiffs);
+  }
+  if (input.alignToolsSchema !== undefined && (!hasModSchema || mInput.schema.alignToolsSchema === undefined)) {
+    result.modules.schema.alignToolsSchema = Boolean(input.alignToolsSchema);
+  }
+  if (input.slimToolsSchema !== undefined && (!hasModSchema || mInput.schema.slimToolsSchema === undefined)) {
+    result.modules.schema.slimToolsSchema = Boolean(input.slimToolsSchema);
+  }
+  if (input.schemaCharThreshold !== undefined && (!hasModSchema || mInput.schema.schemaCharThreshold === undefined)) {
+    const val = Number(input.schemaCharThreshold);
+    result.modules.schema.schemaCharThreshold = (!isNaN(val) && val >= 0) ? val : 15000;
+  }
+  if (input.cacheZoneFreeze !== undefined && (!hasModCacheZone || mInput.cacheZone.cacheZoneFreeze === undefined)) {
+    result.modules.cacheZone.cacheZoneFreeze = Boolean(input.cacheZoneFreeze);
+  }
+  if (input.trueLruRetention !== undefined && (!hasModCacheZone || mInput.cacheZone.trueLruRetention === undefined)) {
+    result.modules.cacheZone.trueLruRetention = Boolean(input.trueLruRetention);
+  }
+  if (input.customTestPassPatterns !== undefined) result.customTestPassPatterns = input.customTestPassPatterns;
+
+  // 3. Compute effective runtime flat keys governed by both master switch and module switches
+  const rtkActive = result.enabled && result.modules.rtk.enabled;
+  const headroomActive = result.enabled && result.modules.headroom.enabled;
+  const schemaActive = result.enabled && result.modules.schema.enabled;
+  const cacheZoneActive = result.enabled && result.modules.cacheZone.enabled;
+
+  result.stripAnsi = rtkActive ? result.modules.rtk.stripAnsi : false;
+  result.cleanProgressBars = rtkActive ? result.modules.rtk.cleanProgressBars : false;
+  result.foldTestPasses = rtkActive ? result.modules.rtk.foldTestPasses : false;
+  const devopsVal = rtkActive ? result.modules.rtk.cleanDevOpsOutput : false;
+  result.cleanDevOpsOutput = devopsVal;
+  result.cleanDockerOutput = rtkActive ? (input.cleanDockerOutput !== undefined ? Boolean(input.cleanDockerOutput) : devopsVal) : false;
+  result.cleanKubectlOutput = rtkActive ? (input.cleanKubectlOutput !== undefined ? Boolean(input.cleanKubectlOutput) : devopsVal) : false;
+  result.cleanTerraformOutput = rtkActive ? (input.cleanTerraformOutput !== undefined ? Boolean(input.cleanTerraformOutput) : devopsVal) : false;
+
+  result.foldLockfiles = headroomActive ? result.modules.headroom.foldLockfiles : false;
+  result.exemptMergeConflicts = result.modules.headroom.exemptMergeConflicts;
+  result.protectSourceDiffs = result.modules.headroom.protectSourceDiffs;
+
+  result.alignToolsSchema = schemaActive ? result.modules.schema.alignToolsSchema : false;
+  result.slimToolsSchema = schemaActive ? result.modules.schema.slimToolsSchema : false;
+  result.schemaCharThreshold = result.modules.schema.schemaCharThreshold;
+
+  result.cacheZoneFreeze = cacheZoneActive ? result.modules.cacheZone.cacheZoneFreeze : false;
+  result.trueLruRetention = result.modules.cacheZone.trueLruRetention;
+
+  return result;
+}
+
+/* ==========================================================================
+   Realtime Token & Chars Savings Metrics Engine & Lightweight Persistence
+   ========================================================================== */
+
+const STATS_FILE = path.join(__dirname, 'compression-stats.json');
+
+let compressionStats = {
+  totalOriginalChars: 0,
+  totalCompressedChars: 0,
+  totalSavedChars: 0,
+  savedTokens: 0,
+  savedCostUSD: 0,
+  compressionRatio: 0,
+  modules: {
+    rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    schema: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 }
+  },
+  lastResetAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+};
+
+function computeDerivedStats(stats) {
+  const totalSavedChars = Math.max(0, stats.totalOriginalChars - stats.totalCompressedChars);
+  stats.totalSavedChars = totalSavedChars;
+  stats.savedTokens = Math.round(totalSavedChars / 3.8);
+  stats.savedCostUSD = Number(((stats.savedTokens / 1000000) * 0.25).toFixed(6));
+  stats.compressionRatio = stats.totalOriginalChars > 0
+    ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
+    : 0;
+
+  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone']) {
+    const mod = stats.modules[modKey] || { savedChars: 0, savedTokens: 0, percentage: 0 };
+    mod.savedTokens = Math.round(mod.savedChars / 3.8);
+    mod.percentage = totalSavedChars > 0
+      ? Number(((mod.savedChars / totalSavedChars) * 100).toFixed(1))
+      : 0;
+    stats.modules[modKey] = mod;
+  }
+  return stats;
+}
+
+function saveStatsToDisk() {
+  try {
+    const tmp = `${STATS_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmp, JSON.stringify(compressionStats, null, 2), 'utf8');
+    fs.renameSync(tmp, STATS_FILE);
+  } catch (err) {
+    // Non-fatal, sandbox logged
+  }
+}
+
+let persistTimer = null;
+function persistStatsThrottled() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    saveStatsToDisk();
+  }, 1000);
+}
+
+function loadStatsFromDisk() {
+  try {
+    if (fs.existsSync(STATS_FILE)) {
+      const raw = fs.readFileSync(STATS_FILE, 'utf8');
+      const loaded = JSON.parse(raw);
+      if (loaded && typeof loaded === 'object') {
+        compressionStats = {
+          totalOriginalChars: Number(loaded.totalOriginalChars) || 0,
+          totalCompressedChars: Number(loaded.totalCompressedChars) || 0,
+          totalSavedChars: Number(loaded.totalSavedChars) || 0,
+          savedTokens: Number(loaded.savedTokens) || 0,
+          savedCostUSD: Number(loaded.savedCostUSD) || 0,
+          compressionRatio: Number(loaded.compressionRatio) || 0,
+          modules: {
+            rtk: { savedChars: (loaded.modules && loaded.modules.rtk && loaded.modules.rtk.savedChars) || 0, savedTokens: 0, percentage: 0 },
+            headroom: { savedChars: (loaded.modules && loaded.modules.headroom && loaded.modules.headroom.savedChars) || 0, savedTokens: 0, percentage: 0 },
+            schema: { savedChars: (loaded.modules && loaded.modules.schema && loaded.modules.schema.savedChars) || 0, savedTokens: 0, percentage: 0 },
+            cacheZone: { savedChars: (loaded.modules && loaded.modules.cacheZone && loaded.modules.cacheZone.savedChars) || 0, savedTokens: 0, percentage: 0 }
+          },
+          lastResetAt: loaded.lastResetAt || new Date().toISOString(),
+          updatedAt: loaded.updatedAt || new Date().toISOString()
+        };
+        computeDerivedStats(compressionStats);
+      }
+    }
+  } catch (e) {
+    // Non-fatal, use initialized memory stats
+  }
+}
+
+loadStatsFromDisk();
+
+function recordModuleOnlySavings(moduleName, deltaChars) {
+  if (deltaChars <= 0) return;
+  if (moduleName && compressionStats.modules[moduleName]) {
+    compressionStats.modules[moduleName].savedChars += deltaChars;
+    compressionStats.updatedAt = new Date().toISOString();
+  }
+}
+
+function recordSavings(moduleName, deltaChars, originalChars = 0) {
+  if (deltaChars <= 0 && originalChars <= 0) return;
+  const validSaved = Math.max(0, deltaChars);
+  const validOrig = Math.max(validSaved, originalChars);
+
+  if (moduleName && compressionStats.modules[moduleName]) {
+    compressionStats.modules[moduleName].savedChars += validSaved;
+  }
+  compressionStats.totalOriginalChars += validOrig;
+  compressionStats.totalCompressedChars += (validOrig - validSaved);
+  compressionStats.updatedAt = new Date().toISOString();
+  computeDerivedStats(compressionStats);
+  persistStatsThrottled();
+}
+
+function recordOverallSavings(origLen, compLen) {
+  if (origLen <= compLen) return;
+  compressionStats.totalOriginalChars += origLen;
+  compressionStats.totalCompressedChars += compLen;
+  compressionStats.updatedAt = new Date().toISOString();
+  computeDerivedStats(compressionStats);
+  persistStatsThrottled();
+}
+
+function getCompressionStats() {
+  return computeDerivedStats(compressionStats);
+}
+
+function resetCompressionStats() {
+  compressionStats = {
+    totalOriginalChars: 0,
+    totalCompressedChars: 0,
+    totalSavedChars: 0,
+    savedTokens: 0,
+    savedCostUSD: 0,
+    compressionRatio: 0,
+    modules: {
+      rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
+      headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
+      schema: { savedChars: 0, savedTokens: 0, percentage: 0 },
+      cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 }
+    },
+    lastResetAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  saveStatsToDisk();
+  return compressionStats;
+}
+
+// Known lockfile patterns and names across major ecosystems
+const LOCKFILE_NAMES = new Set([
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'cargo.lock',
+  'gemfile.lock',
+  'composer.lock',
+  'poetry.lock',
+  'go.sum',
+  'go.work.sum',
+  'mix.lock',
+  'flake.lock',
+  'pipfile.lock',
+  'packages.lock.json',
+  'pdm.lock',
+  'uv.lock',
+  'bun.lockb',
+  'bun.lock',
+  'pubspec.lock',
+  'gradle.lockfile',
+  'berksfile.lock'
+]);
+
+function isLockfilePath(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const clean = filePath.trim().replace(/^["']|["']$/g, '');
+  const baseName = clean.split(/[/\\]/).pop().toLowerCase();
+  return LOCKFILE_NAMES.has(baseName);
+}
+
+// Comprehensive ANSI escape regex (covers 7-bit, 8-bit, 24-bit truecolor, styles, cursor & OSC titles)
+const ANSI_REGEX = /\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\_])/g;
+
+// Session-level memoization cache pool: sessionId -> Map(cacheKey -> compressedText)
+const sessionCompressionMemo = new Map();
+
+/**
+ * Strip ANSI escape sequences from text. Safe sandbox wrapped.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripAnsi(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  try {
+    return text.replace(ANSI_REGEX, '');
+  } catch (err) {
+    console.warn('[ContextCompactor] stripAnsi error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Clean terminal carriage return (\r) overwriting progress bars.
+ * Preserves original line endings (CRLF vs LF).
+ * For lines containing standalone \r overwrites, keeps only the final rendered frame.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanProgressBars(text) {
+  if (typeof text !== 'string' || !text.includes('\r')) return text;
+  try {
+    const isCrlf = text.includes('\r\n');
+    // If text has no standalone carriage returns (only Windows CRLF newlines), bypass immediately
+    const hasStandaloneCr = text.replace(/\r\n/g, '').includes('\r');
+    if (!hasStandaloneCr) {
+      return text;
+    }
+    // Normalize Windows CRLF to LF so remaining \r are true carriage return overwrites
+    const normalized = text.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+    const cleanedLines = lines.map(line => {
+      if (!line.includes('\r')) return line;
+      const parts = line.split('\r').filter(p => p.length > 0);
+      return parts.length > 0 ? parts[parts.length - 1] : '';
+    });
+    return cleanedLines.join(isCrlf ? '\r\n' : '\n');
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanProgressBars error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Robustly parses git diff header to extract fileA and fileB.
+ * Supports quoted paths, spaces, and /dev/null indicators.
+ */
+function parseGitDiffHeader(section) {
+  const firstLine = section.split(/\r?\n/)[0] || '';
+  if (!firstLine.startsWith('diff --git ')) return null;
+  const rest = firstLine.slice(11).trim();
+  const match = rest.match(/^(?:"a\/(.+?)"|a\/(\S+)|"([^\r\n"]+)"|(\S+))\s+(?:"b\/(.+?)"|b\/(\S+)|"([^\r\n"]+)"|(\S+))$/);
+  if (!match) return null;
+  const fileA = match[1] || match[2] || match[3] || match[4] || '';
+  const fileB = match[5] || match[6] || match[7] || match[8] || '';
+  return { fileA, fileB };
+}
+
+/**
+ * Safe folding for lockfile git diffs.
+ * CRITICAL SAFETY: If conflict markers (<<<<<<<, =======, >>>>>>>, |||||||) are detected,
+ * the diff is NEVER folded to guarantee the LLM can inspect and resolve conflicts!
+ * @param {string} text
+ * @returns {string}
+ */
+function foldLockfiles(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+
+    // Case 1: Standard git diff with "diff --git "
+    if (text.includes('diff --git ')) {
+      const sections = text.split(/(?=diff --git )/);
+      const processedSections = sections.map(section => {
+        const header = parseGitDiffHeader(section);
+        if (!header) return section;
+        const { fileA, fileB } = header;
+        if (!isLockfilePath(fileA) && !isLockfilePath(fileB)) {
+          return section; // Non-lockfile, keep completely untouched
+        }
+        // Safety exemption: If merge conflict markers exist, NEVER fold!
+        if (
+          section.includes('<<<<<<<') ||
+          section.includes('=======') ||
+          section.includes('>>>>>>>') ||
+          section.includes('|||||||') ||
+          section.includes('[Lockfile diff folded:')
+        ) {
+          return section;
+        }
+        const lines = section.split(/\r?\n/);
+        if (lines.length <= 6) {
+          return section; // Already minimal
+        }
+        // Find where hunks begin (line starting with @@)
+        let hunkIndex = lines.findIndex(l => l.startsWith('@@'));
+        if (hunkIndex === -1) {
+          const plusIdx = lines.findIndex(l => l.startsWith('+++ '));
+          if (plusIdx !== -1) hunkIndex = plusIdx + 1;
+          else hunkIndex = Math.min(4, lines.length);
+        }
+        const headerLines = lines.slice(0, hunkIndex).join(newline);
+        // If fileB is /dev/null (deleted lockfile), use fileA; if fileA is /dev/null (added), use fileB
+        const targetRaw = (fileB && !fileB.includes('dev/null')) ? fileB : fileA;
+        const targetFile = targetRaw.replace(/^["']|["']$/g, '');
+        const foldedCount = lines.length - hunkIndex;
+        return `${headerLines}${newline}[Lockfile diff folded: ${targetFile} (${foldedCount} lines of dependency lock changes)]${newline}`;
+      });
+      return processedSections.join('');
+    }
+
+    // Case 2: Unified diff starting with --- and +++
+    if (text.includes('--- ') && text.includes('+++ ')) {
+      const sections = text.split(/(?=---\s+(?:"a\/|a\/|\S).+?\r?\n\+\+\+\s+(?:"b\/|b\/|\S))/);
+      if (sections.length > 1 || sections[0].startsWith('--- ')) {
+        const processedSections = sections.map(section => {
+          const headerMatch = section.match(/^---\s+(?:"a\/(.+?)"|a\/([^\s\t\r\n]+)|"([^\r\n"]+)"|([^\s\t\r\n]+)).*?\r?\n\+\+\+\s+(?:"b\/(.+?)"|b\/([^\s\t\r\n]+)|"([^\r\n"]+)"|([^\s\t\r\n]+))/);
+          if (!headerMatch) return section;
+          const fileA = headerMatch[1] || headerMatch[2] || headerMatch[3] || headerMatch[4] || '';
+          const fileB = headerMatch[5] || headerMatch[6] || headerMatch[7] || headerMatch[8] || '';
+          if (!isLockfilePath(fileA) && !isLockfilePath(fileB)) {
+            return section;
+          }
+          if (
+            section.includes('<<<<<<<') ||
+            section.includes('=======') ||
+            section.includes('>>>>>>>') ||
+            section.includes('|||||||') ||
+            section.includes('[Lockfile diff folded:')
+          ) {
+            return section;
+          }
+          const lines = section.split(/\r?\n/);
+          if (lines.length <= 5) return section;
+          let hunkIndex = lines.findIndex(l => l.startsWith('@@'));
+          if (hunkIndex === -1) {
+            const plusIdx = lines.findIndex(l => l.startsWith('+++ '));
+            if (plusIdx !== -1) hunkIndex = plusIdx + 1;
+            else hunkIndex = Math.min(2, lines.length);
+          }
+          const headerLines = lines.slice(0, hunkIndex).join(newline);
+          const targetRaw = (fileB && !fileB.includes('dev/null')) ? fileB : fileA;
+          const targetFile = targetRaw.replace(/^["']|["']$/g, '');
+          const foldedCount = lines.length - hunkIndex;
+          return `${headerLines}${newline}[Lockfile diff folded: ${targetFile} (${foldedCount} lines of dependency lock changes)]${newline}`;
+        });
+        return processedSections.join('');
+      }
+    }
+
+    return text;
+  } catch (err) {
+    console.warn('[ContextCompactor] foldLockfiles error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Positive match test passes folding.
+ * Safe inversion architecture: ONLY recognizes explicit passing blocks (✓, ✔, PASS, ok, PASSED, [OK]).
+ * CRITICAL SAFETY: Never touches failures, errors, assertions, or stack traces (100% preserved).
+ * EXTENSIBILITY: Compiles and honors custom regex patterns passed in options.customTestPassPatterns.
+ * @param {string} text
+ * @param {object} options
+ * @returns {string}
+ */
+function foldTestPasses(text, options = {}) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    let passingRun = [];
+
+    // Compile custom regex patterns safely (supports Array or single string)
+    const customRegexes = [];
+    const rawPatterns = Array.isArray(options.customTestPassPatterns)
+      ? options.customTestPassPatterns
+      : (typeof options.customTestPassPatterns === 'string' && options.customTestPassPatterns.trim()
+          ? [options.customTestPassPatterns]
+          : []);
+    for (const pat of rawPatterns) {
+      if (pat instanceof RegExp) {
+        customRegexes.push(pat);
+      } else if (typeof pat === 'string' && pat.trim()) {
+        try {
+          customRegexes.push(new RegExp(pat.trim(), 'i'));
+        } catch (e) {
+          console.warn('[ContextCompactor] Invalid customTestPassPattern ignored:', pat);
+        }
+      }
+    }
+
+    const isPassLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+
+      // Safety barrier: Explicit failure indicators, assertion details, or stack traces must NEVER be folded
+      if (/[✕✗✖❌]/.test(line)) return false;
+      if (/^\s*(?:not ok\b|FAIL\b|FAILED\b|ERROR\b)/i.test(trimmed)) return false;
+      if (/\b(?:AssertionError|Assertion failed)\b/i.test(line)) return false;
+      if (/^\s*at\s+\S+/.test(line) || /^\s*File\s+".*",\s+line\s+\d+/i.test(line)) return false;
+      if (/^\s*(?:expected|received)\b/i.test(trimmed)) return false;
+
+      // Positive indicators for major testing frameworks:
+      // 1. Jest / Vitest / Mocha: ✓ or ✔
+      if (/^[✓✔]\s+.+/.test(trimmed)) return true;
+      // 2. TAP / node:test: ok 1 - name
+      if (/^ok\s+(?:\d+\b|-\s+|\S+\s+-)/.test(trimmed)) return true;
+      // 3. Jest suite pass: PASS src/...
+      if (/^PASS\s+\S+/.test(trimmed)) return true;
+      // 4. Pytest: test.py::test_fn PASSED [ 10%]
+      if (/(?:::|\.py\b).+?\bPASSED\b/.test(trimmed) || /^(?:tests?[/\\].*?|.*?\btest\w*.*?|.*?\.(?:py|rs|go|js|ts|cpp|c|java))\s*.*?\bPASSED(?:\s*\[\s*\d+%\])?$/i.test(trimmed)) return true;
+      // 5. Rust cargo test & Python unittest: test foo ... ok / test_foo (module.Test) ... ok
+      if (/^test\w*\s*(?:\([^)]+\))?\s*\.\.\.\s*ok\b/i.test(trimmed)) return true;
+      // 6. Go test: --- PASS: TestFoo (0.00s)
+      if (/^---\s*PASS:\s+\S+/.test(trimmed)) return true;
+      // 7. Generic [PASS]
+      if (/^\[PASS\]\s+\S+/.test(trimmed)) return true;
+      // 8. GoogleTest (C++ gtest): [       OK ] Fixture.Test (1 ms)
+      if (/^\[\s*OK\s*\]\s+\S+/.test(trimmed)) return true;
+      // 9. CTest / CMake: 1/10 Test #1: TestName ... Passed
+      if (/^\s*\d+\/\d+\s+Test\s+#\d+:\s+\S+.*?\bPassed\b/i.test(trimmed)) return true;
+
+      // 10. User-supplied custom extensible patterns
+      for (const rx of customRegexes) {
+        if (rx.test(trimmed)) return true;
+      }
+
+      return false;
+    };
+
+    const flushRun = () => {
+      if (passingRun.length >= 3) {
+        result.push(`[Test suite: ${passingRun.length} passed tests folded (✓ / PASS / ok)]`);
+      } else {
+        result.push(...passingRun);
+      }
+      passingRun = [];
+    };
+
+    for (const line of lines) {
+      if (isPassLine(line)) {
+        passingRun.push(line);
+      } else {
+        flushRun();
+        result.push(line);
+      }
+    }
+    flushRun();
+
+    return result.join(newline);
+  } catch (err) {
+    console.warn('[ContextCompactor] foldTestPasses error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Cleans repetitive Docker container layer pull/push progress lines.
+ * Folds 5+ consecutive layer download/extract status lines into a concise summary.
+ * Safety: NEVER folds Docker error lines or build step headers.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanDockerOutput(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  if (!text.includes('Pulling fs layer') && !text.includes('Download complete') && !text.includes('Pull complete') && !text.includes('Extracting') && !text.includes('Already exists') && !text.includes('Layer already exists') && !text.includes('Pushing')) {
+    return text;
+  }
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    let dockerRun = [];
+
+    const isDockerLayerLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (/error|failed/i.test(trimmed)) return false;
+      return /^[0-9a-f]{8,12}:\s+(?:Pulling fs layer|Downloading|Extracting|Verifying Checksum|Download complete|Pull complete|Waiting|Already exists|Layer already exists|Pushing|Pushed)/i.test(trimmed);
+    };
+
+    const flushRun = () => {
+      if (dockerRun.length >= 5) {
+        result.push(`[Docker: ${dockerRun.length} layer download/extract status lines folded]`);
+      } else {
+        result.push(...dockerRun);
+      }
+      dockerRun = [];
+    };
+
+    for (const line of lines) {
+      if (isDockerLayerLine(line)) {
+        dockerRun.push(line);
+      } else {
+        flushRun();
+        result.push(line);
+      }
+    }
+    flushRun();
+
+    return result.join(newline);
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanDockerOutput error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Cleans repetitive Terraform / OpenTofu resource state refreshing noise.
+ * Folds 3+ consecutive "Refreshing state... [id=...]" lines into a concise summary.
+ * Safety: NEVER folds Terraform plan diffs (+, ~, -) or error messages.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanTerraformOutput(text) {
+  if (typeof text !== 'string' || !text.includes('Refreshing state...')) return text;
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    let tfRun = [];
+
+    const isTfRefreshLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (/error|failed/i.test(trimmed)) return false;
+      return /:\s+Refreshing state\.\.\.(?:\s*\[id=[^\]]+\])?/i.test(trimmed);
+    };
+
+    const flushRun = () => {
+      if (tfRun.length >= 3) {
+        result.push(`[Terraform: ${tfRun.length} resources state refreshed]`);
+      } else {
+        result.push(...tfRun);
+      }
+      tfRun = [];
+    };
+
+    for (const line of lines) {
+      if (isTfRefreshLine(line)) {
+        tfRun.push(line);
+      } else {
+        flushRun();
+        result.push(line);
+      }
+    }
+    flushRun();
+
+    return result.join(newline);
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanTerraformOutput error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Cleans repetitive Kubernetes pod / rollout status noise.
+ * Folds 4+ consecutive healthy Running/Completed pod lines or rollout status updates.
+ * Safety: NEVER folds CrashLoopBackOff, Error, Pending, Evicted or Warning states.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanKubectlOutput(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  if (!text.includes('Running') && !text.includes('Completed') && !text.includes('rollout to finish') && !text.includes('condition met')) {
+    return text;
+  }
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    let kubeRun = [];
+
+    const isKubeStatusLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      // Safety exemption: Never fold failing, crashing, evicted or pending states
+      if (/(?:error|failed|crashloop|imagepull|evicted|oom|pending|notready|terminating|warning)/i.test(trimmed)) return false;
+      // Header line
+      if (/^NAME\s+READY\s+STATUS\s+RESTARTS/i.test(trimmed)) return false;
+
+      // 1. Pod table row: name ready status restarts age
+      if (/^(?:pod\/)?[\w.-]+\s+\d+\/\d+\s+(?:Running|Completed)\s+\d+\s+[\w.-]+/i.test(trimmed)) return true;
+      // 2. Rollout progress line
+      if (/^Waiting for (?:deployment|daemon set|statefulset)\b.*?rollout to finish:\s+\d+\s+of\s+\d+\s+updated/i.test(trimmed)) return true;
+      // 3. Condition met line
+      if (/^(?:pod|deployment|service|ingress|job|statefulset)\/[\w.-]+\s+condition met$/i.test(trimmed)) return true;
+
+      return false;
+    };
+
+    const flushRun = () => {
+      if (kubeRun.length >= 4) {
+        result.push(`[Kubectl: ${kubeRun.length} healthy pods / rollout status lines folded (Running / Completed / Met)]`);
+      } else {
+        result.push(...kubeRun);
+      }
+      kubeRun = [];
+    };
+
+    for (const line of lines) {
+      if (isKubeStatusLine(line)) {
+        kubeRun.push(line);
+      } else {
+        flushRun();
+        result.push(line);
+      }
+    }
+    flushRun();
+
+    return result.join(newline);
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanKubectlOutput error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/* ==========================================================================
+   Pluggable Pipeline Architecture
+   Allows registering custom or domain-specific transformers with deterministic
+   priority ordering and individual safe-sandbox isolation.
+   ========================================================================== */
+
+const transformersRegistry = new Map();
+
+/**
+ * Register a text transformer into the pipeline.
+ * @param {string} name Unique transformer identifier
+ * @param {Function} fn (text: string, options: object, context: object) => string
+ * @param {object} meta { priority: number, enabledByDefault: boolean }
+ */
+function registerTransformer(name, fn, { priority = 50, enabledByDefault = true } = {}) {
+  if (typeof name !== 'string' || typeof fn !== 'function') {
+    throw new TypeError('Transformer name must be a string and fn must be a function');
+  }
+  transformersRegistry.set(name, { name, fn, priority, enabledByDefault });
+}
+
+/**
+ * Unregister a transformer from the pipeline.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function unregisterTransformer(name) {
+  return transformersRegistry.delete(name);
+}
+
+/**
+ * Returns all registered transformers sorted by ascending priority.
+ * @returns {Array<{ name: string, fn: Function, priority: number, enabledByDefault: boolean }>}
+ */
+function getRegisteredTransformers() {
+  return Array.from(transformersRegistry.values()).sort((a, b) => a.priority - b.priority);
+}
+
+// Register built-in transformers in standard priority order
+registerTransformer('stripAnsi', (text) => stripAnsi(text), { priority: 10, enabledByDefault: true });
+registerTransformer('cleanProgressBars', (text) => cleanProgressBars(text), { priority: 20, enabledByDefault: true });
+registerTransformer('cleanDockerOutput', (text) => cleanDockerOutput(text), { priority: 30, enabledByDefault: true });
+registerTransformer('cleanKubectlOutput', (text) => cleanKubectlOutput(text), { priority: 35, enabledByDefault: true });
+registerTransformer('cleanTerraformOutput', (text) => cleanTerraformOutput(text), { priority: 40, enabledByDefault: true });
+registerTransformer('foldLockfiles', (text) => foldLockfiles(text), { priority: 50, enabledByDefault: true });
+registerTransformer('foldTestPasses', (text, opts) => foldTestPasses(text, opts), { priority: 60, enabledByDefault: true });
+
+/**
+ * Run text through the pluggable transformer pipeline.
+ * Every step is fully safe-sandboxed: If any transformer throws, the exception
+ * is caught, a warning is logged, and the pipeline continues with the previous step's text.
+ * @param {string} text
+ * @param {object} options
+ * @param {object} context
+ * @returns {string}
+ */
+function runPipeline(text, options = {}, context = {}) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  const transformers = getRegisteredTransformers();
+  let current = text;
+  for (const { name, fn, enabledByDefault } of transformers) {
+    const isEnabled = options[name] !== undefined ? Boolean(options[name]) : enabledByDefault;
+    if (!isEnabled) continue;
+    try {
+      const beforeLen = current.length;
+      const transformed = fn(current, options, context);
+      if (typeof transformed === 'string') {
+        if (transformed.length < beforeLen) {
+          const mod = (name === 'foldLockfiles') ? 'headroom' : 'rtk';
+          recordModuleOnlySavings(mod, beforeLen - transformed.length);
+        }
+        current = transformed;
+      }
+    } catch (err) {
+      console.warn(`[ContextCompactor] Transformer "${name}" threw error, bypassing:`, err.message);
+    }
+  }
+  return current;
+}
+
+/**
+ * Recursively sort object keys and required arrays in deterministic lexicographical order.
+ * Immune to circular references via inStack tracking and correctly sorts shared sub-objects (DAGs).
+ */
+function sortKeysDeep(obj, inStack = new Set()) {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (inStack.has(obj)) {
+    return obj;
+  }
+  inStack.add(obj);
+
+  try {
+    if (Array.isArray(obj)) {
+      return obj.map(item => sortKeysDeep(item, inStack));
+    }
+    const sorted = {};
+    const keys = Object.keys(obj).sort();
+    for (const k of keys) {
+      if (k === 'required' && Array.isArray(obj[k])) {
+        sorted[k] = [...obj[k]].sort();
+      } else {
+        sorted[k] = sortKeysDeep(obj[k], inStack);
+      }
+    }
+    return sorted;
+  } finally {
+    inStack.delete(obj);
+  }
+}
+
+/**
+ * Align tools schema deterministically by tool name and recursive key sorting.
+ * Locks Prompt Cache prefix for upstream providers (Anthropic & OpenAI KV Cache).
+ * Safe sandbox wrapped.
+ * @param {Array} tools
+ * @returns {Array}
+ */
+function alignToolsSchema(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) return tools;
+  try {
+    const sorted = [...tools].sort((a, b) => {
+      const nameA = (a && a.function && a.function.name) || (a && a.name) || '';
+      const nameB = (b && b.function && b.function.name) || (b && b.name) || '';
+      return String(nameA).localeCompare(String(nameB));
+    });
+    return sorted.map(t => (t && typeof t === 'object') ? sortKeysDeep(t) : t);
+  } catch (err) {
+    console.warn('[ContextCompactor] alignToolsSchema error, bypassing:', err.message);
+    return tools;
+  }
+}
+
+/**
+ * Slim a single description string by removing markdown code blocks, examples, and extracting the first sentence.
+ * If trimming leaves nothing, falls back to the first line of the original description.
+ */
+function slimDescription(desc) {
+  if (typeof desc !== 'string' || !desc.trim()) return desc;
+  try {
+    let text = desc;
+    // 1. Strip markdown code blocks
+    text = text.replace(/```[\s\S]*?```/g, '');
+    // 2. Strip example sections (Examples:, Usage:, Sample:, etc.)
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '');
+    text = text.trim();
+    if (!text) {
+      const fallback = desc.trim().split(/\r?\n/)[0].trim();
+      return fallback || desc;
+    }
+    // 3. Extract first paragraph
+    const firstPara = text.split(/\r?\n\s*\r?\n/)[0].trim();
+    // 4. Extract first sentence if descriptive (>= 12 chars)
+    const match = firstPara.match(/^.*?[.!?。！](?:\s|$)/);
+    if (match && match[0].trim().length >= 12) {
+      return match[0].trim();
+    }
+    return firstPara || desc;
+  } catch (e) {
+    return desc;
+  }
+}
+
+/**
+ * Recursively slim composite schema definitions (properties, patternProperties, additionalProperties, items, anyOf, oneOf, allOf, $defs).
+ * Hardened with maximum depth = 50 to prevent call stack exhaustion on extreme adversarial inputs.
+ */
+function slimSchemaDeep(schema, visited = new WeakSet(), depth = 0) {
+  if (!schema || typeof schema !== 'object' || depth > 50) return;
+  if (visited.has(schema)) return;
+  visited.add(schema);
+
+  if (schema.description && typeof schema.description === 'string') {
+    schema.description = slimDescription(schema.description);
+  }
+  if (schema.example !== undefined) delete schema.example;
+  if (schema.examples !== undefined) delete schema.examples;
+
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const sub of Object.values(schema.properties)) {
+      slimSchemaDeep(sub, visited, depth + 1);
+    }
+  }
+  if (schema.patternProperties && typeof schema.patternProperties === 'object') {
+    for (const sub of Object.values(schema.patternProperties)) {
+      slimSchemaDeep(sub, visited, depth + 1);
+    }
+  }
+  if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+    slimSchemaDeep(schema.additionalProperties, visited, depth + 1);
+  }
+  if (schema.items && typeof schema.items === 'object') {
+    if (Array.isArray(schema.items)) {
+      for (const sub of schema.items) slimSchemaDeep(sub, visited, depth + 1);
+    } else {
+      slimSchemaDeep(schema.items, visited, depth + 1);
+    }
+  }
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(schema[key])) {
+      for (const sub of schema[key]) slimSchemaDeep(sub, visited, depth + 1);
+    }
+  }
+  if (schema.$defs && typeof schema.$defs === 'object') {
+    for (const sub of Object.values(schema.$defs)) {
+      slimSchemaDeep(sub, visited, depth + 1);
+    }
+  }
+  if (schema.definitions && typeof schema.definitions === 'object') {
+    for (const sub of Object.values(schema.definitions)) {
+      slimSchemaDeep(sub, visited, depth + 1);
+    }
+  }
+}
+
+function slimToolItem(tool) {
+  if (!tool || typeof tool !== 'object') return tool;
+  try {
+    let cloned;
+    try {
+      cloned = JSON.parse(JSON.stringify(tool));
+    } catch (e) {
+      cloned = { ...tool };
+    }
+
+    // 1. OpenAI function wrapper format
+    if (cloned.function && typeof cloned.function === 'object') {
+      if (cloned.function.description) {
+        cloned.function.description = slimDescription(cloned.function.description);
+      }
+      const params = cloned.function.parameters || cloned.function.inputSchema || cloned.function.input_schema;
+      if (params && typeof params === 'object') {
+        slimSchemaDeep(params);
+      }
+    }
+
+    // 2. Direct tool description (Anthropic, MCP, top-level Responses)
+    if (cloned.description) {
+      cloned.description = slimDescription(cloned.description);
+    }
+
+    // 3. Direct schema properties (Anthropic input_schema, MCP inputSchema, Responses parameters)
+    const directSchema = cloned.parameters || cloned.input_schema || cloned.inputSchema;
+    if (directSchema && typeof directSchema === 'object') {
+      slimSchemaDeep(directSchema);
+    }
+
+    return cloned;
+  } catch (err) {
+    console.warn('[ContextCompactor] slimToolItem error, returning original tool:', err.message);
+    return tool;
+  }
+}
+
+/**
+ * Slim oversized tools schema (> 15,000 chars by default) by trimming markdown examples
+ * and long descriptions while keeping parameter types, names, enums and structure 100% intact.
+ * Safe sandbox wrapped.
+ * @param {Array} tools
+ * @param {number} threshold
+ * @returns {Array}
+ */
+function slimToolsSchema(tools, threshold = 15000) {
+  if (!Array.isArray(tools) || tools.length === 0) return tools;
+  try {
+    const limit = (typeof threshold === 'number' && !isNaN(threshold) && threshold >= 0) ? threshold : 15000;
+    let rawJson = '';
+    try {
+      rawJson = JSON.stringify(tools);
+    } catch (e) {
+      return tools;
+    }
+    if (rawJson.length <= limit) {
+      return tools;
+    }
+    return tools.map(t => slimToolItem(t));
+  } catch (err) {
+    console.warn('[ContextCompactor] slimToolsSchema error, bypassing:', err.message);
+    return tools;
+  }
+}
+
+/**
+ * Generate fast SHA256 hex prefix for text content memoization.
+ */
+function hashContent(text) {
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 16);
+}
+
+const MAX_MEMO_SESSIONS = 500;
+const MAX_MEMO_KEYS_PER_SESSION = 200;
+
+/**
+ * Derives dynamic options signature from all registered transformers and custom options.
+ * Ensures that registering transformers or toggling individual switches safely invalidates cache.
+ */
+function getOptionsSignature(opts) {
+  const transformers = getRegisteredTransformers();
+  const parts = transformers.map(t => {
+    const enabled = opts[t.name] !== undefined ? Boolean(opts[t.name]) : t.enabledByDefault;
+    return `${t.name}:${enabled ? 1 : 0}`;
+  });
+  if (opts.customTestPassPatterns && (Array.isArray(opts.customTestPassPatterns) ? opts.customTestPassPatterns.length > 0 : Boolean(opts.customTestPassPatterns))) {
+    try {
+      parts.push(`custom:${JSON.stringify(opts.customTestPassPatterns)}`);
+    } catch (e) {}
+  }
+  return parts.join('|');
+}
+
+function getMemo(sessionId, cacheKey) {
+  if (!sessionId) return null;
+  const sMap = sessionCompressionMemo.get(sessionId);
+  if (!sMap) return null;
+  const val = sMap.get(cacheKey);
+  if (val !== undefined) {
+    // True LRU refresh within session
+    sMap.delete(cacheKey);
+    sMap.set(cacheKey, val);
+    // True LRU refresh for session itself
+    sessionCompressionMemo.delete(sessionId);
+    sessionCompressionMemo.set(sessionId, sMap);
+    return val;
+  }
+  return null;
+}
+
+function setMemo(sessionId, cacheKey, compressed) {
+  if (!sessionId) return;
+  let sMap = sessionCompressionMemo.get(sessionId);
+  if (!sMap) {
+    if (sessionCompressionMemo.size >= MAX_MEMO_SESSIONS) {
+      const oldestSession = sessionCompressionMemo.keys().next().value;
+      sessionCompressionMemo.delete(oldestSession);
+    }
+    sMap = new Map();
+    sessionCompressionMemo.set(sessionId, sMap);
+  } else {
+    // Refresh session order in memo
+    sessionCompressionMemo.delete(sessionId);
+    sessionCompressionMemo.set(sessionId, sMap);
+  }
+  if (sMap.size >= MAX_MEMO_KEYS_PER_SESSION) {
+    const oldestKey = sMap.keys().next().value;
+    sMap.delete(oldestKey);
+  }
+  sMap.set(cacheKey, compressed);
+}
+
+function clearSessionMemo(sessionId) {
+  if (sessionId) {
+    sessionCompressionMemo.delete(sessionId);
+  }
+}
+
+/**
+ * Perform all enabled text transformations on raw output with pipeline and memoization support.
+ * 100% Safe Sandbox Wrapped.
+ * @param {string} text
+ * @param {object} options
+ * @param {string|null} sessionId
+ * @returns {string}
+ */
+function compactText(text, options = {}, sessionId = null) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  const opts = normalizeCompressionOptions(options);
+  if (!opts.enabled) return text;
+
+  try {
+    let cacheKey = null;
+    if (opts.cacheZoneFreeze && sessionId) {
+      const hash = hashContent(text);
+      // Incorporate dynamic option state signature to prevent stale cache on config or plugin switches
+      const optsSig = getOptionsSignature(opts);
+      cacheKey = `${hash}_${optsSig}`;
+      const cached = getMemo(sessionId, cacheKey);
+      if (cached !== null) {
+        if (text.length > cached.length) {
+          recordSavings('cacheZone', text.length - cached.length, text.length);
+        }
+        return cached;
+      }
+    }
+
+    const result = runPipeline(text, opts, { sessionId });
+
+    if (opts.cacheZoneFreeze && sessionId && cacheKey) {
+      setMemo(sessionId, cacheKey, result);
+    }
+
+    if (text.length > result.length) {
+      recordOverallSavings(text.length, result.length);
+    }
+
+    return result;
+  } catch (err) {
+    console.warn('[ContextCompactor] compactText sandbox caught error, returning original text:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Compact OpenAI /v1/chat/completions payload.
+ * Processes tools schema alignment/slimming and compacts tool / function messages.
+ * 100% Safe Sandbox Wrapped.
+ * @param {object} payload
+ * @param {object} options
+ * @param {string|null} sessionId
+ * @returns {object}
+ */
+function compactChatPayload(payload, options = {}, sessionId = null) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const opts = normalizeCompressionOptions(options);
+  if (!opts.enabled) return payload;
+
+  try {
+    const result = { ...payload };
+
+    if (Array.isArray(result.tools)) {
+      let tools = result.tools;
+      if (opts.alignToolsSchema) tools = alignToolsSchema(tools);
+      if (opts.slimToolsSchema) {
+        let rawLen = 0;
+        try { rawLen = JSON.stringify(tools).length; } catch (e) {}
+        tools = slimToolsSchema(tools, opts.schemaCharThreshold);
+        let slimLen = 0;
+        try { slimLen = JSON.stringify(tools).length; } catch (e) {}
+        if (rawLen > slimLen) {
+          recordSavings('schema', rawLen - slimLen, rawLen);
+        }
+      }
+      result.tools = tools;
+    }
+
+    if (Array.isArray(result.functions)) {
+      let funcs = result.functions;
+      if (opts.alignToolsSchema) funcs = alignToolsSchema(funcs);
+      if (opts.slimToolsSchema) {
+        let rawLen = 0;
+        try { rawLen = JSON.stringify(funcs).length; } catch (e) {}
+        funcs = slimToolsSchema(funcs, opts.schemaCharThreshold);
+        let slimLen = 0;
+        try { slimLen = JSON.stringify(funcs).length; } catch (e) {}
+        if (rawLen > slimLen) {
+          recordSavings('schema', rawLen - slimLen, rawLen);
+        }
+      }
+      result.functions = funcs;
+    }
+
+    if (Array.isArray(result.messages)) {
+      result.messages = result.messages.map(msg => {
+        if (!msg) return msg;
+        if (msg.role === 'tool' || msg.role === 'function') {
+          if (typeof msg.content === 'string') {
+            return { ...msg, content: compactText(msg.content, opts, sessionId) };
+          } else if (Array.isArray(msg.content)) {
+            return {
+              ...msg,
+              content: msg.content.map(part => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                  return { ...part, text: compactText(part.text, opts, sessionId) };
+                }
+                return part;
+              })
+            };
+          }
+        }
+        return msg;
+      });
+    }
+
+    return result;
+  } catch (err) {
+    console.warn('[ContextCompactor] compactChatPayload sandbox error, returning original payload:', err.message);
+    return payload;
+  }
+}
+
+/**
+ * Compact Anthropic /v1/messages payload.
+ * Handles tools alignment/slimming.
+ * In Anthropic protocol, tool outputs are nested in role: 'user' messages with type: 'tool_result'.
+ * 100% Safe Sandbox Wrapped.
+ * @param {object} payload
+ * @param {object} options
+ * @param {string|null} sessionId
+ * @returns {object}
+ */
+function compactAnthropicPayload(payload, options = {}, sessionId = null) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const opts = normalizeCompressionOptions(options);
+  if (!opts.enabled) return payload;
+
+  try {
+    const result = { ...payload };
+
+    if (Array.isArray(result.tools)) {
+      let tools = result.tools;
+      if (opts.alignToolsSchema) tools = alignToolsSchema(tools);
+      if (opts.slimToolsSchema) {
+        let rawLen = 0;
+        try { rawLen = JSON.stringify(tools).length; } catch (e) {}
+        tools = slimToolsSchema(tools, opts.schemaCharThreshold);
+        let slimLen = 0;
+        try { slimLen = JSON.stringify(tools).length; } catch (e) {}
+        if (rawLen > slimLen) {
+          recordSavings('schema', rawLen - slimLen, rawLen);
+        }
+      }
+      result.tools = tools;
+    }
+
+    if (Array.isArray(result.messages)) {
+      result.messages = result.messages.map(msg => {
+        if (!msg) return msg;
+        if (msg.role === 'user' && Array.isArray(msg.content)) {
+          return {
+            ...msg,
+            content: msg.content.map(block => {
+              if (block && block.type === 'tool_result') {
+                if (typeof block.content === 'string') {
+                  return { ...block, content: compactText(block.content, opts, sessionId) };
+                } else if (Array.isArray(block.content)) {
+                  return {
+                    ...block,
+                    content: block.content.map(part => {
+                      if (part && part.type === 'text' && typeof part.text === 'string') {
+                        return { ...part, text: compactText(part.text, opts, sessionId) };
+                      }
+                      return part;
+                    })
+                  };
+                }
+              }
+              return block;
+            })
+          };
+        }
+        return msg;
+      });
+    }
+
+    return result;
+  } catch (err) {
+    console.warn('[ContextCompactor] compactAnthropicPayload sandbox error, returning original payload:', err.message);
+    return payload;
+  }
+}
+
+/**
+ * Compact Codex /responses payload.
+ * Handles tools alignment/slimming and compacts function_call_output and custom_tool_call_output in input array.
+ * CRITICAL FIX: Strictly preserves Array type when output is an array of content blocks.
+ * 100% Safe Sandbox Wrapped.
+ * @param {object} payload
+ * @param {object} options
+ * @param {string|null} sessionId
+ * @returns {object}
+ */
+function compactResponsesPayload(payload, options = {}, sessionId = null) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const opts = normalizeCompressionOptions(options);
+  if (!opts.enabled) return payload;
+
+  try {
+    const result = { ...payload };
+
+    if (Array.isArray(result.tools)) {
+      let tools = result.tools;
+      if (opts.alignToolsSchema) tools = alignToolsSchema(tools);
+      if (opts.slimToolsSchema) {
+        let rawLen = 0;
+        try { rawLen = JSON.stringify(tools).length; } catch (e) {}
+        tools = slimToolsSchema(tools, opts.schemaCharThreshold);
+        let slimLen = 0;
+        try { slimLen = JSON.stringify(tools).length; } catch (e) {}
+        if (rawLen > slimLen) {
+          recordSavings('schema', rawLen - slimLen, rawLen);
+        }
+      }
+      result.tools = tools;
+    }
+
+    if (Array.isArray(result.input)) {
+      result.input = result.input.map(item => {
+        if (!item) return item;
+        if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
+          if (typeof item.output === 'string') {
+            return { ...item, output: compactText(item.output, opts, sessionId) };
+          } else if (Array.isArray(item.output)) {
+            // Strictly preserve array structure for multimodal/block outputs
+            const compactedParts = item.output.map(part => {
+              if (typeof part === 'string') {
+                return compactText(part, opts, sessionId);
+              } else if (part && typeof part === 'object') {
+                const clonedPart = { ...part };
+                if (typeof clonedPart.text === 'string') {
+                  clonedPart.text = compactText(clonedPart.text, opts, sessionId);
+                }
+                if (typeof clonedPart.output === 'string') {
+                  clonedPart.output = compactText(clonedPart.output, opts, sessionId);
+                }
+                return clonedPart;
+              }
+              return part;
+            });
+            return { ...item, output: compactedParts };
+          } else if (item.output && typeof item.output === 'object') {
+            const clonedOutput = { ...item.output };
+            if (typeof clonedOutput.stdout === 'string') {
+              clonedOutput.stdout = compactText(clonedOutput.stdout, opts, sessionId);
+            }
+            if (typeof clonedOutput.stderr === 'string') {
+              clonedOutput.stderr = compactText(clonedOutput.stderr, opts, sessionId);
+            }
+            if (typeof clonedOutput.output === 'string') {
+              clonedOutput.output = compactText(clonedOutput.output, opts, sessionId);
+            }
+            if (typeof clonedOutput.text === 'string') {
+              clonedOutput.text = compactText(clonedOutput.text, opts, sessionId);
+            }
+            if (typeof clonedOutput.content === 'string') {
+              clonedOutput.content = compactText(clonedOutput.content, opts, sessionId);
+            } else if (Array.isArray(clonedOutput.content)) {
+              clonedOutput.content = clonedOutput.content.map(part => {
+                if (part && typeof part === 'object' && typeof part.text === 'string') {
+                  return { ...part, text: compactText(part.text, opts, sessionId) };
+                }
+                return part;
+              });
+            }
+            return { ...item, output: clonedOutput };
+          }
+        }
+        return item;
+      });
+    }
+
+    return result;
+  } catch (err) {
+    console.warn('[ContextCompactor] compactResponsesPayload sandbox error, returning original payload:', err.message);
+    return payload;
+  }
+}
+
+module.exports = {
+  DEFAULT_COMPRESSION_CONFIG,
+  COMPRESSION_PRESETS,
+  normalizeCompressionOptions,
+  getCompressionStats,
+  resetCompressionStats,
+  recordSavings,
+  STATS_FILE,
+  stripAnsi,
+  cleanProgressBars,
+  cleanDockerOutput,
+  cleanTerraformOutput,
+  cleanKubectlOutput,
+  foldLockfiles,
+  foldTestPasses,
+  alignToolsSchema,
+  slimToolsSchema,
+  compactText,
+  compactChatPayload,
+  compactAnthropicPayload,
+  compactResponsesPayload,
+  getMemo,
+  setMemo,
+  clearSessionMemo,
+  sessionCompressionMemo,
+  registerTransformer,
+  unregisterTransformer,
+  getRegisteredTransformers,
+  runPipeline,
+  getOptionsSignature
+};

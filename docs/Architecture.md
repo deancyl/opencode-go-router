@@ -80,3 +80,10 @@ flowchart TD
 ### 5. 动态工具 Schema 规范化与网关错误清洗屏障
 - **Schema 规范化**：全面探测 `parameters`、`inputSchema` 与 `input_schema`，杜绝空参数降级为空对象 `{}` 引发严校验上游集群 400 崩溃；强制补齐 `{ type: 'object', properties: {} }`。
 - **错误清洗屏障**：拦截非 200 响应，强制剥离 `content-encoding` 干扰，将上游 0 字节 SSE 空流或非标裸 JSON 统一包装为规范的 OpenAI Error 结构，消除客户端红框气泡与空气泡。
+
+### 6. 无损上下文优化与多层 Token 压缩引擎 (Context Compactor)
+- **多维去噪**：剔除 ANSI 控制字符、合并 `\r` 覆盖式终端进度条并严格保全 Windows CRLF 换行、安全折叠 Docker 镜像拉取与推送、Kubectl Pod 与发布轮转状态（严密保全 CrashLoopBackOff 等故障状态）、Terraform 资源与数据源状态刷新输出；
+- **Lockfile 智能折叠**：自动折叠巨型 lockfile 差异（覆盖 npm, yarn, pnpm, cargo, bun, uv, pdm, pubspec, gradle, go.sum 等），遇到 Git 冲突标记（`<<<<<<<` 等）精准豁免折叠，保障代码语法与求解能力；
+- **测试通过项正向安全折叠**：严密匹配算法绝不错杀源码变量行与代码断言，仅折叠明确成功的用例（✓/PASS/ok/gtest/unittest/ctest 及自定义正则），遇失败断言、报错及堆栈全量原样留存；
+- **Prompt Cache 字典序对齐与超大 Schema 瘦身**：深度遍历参数架构（包含 patternProperties 与 additionalProperties），50层深度递归防溢出护栏，字典序排序并去除繁冗 Markdown 样例，锁定上游 KV 缓存前缀；
+- **可插拔管道体系、动态插件缓存签名与真 LRU 会话池**：支持自定义转换器插拔，全管道零外部依赖原生沙盒运行，任何异常纯净旁路绝不影响正常业务转发；动态派生插件级缓存键签名，杜绝脏缓存漂移。

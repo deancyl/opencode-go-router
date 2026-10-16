@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execSync } = require('node:child_process');
+const contextCompactor = require('./context-compactor');
 
 // 38 All Available OpenCode Go Models with rich metadata for Codex catalog & reasoning support
 const OPENCODE_GO_ALL_MODELS = [
@@ -1495,9 +1496,37 @@ function sanitizeAndValidateChatMessages(messages) {
 }
 
 /**
+ * Safely extracts raw patch text from model arguments or JSON payloads
+ * Ensures apply_patch always receives clean diff content without JSON wrapper noise.
+ */
+function extractPatchInput(rawArgs) {
+  if (typeof rawArgs !== 'string') return '';
+  const trimmed = rawArgs.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed.input === 'string') return parsed.input;
+      if (typeof parsed.patch === 'string') return parsed.patch;
+      if (typeof parsed.diff === 'string') return parsed.diff;
+      if (typeof parsed.content === 'string') return parsed.content;
+    } catch (e) {
+      const match = trimmed.match(/"(?:input|patch|diff|content)"\s*:\s*"([\s\S]*)"\s*}?$/);
+      if (match) {
+        try {
+          return JSON.parse(`"${match[1]}"`);
+        } catch (_) {
+          return match[1];
+        }
+      }
+    }
+  }
+  return rawArgs;
+}
+
+/**
  * Converts OpenAI Responses API JSON payload to standard OpenAI ChatCompletions JSON payload
  */
-function convertResponsesToChatPayload(body) {
+function convertResponsesToChatPayload(body, compressionOptions = null, sessionId = null) {
   const messages = [];
   if (body.instructions && typeof body.instructions === 'string') {
     messages.push({ role: 'system', content: body.instructions });
@@ -1534,8 +1563,12 @@ function convertResponsesToChatPayload(body) {
           funcArgs = JSON.stringify({ command: item.command });
         } else if (item.action && typeof item.action === 'object') {
           funcArgs = JSON.stringify(item.action);
-        } else if (item.input && typeof item.input === 'object') {
-          funcArgs = JSON.stringify(item.input);
+        } else if (item.input !== undefined) {
+          if (typeof item.input === 'string') {
+            funcArgs = JSON.stringify({ input: item.input });
+          } else if (typeof item.input === 'object') {
+            funcArgs = JSON.stringify(item.input);
+          }
         }
 
         const toolCallObj = {
@@ -1664,6 +1697,15 @@ function convertResponsesToChatPayload(body) {
     }
   }
 
+  if (compressionOptions && compressionOptions.enabled !== false) {
+    try {
+      return contextCompactor.compactChatPayload(chatPayload, compressionOptions, sessionId);
+    } catch (err) {
+      console.warn('[CodexAdapter] Chat payload compression failed, bypassing safely:', err.message);
+      return chatPayload;
+    }
+  }
+
   return chatPayload;
 }
 
@@ -1788,14 +1830,26 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       });
     }
     for (const rec of toolCallsMap.values()) {
-      finalOutput.push({
-        id: rec.id,
-        type: 'function_call',
-        name: rec.name || 'custom_tool',
-        call_id: rec.id,
-        arguments: rec.args,
-        status: 'completed'
-      });
+      if (rec.isCustomTool || rec.name === 'apply_patch') {
+        const cleanInput = extractPatchInput(rec.args);
+        finalOutput.push({
+          id: rec.id,
+          type: 'custom_tool_call',
+          name: rec.name || 'apply_patch',
+          call_id: rec.id,
+          input: cleanInput,
+          status: 'completed'
+        });
+      } else {
+        finalOutput.push({
+          id: rec.id,
+          type: 'function_call',
+          name: rec.name || 'custom_tool',
+          call_id: rec.id,
+          arguments: rec.args,
+          status: 'completed'
+        });
+      }
     }
     return finalOutput;
   };
@@ -2081,37 +2135,53 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               const tcOutIdx = outputIndex++;
               const callId = tc.id || `call_${Date.now()}_${idx}`;
               const funcName = tc.function?.name || '';
+              const isCustomTool = (funcName === 'apply_patch');
               const rec = {
                 id: callId,
                 name: funcName,
                 args: '',
-                outIdx: tcOutIdx
+                outIdx: tcOutIdx,
+                isCustomTool
               };
               toolCallsMap.set(idx, rec);
-              sendEvent('response.output_item.added', {
-                type: 'response.output_item.added',
-                sequence_number: seq++,
-                output_index: tcOutIdx,
-                item: { id: callId, type: 'function_call', name: funcName, call_id: callId, arguments: '' }
-              });
+              if (isCustomTool) {
+                sendEvent('response.output_item.added', {
+                  type: 'response.output_item.added',
+                  sequence_number: seq++,
+                  output_index: tcOutIdx,
+                  item: { id: callId, type: 'custom_tool_call', name: funcName, call_id: callId, input: '' }
+                });
+              } else {
+                sendEvent('response.output_item.added', {
+                  type: 'response.output_item.added',
+                  sequence_number: seq++,
+                  output_index: tcOutIdx,
+                  item: { id: callId, type: 'function_call', name: funcName, call_id: callId, arguments: '' }
+                });
+              }
             }
 
             const rec = toolCallsMap.get(idx);
             if (tc.function?.name && !rec.name) {
               rec.name = tc.function.name;
+              if (rec.name === 'apply_patch') {
+                rec.isCustomTool = true;
+              }
             }
             if (tc.id && !rec.id) {
               rec.id = tc.id;
             }
             if (tc.function?.arguments) {
               rec.args += tc.function.arguments;
-              sendEvent('response.function_call_arguments.delta', {
-                type: 'response.function_call_arguments.delta',
-                sequence_number: seq++,
-                output_index: rec.outIdx,
-                call_id: rec.id,
-                delta: tc.function.arguments
-              });
+              if (!rec.isCustomTool && rec.name !== 'apply_patch') {
+                sendEvent('response.function_call_arguments.delta', {
+                  type: 'response.function_call_arguments.delta',
+                  sequence_number: seq++,
+                  output_index: rec.outIdx,
+                  call_id: rec.id,
+                  delta: tc.function.arguments
+                });
+              }
             }
           }
         }
@@ -2128,19 +2198,43 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
     // Close tool calls
     for (const rec of toolCallsMap.values()) {
-      sendEvent('response.function_call_arguments.done', {
-        type: 'response.function_call_arguments.done',
-        sequence_number: seq++,
-        output_index: rec.outIdx,
-        call_id: rec.id,
-        arguments: rec.args
-      });
-      sendEvent('response.output_item.done', {
-        type: 'response.output_item.done',
-        sequence_number: seq++,
-        output_index: rec.outIdx,
-        item: { id: rec.id, type: 'function_call', name: rec.name || 'custom_tool', call_id: rec.id, arguments: rec.args, status: 'completed' }
-      });
+      if (rec.isCustomTool || rec.name === 'apply_patch') {
+        const cleanInput = extractPatchInput(rec.args);
+        sendEvent('response.custom_tool_call_input.delta', {
+          type: 'response.custom_tool_call_input.delta',
+          sequence_number: seq++,
+          output_index: rec.outIdx,
+          call_id: rec.id,
+          delta: cleanInput
+        });
+        sendEvent('response.custom_tool_call_input.done', {
+          type: 'response.custom_tool_call_input.done',
+          sequence_number: seq++,
+          output_index: rec.outIdx,
+          call_id: rec.id,
+          input: cleanInput
+        });
+        sendEvent('response.output_item.done', {
+          type: 'response.output_item.done',
+          sequence_number: seq++,
+          output_index: rec.outIdx,
+          item: { id: rec.id, type: 'custom_tool_call', name: rec.name || 'apply_patch', call_id: rec.id, input: cleanInput, status: 'completed' }
+        });
+      } else {
+        sendEvent('response.function_call_arguments.done', {
+          type: 'response.function_call_arguments.done',
+          sequence_number: seq++,
+          output_index: rec.outIdx,
+          call_id: rec.id,
+          arguments: rec.args
+        });
+        sendEvent('response.output_item.done', {
+          type: 'response.output_item.done',
+          sequence_number: seq++,
+          output_index: rec.outIdx,
+          item: { id: rec.id, type: 'function_call', name: rec.name || 'custom_tool', call_id: rec.id, arguments: rec.args, status: 'completed' }
+        });
+      }
     }
 
     if (fullText === '' && toolCallsMap.size === 0) {
@@ -2292,7 +2386,7 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
 /**
  * Converts OpenAI Responses API JSON payload to standard Anthropic Messages JSON payload
  */
-function convertResponsesToAnthropicPayload(body) {
+function convertResponsesToAnthropicPayload(body, compressionOptions = null, sessionId = null) {
   let model = body.model || 'claude-haiku-5-5';
   if (model.startsWith('opencode-go/')) model = model.slice(12);
 
@@ -2332,8 +2426,12 @@ function convertResponsesToAnthropicPayload(body) {
           inputObj = { command: item.command };
         } else if (item.action && typeof item.action === 'object') {
           inputObj = item.action;
-        } else if (item.input && typeof item.input === 'object') {
-          inputObj = item.input;
+        } else if (item.input !== undefined) {
+          if (typeof item.input === 'string') {
+            inputObj = { input: item.input };
+          } else if (typeof item.input === 'object') {
+            inputObj = item.input;
+          }
         }
 
         rawMessages.push({
@@ -2419,6 +2517,15 @@ function convertResponsesToAnthropicPayload(body) {
         input_schema: inputSchema
       };
     }).filter(t => Boolean(t.name));
+  }
+
+  if (compressionOptions && compressionOptions.enabled !== false) {
+    try {
+      return contextCompactor.compactAnthropicPayload(payload, compressionOptions, sessionId);
+    } catch (err) {
+      console.warn('[CodexAdapter] Anthropic payload compression failed, bypassing safely:', err.message);
+      return payload;
+    }
   }
 
   return payload;
@@ -2513,14 +2620,26 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       });
     }
     for (const rec of toolCallsMap.values()) {
-      finalOutput.push({
-        id: rec.id,
-        type: 'function_call',
-        name: rec.name,
-        call_id: rec.id,
-        arguments: rec.args,
-        status: 'completed'
-      });
+      if (rec.isCustomTool || rec.name === 'apply_patch') {
+        const cleanInput = extractPatchInput(rec.args);
+        finalOutput.push({
+          id: rec.id,
+          type: 'custom_tool_call',
+          name: rec.name || 'apply_patch',
+          call_id: rec.id,
+          input: cleanInput,
+          status: 'completed'
+        });
+      } else {
+        finalOutput.push({
+          id: rec.id,
+          type: 'function_call',
+          name: rec.name,
+          call_id: rec.id,
+          arguments: rec.args,
+          status: 'completed'
+        });
+      }
     }
     return finalOutput;
   };
@@ -2691,14 +2810,24 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             const tcOutIdx = outputIndex++;
             const callId = cb.id || `call_${Date.now()}_${bIdx}`;
             const funcName = cb.name || 'custom_tool';
-            const rec = { id: callId, name: funcName, args: '', outIdx: tcOutIdx };
+            const isCustomTool = (funcName === 'apply_patch');
+            const rec = { id: callId, name: funcName, args: '', outIdx: tcOutIdx, isCustomTool };
             toolCallsMap.set(bIdx, rec);
-            sendEvent('response.output_item.added', {
-              type: 'response.output_item.added',
-              sequence_number: seq++,
-              output_index: tcOutIdx,
-              item: { id: callId, type: 'function_call', name: funcName, call_id: callId, arguments: '' }
-            });
+            if (isCustomTool) {
+              sendEvent('response.output_item.added', {
+                type: 'response.output_item.added',
+                sequence_number: seq++,
+                output_index: tcOutIdx,
+                item: { id: callId, type: 'custom_tool_call', name: funcName, call_id: callId, input: '' }
+              });
+            } else {
+              sendEvent('response.output_item.added', {
+                type: 'response.output_item.added',
+                sequence_number: seq++,
+                output_index: tcOutIdx,
+                item: { id: callId, type: 'function_call', name: funcName, call_id: callId, arguments: '' }
+              });
+            }
           }
         } else if (evType === 'content_block_delta') {
           const delta = parsed.delta;
@@ -2718,32 +2847,58 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             const rec = toolCallsMap.get(bIdx);
             if (rec) {
               rec.args += delta.partial_json;
-              sendEvent('response.function_call_arguments.delta', {
-                type: 'response.function_call_arguments.delta',
-                sequence_number: seq++,
-                output_index: rec.outIdx,
-                call_id: rec.id,
-                delta: delta.partial_json
-              });
+              if (!rec.isCustomTool && rec.name !== 'apply_patch') {
+                sendEvent('response.function_call_arguments.delta', {
+                  type: 'response.function_call_arguments.delta',
+                  sequence_number: seq++,
+                  output_index: rec.outIdx,
+                  call_id: rec.id,
+                  delta: delta.partial_json
+                });
+              }
             }
           }
         } else if (evType === 'content_block_stop') {
           const bIdx = parsed.index ?? 0;
           const rec = toolCallsMap.get(bIdx);
           if (rec) {
-            sendEvent('response.function_call_arguments.done', {
-              type: 'response.function_call_arguments.done',
-              sequence_number: seq++,
-              output_index: rec.outIdx,
-              call_id: rec.id,
-              arguments: rec.args
-            });
-            sendEvent('response.output_item.done', {
-              type: 'response.output_item.done',
-              sequence_number: seq++,
-              output_index: rec.outIdx,
-              item: { id: rec.id, type: 'function_call', name: rec.name, call_id: rec.id, arguments: rec.args, status: 'completed' }
-            });
+            if (rec.isCustomTool || rec.name === 'apply_patch') {
+              const cleanInput = extractPatchInput(rec.args);
+              sendEvent('response.custom_tool_call_input.delta', {
+                type: 'response.custom_tool_call_input.delta',
+                sequence_number: seq++,
+                output_index: rec.outIdx,
+                call_id: rec.id,
+                delta: cleanInput
+              });
+              sendEvent('response.custom_tool_call_input.done', {
+                type: 'response.custom_tool_call_input.done',
+                sequence_number: seq++,
+                output_index: rec.outIdx,
+                call_id: rec.id,
+                input: cleanInput
+              });
+              sendEvent('response.output_item.done', {
+                type: 'response.output_item.done',
+                sequence_number: seq++,
+                output_index: rec.outIdx,
+                item: { id: rec.id, type: 'custom_tool_call', name: rec.name || 'apply_patch', call_id: rec.id, input: cleanInput, status: 'completed' }
+              });
+            } else {
+              sendEvent('response.function_call_arguments.done', {
+                type: 'response.function_call_arguments.done',
+                sequence_number: seq++,
+                output_index: rec.outIdx,
+                call_id: rec.id,
+                arguments: rec.args
+              });
+              sendEvent('response.output_item.done', {
+                type: 'response.output_item.done',
+                sequence_number: seq++,
+                output_index: rec.outIdx,
+                item: { id: rec.id, type: 'function_call', name: rec.name, call_id: rec.id, arguments: rec.args, status: 'completed' }
+              });
+            }
           }
         } else if (evType === 'message_delta' && parsed.usage?.output_tokens) {
           if (!collectedUsage) collectedUsage = {};
@@ -3068,6 +3223,7 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
   } catch (e) {}
 
   let isBound = false;
+  let hasStreamIdleTimeout = false;
   let currentModel = null;
   let currentProvider = null;
   let currentReasoningEffort = null;
@@ -3571,6 +3727,14 @@ function restoreCodexConfig(codexDirOverride = null, options = {}) {
 function restartCodex(options = {}) {
   const isWin = process.platform === 'win32';
   const messages = [];
+
+  if (options && options.dryRun) {
+    return {
+      success: true,
+      restarted: true,
+      messages: ['Dry-run 模式：跳过实际进程终止与应用重启']
+    };
+  }
 
   if (isWin) {
     try {
@@ -4470,5 +4634,28 @@ module.exports = {
   checkCodexLocaleAndEnvironment,
   repairCodexLocaleAndEnvironment,
   resolveCompatibleFallbackModel,
-  sanitizeAndValidateChatMessages
+  sanitizeAndValidateChatMessages,
+  extractPatchInput,
+  contextCompactor,
+  compactChatPayload: contextCompactor.compactChatPayload,
+  compactAnthropicPayload: contextCompactor.compactAnthropicPayload,
+  compactResponsesPayload: contextCompactor.compactResponsesPayload,
+  compactText: contextCompactor.compactText,
+  stripAnsi: contextCompactor.stripAnsi,
+  cleanProgressBars: contextCompactor.cleanProgressBars,
+  foldLockfiles: contextCompactor.foldLockfiles,
+  foldTestPasses: contextCompactor.foldTestPasses,
+  alignToolsSchema: contextCompactor.alignToolsSchema,
+  slimToolsSchema: contextCompactor.slimToolsSchema,
+  cleanDockerOutput: contextCompactor.cleanDockerOutput,
+  cleanTerraformOutput: contextCompactor.cleanTerraformOutput,
+  cleanKubectlOutput: contextCompactor.cleanKubectlOutput,
+  registerTransformer: contextCompactor.registerTransformer,
+  unregisterTransformer: contextCompactor.unregisterTransformer,
+  runPipeline: contextCompactor.runPipeline,
+  getOptionsSignature: contextCompactor.getOptionsSignature,
+  normalizeCompressionOptions: contextCompactor.normalizeCompressionOptions,
+  getCompressionStats: contextCompactor.getCompressionStats,
+  resetCompressionStats: contextCompactor.resetCompressionStats,
+  COMPRESSION_PRESETS: contextCompactor.COMPRESSION_PRESETS
 };
