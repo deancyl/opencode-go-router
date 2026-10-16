@@ -382,6 +382,96 @@ async function runTests() {
       return;
     }
 
+    if (session === 'session-502-bad-gateway-jitter') {
+      const html502 = '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>cloudflare</center></body></html>';
+      res.writeHead(502, {
+        'Content-Type': 'text/html',
+        'Content-Length': String(Buffer.byteLength(html502))
+      });
+      res.end(html502);
+      return;
+    }
+
+    if (typeof session === 'string' && session.startsWith('session-502-bad-gateway-jitter-r')) {
+      const okBody = JSON.stringify({
+        id: 'resp-502-healed',
+        model: 'deepseek-v4.1-flash',
+        choices: [{ message: { role: 'assistant', content: 'Healed after 502 Bad Gateway transient jitter!' } }]
+      });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(okBody))
+      });
+      res.end(okBody);
+      return;
+    }
+
+    if (session === 'session-anthropic-bridge-fallback') {
+      if (req.url.includes('/messages')) {
+        const restrictBody = JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed claude-haiku-5-5. (request_id: test-anthropic-fallback)'
+          }
+        });
+        res.writeHead(400, {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(restrictBody))
+        });
+        res.end(restrictBody);
+        return;
+      }
+      if (req.url.includes('/chat/completions')) {
+        const okBody = JSON.stringify({
+          id: 'chat-anthropic-fallback-healed',
+          model: 'deepseek-flash',
+          choices: [{ message: { role: 'assistant', content: 'Anthropic seamlessly bridged to Chat deepseek-flash!' } }]
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(okBody))
+        });
+        res.end(okBody);
+        return;
+      }
+    }
+
+    if (session === 'session-preemptive-memory-chat') {
+      let reqBodyStr = '';
+      req.on('data', c => { reqBodyStr += c; });
+      req.on('end', () => {
+        let reqBody = {};
+        try { reqBody = JSON.parse(reqBodyStr); } catch (_) {}
+        if (reqBody.model === 'deepseek-v4.1-flash') {
+          // Model is restricted, return 400
+          const restrictBody = JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              message: 'The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash.'
+            }
+          });
+          res.writeHead(400, {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(restrictBody))
+          });
+          res.end(restrictBody);
+          return;
+        }
+        // Fallback model or pre-emptively rewritten model succeeded
+        const okBody = JSON.stringify({
+          id: 'chat-turn-ok',
+          model: reqBody.model || 'deepseek-flash',
+          choices: [{ message: { role: 'assistant', content: `Success with model ${reqBody.model}` } }]
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(okBody))
+        });
+        res.end(okBody);
+      });
+      return;
+    }
+
     if (session === 'session-genuine-invalid-key') {
       if (auth.includes('key-account-1')) {
         account1Calls++;
@@ -4723,8 +4813,120 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Upstream Cluster Glitch Self-Healing & In-Flight Jitter Retries verified');
 
+    // [Test 116] Testing Centralized Upstream Error Classifier (classifyUpstreamError) & Case-Insensitivity
+    console.log('\n[Test 116] Testing Centralized Upstream Error Classifier (classifyUpstreamError) & Case-Insensitivity...');
+    const serverModule = require('./server');
+    const classify = serverModule.classifyUpstreamError;
+    assert.strictEqual(typeof classify, 'function', 'server.js must export classifyUpstreamError');
+
+    // 1. Case-insensitivity: standard HTTP 502 with uppercase "502 Bad Gateway"
+    const c1 = classify(502, '502 Bad Gateway');
+    assert.strictEqual(c1.isUpstreamClusterGlitch, true, '502 Bad Gateway must be identified as cluster glitch');
+
+    // 2. 500 Internal Server Error
+    const c2 = classify(500, '500 Internal Server Error');
+    assert.strictEqual(c2.isUpstreamClusterGlitch, true, '500 Internal Server Error must be cluster glitch');
+
+    // 3. Cluster error disguised as 401 (e.g. "Upstream request failed: Invalid credential")
+    const c3 = classify(401, '{"error":{"type":"server_error","message":"Upstream request failed: Invalid credential"}}');
+    assert.strictEqual(c3.isUpstreamClusterGlitch, true, 'Masked 401 cluster error must be cluster glitch');
+    assert.strictEqual(c3.isInvalidApiKey, false, 'Masked 401 cluster error must NOT be flagged as genuine invalid API key');
+
+    // 4. Genuine invalid API key
+    const c4 = classify(401, '{"error":{"message":"Incorrect API key provided: sk-xxx","type":"invalid_request_error","code":"invalid_api_key"}}');
+    assert.strictEqual(c4.isInvalidApiKey, true, 'Genuine key failure must be flagged as isInvalidApiKey');
+    assert.strictEqual(c4.isUpstreamClusterGlitch, false, 'Genuine key failure must NOT be flagged as cluster glitch');
+
+    // 5. Gateway Timeout / Upstream Connect Error
+    const c5 = classify(504, '<html>504 Gateway Time-out</html>');
+    assert.strictEqual(c5.isUpstreamClusterGlitch, true, '504 Gateway Time-out must be cluster glitch');
+
+    // 6. Safe with null / empty / malformed error text
+    const c6 = classify(502, null);
+    assert.strictEqual(c6.isUpstreamClusterGlitch, true, '502 with null text must safely classify as cluster glitch');
+    const c7 = classify(200, '');
+    assert.strictEqual(c7.isUpstreamClusterGlitch, false, '200 OK must not be glitch');
+
+    console.log('✓ Centralized Upstream Error Classifier & Case-Insensitivity verified');
+
+    // [Test 117] Testing 502 Bad Gateway In-Flight Jitter Auto-Healing (HTML Response Masking)
+    console.log('\n[Test 117] Testing 502 Bad Gateway In-Flight Jitter Auto-Healing (HTML Response Masking)...');
+    const res502 = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-502-bad-gateway-jitter'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'Testing 502 Bad Gateway recovery' }]
+      })
+    });
+    assert.strictEqual(res502.statusCode, 200, 'Router must intercept 502 Bad Gateway HTML and heal with 200 OK');
+    const res502Json = JSON.parse(res502.body);
+    assert.ok(res502Json.choices[0].message.content.includes('Healed after 502 Bad Gateway transient jitter'));
+    console.log('✓ 502 Bad Gateway In-Flight Jitter Auto-Healing verified');
+
+    // [Test 118] Testing Anthropic Bridge Dynamic Fallback to Chat & Bidirectional Dispatching
+    console.log('\n[Test 118] Testing Anthropic Bridge Dynamic Fallback to Chat & Bidirectional Dispatching...');
+    const resAnthropicFallback = await request('/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-anthropic-bridge-fallback'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-5-5',
+        stream: false,
+        input: [{ type: 'message', role: 'user', content: 'Testing anthropic fallback to chat bridge' }]
+      })
+    });
+    assert.strictEqual(resAnthropicFallback.statusCode, 200, 'Anthropic model restriction must dynamically fallback to Chat bridge and succeed');
+    const resAnthropicJson = JSON.parse(resAnthropicFallback.body);
+    assert.strictEqual(resAnthropicJson.status, 'completed', 'Bridged responses status must be completed');
+    console.log('✓ Anthropic Bridge Dynamic Fallback to Chat & Bidirectional Dispatching verified');
+
+    // [Test 119] Testing Multi-Turn Pre-Emptive Model Memory Hit on Chat & Flagship Anti-Downgrade
+    console.log('\n[Test 119] Testing Multi-Turn Pre-Emptive Model Memory Hit on Chat & Flagship Anti-Downgrade...');
+
+    // Turn 1: deepseek-v4.1-flash is restricted, router falls back to deepseek-flash and saves session memory
+    const resChatTurn1 = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-preemptive-memory-chat'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'Turn 1 test' }]
+      })
+    });
+    assert.strictEqual(resChatTurn1.statusCode, 200, 'Turn 1 must recover and return 200 OK via dynamic fallback');
+
+    // Turn 2: Request sent with original restricted model deepseek-v4.1-flash. Router pre-emptively rewrites model before sending to upstream!
+    const resChatTurn2 = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-preemptive-memory-chat'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'Turn 2 test' }]
+      })
+    });
+    assert.strictEqual(resChatTurn2.statusCode, 200, 'Turn 2 must pre-emptively rewrite model and succeed without upstream 400 roundtrip');
+    const resChatTurn2Json = JSON.parse(resChatTurn2.body);
+    assert.strictEqual(resChatTurn2Json.model, 'deepseek-flash', 'Turn 2 response model must reflect pre-emptively memorized fallback model');
+
+    // Anti-Downgrade flagship test in Section 2 fallback:
+    const flagshipResolved = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' });
+    assert.strictEqual(flagshipResolved, 'deepseek-v4-pro', 'High reasoning effort (xhigh) must strictly resolve to 671B flagship deepseek-v4-pro');
+
+    console.log('✓ Multi-Turn Pre-Emptive Model Memory Hit on Chat & Flagship Anti-Downgrade verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 115 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 119 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

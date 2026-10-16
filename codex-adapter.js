@@ -1043,6 +1043,9 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   }
 
   // 2. Heuristic rules when candidate list is absent from error text
+  if (options.preferFlagship || options.reasoningEffort === 'xhigh') {
+    return 'deepseek-v4-pro';
+  }
   if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash') {
     return 'deepseek-flash';
   }
@@ -1055,10 +1058,17 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   if (cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-')) {
     return 'deepseek-v4-pro';
   }
+  if (cleanReq.startsWith('claude-')) {
+    if (cleanReq.includes('haiku') || cleanReq.includes('flash')) return 'deepseek-flash';
+    return 'deepseek-v4-pro';
+  }
   if (cleanReq.startsWith('kimi-')) {
     return 'kimi-k3';
   }
   if (cleanReq.startsWith('glm')) {
+    if (cleanReq.includes('flash') || cleanReq.includes('speed') || cleanReq.includes('mini')) {
+      return 'deepseek-flash';
+    }
     return cleanReq === 'glm-5.3' ? 'glm-5.2' : 'glm-5.3';
   }
   if (cleanReq.startsWith('qwen')) {
