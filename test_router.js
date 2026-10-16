@@ -379,7 +379,6 @@ async function runTests() {
   };
   fs.writeFileSync(testConfigFile, JSON.stringify(testConfig, null, 2), 'utf8');
 
-  // Spawn router process with isolated config
   const routerProc = fork(path.join(__dirname, 'server.js'), [], {
     stdio: 'pipe',
     env: {
@@ -389,6 +388,11 @@ async function runTests() {
       OPENCODE_SNAPSHOTS_DIR: testSnapshotsDir,
       PORT: String(routerPort)
     }
+  });
+
+  routerProc.stdout.on('data', () => {});
+  routerProc.stderr.on('data', (d) => {
+    if (process.env.DEBUG_ROUTER) process.stderr.write(d);
   });
 
   await new Promise(resolve => setTimeout(resolve, 1500));
@@ -3100,9 +3104,6 @@ $ProgressPreference = 'SilentlyContinue'
     if (fs.existsSync(testSnapshotsDir)) {
       try { fs.rmSync(testSnapshotsDir, { recursive: true, force: true }); } catch (e) {}
     }
-    try {
-      codexAdapter.restoreCodexConfig();
-    } catch (e) {}
   }
 }
 

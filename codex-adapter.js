@@ -986,7 +986,7 @@ const MODEL_COMPATIBILITY_ALIASES = {
  * an unsupported model or restricted model list.
  * e.g. "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash."
  */
-function resolveCompatibleFallbackModel(reqModel, errText = '') {
+function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   if (typeof errText !== 'string') errText = '';
   const cleanReq = (reqModel || '').toLowerCase().trim();
 
@@ -999,6 +999,12 @@ function resolveCompatibleFallbackModel(reqModel, errText = '') {
       .filter(s => s && /^[a-zA-Z0-9_.-]+$/.test(s) && s.toLowerCase() !== cleanReq);
 
     if (candidates.length > 0) {
+      // 1.0 Flagship preference guard: If xhigh reasoning effort or flagship preference is explicitly set, prioritize pro/max
+      if (options.preferFlagship || options.reasoningEffort === 'xhigh') {
+        const proHit = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('max'));
+        if (proHit) return proHit;
+      }
+
       // 1.1 Pro/Advanced reasoning models (gpt-*, o1/o3, grok-*, claude-*, deepseek-v4-pro, etc.)
       const isProOrAdvanced = cleanReq.includes('pro') || cleanReq.includes('max') || cleanReq.includes('luna') || 
         cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-') || cleanReq.startsWith('claude-');
@@ -3970,6 +3976,176 @@ Write-Output $resumed
   }
 }
 
+const CODEX_ZHCN_TRANSLATE_SCRIPT = `// ==UserScript==
+// @name         Codex简体中文汉化
+// @namespace    codex-plus-plus
+// @version      2.0.0
+// @description  Codex客户端全界面高保真深度简体中文汉化补丁（支持顶部菜单、侧边栏导航与浮动工具栏）
+// @author       OpenCode-Router
+// @match        app://-/*
+// @match        *://*/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+
+(() => {
+  "use strict";
+
+  const INSTALL_KEY = "__codexZhCnTranslateInstalled";
+  if (window[INSTALL_KEY]) return;
+  window[INSTALL_KEY] = true;
+
+  const EXACT_MAP = new Map([
+    ["File", "文件"],
+    ["Edit", "编辑"],
+    ["View", "视图"],
+    ["Help", "帮助"],
+    ["New chat", "新聊天"],
+    ["Scheduled", "定时任务"],
+    ["Plugins", "插件"],
+    ["Explore", "探索"],
+    ["Projects", "项目"],
+    ["New Project...", "新建项目..."],
+    ["New Project…", "新建项目…"],
+    ["New Project", "新建项目"],
+    ["Open Folder...", "打开文件夹..."],
+    ["Open Folder…", "打开文件夹…"],
+    ["Open Folder", "打开文件夹"],
+    ["Close", "关闭"],
+    ["Log out", "退出登录"],
+    ["Log Out", "退出登录"],
+    ["Settings", "设置"],
+    ["Preferences", "偏好设置"],
+    ["Keyboard Shortcuts", "快捷键"],
+    ["Documentation", "官方文档"],
+    ["Release Notes", "更新日志"],
+    ["Ask for changes", "请求修改"],
+    ["Ask for selection edit", "行内微调"],
+    ["Accept", "接受"],
+    ["Reject", "拒绝"],
+    ["Apply", "应用"],
+    ["Discard", "放弃"],
+    ["Diff", "差异对比"],
+    ["Revert", "还原"],
+    ["Keep", "保留"],
+    ["Reasoning effort", "思考等级"],
+    ["Reasoning", "思考推导"],
+    ["Temporary chat", "临时聊天"],
+    ["Attach files", "添加附件"],
+    ["Send message", "发送消息"],
+    ["Cancel generation", "停止生成"],
+    ["Stop generating", "停止生成"],
+    ["Delete", "删除"],
+    ["Cancel", "取消"],
+    ["Save", "保存"],
+    ["Export", "导出"],
+    ["Confirm", "确认"],
+    ["Retry", "重试"],
+    ["Model", "模型"],
+    ["API Key", "API 密钥"]
+  ]);
+
+  function shouldIgnore(el) {
+    if (!el || !(el instanceof Element)) return true;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "code" || tag === "pre" || tag === "input" || tag === "textarea" || tag === "script" || tag === "style") return true;
+    if (el.isContentEditable) return true;
+    if (el.closest("pre, code, textarea, input, .monaco-editor, [contenteditable='true']")) return true;
+    return false;
+  }
+
+  function translateNode(node) {
+    if (!node) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent?.trim();
+      if (!text) return;
+      const parent = node.parentElement;
+      if (shouldIgnore(parent)) return;
+      if (EXACT_MAP.has(text)) {
+        node.textContent = node.textContent.replace(text, EXACT_MAP.get(text));
+      }
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      if (shouldIgnore(node)) return;
+      const ariaLabel = node.getAttribute("aria-label");
+      if (ariaLabel && EXACT_MAP.has(ariaLabel.trim())) {
+        node.setAttribute("aria-label", EXACT_MAP.get(ariaLabel.trim()));
+      }
+      const title = node.getAttribute("title");
+      if (title && EXACT_MAP.has(title.trim())) {
+        node.setAttribute("title", EXACT_MAP.get(title.trim()));
+      }
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === Node.TEXT_NODE) translateNode(child);
+      }
+    }
+  }
+
+  function scanAndTranslate(root = document.body) {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_SKIP;
+        if (shouldIgnore(node.parentElement)) return NodeFilter.FILTER_REJECT;
+        const text = node.textContent.trim();
+        return EXACT_MAP.has(text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      }
+    });
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      const text = textNode.textContent.trim();
+      if (EXACT_MAP.has(text)) {
+        textNode.textContent = textNode.textContent.replace(text, EXACT_MAP.get(text));
+      }
+    }
+    const labeledElements = root.querySelectorAll("[aria-label], [title]");
+    labeledElements.forEach(el => {
+      if (shouldIgnore(el)) return;
+      const aria = el.getAttribute("aria-label");
+      if (aria && EXACT_MAP.has(aria.trim())) el.setAttribute("aria-label", EXACT_MAP.get(aria.trim()));
+      const t = el.getAttribute("title");
+      if (t && EXACT_MAP.has(t.trim())) el.setAttribute("title", EXACT_MAP.get(t.trim()));
+    });
+  }
+
+  let debounceTimer = null;
+  const observer = new MutationObserver((mutations) => {
+    let needsScan = false;
+    for (const m of mutations) {
+      if (m.type === "childList" && m.addedNodes.length > 0) {
+        for (const added of m.addedNodes) {
+          if (added.nodeType === Node.ELEMENT_NODE) {
+            if (!shouldIgnore(added)) { needsScan = true; break; }
+          } else if (added.nodeType === Node.TEXT_NODE) {
+            translateNode(added);
+          }
+        }
+      } else if (m.type === "characterData") {
+        translateNode(m.target);
+      }
+      if (needsScan) break;
+    }
+    if (needsScan) {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => scanAndTranslate(), 50);
+    }
+  });
+
+  function init() {
+    if (document.body) {
+      scanAndTranslate();
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } else {
+      document.addEventListener("DOMContentLoaded", () => {
+        scanAndTranslate();
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      });
+    }
+  }
+
+  init();
+})();
+`;
+
 /**
  * Checks Simplified Chinese locale alignment and port conflict immunity for Codex
  */
@@ -4037,6 +4213,7 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   }
 
   let hasCodexPlusPortConflict = false;
+  let missingCodexPlusZhScript = false;
   if (process.platform === 'win32') {
     const codexPlusDir = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Codex++');
     const watcherLnk = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'CodexPlusPlusWatcher.lnk');
@@ -4046,6 +4223,16 @@ function checkCodexLocaleAndEnvironment(options = {}) {
       if (!portEnv || portEnv === '4010') {
         hasCodexPlusPortConflict = true;
       }
+    }
+
+    const codexPlusUserScript = path.join(process.env.APPDATA || '', 'Codex++', 'user_scripts', 'market-codex-zhcn-translate.js');
+    if (fs.existsSync(codexPlusUserScript)) {
+      try {
+        const scriptContent = fs.readFileSync(codexPlusUserScript, 'utf8');
+        if (!scriptContent.includes('app://-/*') || scriptContent.includes('document.createObserver')) {
+          missingCodexPlusZhScript = true;
+        }
+      } catch (_) {}
     }
   }
 
@@ -4065,6 +4252,9 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   if (hasCodexPlusPortConflict) {
     issues.push('Codex++ 汉化注入工具默认侦听 4010 端口与本地智能网关冲突，导致汉化插件闪退');
   }
+  if (missingCodexPlusZhScript) {
+    issues.push('Codex++ 界面汉化脚本存在语法错误或匹配失效，一键修复即可自动升级为最新高保真汉化补丁');
+  }
 
   return {
     healthy: issues.length === 0,
@@ -4074,6 +4264,7 @@ function checkCodexLocaleAndEnvironment(options = {}) {
     missingChromiumLocale,
     missingModelInstructions,
     hasCodexPlusPortConflict,
+    missingCodexPlusZhScript,
     issues
   };
 }
@@ -4186,22 +4377,26 @@ function repairCodexLocaleAndEnvironment(options = {}) {
   try {
     const catalogPath = path.join(codexDir, 'model-catalogs', 'opencode-go-catalog.json');
     const modelsPath = path.join(codexDir, 'models.json');
-    const chineseNotice = '\n\n# 语言规范\n无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n';
+    const chineseNotice = '\n\n# 语言规范与任务自主执行铁律\n' +
+      '1. 无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n' +
+      '2. 严禁计划中途早熟停机：若在回复中制定了多步骤任务规划（例如 Step 1/N 到 Step N/N），必须严格自主推进并执行完毕，严禁中途（如 Step 2/N）无故停机交还控制权。\n' +
+      '3. 遇到执行报错或脚本异常时，必须自主分析错误原因并调用工具尝试替代方案解决，严禁输出半截话、未闭合括号或未闭合反引号直接终止。\n' +
+      '4. 回复必须保持语法结构与代码块完整闭合。\n';
 
     if (fs.existsSync(catalogPath)) {
       const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
       let modified = false;
       if (Array.isArray(cat.models)) {
         cat.models.forEach(m => {
-          if (!m.base_instructions || !m.base_instructions.includes('简体中文')) {
-            m.base_instructions = (m.base_instructions || '') + chineseNotice;
+          if (!m.base_instructions || !m.base_instructions.includes('严禁计划中途早熟停机')) {
+            m.base_instructions = (m.base_instructions || '').replace(/\n\n# 语言规范[\s\S]*$/, '') + chineseNotice;
             modified = true;
           }
         });
       }
       if (modified) {
         fs.writeFileSync(catalogPath, JSON.stringify(cat, null, 2), 'utf8');
-        messages.push('已为 opencode-go-catalog.json 补齐简体中文思考与回答规范');
+        messages.push('已为 opencode-go-catalog.json 补齐简体中文思考、自主执行与防早熟停机规范');
       }
     }
 
@@ -4210,18 +4405,37 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       let modified = false;
       if (Array.isArray(mData.models)) {
         mData.models.forEach(m => {
-          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('简体中文'))) {
-            m.base_instructions = (m.base_instructions || '') + chineseNotice;
+          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('严禁计划中途早熟停机'))) {
+            m.base_instructions = (m.base_instructions || '').replace(/\n\n# 语言规范[\s\S]*$/, '') + chineseNotice;
             modified = true;
           }
         });
       }
       if (modified) {
         fs.writeFileSync(modelsPath, JSON.stringify(mData, null, 2), 'utf8');
-        messages.push('已为 models.json 补齐简体中文思考与回答规范');
+        messages.push('已为 models.json 补齐简体中文思考、自主执行与防早熟停机规范');
       }
     }
   } catch (_) {}
+
+  // 5. Deploy / Repair Codex++ Chinese translation user script
+  try {
+    const codexPlusDir = path.join(process.env.APPDATA || '', 'Codex++', 'user_scripts');
+    if (fs.existsSync(codexPlusDir)) {
+      const scriptPath = path.join(codexPlusDir, 'market-codex-zhcn-translate.js');
+      let needWrite = true;
+      if (fs.existsSync(scriptPath)) {
+        const cur = fs.readFileSync(scriptPath, 'utf8');
+        if (cur === CODEX_ZHCN_TRANSLATE_SCRIPT) needWrite = false;
+      }
+      if (needWrite) {
+        fs.writeFileSync(scriptPath, CODEX_ZHCN_TRANSLATE_SCRIPT, 'utf8');
+        messages.push('已自动升级 Codex++ 全界面高保真简体中文汉化脚本 (market-codex-zhcn-translate.js)');
+      }
+    }
+  } catch (err) {
+    messages.push(`Codex++ 汉化脚本修复提醒: ${err.message}`);
+  }
 
   return { success: true, messages };
 }

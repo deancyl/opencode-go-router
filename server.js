@@ -816,8 +816,9 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           errText.includes('max_tokens')
         );
 
-        if (isContextLengthExceeded) {
-          const originalModel = parsedBody.model || 'unknown';
+        const originalModel = (parsedBody && parsedBody.model) || 'unknown';
+
+        if (isContextLengthExceeded && parsedBody && attemptNumber <= config.maxFailoverRetries) {
           console.warn(`[Auto Self-Healing] 模型 "${originalModel}" 触发上下文长度超限 (context_length_exceeded)。网关正在执行智能滑动窗口裁剪自愈...`);
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
@@ -839,10 +840,14 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           return;
         }
 
-        if (isRegionBlocked || isProtocolUnsupported || isModelUnsupported) {
-          const originalModel = parsedBody.model || 'unknown';
-          const targetFallback = codexAdapter.resolveCompatibleFallbackModel(originalModel, errText);
+        if ((isRegionBlocked || isProtocolUnsupported || isModelUnsupported) && parsedBody && attemptNumber <= config.maxFailoverRetries) {
+          const eff = parsedBody?.reasoning_effort || parsedBody?.reasoning?.effort;
+          const targetFallback = codexAdapter.resolveCompatibleFallbackModel(originalModel, errText, { reasoningEffort: eff });
           if (targetFallback && targetFallback !== originalModel) {
+            if (sessionId && originalModel) {
+              const cleanReq = originalModel.replace(/^opencode-go\//, '');
+              sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, targetFallback);
+            }
             let reason = 'OpenAI 地域封锁 (unsupported_country_region_territory)';
             if (isProtocolUnsupported) reason = '上游协议不兼容 (ModelProtocolUnsupported)';
             else if (isModelUnsupported) reason = '上游节点模型限制 (Model Not Supported on Node)';
@@ -1149,7 +1154,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         }
 
         if ((isProtocolUnsupported || isRegionBlocked || isModelUnsupported) && attemptNumber <= config.maxFailoverRetries) {
-          const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText);
+          const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+          const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText, { reasoningEffort: eff });
           if (fallbackModel && fallbackModel !== reqModel) {
             if (sessionId && reqModel) {
               const cleanReq = reqModel.replace(/^opencode-go\//, '');
