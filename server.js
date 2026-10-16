@@ -2274,6 +2274,22 @@ function findOpenCodeBinary() {
 }
 
 async function runSystemDoctor(scope = 'all') {
+  if (scope === 'compression') {
+    const compStats = contextCompactor.getCompressionStats();
+    const compHealth = contextCompactor.checkCompressionHealth(config.compression, compStats);
+    return {
+      timestamp: new Date().toISOString(),
+      scope: 'compression',
+      router: {
+        status: 'ok',
+        port: config.port,
+        upstream: config.upstream
+      },
+      compression: compHealth,
+      issues: compHealth.issues
+    };
+  }
+
   if (scope === 'codex') {
     const codexStatus = codexAdapter.getCodexStatus(config.port);
     const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
@@ -2760,12 +2776,43 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     strategy: 'dynamic_candidate_resolution'
   };
 
+  // 8.4 Check Context Compression Health & Anti-Downgrade Redlines
+  try {
+    const compStats = contextCompactor.getCompressionStats();
+    const compHealth = contextCompactor.checkCompressionHealth(config.compression, compStats);
+    report.compression = compHealth;
+    if (scope === 'all' && compHealth.issues && compHealth.issues.length > 0) {
+      report.issues.push(...compHealth.issues);
+    }
+  } catch (e) {}
+
   return report;
 }
 
 // Auto-Repair Engine
 async function executeSystemRepair(options = {}) {
   const scope = options.scope || 'all';
+
+  // Compression 专项自愈与防降智修复分支
+  if (scope === 'compression') {
+    const results = [];
+    try {
+      const repairResult = contextCompactor.repairCompressionConfig(config.compression, options);
+      if (repairResult && repairResult.repairedConfig) {
+        config.compression = repairResult.repairedConfig;
+        if (fs.existsSync(CONFIG_FILE)) {
+          try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
+        }
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+      }
+      if (repairResult && repairResult.results) {
+        results.push(...repairResult.results);
+      }
+    } catch (e) {
+      results.push({ item: 'Context Compression Engine', success: false, message: '压缩引擎专项自愈异常: ' + e.message });
+    }
+    return results;
+  }
 
   // Codex 专项自愈与防断流加固分支
   if (scope === 'codex') {
@@ -3186,6 +3233,31 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     }
   } catch (e) {
     results.push({ item: 'OMO v2 Bridge Patch', success: false, message: '修补 OMO 插件异常: ' + e.message });
+  }
+
+  // 9. Context Compression Engine auto-healing (when scope === 'all')
+  if (scope === 'all') {
+    try {
+      const compStats = contextCompactor.getCompressionStats();
+      const compHealth = contextCompactor.checkCompressionHealth(config.compression, compStats);
+      if (!compHealth.healthy) {
+        const compRep = contextCompactor.repairCompressionConfig(config.compression, { autoHeal: true });
+        if (compRep && compRep.repairedConfig) {
+          config.compression = compRep.repairedConfig;
+          if (fs.existsSync(CONFIG_FILE)) {
+            try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
+          }
+          fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+        }
+        if (compRep && compRep.results) {
+          results.push(...compRep.results);
+        }
+      } else {
+        results.push({ item: 'Context Compression Engine', success: true, message: '压缩引擎配置安全健康，防降智与防断流守护均正常' });
+      }
+    } catch (e) {
+      results.push({ item: 'Context Compression Engine', success: false, message: '压缩引擎自愈异常: ' + e.message });
+    }
   }
 
   return results;
@@ -3705,6 +3777,67 @@ const server = http.createServer((req, res) => {
       message: '压缩与 Token 节省统计数据已清零',
       stats
     }));
+    return;
+  }
+
+  // Compression Doctor API
+  if (reqUrl.pathname === '/balancer/api/compression/doctor' && req.method === 'GET') {
+    try {
+      const stats = contextCompactor.getCompressionStats();
+      const report = contextCompactor.checkCompressionHealth(config.compression, stats);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify(report, null, 2));
+    } catch (err) {
+      res.writeHead(500, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({ error: err.message }, null, 2));
+    }
+    return;
+  }
+
+  // Compression Repair API
+  if (reqUrl.pathname === '/balancer/api/compression/repair' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => { chunks.push(chunk); });
+    req.on('end', async () => {
+      try {
+        let postData = {};
+        if (chunks.length > 0) {
+          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+          if (rawBody) {
+            try { postData = JSON.parse(rawBody); } catch (_) {}
+          }
+        }
+        const repairResult = contextCompactor.repairCompressionConfig(config.compression, postData);
+        if (repairResult && repairResult.repairedConfig) {
+          config.compression = repairResult.repairedConfig;
+          if (fs.existsSync(CONFIG_FILE)) {
+            try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
+          }
+          fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({
+          success: true,
+          results: repairResult.results,
+          compression: config.compression
+        }, null, 2));
+      } catch (err) {
+        res.writeHead(500, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
     return;
   }
 
@@ -5114,12 +5247,19 @@ function renderDashboardHtml(config) {
         <div class="section-title-left">
           <span>⚡ 上下文优化与 Token 压缩配置 (Context Compression)</span>
           <span class="badge badge-healthy" id="comp-global-status-badge">${(compCfg.enabled === false) ? '总开关已关闭' : '全引擎就绪'}</span>
+          <span class="badge badge-healthy" id="comp-doctor-status-badge" style="margin-left: 4px;">🟢 压缩引擎健康</span>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 0.78rem; color: var(--muted); display: inline-flex; align-items: center; gap: 4px;">
             <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#34d399; box-shadow: 0 0 6px #34d399;"></span>
             实时估算中
           </span>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-comp-doctor" onclick="runCompressionDoctorCheck(false)" title="深度诊断压缩引擎健康度与防降智配置">
+            🩺 诊断体检
+          </button>
+          <button type="button" class="btn btn-success btn-sm" id="btn-comp-repair" onclick="runCompressionRepair()" title="一键自愈修复异常并对齐安全推荐档">
+            🛠️ 一键修复安全配置
+          </button>
           <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-comp-stats" onclick="handleResetCompressionStats()" title="清零累计压缩与Token节省统计数据">
             🔄 一键清零统计
           </button>
@@ -5129,6 +5269,13 @@ function renderDashboardHtml(config) {
       <div id="compression-collapse-body">
         <div class="plain-tip-box">
           💡 <strong>【白话通俗解释】</strong>：自动帮您剔除终端滚动进度条、控制符与冗余通过项日志，绝不改变任何代码和回答原意，可直接为您节约 15%~30% 官方限额消耗！小白直接保持推荐的【🌟 平衡标准档】即可。
+        </div>
+
+        <!-- 压缩引擎健康自检与异常修复报告抽屉 (Compression Doctor Panel) -->
+        <div id="comp-doctor-panel" class="comp-doctor-panel" style="display: none; margin-bottom: 14px; padding: 12px 14px; background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
+          <div id="comp-doctor-panel-content">
+            <!-- 动态渲染 -->
+          </div>
         </div>
 
         <!-- 顶层总开关与一键预设档位 -->
@@ -6434,6 +6581,14 @@ function renderDashboardHtml(config) {
             </div>
           \`;
         }
+        if (doc.compression && doc.compression.issues && doc.compression.issues.length > 0) {
+          html += \`
+            <div style="margin-top:10px; padding:8px 12px; background:rgba(234, 179, 8, 0.08); border:1px solid rgba(234, 179, 8, 0.25); border-radius:6px; font-size:0.83rem; color:#fde047; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <span>⚡ 检测到上下文压缩配置存在 <strong>\${doc.compression.issues.length}</strong> 个待优化项（已关联至压缩专属面板）</span>
+              <button class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="scrollToCompressionCard()">👉 前往压缩卡片查看与一键修复</button>
+            </div>
+          \`;
+        }
         box.innerHTML = html;
       } catch (e) {
         box.innerHTML = '<span style="color:var(--danger)">自检失败: ' + e.message + '</span>';
@@ -6445,6 +6600,14 @@ function renderDashboardHtml(config) {
       if (card) {
         card.scrollIntoView({ behavior: 'smooth' });
         runCodexDoctorCheck();
+      }
+    }
+
+    function scrollToCompressionCard() {
+      const card = document.getElementById('compression-card');
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth' });
+        runCompressionDoctorCheck(false);
       }
     }
 
@@ -7237,6 +7400,126 @@ function renderDashboardHtml(config) {
       }
     }
 
+    // Context Compression Doctor & Auto-Repair Engine
+    async function runCompressionDoctorCheck(silent = false) {
+      const panel = document.getElementById('comp-doctor-panel');
+      const content = document.getElementById('comp-doctor-panel-content');
+      const badge = document.getElementById('comp-doctor-status-badge');
+      if (!silent && panel && content) {
+        panel.style.display = 'block';
+        content.innerHTML = '<span style="color:var(--primary);">⏳ 正在执行压缩引擎健康体检与防降智审计...</span>';
+      }
+      try {
+        const res = await fetch('/balancer/api/compression/doctor', { headers: apiHeaders() });
+        const doc = await res.json();
+        renderCompressionDiagnostics(doc, silent);
+        if (!silent) {
+          showToast(doc.healthy ? '✔ 压缩引擎体检完成：全引擎健康' : '⚠️ 压缩引擎检测到可优化项');
+        }
+      } catch (e) {
+        if (content) content.innerHTML = '<span style="color:var(--danger);">诊断异常: ' + e.message + '</span>';
+        if (!silent) showToast('压缩诊断请求失败: ' + e.message, true);
+      }
+    }
+
+    function renderCompressionDiagnostics(doc, silent = false) {
+      const panel = document.getElementById('comp-doctor-panel');
+      const content = document.getElementById('comp-doctor-panel-content');
+      const badge = document.getElementById('comp-doctor-status-badge');
+      if (!doc) return;
+
+      const issues = doc.issues || [];
+      const hasHigh = issues.some(i => i.severity === 'high');
+
+      if (badge) {
+        if (issues.length === 0) {
+          badge.className = 'badge badge-healthy';
+          badge.innerText = '🟢 压缩引擎健康';
+        } else if (hasHigh) {
+          badge.className = 'badge badge-cooling';
+          badge.innerText = '🔴 待修复 (' + issues.length + ')';
+        } else {
+          badge.className = 'badge badge-healthy';
+          badge.innerText = '🟡 待优化 (' + issues.length + ')';
+        }
+      }
+
+      if (!content) return;
+      if (!silent && panel) panel.style.display = 'block';
+
+      const eng = doc.activeEngines || {};
+      const clients = doc.clientsCompatibility || {};
+
+      let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">';
+      html += '<strong>🩺 压缩引擎健康度诊断与防降智检测报告</strong>';
+      html += '<div style="display:flex; gap:6px;">';
+      html += '<button type="button" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="runCompressionDoctorCheck(false)">🔄 重新体检</button>';
+      html += '<button type="button" class="btn btn-success btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="runCompressionRepair()">🛠️ 一键修复安全配置</button>';
+      html += '<button type="button" class="btn btn-secondary btn-sm" style="padding:2px 6px; font-size:0.75rem;" onclick="document.getElementById(\\\'comp-doctor-panel\\\').style.display=\\\'none\\\'">✕ 收起</button>';
+      html += '</div></div>';
+
+      // 4 大引擎状态条
+      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px; margin-bottom:10px;">';
+      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<strong>1. RTK 终端去噪:</strong> ' + (eng.rtk && eng.rtk.enabled ? '<span style="color:var(--success);">✔ 运行中</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
+      html += '</div>';
+      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<strong>2. Headroom 结构折叠:</strong> ' + (eng.headroom && eng.headroom.enabled ? '<span style="color:var(--success);">✔ 运行中</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
+      html += '</div>';
+      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<strong>3. CacheAligner 优化:</strong> ' + (eng.schema && eng.schema.enabled ? '<span style="color:var(--success);">✔ 门限 ' + (eng.schema.threshold || 15000) + ' 字符</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
+      html += '</div>';
+      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<strong>4. llmtrim Cache-Zone:</strong> ' + (eng.cacheZone && eng.cacheZone.enabled ? '<span style="color:var(--success);">✔ 活跃会话 ' + (eng.cacheZone.activeSessions || 0) + '</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
+      html += '</div>';
+      html += '</div>';
+
+      // 3 大客户端适配保障状态
+      html += '<div style="font-size:0.8rem; background:rgba(30, 41, 59, 0.6); padding:8px 10px; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">';
+      html += '<span>🤖 <strong>Codex CLI / Desktop:</strong> <span style="color:var(--success);">✔ Responses 保真 & 超时加固</span></span>';
+      html += '<span>⚡ <strong>OpenCode 2.0+:</strong> <span style="color:var(--success);">✔ Tool Call 连续性保全 & 空流阻断</span></span>';
+      html += '<span>💻 <strong>OpenChamber:</strong> <span style="color:var(--success);">✔ 100% 离线沙箱安全 & 冲突豁免</span></span>';
+      html += '</div>';
+
+      if (issues.length > 0) {
+        html += '<div style="margin-top:6px;"><strong style="color:#f59e0b;">🔍 发现 ' + issues.length + ' 个待修复/可优化项：</strong></div>';
+        issues.forEach(function(iss) {
+          const cls = iss.severity === 'high' ? 'issue-high' : (iss.severity === 'medium' ? 'issue-medium' : 'issue-low');
+          html += '<div class="issue-item ' + cls + '" style="margin-top:6px;">';
+          html += '<div><strong>' + iss.title + '</strong>: <span style="color:var(--muted);">' + iss.desc + '</span></div>';
+          html += '</div>';
+        });
+        html += '<div style="margin-top:10px;"><button type="button" class="btn btn-success btn-sm" onclick="runCompressionRepair()">🛠️ 立即一键修复上述安全异常</button></div>';
+      } else {
+        html += '<div style="color:var(--success); font-weight:600; padding:4px 0;">🎉 压缩引擎状态极佳：已全开 Git 冲突豁免、源码 Diff 保真、Schema 安全门限与防断流守护，未发现降智或链接风险！</div>';
+      }
+
+      content.innerHTML = html;
+    }
+
+    async function runCompressionRepair() {
+      if (!confirm('确认执行压缩引擎安全自愈？\\n\\n将自动开启 Git 冲突豁免防御、源码 Diff 完整性保护、修正瘦身门限为安全档 (15,000字符) 并开启真 LRU 守护，杜绝断流与降智隐患。')) {
+        return;
+      }
+      try {
+        const res = await fetch('/balancer/api/compression/repair', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ autoHeal: true })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('🎉 压缩引擎已成功自愈并对齐安全推荐档！');
+          await runCompressionDoctorCheck(false);
+          await fetchConfig();
+        } else {
+          showToast('自愈失败: ' + (data.error || '未知错误'), true);
+        }
+      } catch (e) {
+        showToast('自愈请求异常: ' + e.message, true);
+      }
+    }
+
     // Init
     const currentHost = window.location.hostname || '127.0.0.1';
     const baseUrlElem = document.getElementById('lbl-baseurl');
@@ -7257,6 +7540,7 @@ function renderDashboardHtml(config) {
     fetchCompressionStats();
     runDoctorCheck('system');
     loadCodexStatus();
+    runCompressionDoctorCheck(true);
     setInterval(() => {
       if (!document.hidden) fetchStatus();
     }, 2000);

@@ -5166,8 +5166,248 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Multi-Family Model Fallback Loop Prevention, Bounded Cache & Flagship Protection verified');
 
+    // [Test 125] Testing Context Compression Doctor API (GET /balancer/api/compression/doctor) & Full Client Compatibility Matrix
+    console.log('\n[Test 125] Testing Context Compression Doctor API (GET /balancer/api/compression/doctor) & Full Client Compatibility Matrix...');
+    const compDocRes = await request('/balancer/api/compression/doctor', { method: 'GET' });
+    assert.strictEqual(compDocRes.statusCode, 200);
+    const compDocJson = JSON.parse(compDocRes.body);
+    assert.strictEqual(compDocJson.healthy, true, 'Default configuration must be diagnosed as healthy');
+    assert.ok(compDocJson.activeEngines, 'Report must contain activeEngines');
+    assert.strictEqual(compDocJson.activeEngines.rtk.enabled, true);
+    assert.strictEqual(compDocJson.activeEngines.headroom.enabled, true);
+    assert.strictEqual(compDocJson.activeEngines.schema.enabled, true);
+    assert.strictEqual(compDocJson.activeEngines.cacheZone.enabled, true);
+    assert.ok(compDocJson.clientsCompatibility, 'Report must contain clientsCompatibility matrix');
+    assert.strictEqual(compDocJson.clientsCompatibility.codex.status, 'compatible');
+    assert.strictEqual(compDocJson.clientsCompatibility.codex.protocol, 'OpenAI Responses API');
+    assert.strictEqual(compDocJson.clientsCompatibility.opencode.status, 'compatible');
+    assert.strictEqual(compDocJson.clientsCompatibility.openchamber.status, 'compatible');
+    assert.ok(compDocJson.summary, 'Report must contain summary');
+    console.log('✓ Context Compression Doctor API & Full Client Compatibility Matrix verified');
+
+    // [Test 126] Testing Context Compression Health Detection on Unsafe Configurations (Conflict Shield Off, Low Threshold, Broken Regex)
+    console.log('\n[Test 126] Testing Context Compression Health Detection on Unsafe Configurations...');
+    // Post unsafe configuration: disable conflict shield, disable source diff protect, set threshold < 4000, broken pattern, disable LRU
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream: `http://127.0.0.1:${mockPort}/v1`,
+        accounts: testConfig.accounts,
+        compression: {
+          enabled: true,
+          preset: 'custom',
+          modules: {
+            rtk: { enabled: true, stripAnsi: true, cleanProgressBars: true, foldTestPasses: true, cleanDevOpsOutput: true },
+            headroom: { enabled: true, foldLockfiles: true, exemptMergeConflicts: false, protectSourceDiffs: false },
+            schema: { enabled: true, alignToolsSchema: true, slimToolsSchema: true, schemaCharThreshold: 1200 },
+            cacheZone: { enabled: true, cacheZoneFreeze: true, trueLruRetention: false }
+          },
+          customTestPassPatterns: ['[broken(regex']
+        }
+      })
+    });
+
+    const unsafeDocRes = await request('/balancer/api/compression/doctor', { method: 'GET' });
+    assert.strictEqual(unsafeDocRes.statusCode, 200);
+    const unsafeDocJson = JSON.parse(unsafeDocRes.body);
+    assert.strictEqual(unsafeDocJson.healthy, false, 'Unsafe configuration must trigger healthy: false');
+    assert.ok(unsafeDocJson.issues.length >= 4, `Must detect multiple safety issues (found ${unsafeDocJson.issues.length})`);
+
+    const issueIds = unsafeDocJson.issues.map(i => i.id);
+    assert.ok(issueIds.includes('comp_merge_conflicts_unprotected'), 'Must detect merge conflicts unprotected (CRITICAL REDLINE)');
+    assert.ok(issueIds.includes('comp_source_diffs_unprotected'), 'Must detect source diffs unprotected (CRITICAL REDLINE)');
+    assert.ok(issueIds.includes('comp_schema_threshold_too_low'), 'Must detect schema threshold < 4000 (ANTI-DOWNGRADE)');
+    assert.ok(issueIds.includes('comp_invalid_test_pattern'), 'Must detect invalid regex syntax in customTestPassPatterns');
+    assert.ok(issueIds.includes('comp_lru_disabled'), 'Must detect trueLruRetention disabled');
+
+    // Verify client compatibility matrix flags conflict shield degradation
+    assert.strictEqual(unsafeDocJson.clientsCompatibility.openchamber.checks.find(c => c.name.includes('冲突')).passed, false);
+    console.log('✓ Context Compression Health Detection on Unsafe Configurations verified');
+
+    // [Test 127] Testing Context Compression Auto-Repair API (POST /balancer/api/compression/repair) & Zero-Loss Self-Healing
+    console.log('\n[Test 127] Testing Context Compression Auto-Repair API & Zero-Loss Self-Healing...');
+    const repApiRes = await request('/balancer/api/compression/repair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoHeal: true })
+    });
+    assert.strictEqual(repApiRes.statusCode, 200);
+    const repApiJson = JSON.parse(repApiRes.body);
+    assert.strictEqual(repApiJson.success, true);
+    assert.ok(Array.isArray(repApiJson.results), 'Repair response must include results array');
+    const repairedItems = repApiJson.results.map(r => r.item);
+    assert.ok(repairedItems.includes('Merge Conflict Shield'), 'Must heal Merge Conflict Shield');
+    assert.ok(repairedItems.includes('Source Diff Protection'), 'Must heal Source Diff Protection');
+    assert.ok(repairedItems.includes('Schema Slim Threshold'), 'Must heal Schema Slim Threshold');
+    assert.ok(repairedItems.includes('Custom Test Patterns'), 'Must heal Custom Test Patterns');
+    assert.ok(repairedItems.includes('Cache-Zone LRU Retention'), 'Must heal Cache-Zone LRU Retention');
+
+    // Verify subsequent doctor check is 100% healthy
+    const afterHealDocRes = await request('/balancer/api/compression/doctor', { method: 'GET' });
+    const afterHealDoc = JSON.parse(afterHealDocRes.body);
+    assert.strictEqual(afterHealDoc.healthy, true, 'Doctor must report 100% healthy after auto-repair');
+    assert.strictEqual(afterHealDoc.issues.length, 0, 'No issues must remain after auto-repair');
+    assert.strictEqual(afterHealDoc.activeEngines.schema.threshold, 15000, 'Threshold must be restored to safe 15000 chars');
+    console.log('✓ Context Compression Auto-Repair API & Zero-Loss Self-Healing verified');
+
+    // [Test 128] Testing Compression Doctor & Repair Modular Scoping (scope=compression vs scope=all linkage)
+    console.log('\n[Test 128] Testing Compression Doctor & Repair Modular Scoping...');
+    // 1. Scoped doctor: GET /balancer/api/doctor?scope=compression
+    const scopedDocRes = await request('/balancer/api/doctor?scope=compression', { method: 'GET' });
+    assert.strictEqual(scopedDocRes.statusCode, 200);
+    const scopedDocJson = JSON.parse(scopedDocRes.body);
+    assert.strictEqual(scopedDocJson.scope, 'compression');
+    assert.ok(scopedDocJson.compression && typeof scopedDocJson.compression === 'object');
+    assert.ok(Array.isArray(scopedDocJson.issues));
+
+    // 2. Scoped repair with resetToBalanced: POST /balancer/api/repair?scope=compression
+    const scopedRepRes = await request('/balancer/api/repair?scope=compression', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resetToBalanced: true })
+    });
+    assert.strictEqual(scopedRepRes.statusCode, 200);
+    const scopedRepJson = JSON.parse(scopedRepRes.body);
+    assert.strictEqual(scopedRepJson.success, true);
+    assert.ok(scopedRepJson.results.some(r => r.item === 'Preset Alignment'));
+
+    // 3. Global doctor linkage: GET /balancer/api/doctor (scope=all) must contain compression health
+    const globalDocRes = await request('/balancer/api/doctor', { method: 'GET' });
+    assert.strictEqual(globalDocRes.statusCode, 200);
+    const globalDocJson = JSON.parse(globalDocRes.body);
+    assert.ok(globalDocJson.compression, 'Global doctor report must embed compression health block');
+    assert.strictEqual(globalDocJson.compression.healthy, true);
+    console.log('✓ Compression Doctor & Repair Modular Scoping verified');
+
+    // [Test 129] Testing Anti-Downgrade Redlines: Compiler Errors, Tracebacks, Stack Traces & Merge Conflicts (<<<<<<<) Zero-Loss Preservation
+    console.log('\n[Test 129] Testing Anti-Downgrade Redlines: Compiler Errors, Tracebacks, Stack Traces & Merge Conflicts Zero-Loss Preservation...');
+    const mixedErrorAndPassInput = [
+      '✓ test 1 passed',
+      '✓ test 2 passed',
+      '✓ test 3 passed',
+      '✓ test 4 passed',
+      'src/main.rs:42:15: error[E0308]: mismatched types expected `usize`, found `u32`',
+      '   --> src/main.rs:42:15',
+      'AssertionError: expected 42 to equal 99',
+      '    at Context.<anonymous> (test.js:10:5)',
+      'Traceback (most recent call last):',
+      '  File "app.py", line 12, in <module>',
+      'BUILD FAILED: compilation halted with 1 error',
+      '<<<<<<< HEAD',
+      'const port = 4010;',
+      '=======',
+      'const port = 3000;',
+      '>>>>>>> conflict-branch',
+      'diff --git a/src/index.js b/src/index.js',
+      '--- a/src/index.js',
+      '+++ b/src/index.js',
+      '@@ -1,5 +1,6 @@'
+    ].join('\n');
+
+    const compactedOutput = contextCompactor.compactText(mixedErrorAndPassInput, { enabled: true });
+    // Positive match test passes must be folded
+    assert.ok(compactedOutput.includes('[Test suite: 4 passed tests folded (✓ / PASS / ok)]'), 'Pass lines must be folded');
+    // Error redlines must NEVER be folded:
+    assert.ok(compactedOutput.includes('error[E0308]: mismatched types'), 'Rust compiler error must be 100% preserved');
+    assert.ok(compactedOutput.includes('src/main.rs:42:15'), 'Line numbers in compiler error must be 100% preserved');
+    assert.ok(compactedOutput.includes('AssertionError: expected 42 to equal 99'), 'AssertionError must be 100% preserved');
+    assert.ok(compactedOutput.includes('at Context.<anonymous> (test.js:10:5)'), 'Stack trace must be 100% preserved');
+    assert.ok(compactedOutput.includes('Traceback (most recent call last):'), 'Python traceback header must be 100% preserved');
+    assert.ok(compactedOutput.includes('BUILD FAILED: compilation halted'), 'Build failed header must be 100% preserved');
+    assert.ok(compactedOutput.includes('<<<<<<< HEAD'), 'Merge conflict marker <<<<<<< must NEVER be folded');
+    assert.ok(compactedOutput.includes('======='), 'Merge conflict marker ======= must NEVER be folded');
+    assert.ok(compactedOutput.includes('>>>>>>> conflict-branch'), 'Merge conflict marker >>>>>>> must NEVER be folded');
+    assert.ok(compactedOutput.includes('diff --git a/src/index.js b/src/index.js'), 'Source diff header must be 100% preserved');
+    assert.ok(compactedOutput.includes('@@ -1,5 +1,6 @@'), 'Hunk line numbers must be 100% preserved');
+
+    // Test foldLockfiles merge conflict exemption:
+    const lockfileConflictSample = [
+      'diff --git a/package-lock.json b/package-lock.json',
+      'index 1234567..89abcdef 100644',
+      '--- a/package-lock.json',
+      '+++ b/package-lock.json',
+      '@@ -1,10 +1,15 @@',
+      '<<<<<<< HEAD',
+      '    "version": "1.0.0",',
+      '=======',
+      '    "version": "2.0.0",',
+      '>>>>>>> feature',
+      '   "name": "opencode"'
+    ].join('\n');
+    const lockConflictComp = contextCompactor.foldLockfiles(lockfileConflictSample, { exemptMergeConflicts: true });
+    assert.strictEqual(lockConflictComp, lockfileConflictSample, 'Lockfile diff containing merge conflict must NOT be folded');
+
+    // Test non-lockfile source diff protection:
+    const jsSourceDiff = [
+      'diff --git a/server.js b/server.js',
+      'index 1234567..89abcdef 100644',
+      '--- a/server.js',
+      '+++ b/server.js',
+      '@@ -10,6 +10,7 @@',
+      '+const newCode = true;'
+    ].join('\n');
+    const jsComp = contextCompactor.foldLockfiles(jsSourceDiff, { protectSourceDiffs: true });
+    assert.strictEqual(jsComp, jsSourceDiff, 'Source code diffs must NEVER be touched by foldLockfiles');
+    console.log('✓ Anti-Downgrade Redlines: Compiler Errors, Tracebacks, Stack Traces & Merge Conflicts Zero-Loss Preservation verified');
+
+    // [Test 130] Testing Protocol & Connection Shield: Empty Output Protection (Anthropic tool_result, Responses, Chat) & Zero 400 Errors
+    console.log('\n[Test 130] Testing Protocol & Connection Shield: Empty Output Protection & Zero 400 Errors...');
+    // 1. Anthropic protocol: tool_result must NEVER have empty string content
+    const pureAnsiOutput = '\u001b[32m\u001b[0m\r\r';
+    const anthropicPayloadWithEmptyTool = {
+      model: 'claude-haiku-5-5',
+      messages: [
+        { role: 'user', content: 'run command' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'bash', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: pureAnsiOutput }] }
+      ]
+    };
+    const compactedAnthropicShield = contextCompactor.compactAnthropicPayload(anthropicPayloadWithEmptyTool, { enabled: true });
+    const toolResultBlockShield = compactedAnthropicShield.messages[2].content[0];
+    assert.ok(typeof toolResultBlockShield.content === 'string' && toolResultBlockShield.content.length > 0, 'Anthropic tool_result content must NEVER be empty string');
+    assert.strictEqual(toolResultBlockShield.content, '[Empty terminal output]');
+
+    // 2. OpenAI Chat completions protocol: tool content must NEVER be empty string
+    const chatPayloadWithEmptyTool = {
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'user', content: 'test' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'exec', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'call_2', content: pureAnsiOutput }
+      ]
+    };
+    const compactedChat = contextCompactor.compactChatPayload(chatPayloadWithEmptyTool, { enabled: true });
+    assert.ok(typeof compactedChat.messages[2].content === 'string' && compactedChat.messages[2].content.length > 0, 'Chat tool content must NEVER be empty string');
+    assert.strictEqual(compactedChat.messages[2].content, '[Empty terminal output]');
+
+    // 3. Codex Responses protocol: function_call_output must NEVER be empty string
+    const responsesPayloadWithEmptyTool = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'function_call', call_id: 'call_3', name: 'exec', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'call_3', output: pureAnsiOutput }
+      ]
+    };
+    const compactedResponses = contextCompactor.compactResponsesPayload(responsesPayloadWithEmptyTool, { enabled: true });
+    assert.ok(typeof compactedResponses.input[1].output === 'string' && compactedResponses.input[1].output.length > 0, 'Responses function_call_output must NEVER be empty string');
+    assert.strictEqual(compactedResponses.input[1].output, '[Empty terminal output]');
+
+    // 4. Web UI verification for Doctor & Repair controls
+    const compUiDoctorRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(compUiDoctorRes.statusCode, 200);
+    assert.ok(compUiDoctorRes.body.includes('id="comp-doctor-status-badge"'), 'UI must contain comp-doctor-status-badge');
+    assert.ok(compUiDoctorRes.body.includes('id="btn-comp-doctor"'), 'UI must contain btn-comp-doctor');
+    assert.ok(compUiDoctorRes.body.includes('id="btn-comp-repair"'), 'UI must contain btn-comp-repair');
+    assert.ok(compUiDoctorRes.body.includes('id="comp-doctor-panel"'), 'UI must contain comp-doctor-panel');
+    assert.ok(compUiDoctorRes.body.includes('runCompressionDoctorCheck'), 'UI script must contain runCompressionDoctorCheck');
+    assert.ok(compUiDoctorRes.body.includes('renderCompressionDiagnostics'), 'UI script must contain renderCompressionDiagnostics');
+    assert.ok(compUiDoctorRes.body.includes('runCompressionRepair'), 'UI script must contain runCompressionRepair');
+
+    console.log('✓ Protocol & Connection Shield: Empty Output Protection & Zero 400 Errors verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 124 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 130 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
