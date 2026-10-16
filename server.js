@@ -811,13 +811,87 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
-    // Check if Region Blocked (403), Protocol Incompatible (400), Model Unsupported (400/404), or Context Exceeded (400)
-    if ((statusCode === 403 || statusCode === 400 || statusCode === 404 || statusCode === 422) && parsedBody && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
+    // Check if Upstream Cluster Glitch (401/500/502/504), Region Blocked (403), Protocol Incompatible (400), Model Unsupported (400/404), or Context Exceeded (400)
+    if ((statusCode === 403 || statusCode === 400 || statusCode === 401 || statusCode === 404 || statusCode === 422 || statusCode === 500 || statusCode === 502 || statusCode === 504) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
+
+        // 1. Detect Upstream Cluster Internal Glitch (e.g. Novita/Luminal node credential or availability failure masked as 401/500/502)
+        const isUpstreamClusterGlitch = (
+          errText.includes('Upstream request failed') ||
+          errText.includes('server_error') ||
+          errText.includes('Model is unavailable') ||
+          errText.includes('Bad gateway') ||
+          errText.includes('Internal server error')
+        );
+
+        // 2. Detect Genuine Invalid API Key for current subscription account
+        const isInvalidApiKey = statusCode === 401 && (
+          errText.includes('invalid_api_key') ||
+          errText.includes('Incorrect API key') ||
+          errText.includes('Invalid token')
+        );
+
+        if (isInvalidApiKey) {
+          console.warn(`[Router Auth Alert] Account "${account.name}" returned invalid API key: ${errText.slice(0, 160)}`);
+          recordCooldown(account.id, 3600000, 'Invalid API Key');
+          const nextAccount = selectAccount(sessionId, triedAccountIds);
+          if (nextAccount) {
+            if (stat) stat.failoverCount += 1;
+            console.log(`[Failover] Account "${account.name}" returned ${statusCode} (Invalid API Key). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+            finishRequest();
+            clientRes.removeListener('close', clientCloseHandler);
+            sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
+        }
+
+        if (isUpstreamClusterGlitch && attemptNumber <= config.maxFailoverRetries) {
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+
+          // Step 1: In-flight retry with fresh session jitter after brief backoff on current account
+          if (attemptNumber === 1) {
+            console.warn(`[Auto Self-Healing] 捕获上游异构推理节点瞬态异常 (${statusCode}): "${errText.slice(0, 120)}"，正在实施原位平滑重试...`);
+            setTimeout(() => {
+              if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+              const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
+              sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+            }, 350);
+            return;
+          }
+
+          // Step 2: If in-flight jitter retry failed, try backup subscription account if available
+          const nextAccount = selectAccount(sessionId, triedAccountIds);
+          if (nextAccount) {
+            if (stat) stat.failoverCount += 1;
+            console.log(`[Failover] Account "${account.name}" returned ${statusCode} (Upstream Cluster Node Failure). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+            sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
+
+          // Step 3: Dynamic fallback to equivalent compatible model (Rule 15 & 19)
+          if (parsedBody && parsedBody.model) {
+            const originalModel = parsedBody.model;
+            const eff = parsedBody?.reasoning_effort || parsedBody?.reasoning?.effort;
+            const targetFallback = codexAdapter.resolveCompatibleFallbackModel(originalModel, errText, { reasoningEffort: eff });
+            if (targetFallback && targetFallback !== originalModel) {
+              console.warn(`[Auto Self-Healing] 上游集群节点持续报错，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
+              if (sessionId) {
+                const cleanReq = originalModel.replace(/^opencode-go\//, '');
+                sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, targetFallback);
+              }
+              parsedBody.model = targetFallback;
+              const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+              sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+              return;
+            }
+          }
+        }
+
         const isRegionBlocked = errText.includes('unsupported_country_region_territory') || errText.includes('territory not supported') || errText.includes('not available in your country');
         const isProtocolUnsupported = statusCode === 400 && (errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses'));
         const isModelUnsupported = (
@@ -1136,6 +1210,78 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
+
+        // 1. Detect Upstream Cluster Internal Glitch (e.g. Novita/Luminal node credential or availability failure masked as 401/500/502)
+        const isUpstreamClusterGlitch = (
+          errText.includes('Upstream request failed') ||
+          errText.includes('server_error') ||
+          errText.includes('Model is unavailable') ||
+          errText.includes('Bad gateway') ||
+          errText.includes('Internal server error')
+        );
+
+        // 2. Detect Genuine Invalid API Key for current subscription account
+        const isInvalidApiKey = statusCode === 401 && (
+          errText.includes('invalid_api_key') ||
+          errText.includes('Incorrect API key') ||
+          errText.includes('Invalid token')
+        );
+
+        if (isInvalidApiKey) {
+          console.warn(`[Router Auth Alert] Account "${account.name}" returned invalid API key: ${errText.slice(0, 160)}`);
+          recordCooldown(account.id, 3600000, 'Invalid API Key');
+          const nextAccount = selectAccount(sessionId, triedAccountIds);
+          if (nextAccount) {
+            if (stat) stat.failoverCount += 1;
+            console.log(`[Bridge Failover] Account "${account.name}" returned ${statusCode} (Invalid API Key). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+            finishRequest();
+            clientRes.removeListener('close', clientCloseHandler);
+            bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
+        }
+
+        if (isUpstreamClusterGlitch && attemptNumber <= config.maxFailoverRetries) {
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+
+          // Step 1: In-flight retry with fresh session jitter after brief backoff
+          if (attemptNumber === 1) {
+            console.warn(`[Auto Self-Healing] 捕获上游异构推理节点瞬态异常 (${statusCode}): "${errText.slice(0, 120)}"，正在实施原位平滑重试...`);
+            setTimeout(() => {
+              if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+              const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
+              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+            }, 350);
+            return;
+          }
+
+          // Step 2: Try next backup subscription account if available
+          const nextAccount = selectAccount(sessionId, triedAccountIds);
+          if (nextAccount) {
+            if (stat) stat.failoverCount += 1;
+            console.log(`[Bridge Failover] Account "${account.name}" returned ${statusCode} (Upstream Cluster Node Failure). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+            bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
+
+          // Step 3: Dynamic fallback to equivalent compatible model (Rule 15 & 19)
+          if (reqModel) {
+            const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+            const targetFallback = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText, { reasoningEffort: eff });
+            if (targetFallback && targetFallback !== reqModel) {
+              console.warn(`[Auto Self-Healing] 上游集群节点持续报错，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
+              if (sessionId) {
+                const cleanReq = reqModel.replace(/^opencode-go\//, '');
+                sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, targetFallback);
+              }
+              const healedBody = { ...responsesBody, model: targetFallback };
+              bridgeResponsesToChatRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+              return;
+            }
+          }
+        }
+
         const isProtocolUnsupported = errText.includes('ModelProtocolUnsupported') || errText.includes('does not support this protocol') || errText.includes('does not support /responses');
         const isRegionBlocked = errText.includes('not available in your country') || errText.includes('unsupported_country_region_territory');
         const isModelUnsupported = (
@@ -1449,6 +1595,78 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
+
+        // 1. Detect Upstream Cluster Internal Glitch (e.g. Novita/Luminal node credential or availability failure masked as 401/500/502)
+        const isUpstreamClusterGlitch = (
+          errText.includes('Upstream request failed') ||
+          errText.includes('server_error') ||
+          errText.includes('Model is unavailable') ||
+          errText.includes('Bad gateway') ||
+          errText.includes('Internal server error')
+        );
+
+        // 2. Detect Genuine Invalid API Key for current subscription account
+        const isInvalidApiKey = statusCode === 401 && (
+          errText.includes('invalid_api_key') ||
+          errText.includes('Incorrect API key') ||
+          errText.includes('Invalid token')
+        );
+
+        if (isInvalidApiKey) {
+          console.warn(`[Router Auth Alert] Account "${account.name}" returned invalid API key: ${errText.slice(0, 160)}`);
+          recordCooldown(account.id, 3600000, 'Invalid API Key');
+          const nextAccount = selectAccount(sessionId, triedAccountIds);
+          if (nextAccount) {
+            if (stat) stat.failoverCount += 1;
+            console.log(`[Anthropic Failover] Account "${account.name}" returned ${statusCode} (Invalid API Key). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+            finishRequest();
+            clientRes.removeListener('close', clientCloseHandler);
+            bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
+        }
+
+        if (isUpstreamClusterGlitch && attemptNumber <= config.maxFailoverRetries) {
+          finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
+
+          // Step 1: In-flight retry with fresh session jitter after brief backoff
+          if (attemptNumber === 1) {
+            console.warn(`[Auto Self-Healing] Anthropic 桥接捕获上游异构推理节点瞬态异常 (${statusCode}): "${errText.slice(0, 120)}"，正在实施原位平滑重试...`);
+            setTimeout(() => {
+              if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+              const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
+              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+            }, 350);
+            return;
+          }
+
+          // Step 2: Try next backup subscription account if available
+          const nextAccount = selectAccount(sessionId, triedAccountIds);
+          if (nextAccount) {
+            if (stat) stat.failoverCount += 1;
+            console.log(`[Anthropic Failover] Account "${account.name}" returned ${statusCode} (Upstream Cluster Node Failure). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+            bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+            return;
+          }
+
+          // Step 3: Dynamic fallback
+          if (reqModel) {
+            const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+            const targetFallback = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText, { reasoningEffort: eff });
+            if (targetFallback && targetFallback !== reqModel) {
+              console.warn(`[Auto Self-Healing] 上游集群节点持续报错，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
+              if (sessionId) {
+                const cleanReq = reqModel.replace(/^opencode-go\//, '');
+                sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, targetFallback);
+              }
+              const healedBody = { ...responsesBody, model: targetFallback };
+              bridgeResponsesToChatRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+              return;
+            }
+          }
+        }
+
         const isContextLengthExceeded = statusCode === 400 && (
           errText.includes('prompt is too long') ||
           errText.includes('context_length_exceeded') ||

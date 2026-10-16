@@ -324,6 +324,96 @@ async function runTests() {
       return;
     }
 
+    if (session === 'session-cluster-glitch-retry') {
+      const glitchBody = JSON.stringify({
+        error: {
+          type: 'server_error',
+          message: 'Upstream request failed: Invalid credential'
+        }
+      });
+      res.writeHead(401, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(glitchBody))
+      });
+      res.end(glitchBody);
+      return;
+    }
+
+    if (typeof session === 'string' && session.startsWith('session-cluster-glitch-retry-r')) {
+      const okBody = JSON.stringify({
+        id: 'resp-glitch-healed',
+        model: 'deepseek-v4.1-flash',
+        choices: [{ message: { role: 'assistant', content: 'Healed after transient cluster credential glitch!' } }]
+      });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(okBody))
+      });
+      res.end(okBody);
+      return;
+    }
+
+    if (session === 'session-bridge-glitch-retry') {
+      const glitchBody = JSON.stringify({
+        error: {
+          type: 'server_error',
+          message: 'Upstream request failed: Invalid credential'
+        }
+      });
+      res.writeHead(401, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(glitchBody))
+      });
+      res.end(glitchBody);
+      return;
+    }
+
+    if (typeof session === 'string' && session.startsWith('session-bridge-glitch-retry-r')) {
+      const okBody = JSON.stringify({
+        id: 'resp-bridge-glitch-healed',
+        model: 'deepseek-v4.1-flash',
+        choices: [{ message: { role: 'assistant', content: 'Bridge healed after transient glitch!' } }]
+      });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(okBody))
+      });
+      res.end(okBody);
+      return;
+    }
+
+    if (session === 'session-genuine-invalid-key') {
+      if (auth.includes('key-account-1')) {
+        account1Calls++;
+        const invalidBody = JSON.stringify({
+          error: {
+            message: 'Incorrect API key provided: key-account-1',
+            type: 'invalid_request_error',
+            code: 'invalid_api_key'
+          }
+        });
+        res.writeHead(401, {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(invalidBody))
+        });
+        res.end(invalidBody);
+        return;
+      }
+      if (auth.includes('key-account-2')) {
+        account2Calls++;
+        const okBody = JSON.stringify({
+          id: 'resp-acc2-ok',
+          choices: [{ message: { role: 'assistant', content: 'Account 2 failover success!' } }]
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(okBody))
+        });
+        res.end(okBody);
+        return;
+      }
+    }
+
     if (auth.includes('key-account-1')) {
       account1Calls++;
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4581,8 +4671,60 @@ $ProgressPreference = 'SilentlyContinue'
     }, 'Foolproof UI script methods must execute cleanly in VM context without error or recursion');
     console.log('✓ Foolproof UX/UI Smart Quick Start Wizard & Visual Hierarchy Integrity verified');
 
+    // [Test 115] Testing Upstream Cluster Glitch Self-Healing & In-Flight Jitter Retries (Invalid Credential / Server Error Masking)
+    console.log('\n[Test 115] Testing Upstream Cluster Glitch Self-Healing & In-Flight Jitter Retries (Invalid Credential / Server Error Masking)...');
+
+    // 1. Direct proxy request encountering transient upstream cluster credential glitch
+    const glitchChatRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-cluster-glitch-retry'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'Testing transient upstream glitch resilience' }]
+      })
+    });
+    assert.strictEqual(glitchChatRes.statusCode, 200, 'Gateway must intercept masked 401 cluster glitch and auto-heal with 200 OK');
+    const glitchChatJson = JSON.parse(glitchChatRes.body);
+    assert.ok(glitchChatJson.choices[0].message.content.includes('Healed after transient cluster credential glitch'));
+
+    // 2. Bridged Responses protocol request encountering transient glitch
+    const glitchBridgeRes = await request('/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-bridge-glitch-retry'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        stream: false,
+        input: [{ type: 'message', role: 'user', content: 'Testing bridge glitch resilience' }]
+      })
+    });
+    assert.strictEqual(glitchBridgeRes.statusCode, 200, 'Bridge must intercept masked 401 cluster glitch and auto-heal with 200 OK');
+
+    // 3. Genuine Invalid API Key: Put account on cooldown and failover to Account 2
+    const invalidKeyRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-genuine-invalid-key'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'Testing genuine invalid API key failover' }]
+      })
+    });
+    assert.strictEqual(invalidKeyRes.statusCode, 200, 'Gateway must failover to next account when account returns genuine invalid API key');
+    const invalidKeyJson = JSON.parse(invalidKeyRes.body);
+    assert.ok(invalidKeyJson.choices[0].message.content.includes('Account 2 failover success'));
+
+    console.log('✓ Upstream Cluster Glitch Self-Healing & In-Flight Jitter Retries verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 114 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 115 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

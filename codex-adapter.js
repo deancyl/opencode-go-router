@@ -1058,6 +1058,9 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   if (cleanReq.startsWith('kimi-')) {
     return 'kimi-k3';
   }
+  if (cleanReq.startsWith('glm')) {
+    return cleanReq === 'glm-5.3' ? 'glm-5.2' : 'glm-5.3';
+  }
   if (cleanReq.startsWith('qwen')) {
     return 'qwen3.7-max';
   }
