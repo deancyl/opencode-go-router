@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { fork, execSync } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
 
@@ -4925,8 +4926,248 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Multi-Turn Pre-Emptive Model Memory Hit on Chat & Flagship Anti-Downgrade verified');
 
+    // [Test 120] Testing Anthropic Bridge Multimodal Image Base64 Preservation & Chat Parity
+    console.log('\n[Test 120] Testing Anthropic Bridge Multimodal Image Base64 Preservation & Chat Parity...');
+    const bodyWithDataUri = {
+      model: 'claude-haiku-5-5',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Analyze this image.' },
+            {
+              type: 'input_image',
+              image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+            }
+          ]
+        }
+      ]
+    };
+    const antPayload1 = codexAdapter.convertResponsesToAnthropicPayload(bodyWithDataUri);
+    assert.strictEqual(antPayload1.messages.length, 1);
+    const antContents1 = antPayload1.messages[0].content;
+    assert.ok(Array.isArray(antContents1), 'Anthropic content must be an array of blocks');
+    assert.strictEqual(antContents1[0].type, 'text');
+    assert.strictEqual(antContents1[0].text, 'Analyze this image.');
+    assert.strictEqual(antContents1[1].type, 'image');
+    assert.strictEqual(antContents1[1].source.type, 'base64');
+    assert.strictEqual(antContents1[1].source.media_type, 'image/png');
+    assert.strictEqual(antContents1[1].source.data, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
+
+    // Preservation of pre-formatted Anthropic image source block
+    const bodyWithSource = {
+      model: 'claude-haiku-5-5',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/jpeg',
+                data: '/9j/4AAQSkZJRg=='
+              }
+            }
+          ]
+        }
+      ]
+    };
+    const antPayload2 = codexAdapter.convertResponsesToAnthropicPayload(bodyWithSource);
+    assert.strictEqual(antPayload2.messages[0].content[0].type, 'image');
+    assert.strictEqual(antPayload2.messages[0].content[0].source.type, 'base64');
+    assert.strictEqual(antPayload2.messages[0].content[0].source.media_type, 'image/jpeg');
+    assert.strictEqual(antPayload2.messages[0].content[0].source.data, '/9j/4AAQSkZJRg==');
+
+    // Chat bridge parity
+    const chatPayload = codexAdapter.convertResponsesToChatPayload(bodyWithDataUri);
+    assert.strictEqual(chatPayload.messages[0].content[1].type, 'image_url');
+    assert.strictEqual(chatPayload.messages[0].content[1].image_url.url, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
+
+    console.log('✓ Anthropic Bridge Multimodal Image Base64 Preservation & Chat Parity verified');
+
+    // [Test 121] Testing Multi-Account Resilience Pipeline Continuity & Step 3 Fallback Reachability
+    console.log('\n[Test 121] Testing Multi-Account Resilience Pipeline Continuity & Step 3 Fallback Reachability...');
+    const origAccounts = serverModule.config ? serverModule.config.accounts : null;
+    if (serverModule.config) {
+      serverModule.config.accounts = [
+        { id: 'account-1', name: 'OpenCode Go Acc 1', apiKey: 'test-key-1', enabled: true },
+        { id: 'account-2', name: 'OpenCode Go Acc 2', apiKey: 'test-key-2', enabled: true }
+      ];
+    }
+    const mockRes121 = new EventEmitter();
+    mockRes121.destroyed = false;
+    mockRes121.writableEnded = false;
+
+    let glitchJitterCalled = false;
+    let glitchAccountSwitched = null;
+    let glitchModelFallback = null;
+
+    // Attempt 1: Jitter retry on current account
+    const g1 = serverModule.handleUpstreamGlitchAndFailover({
+      protocolTag: 'Test',
+      clientRes: mockRes121,
+      account: { id: 'account-1', name: 'OpenCode Go Acc 1' },
+      attemptNumber: 1,
+      triedAccountIds: new Set(['account-1']),
+      sessionId: 'sess-glitch-test',
+      statusCode: 502,
+      errText: '502 Bad Gateway',
+      model: 'deepseek-v4.1-flash',
+      finishRequest: () => {},
+      clientCloseHandler: () => {},
+      retryCurrentAccount: () => { glitchJitterCalled = true; },
+      retryNextAccount: (acc) => { glitchAccountSwitched = acc; },
+      fallbackModelFn: (mod) => { glitchModelFallback = mod; }
+    });
+    assert.strictEqual(g1, true, 'Attempt 1 must trigger jitter retry');
+
+    // Attempt 2: Next account failover
+    const g2 = serverModule.handleUpstreamGlitchAndFailover({
+      protocolTag: 'Test',
+      clientRes: mockRes121,
+      account: { id: 'account-1', name: 'OpenCode Go Acc 1' },
+      attemptNumber: 2,
+      triedAccountIds: new Set(['account-1']),
+      sessionId: 'sess-glitch-test',
+      statusCode: 502,
+      errText: '502 Bad Gateway',
+      model: 'deepseek-v4.1-flash',
+      finishRequest: () => {},
+      clientCloseHandler: () => {},
+      retryCurrentAccount: () => {},
+      retryNextAccount: (acc) => { glitchAccountSwitched = acc; },
+      fallbackModelFn: (mod) => { glitchModelFallback = mod; }
+    });
+    assert.strictEqual(g2, true, 'Attempt 2 must switch to next account');
+    assert.ok(glitchAccountSwitched, 'Next account must be selected');
+    assert.strictEqual(glitchAccountSwitched.id, 'account-2');
+
+    // Attempt 3: All accounts exhausted -> Step 3 model fallback MUST be reached!
+    const g3 = serverModule.handleUpstreamGlitchAndFailover({
+      protocolTag: 'Test',
+      clientRes: mockRes121,
+      account: { id: 'account-2', name: 'OpenCode Go Acc 2' },
+      attemptNumber: 3,
+      triedAccountIds: new Set(['account-1', 'account-2']),
+      sessionId: 'sess-glitch-test',
+      statusCode: 502,
+      errText: '502 Bad Gateway',
+      model: 'deepseek-v4.1-flash',
+      finishRequest: () => {},
+      clientCloseHandler: () => {},
+      retryCurrentAccount: () => {},
+      retryNextAccount: () => {},
+      fallbackModelFn: (mod) => { glitchModelFallback = mod; }
+    });
+    assert.strictEqual(g3, true, 'Attempt 3 must reach Step 3 dynamic fallback');
+    assert.strictEqual(glitchModelFallback, 'deepseek-flash', 'Model must fallback to deepseek-flash');
+
+    console.log('✓ Multi-Account Resilience Pipeline Continuity & Step 3 Fallback Reachability verified');
+
+    // [Test 122] Testing Network Socket Error Failover & Client Disconnect Cancellation
+    console.log('\n[Test 122] Testing Network Socket Error Failover & Client Disconnect Cancellation...');
+    const mockRes122 = new EventEmitter();
+    mockRes122.destroyed = false;
+    mockRes122.writableEnded = false;
+    let netRetryCalled = false;
+
+    const netHandled = serverModule.handleNetworkErrorFailover({
+      protocolTag: 'Test',
+      clientRes: mockRes122,
+      account: { id: 'account-1', name: 'OpenCode Go Acc 1' },
+      attemptNumber: 1,
+      triedAccountIds: new Set(['account-1']),
+      sessionId: 'sess-net-err-test',
+      err: new Error('read ECONNRESET'),
+      finishRequest: () => {},
+      clientCloseHandler: () => {},
+      retryCurrentAccount: () => { netRetryCalled = true; },
+      retryNextAccount: () => {},
+      fallbackModelFn: () => {}
+    });
+    assert.strictEqual(netHandled, true, 'handleNetworkErrorFailover must handle attempt 1 with jitter');
+
+    // Simulate client abrupt disconnect before 350ms
+    mockRes122.emit('close');
+    mockRes122.destroyed = true;
+    await new Promise(r => setTimeout(r, 450));
+    assert.strictEqual(netRetryCalled, false, 'Jitter retry must be cancelled if client disconnected');
+
+    console.log('✓ Network Socket Error Failover & Client Disconnect Cancellation verified');
+
+    // [Test 123] Testing Centralized Rate-Limit Failover & Stream Drainage
+    console.log('\n[Test 123] Testing Centralized Rate-Limit Failover & Stream Drainage...');
+    const mockUpstream123 = new EventEmitter();
+    mockUpstream123.headers = { 'retry-after': '5' };
+    const mockRes123 = new EventEmitter();
+    mockRes123.destroyed = false;
+    let rateLimitSwitchedAcc = null;
+
+    serverModule.handleRateLimitFailover({
+      protocolTag: 'Test',
+      clientRes: mockRes123,
+      account: { id: 'account-1', name: 'OpenCode Go Acc 1' },
+      attemptNumber: 1,
+      triedAccountIds: new Set(['account-1']),
+      sessionId: 'sess-rate-limit-test',
+      statusCode: 429,
+      upstreamRes: mockUpstream123,
+      finishRequest: () => {},
+      clientCloseHandler: () => {},
+      retryFn: (acc) => { rateLimitSwitchedAcc = acc; }
+    });
+
+    mockUpstream123.emit('data', Buffer.from('{"error":"Rate limit reached"}'));
+    mockUpstream123.emit('end');
+
+    assert.ok(rateLimitSwitchedAcc, 'Rate limit failover must select next available account');
+    assert.strictEqual(rateLimitSwitchedAcc.id, 'account-2');
+
+    console.log('✓ Centralized Rate-Limit Failover & Stream Drainage verified');
+    if (serverModule.config && origAccounts) {
+      serverModule.config.accounts = origAccounts;
+    }
+
+    // [Test 124] Testing Multi-Family Model Fallback Loop Prevention, Bounded Cache & Flagship Protection
+    console.log('\n[Test 124] Testing Multi-Family Model Fallback Loop Prevention, Bounded Cache & Flagship Protection...');
+    // 1. Kimi loop prevention
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('kimi-k3'), 'kimi-k2.7-code');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('kimi-k2.7-code'), 'kimi-k3');
+
+    // 2. GLM multi-family
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('glm-5.3'), 'glm-5.2');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('glm-5.2'), 'glm-5.3');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('glm-5.1-flash'), 'deepseek-flash');
+
+    // 3. Qwen loop prevention
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('qwen3.7-max'), 'deepseek-v4-pro');
+
+    // 4. Extended families: Gemini, LLaMA, Minimax
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('gemini-2.5-flash'), 'deepseek-flash');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('gemini-2.5-pro'), 'deepseek-v4-pro');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('llama-3.3-70b'), 'deepseek-v4-pro');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('minimax-m3'), 'deepseek-v4-pro');
+
+    // 5. Reasoning effort anti-downgrade (both 'high' and 'xhigh')
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'high' }), 'deepseek-v4-pro');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-v4-pro');
+
+    // 6. Bounded cache capacity guard in setSessionModelFallback
+    if (typeof serverModule.setSessionModelFallback === 'function') {
+      const cache = serverModule.sessionModelFallbackCache;
+      for (let i = 0; i < 5010; i++) {
+        serverModule.setSessionModelFallback(`sess-stress-${i}`, 'test-model', 'fallback-model');
+      }
+      assert.ok(cache.size <= 5000, `sessionModelFallbackCache size (${cache.size}) must be bounded to <= 5000`);
+    }
+
+    console.log('✓ Multi-Family Model Fallback Loop Prevention, Bounded Cache & Flagship Protection verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 119 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 124 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

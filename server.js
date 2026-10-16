@@ -179,6 +179,19 @@ const sessionLastSeen = new Map();
 // Pre-emptive fallback cache: `${sessionId}:${model}` -> fallbackModel (for heterogeneous nodes)
 const sessionModelFallbackCache = new Map();
 
+function setSessionModelFallback(sessionId, model, fallbackModel) {
+  if (!sessionId || !model || !fallbackModel) return;
+  const cleanReq = model.replace(/^opencode-go\//, '');
+  if (sessionModelFallbackCache.size >= 5000) {
+    const keys = Array.from(sessionModelFallbackCache.keys());
+    const pruneCount = Math.floor(keys.length * 0.2) || 1;
+    for (let i = 0; i < pruneCount; i++) {
+      sessionModelFallbackCache.delete(keys[i]);
+    }
+  }
+  sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, fallbackModel);
+}
+
 // Clean up stale sessions periodically (every 10 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -233,9 +246,15 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
       const entries = Array.from(sessionLastSeen.entries()).sort((a, b) => a[1] - b[1]);
       const pruneCount = Math.floor(entries.length * 0.2) || 1;
       for (let i = 0; i < pruneCount; i++) {
-        sessionMap.delete(entries[i][0]);
-        sessionLastSeen.delete(entries[i][0]);
-        contextCompactor.clearSessionMemo(entries[i][0]);
+        const sess = entries[i][0];
+        sessionMap.delete(sess);
+        sessionLastSeen.delete(sess);
+        contextCompactor.clearSessionMemo(sess);
+        for (const key of Array.from(sessionModelFallbackCache.keys())) {
+          if (key.startsWith(`${sess}:`)) {
+            sessionModelFallbackCache.delete(key);
+          }
+        }
       }
     }
     sessionMap.set(sessionId, chosen.id);
@@ -619,9 +638,10 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
   const errText = typeof rawErrText === 'string' ? rawErrText : String(rawErrText || '');
   const lowerText = errText.toLowerCase();
 
-  // 1. Detect Upstream Cluster Internal Glitch (e.g. node credential or availability failure masked as 401/500/502/504)
+  // 1. Detect Upstream Cluster Internal Glitch (e.g. node credential or availability failure masked as 401/500/502/503/504)
   const isUpstreamClusterGlitch = (
     statusCode === 500 || statusCode === 502 || statusCode === 504 ||
+    (statusCode === 503 && !lowerText.includes('rate limit')) ||
     lowerText.includes('upstream request failed') ||
     lowerText.includes('server_error') ||
     lowerText.includes('model is unavailable') ||
@@ -645,7 +665,7 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
   );
 
   // 3. Detect Rate Limited / Service Unavailable
-  const isRateLimitedOrServiceUnavailable = statusCode === 429 || statusCode === 503;
+  const isRateLimitedOrServiceUnavailable = statusCode === 429 || (statusCode === 503 && lowerText.includes('rate limit'));
 
   // 4. Detect Context Length Exceeded
   const isContextLengthExceeded = statusCode === 400 && (
@@ -740,6 +760,78 @@ function handleInvalidApiKeyFailover({
 }
 
 /**
+ * Unified Rate Limit (429 / 503 with Retry-After) Failover Handler
+ */
+function handleRateLimitFailover({
+  protocolTag,
+  clientRes,
+  account,
+  attemptNumber,
+  triedAccountIds,
+  sessionId,
+  statusCode,
+  upstreamRes,
+  finishRequest,
+  clientCloseHandler,
+  retryFn,
+  errorFallbackFn
+}) {
+  let cooldownMs = config.defaultCooldownMs;
+  const retryAfter = upstreamRes.headers ? upstreamRes.headers['retry-after'] : null;
+  if (retryAfter) {
+    const sec = parseInt(retryAfter, 10);
+    if (!isNaN(sec) && sec > 0) {
+      cooldownMs = sec * 1000;
+    } else {
+      const dateMs = new Date(retryAfter).getTime();
+      if (!isNaN(dateMs) && dateMs > Date.now()) {
+        cooldownMs = dateMs - Date.now();
+      }
+    }
+  }
+
+  recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
+
+  const errorChunks = [];
+  upstreamRes.on('data', chunk => errorChunks.push(chunk));
+  upstreamRes.on('error', (err) => {
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+    if (typeof errorFallbackFn === 'function') {
+      errorFallbackFn(err.message);
+    }
+  });
+
+  upstreamRes.on('end', () => {
+    if (clientRes.destroyed || clientRes.writableEnded) {
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      return;
+    }
+
+    const nextAccount = selectAccount(sessionId, triedAccountIds);
+    const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+    if (nextAccount && attemptNumber <= maxRetries) {
+      const stat = accountStats.get(account.id);
+      if (stat) stat.failoverCount += 1;
+      console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      retryFn(nextAccount);
+    } else {
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      const errText = Buffer.concat(errorChunks).toString('utf8');
+      if (typeof errorFallbackFn === 'function') {
+        errorFallbackFn(errText);
+      } else {
+        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+      }
+    }
+  });
+}
+
+/**
  * Unified Upstream Cluster Node Glitch Self-Healing Pipeline
  * Step 1: In-flight session jitter retry after 350ms backoff
  * Step 2: Next backup subscription account failover
@@ -762,7 +854,9 @@ function handleUpstreamGlitchAndFailover({
   retryNextAccount,
   fallbackModelFn
 }) {
-  if (attemptNumber > config.maxFailoverRetries) {
+  const accountCount = config.accounts && config.accounts.length ? config.accounts.length : 1;
+  const maxRetries = Math.max(config.maxFailoverRetries || 2, accountCount + 2);
+  if (attemptNumber > maxRetries) {
     return false;
   }
 
@@ -803,13 +897,12 @@ function handleUpstreamGlitchAndFailover({
   }
 
   // Step 3: Dynamic fallback to equivalent compatible model (Rule 15 & 19)
-  if (model) {
+  if (model && typeof fallbackModelFn === 'function') {
     const targetFallback = codexAdapter.resolveCompatibleFallbackModel(model, errText, { reasoningEffort });
     if (targetFallback && targetFallback !== model) {
       console.warn(`[Auto Self-Healing] 上游集群节点持续报错，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
       if (sessionId) {
-        const cleanReq = model.replace(/^opencode-go\//, '');
-        sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, targetFallback);
+        setSessionModelFallback(sessionId, model, targetFallback);
       }
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
@@ -822,10 +915,207 @@ function handleUpstreamGlitchAndFailover({
 }
 
 /**
+ * Unified Network Socket Error Self-Healing Pipeline
+ * Step 1: In-flight retry with fresh session jitter after brief backoff
+ * Step 2: Next backup subscription account failover
+ * Step 3: Dynamic compatible equivalent model fallback (if model provided)
+ */
+function handleNetworkErrorFailover({
+  protocolTag,
+  clientRes,
+  account,
+  attemptNumber,
+  triedAccountIds,
+  sessionId,
+  err,
+  model,
+  reasoningEffort,
+  finishRequest,
+  clientCloseHandler,
+  retryCurrentAccount,
+  retryNextAccount,
+  fallbackModelFn
+}) {
+  const accountCount = config.accounts && config.accounts.length ? config.accounts.length : 1;
+  const maxRetries = Math.max(config.maxFailoverRetries || 2, accountCount + 2);
+  if (attemptNumber > maxRetries) {
+    return false;
+  }
+
+  // Step 1: In-flight jitter retry on current account
+  if (attemptNumber === 1) {
+    console.warn(`[Auto Self-Healing] ${protocolTag} 捕获上游网络瞬态异常 (${err.message})，正在实施原位平滑重试...`);
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+
+    let jitterTimer = null;
+    const cancelJitter = () => {
+      if (jitterTimer) {
+        clearTimeout(jitterTimer);
+        jitterTimer = null;
+      }
+    };
+    clientRes.once('close', cancelJitter);
+
+    jitterTimer = setTimeout(() => {
+      clientRes.removeListener('close', cancelJitter);
+      if (clientRes.destroyed || clientRes.writableEnded) return;
+      const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
+      retryCurrentAccount(retrySessionId);
+    }, 350);
+    return true;
+  }
+
+  // Step 2: Try next backup subscription account
+  const nextAccount = selectAccount(sessionId, triedAccountIds);
+  if (nextAccount) {
+    const stat = accountStats.get(account.id);
+    if (stat) stat.failoverCount += 1;
+    console.log(`[${protocolTag} Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+    retryNextAccount(nextAccount);
+    return true;
+  }
+
+  // Step 3: Fallback to equivalent compatible model if available
+  if (model && typeof fallbackModelFn === 'function') {
+    const targetFallback = codexAdapter.resolveCompatibleFallbackModel(model, err.message, { reasoningEffort });
+    if (targetFallback && targetFallback !== model) {
+      console.warn(`[Auto Self-Healing] 网络连接持续异常，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
+      if (sessionId) {
+        setSessionModelFallback(sessionId, model, targetFallback);
+      }
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      fallbackModelFn(targetFallback);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Unified Context Compaction, Model Restriction & Tool Call Mismatch Self-Healing Handler
+ */
+function handleModelAndContextFallback({
+  protocolTag,
+  clientRes,
+  account,
+  attemptNumber,
+  triedAccountIds,
+  sessionId,
+  statusCode,
+  errText,
+  classified,
+  model,
+  reasoningEffort,
+  payload,
+  finishRequest,
+  clientCloseHandler,
+  retryWithPayload
+}) {
+  const accountCount = config.accounts && config.accounts.length ? config.accounts.length : 1;
+  const maxRetries = Math.max(config.maxFailoverRetries || 2, accountCount + 2);
+  if (attemptNumber > maxRetries) {
+    return false;
+  }
+
+  // 1. Context length exceeded or empty stream -> prune or escalate to 2M kimi
+  if ((classified.isContextLengthExceeded || classified.isEmptyStreamError) && payload) {
+    const warnReason = classified.isContextLengthExceeded ? `上下文超限 (${model})` : `上游空流/尺寸截断拦截 (${model})`;
+    console.warn(`[Auto Self-Healing] ${protocolTag} 请求触发 ${warnReason}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+
+    let pruned = payload;
+    const beforePrune = JSON.stringify(payload);
+    if (Array.isArray(payload.messages)) {
+      pruned = { ...payload, messages: codexAdapter.pruneChatMessages(payload.messages) };
+    } else if (Array.isArray(payload.input)) {
+      pruned = codexAdapter.pruneResponsesPayload(payload);
+    }
+    const afterPrune = JSON.stringify(pruned);
+    const wasPruned = beforePrune !== afterPrune;
+
+    if ((attemptNumber > 1 || !wasPruned) && model !== 'kimi-k2.7-code') {
+      console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
+      pruned = { ...pruned, model: 'kimi-k2.7-code' };
+    }
+    retryWithPayload(pruned, model !== pruned.model);
+    return true;
+  }
+
+  // 2. Region blocked, protocol unsupported, or model unsupported -> fallback model
+  if ((classified.isRegionBlocked || classified.isProtocolUnsupported || classified.isModelUnsupported) && model) {
+    const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(model, errText, { reasoningEffort });
+    if (fallbackModel && fallbackModel !== model) {
+      if (sessionId && model) {
+        setSessionModelFallback(sessionId, model, fallbackModel);
+      }
+      let reason = '上游节点模型限制 (Model Not Supported on Node)';
+      if (classified.isRegionBlocked) reason = '上游地域限制 (Region Blocked)';
+      else if (classified.isProtocolUnsupported) reason = '上游协议暂未支持该模型 (ModelProtocolUnsupported)';
+      console.warn(`[Auto Self-Healing] 模型 "${model}" 触发 ${reason}。网关正在无缝自动挽救并切至 "${fallbackModel}"...`);
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+
+      let healedPayload = payload;
+      if (payload && typeof payload === 'object') {
+        healedPayload = { ...payload, model: fallbackModel };
+      }
+      retryWithPayload(healedPayload, true);
+      return true;
+    }
+  }
+
+  // 3. Tool calls mismatch -> sanitize and validate tool calls sequence
+  if (classified.isToolCallsMismatch && payload) {
+    console.warn(`[Auto Self-Healing] 上游抛出工具回调不匹配错误: ${errText.slice(0, 160)}。网关正在执行原子工具序列规范化与缺失回复自愈补齐...`);
+    finishRequest();
+    clientRes.removeListener('close', clientCloseHandler);
+
+    let healedPayload = payload;
+    if (Array.isArray(payload.messages)) {
+      healedPayload = { ...payload, messages: codexAdapter.sanitizeAndValidateChatMessages(payload.messages) };
+    } else if (Array.isArray(payload.input)) {
+      const missingMatch = errText.match(/The following tool_call_ids did not have response messages:\s*([^\n\r.]+)/i);
+      const missingIds = missingMatch ? missingMatch[1].split(',').map(s => s.trim()).filter(Boolean) : [];
+      healedPayload = JSON.parse(JSON.stringify(payload));
+      const existingOutputIds = new Set();
+      for (const item of healedPayload.input) {
+        if (item && item.call_id && (item.output !== undefined || (item.type && item.type.endsWith('_output')))) {
+          existingOutputIds.add(item.call_id);
+        }
+      }
+      for (const missingId of missingIds) {
+        if (!existingOutputIds.has(missingId)) {
+          healedPayload.input.push({
+            type: 'custom_tool_call_output',
+            call_id: missingId,
+            output: '{"status":"completed","note":"auto-filled by gateway resilience"}'
+          });
+          existingOutputIds.add(missingId);
+        }
+      }
+    }
+    retryWithPayload(healedPayload, false);
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Unified Bidirectional Responses Protocol Dispatcher (Anthropic vs OpenAI Chat)
  */
-function dispatchResponsesRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds, sessionId) {
+function dispatchResponsesRequest(clientReq, clientRes, responsesBody, account, attemptNumber = 1, triedAccountIds = new Set(), sessionId = null) {
   let model = responsesBody && responsesBody.model;
+  if (typeof model === 'string' && model.startsWith('opencode-go/')) {
+    model = model.slice(12);
+    responsesBody = { ...responsesBody, model };
+  }
   // Pre-emptive model fallback check for heterogeneous upstream nodes (Rule 19)
   if (sessionId && model) {
     const rawReqModel = model.replace(/^opencode-go\//, '');
@@ -1001,49 +1291,39 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
-    // Check if Rate Limited (429) or Service Unavailable (503)
-    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
-      // Dynamic cooldown calculation from Retry-After header
-      let cooldownMs = config.defaultCooldownMs;
-      const retryAfter = upstreamRes.headers['retry-after'];
-      if (retryAfter) {
-        const sec = parseInt(retryAfter, 10);
-        if (!isNaN(sec) && sec > 0) {
-          cooldownMs = sec * 1000;
-        } else {
-          const dateMs = new Date(retryAfter).getTime();
-          if (!isNaN(dateMs) && dateMs > Date.now()) {
-            cooldownMs = dateMs - Date.now();
-          }
-        }
-      }
-
-      recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
-      finishRequest();
-      clientRes.removeListener('close', clientCloseHandler);
-
-      const errorChunks = [];
-      upstreamRes.on('data', chunk => errorChunks.push(chunk));
-      upstreamRes.on('end', () => {
-        if (clientAborted || clientRes.destroyed) return;
-        const nextAccount = selectAccount(sessionId, triedAccountIds);
-
-        if (nextAccount) {
-          if (stat) stat.failoverCount += 1;
-          console.log(`[Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+    // 1. Check Rate Limited (429 or 503 with retry-after)
+    const hasRetryAfter = Boolean(upstreamRes.headers && upstreamRes.headers['retry-after']);
+    if ((statusCode === 429 || (statusCode === 503 && hasRetryAfter)) && !clientAborted && !clientRes.destroyed) {
+      handleRateLimitFailover({
+        protocolTag: 'Proxy',
+        clientRes,
+        account,
+        attemptNumber,
+        triedAccountIds,
+        sessionId,
+        statusCode,
+        upstreamRes,
+        finishRequest,
+        clientCloseHandler,
+        retryFn: (nextAccount) => {
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
-        } else {
-          finishRequest();
-          sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errorChunks).toString('utf8'));
+        },
+        errorFallbackFn: (errText) => {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
       return;
     }
 
-    // Check if Responses protocol is unsupported on upstream for native models
+    // 2. Check if Responses protocol is unsupported on upstream for native models
     if (isResponsesReq && statusCode === 400 && parsedBody && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('error', (err) => {
+        finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+      });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
@@ -1054,20 +1334,25 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           dispatchResponsesRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
         } else {
           finishRequest();
+          clientRes.removeListener('close', clientCloseHandler);
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
       return;
     }
 
-    // Check if Upstream Cluster Glitch (401/500/502/504), Region Blocked (403), Protocol Incompatible (400), Model Unsupported (400/404), or Context Exceeded (400)
-    if ((statusCode === 403 || statusCode === 400 || statusCode === 401 || statusCode === 404 || statusCode === 422 || statusCode === 500 || statusCode === 502 || statusCode === 504) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
+    // 3. Error status codes (400, 401, 403, 404, 422, 500, 502, 503, 504)
+    if (statusCode !== 200 && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
+      upstreamRes.on('error', (err) => {
+        finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+      });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
-
         const classified = classifyUpstreamError(statusCode, errText);
 
         if (classified.isInvalidApiKey) {
@@ -1112,77 +1397,41 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
               sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
             },
             fallbackModelFn: (targetFallback) => {
-              parsedBody.model = targetFallback;
-              const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-              sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+              if (parsedBody && typeof parsedBody === 'object') {
+                parsedBody.model = targetFallback;
+                const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+                sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
+              }
             }
           });
           if (handled) return;
         }
 
-        const isRegionBlocked = classified.isRegionBlocked;
-        const isProtocolUnsupported = classified.isProtocolUnsupported;
-        const isModelUnsupported = classified.isModelUnsupported;
-        const isContextLengthExceeded = classified.isContextLengthExceeded;
-
-        const originalModel = (parsedBody && parsedBody.model) || 'unknown';
-
-        if (isContextLengthExceeded && parsedBody && attemptNumber <= config.maxFailoverRetries) {
-          console.warn(`[Auto Self-Healing] 模型 "${originalModel}" 触发上下文长度超限 (context_length_exceeded)。网关正在执行智能滑动窗口裁剪自愈...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          const beforePrune = JSON.stringify(parsedBody);
-          if (Array.isArray(parsedBody.messages)) {
-            parsedBody.messages = codexAdapter.pruneChatMessages(parsedBody.messages);
-          } else if (Array.isArray(parsedBody.input)) {
-            parsedBody = codexAdapter.pruneResponsesPayload(parsedBody);
+        const handledFallback = handleModelAndContextFallback({
+          protocolTag: 'Proxy',
+          clientRes,
+          account,
+          attemptNumber,
+          triedAccountIds,
+          sessionId,
+          statusCode,
+          errText,
+          classified,
+          model: parsedBody && parsedBody.model,
+          reasoningEffort: parsedBody?.reasoning_effort || parsedBody?.reasoning?.effort,
+          payload: parsedBody,
+          finishRequest,
+          clientCloseHandler,
+          retryWithPayload: (newPayload, isModelChanged) => {
+            parsedBody = newPayload;
+            const newReqBody = Buffer.from(JSON.stringify(newPayload), 'utf8');
+            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId);
           }
-          const afterPrune = JSON.stringify(parsedBody);
-          const wasPruned = beforePrune !== afterPrune;
-
-          if ((attemptNumber > 1 || !wasPruned) && originalModel !== 'kimi-k2.7-code') {
-            console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
-            parsedBody.model = 'kimi-k2.7-code';
-          }
-          const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
-        }
-
-        if ((isRegionBlocked || isProtocolUnsupported || isModelUnsupported) && parsedBody && attemptNumber <= config.maxFailoverRetries) {
-          const eff = parsedBody?.reasoning_effort || parsedBody?.reasoning?.effort;
-          const targetFallback = codexAdapter.resolveCompatibleFallbackModel(originalModel, errText, { reasoningEffort: eff });
-          if (targetFallback && targetFallback !== originalModel) {
-            if (sessionId && originalModel) {
-              const cleanReq = originalModel.replace(/^opencode-go\//, '');
-              sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, targetFallback);
-            }
-            let reason = 'OpenAI 地域封锁 (unsupported_country_region_territory)';
-            if (isProtocolUnsupported) reason = '上游协议不兼容 (ModelProtocolUnsupported)';
-            else if (isModelUnsupported) reason = '上游节点模型限制 (Model Not Supported on Node)';
-            console.log(`[Auto Self-Healing] 模型 "${originalModel}" 触发 ${reason}。网关正在无缝自动挽救并切至 "${targetFallback}"...`);
-            finishRequest();
-            clientRes.removeListener('close', clientCloseHandler);
-            parsedBody.model = targetFallback;
-            const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-            return;
-          }
-        }
-
-        if (classified.isToolCallsMismatch && attemptNumber <= config.maxFailoverRetries) {
-          console.warn(`[Auto Self-Healing] 上游抛出工具回调不匹配错误: ${errText.slice(0, 160)}。网关正在执行消息序列规范化自愈...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          if (Array.isArray(parsedBody.messages)) {
-            parsedBody.messages = codexAdapter.sanitizeAndValidateChatMessages(parsedBody.messages);
-          }
-          const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-          sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
-        }
+        });
+        if (handledFallback) return;
 
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
@@ -1190,22 +1439,6 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded) {
       finishRequest();
-      return;
-    }
-
-    if (statusCode !== 200) {
-      const errChunks = [];
-      upstreamRes.on('data', chunk => errChunks.push(chunk));
-      upstreamRes.on('error', (err) => {
-        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
-        finishRequest();
-        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
-      });
-      upstreamRes.on('end', () => {
-        if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
-        finishRequest();
-        sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errChunks).toString('utf8'));
-      });
       return;
     }
 
@@ -1237,22 +1470,34 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
 
     console.error(`[Upstream Proxy Error] Account "${account.name}":`, err.stack || err.message);
-    if (!responded && attemptNumber <= config.maxFailoverRetries) {
-      const nextAccount = selectAccount(sessionId, triedAccountIds);
-      if (nextAccount) {
-        if (stat) stat.failoverCount += 1;
-        console.log(`[Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
-        sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
-        return;
-      } else if (attemptNumber === 1) {
-        console.warn(`[Auto Self-Healing] Account "${account.name}" encountered transient network error: ${err.message}. Retrying with fresh session jitter...`);
-        const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
-        setTimeout(() => {
-          if (clientRes.destroyed || clientRes.writableEnded) return;
+    if (!responded) {
+      const handled = handleNetworkErrorFailover({
+        protocolTag: 'Proxy',
+        clientRes,
+        account,
+        attemptNumber,
+        triedAccountIds,
+        sessionId,
+        err,
+        model: parsedBody && parsedBody.model,
+        reasoningEffort: parsedBody?.reasoning_effort || parsedBody?.reasoning?.effort,
+        finishRequest,
+        clientCloseHandler,
+        retryCurrentAccount: (retrySessionId) => {
           sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
-        }, 350);
-        return;
-      }
+        },
+        retryNextAccount: (nextAccount) => {
+          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+        },
+        fallbackModelFn: (targetFallback) => {
+          if (parsedBody && typeof parsedBody === 'object') {
+            parsedBody.model = targetFallback;
+            const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
+          }
+        }
+      });
+      if (handled) return;
     }
 
     if (!responded) {
@@ -1382,47 +1627,38 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
-    // 429 / 503 failover
-    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
-      let cooldownMs = config.defaultCooldownMs;
-      const retryAfter = upstreamRes.headers['retry-after'];
-      if (retryAfter) {
-        const sec = parseInt(retryAfter, 10);
-        if (!isNaN(sec) && sec > 0) cooldownMs = sec * 1000;
-        else {
-          const dateMs = new Date(retryAfter).getTime();
-          if (!isNaN(dateMs) && dateMs > Date.now()) cooldownMs = dateMs - Date.now();
-        }
-      }
-      recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
-      finishRequest();
-      clientRes.removeListener('close', clientCloseHandler);
-
-      const errorChunks = [];
-      upstreamRes.on('data', chunk => errorChunks.push(chunk));
-      upstreamRes.on('end', () => {
-        if (clientAborted || clientRes.destroyed) return;
-        const nextAccount = selectAccount(sessionId, triedAccountIds);
-        if (nextAccount) {
-          if (stat) stat.failoverCount += 1;
-          console.log(`[Bridge Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+    // 1. Check Rate Limited (429 or 503 with retry-after)
+    const hasRetryAfter = Boolean(upstreamRes.headers && upstreamRes.headers['retry-after']);
+    if ((statusCode === 429 || (statusCode === 503 && hasRetryAfter)) && !clientAborted && !clientRes.destroyed) {
+      handleRateLimitFailover({
+        protocolTag: 'Bridge',
+        clientRes,
+        account,
+        attemptNumber,
+        triedAccountIds,
+        sessionId,
+        statusCode,
+        upstreamRes,
+        finishRequest,
+        clientCloseHandler,
+        retryFn: (nextAccount) => {
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
-        } else {
-          responded = true;
-          finishRequest();
-          sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errorChunks).toString('utf8'));
+        },
+        errorFallbackFn: (errText) => {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
       return;
     }
 
-    if (statusCode !== 200) {
+    if (statusCode !== 200 && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('error', (err) => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         responded = true;
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
       });
       upstreamRes.on('end', () => {
@@ -1473,83 +1709,37 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             },
             fallbackModelFn: (targetFallback) => {
               const healedBody = { ...responsesBody, model: targetFallback };
-              dispatchResponsesRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+              dispatchResponsesRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
             }
           });
           if (handled) return;
         }
 
-        if ((classified.isContextLengthExceeded || classified.isEmptyStreamError) && attemptNumber <= config.maxFailoverRetries) {
-          const warnReason = classified.isContextLengthExceeded ? `上下文长度超限 (${reqModel}): ${errText.slice(0, 160)}` : `上游空流/尺寸截断拦截 (${reqModel})`;
-          console.warn(`[Auto Self-Healing] Codex 请求触发 ${warnReason}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          const beforePrune = JSON.stringify(responsesBody);
-          let prunedBody = codexAdapter.pruneResponsesPayload(responsesBody);
-          const afterPrune = JSON.stringify(prunedBody);
-          const wasPruned = beforePrune !== afterPrune;
-
-          if ((attemptNumber > 1 || !wasPruned) && reqModel !== 'kimi-k2.7-code') {
-            console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
-            prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
+        const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+        const handledFallback = handleModelAndContextFallback({
+          protocolTag: 'Bridge',
+          clientRes,
+          account,
+          attemptNumber,
+          triedAccountIds,
+          sessionId,
+          statusCode,
+          errText,
+          classified,
+          model: reqModel,
+          reasoningEffort: eff,
+          payload: responsesBody,
+          finishRequest,
+          clientCloseHandler,
+          retryWithPayload: (newPayload, isModelChanged) => {
+            dispatchResponsesRequest(clientReq, clientRes, newPayload, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId);
           }
-          dispatchResponsesRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
-        }
-
-        if ((classified.isProtocolUnsupported || classified.isRegionBlocked || classified.isModelUnsupported) && attemptNumber <= config.maxFailoverRetries) {
-          const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
-          const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText, { reasoningEffort: eff });
-          if (fallbackModel && fallbackModel !== reqModel) {
-            if (sessionId && reqModel) {
-              const cleanReq = reqModel.replace(/^opencode-go\//, '');
-              sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, fallbackModel);
-            }
-            let reason = classified.isProtocolUnsupported ? '上游协议暂未支持该模型 (ModelProtocolUnsupported)' : '上游地域限制 (Region Blocked)';
-            if (classified.isModelUnsupported) reason = '上游节点可用模型限制 (Model Not Supported on Node)';
-            console.warn(`[Auto Self-Healing] 模型 "${reqModel}" 触发 ${reason}。网关正在无缝自动挽救并切换至 "${fallbackModel}"...`);
-            finishRequest();
-            clientRes.removeListener('close', clientCloseHandler);
-            const healedResponsesBody = { ...responsesBody, model: fallbackModel };
-            dispatchResponsesRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-            return;
-          }
-        }
-
-        if (classified.isToolCallsMismatch && attemptNumber <= config.maxFailoverRetries) {
-          console.warn(`[Auto Self-Healing] 上游抛出工具回调不匹配错误: ${errText.slice(0, 160)}。网关正在执行原子工具序列规范化与缺失回复自愈补齐...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-
-          const missingMatch = errText.match(/The following tool_call_ids did not have response messages:\s*([^\n\r.]+)/i);
-          const missingIds = missingMatch ? missingMatch[1].split(',').map(s => s.trim()).filter(Boolean) : [];
-
-          const healedBody = JSON.parse(JSON.stringify(responsesBody));
-          if (Array.isArray(healedBody.input)) {
-            const existingOutputIds = new Set();
-            for (const item of healedBody.input) {
-              if (item && (item.type === 'function_call_output' || item.output !== undefined)) {
-                if (item.call_id) existingOutputIds.add(item.call_id);
-              }
-            }
-            for (const missingId of missingIds) {
-              if (!existingOutputIds.has(missingId)) {
-                healedBody.input.push({
-                  type: 'function_call_output',
-                  call_id: missingId,
-                  output: '{"status":"completed","note":"auto-filled by gateway resilience"}'
-                });
-                existingOutputIds.add(missingId);
-              }
-            }
-          }
-
-          bridgeResponsesToChatRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
-        }
+        });
+        if (handledFallback) return;
 
         responded = true;
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
@@ -1583,11 +1773,17 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           const headers = getCorsHeaders(upstreamRes.headers);
           headers['content-type'] = 'application/json; charset=utf-8';
           headers['content-length'] = String(outBuf.length);
-          clientRes.writeHead(responsesJson.status === 'failed' ? 502 : 200, headers);
+          if (!clientRes.headersSent) {
+            clientRes.writeHead(responsesJson.status === 'failed' ? 502 : 200, headers);
+          }
           clientRes.end(outBuf);
         } catch (e) {
-          clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-          clientRes.end(JSON.stringify({ error: { message: 'Bridge parse error: ' + e.message } }));
+          if (!clientRes.headersSent) {
+            clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          }
+          if (!clientRes.writableEnded) {
+            clientRes.end(JSON.stringify({ error: { message: 'Bridge parse error: ' + e.message } }));
+          }
         }
       });
       upstreamRes.on('error', (err) => {
@@ -1616,22 +1812,32 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     clientRes.removeListener('close', clientCloseHandler);
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
 
-    if (!responded && attemptNumber <= config.maxFailoverRetries) {
-      const nextAccount = selectAccount(sessionId, triedAccountIds);
-      if (nextAccount) {
-        if (stat) stat.failoverCount += 1;
-        console.log(`[Bridge Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
-        bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
-        return;
-      } else if (attemptNumber === 1) {
-        console.warn(`[Auto Self-Healing] Bridge account "${account.name}" encountered transient network error: ${err.message}. Retrying with fresh session jitter...`);
-        const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
-        setTimeout(() => {
-          if (clientRes.destroyed || clientRes.writableEnded) return;
+    if (!responded) {
+      const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+      const handled = handleNetworkErrorFailover({
+        protocolTag: 'Bridge',
+        clientRes,
+        account,
+        attemptNumber,
+        triedAccountIds,
+        sessionId,
+        err,
+        model: reqModel,
+        reasoningEffort: eff,
+        finishRequest,
+        clientCloseHandler,
+        retryCurrentAccount: (retrySessionId) => {
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
-        }, 350);
-        return;
-      }
+        },
+        retryNextAccount: (nextAccount) => {
+          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+        },
+        fallbackModelFn: (targetFallback) => {
+          const healedBody = { ...responsesBody, model: targetFallback };
+          dispatchResponsesRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
+        }
+      });
+      if (handled) return;
     }
 
     if (!responded) {
@@ -1754,47 +1960,38 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
-    // 429 / 503 failover
-    if ((statusCode === 429 || statusCode === 503) && attemptNumber <= config.maxFailoverRetries && !clientAborted && !clientRes.destroyed) {
-      let cooldownMs = config.defaultCooldownMs;
-      const retryAfter = upstreamRes.headers['retry-after'];
-      if (retryAfter) {
-        const sec = parseInt(retryAfter, 10);
-        if (!isNaN(sec) && sec > 0) cooldownMs = sec * 1000;
-        else {
-          const dateMs = new Date(retryAfter).getTime();
-          if (!isNaN(dateMs) && dateMs > Date.now()) cooldownMs = dateMs - Date.now();
-        }
-      }
-      recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
-      finishRequest();
-      clientRes.removeListener('close', clientCloseHandler);
-
-      const errorChunks = [];
-      upstreamRes.on('data', chunk => errorChunks.push(chunk));
-      upstreamRes.on('end', () => {
-        if (clientAborted || clientRes.destroyed) return;
-        const nextAccount = selectAccount(sessionId, triedAccountIds);
-        if (nextAccount) {
-          if (stat) stat.failoverCount += 1;
-          console.log(`[Anthropic Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+    // 1. Check Rate Limited (429 or 503 with retry-after)
+    const hasRetryAfter = Boolean(upstreamRes.headers && upstreamRes.headers['retry-after']);
+    if ((statusCode === 429 || (statusCode === 503 && hasRetryAfter)) && !clientAborted && !clientRes.destroyed) {
+      handleRateLimitFailover({
+        protocolTag: 'Anthropic',
+        clientRes,
+        account,
+        attemptNumber,
+        triedAccountIds,
+        sessionId,
+        statusCode,
+        upstreamRes,
+        finishRequest,
+        clientCloseHandler,
+        retryFn: (nextAccount) => {
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
-        } else {
-          responded = true;
-          finishRequest();
-          sendStandardizedError(clientRes, upstreamRes, statusCode, Buffer.concat(errorChunks).toString('utf8'));
+        },
+        errorFallbackFn: (errText) => {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
       return;
     }
 
-    if (statusCode !== 200) {
+    if (statusCode !== 200 && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       upstreamRes.on('data', chunk => errChunks.push(chunk));
       upstreamRes.on('error', (err) => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         responded = true;
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
       });
       upstreamRes.on('end', () => {
@@ -1845,42 +2042,37 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             },
             fallbackModelFn: (targetFallback) => {
               const healedBody = { ...responsesBody, model: targetFallback };
-              dispatchResponsesRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
+              dispatchResponsesRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
             }
           });
           if (handled) return;
         }
 
-        if ((classified.isContextLengthExceeded || classified.isEmptyStreamError) && attemptNumber <= config.maxFailoverRetries) {
-          const warnReason = classified.isContextLengthExceeded ? `上下文超限 (${reqModel})` : `上游空流/尺寸截断拦截 (${reqModel})`;
-          console.warn(`[Auto Self-Healing] Anthropic 请求触发 ${warnReason}。网关正在执行智能滑动窗口裁剪自愈...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          const beforePrune = JSON.stringify(responsesBody);
-          let prunedBody = codexAdapter.pruneResponsesPayload(responsesBody);
-          const afterPrune = JSON.stringify(prunedBody);
-          const wasPruned = beforePrune !== afterPrune;
-
-          if ((attemptNumber > 1 || !wasPruned) && reqModel !== 'kimi-k2.7-code') {
-            console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
-            prunedBody = { ...prunedBody, model: 'kimi-k2.7-code' };
+        const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+        const handledFallback = handleModelAndContextFallback({
+          protocolTag: 'Anthropic',
+          clientRes,
+          account,
+          attemptNumber,
+          triedAccountIds,
+          sessionId,
+          statusCode,
+          errText,
+          classified,
+          model: reqModel,
+          reasoningEffort: eff,
+          payload: responsesBody,
+          finishRequest,
+          clientCloseHandler,
+          retryWithPayload: (newPayload, isModelChanged) => {
+            dispatchResponsesRequest(clientReq, clientRes, newPayload, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId);
           }
-          dispatchResponsesRequest(clientReq, clientRes, prunedBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
-        }
-
-        if (classified.isModelUnsupported && attemptNumber <= config.maxFailoverRetries) {
-          const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(reqModel, errText);
-          console.warn(`[Auto Self-Healing] Anthropic 模型 "${reqModel}" 触发模型限制。网关正在切换至通用协议桥模型 "${fallbackModel}"...`);
-          finishRequest();
-          clientRes.removeListener('close', clientCloseHandler);
-          const healedResponsesBody = { ...responsesBody, model: fallbackModel };
-          dispatchResponsesRequest(clientReq, clientRes, healedResponsesBody, account, attemptNumber + 1, triedAccountIds, sessionId);
-          return;
-        }
+        });
+        if (handledFallback) return;
 
         responded = true;
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
@@ -1914,11 +2106,17 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           const headers = getCorsHeaders(upstreamRes.headers);
           headers['content-type'] = 'application/json; charset=utf-8';
           headers['content-length'] = String(outBuf.length);
-          clientRes.writeHead(responsesJson.status === 'failed' ? 502 : 200, headers);
+          if (!clientRes.headersSent) {
+            clientRes.writeHead(responsesJson.status === 'failed' ? 502 : 200, headers);
+          }
           clientRes.end(outBuf);
         } catch (e) {
-          clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-          clientRes.end(JSON.stringify({ error: { message: 'Anthropic parse error: ' + e.message } }));
+          if (!clientRes.headersSent) {
+            clientRes.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          }
+          if (!clientRes.writableEnded) {
+            clientRes.end(JSON.stringify({ error: { message: 'Anthropic parse error: ' + e.message } }));
+          }
         }
       });
       upstreamRes.on('error', (err) => {
@@ -1947,22 +2145,32 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     clientRes.removeListener('close', clientCloseHandler);
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
 
-    if (!responded && attemptNumber <= config.maxFailoverRetries) {
-      const nextAccount = selectAccount(sessionId, triedAccountIds);
-      if (nextAccount) {
-        if (stat) stat.failoverCount += 1;
-        console.log(`[Anthropic Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}"`);
-        bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
-        return;
-      } else if (attemptNumber === 1) {
-        console.warn(`[Auto Self-Healing] Anthropic bridge account "${account.name}" encountered transient network error: ${err.message}. Retrying with fresh session jitter...`);
-        const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
-        setTimeout(() => {
-          if (clientRes.destroyed || clientRes.writableEnded) return;
+    if (!responded) {
+      const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
+      const handled = handleNetworkErrorFailover({
+        protocolTag: 'Anthropic',
+        clientRes,
+        account,
+        attemptNumber,
+        triedAccountIds,
+        sessionId,
+        err,
+        model: reqModel,
+        reasoningEffort: eff,
+        finishRequest,
+        clientCloseHandler,
+        retryCurrentAccount: (retrySessionId) => {
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
-        }, 350);
-        return;
-      }
+        },
+        retryNextAccount: (nextAccount) => {
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+        },
+        fallbackModelFn: (targetFallback) => {
+          const healedBody = { ...responsesBody, model: targetFallback };
+          dispatchResponsesRequest(clientReq, clientRes, healedBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
+        }
+      });
+      if (handled) return;
     }
 
     if (!responded) {
@@ -7204,9 +7412,14 @@ if (require.main === module) {
 
 module.exports = {
   server,
+  config,
   classifyUpstreamError,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
+  handleRateLimitFailover,
+  handleNetworkErrorFailover,
+  handleModelAndContextFallback,
   dispatchResponsesRequest,
-  sessionModelFallbackCache
+  sessionModelFallbackCache,
+  setSessionModelFallback
 };

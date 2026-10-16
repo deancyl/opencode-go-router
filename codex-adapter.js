@@ -1000,8 +1000,8 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
       .filter(s => s && /^[a-zA-Z0-9_.-]+$/.test(s) && s.toLowerCase() !== cleanReq);
 
     if (candidates.length > 0) {
-      // 1.0 Flagship preference guard: If xhigh reasoning effort or flagship preference is explicitly set, prioritize pro/max
-      if (options.preferFlagship || options.reasoningEffort === 'xhigh') {
+      // 1.0 Flagship preference guard: If high/xhigh reasoning effort or flagship preference is explicitly set, prioritize pro/max
+      if (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high') {
         const proHit = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('max'));
         if (proHit) return proHit;
       }
@@ -1043,7 +1043,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   }
 
   // 2. Heuristic rules when candidate list is absent from error text
-  if (options.preferFlagship || options.reasoningEffort === 'xhigh') {
+  if (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high') {
     return 'deepseek-v4-pro';
   }
   if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash') {
@@ -1063,7 +1063,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     return 'deepseek-v4-pro';
   }
   if (cleanReq.startsWith('kimi-')) {
-    return 'kimi-k3';
+    return cleanReq === 'kimi-k3' ? 'kimi-k2.7-code' : 'kimi-k3';
   }
   if (cleanReq.startsWith('glm')) {
     if (cleanReq.includes('flash') || cleanReq.includes('speed') || cleanReq.includes('mini')) {
@@ -1072,7 +1072,17 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     return cleanReq === 'glm-5.3' ? 'glm-5.2' : 'glm-5.3';
   }
   if (cleanReq.startsWith('qwen')) {
-    return 'qwen3.7-max';
+    return cleanReq === 'qwen3.7-max' ? 'deepseek-v4-pro' : 'qwen3.7-max';
+  }
+  if (cleanReq.startsWith('gemini')) {
+    if (cleanReq.includes('flash')) return 'deepseek-flash';
+    return 'deepseek-v4-pro';
+  }
+  if (cleanReq.startsWith('llama')) {
+    return 'deepseek-v4-pro';
+  }
+  if (cleanReq.startsWith('minimax')) {
+    return 'deepseek-v4-pro';
   }
 
   return cleanReq === 'deepseek-flash' ? 'deepseek-v4-pro' : 'deepseek-flash';
@@ -1619,12 +1629,18 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
         if (typeof item.content === 'string') {
           content = item.content;
         } else if (Array.isArray(item.content)) {
-          const hasImages = item.content.some(c => c && (c.type === 'input_image' || c.type === 'image_url'));
+          const hasImages = item.content.some(c => c && (c.type === 'input_image' || c.type === 'image_url' || c.type === 'image' || (c.source && c.source.type)));
           if (hasImages) {
             content = item.content.map(c => {
               if (typeof c === 'string') return { type: 'text', text: c };
               if (c.type === 'input_text' || c.type === 'text') return { type: 'text', text: c.text || '' };
-              if (c.type === 'input_image') return { type: 'image_url', image_url: { url: c.image_url || c.url } };
+              if (c.type === 'input_image' || c.type === 'image_url' || c.type === 'image' || (c.source && c.source.type)) {
+                if (c.image_url && typeof c.image_url === 'object' && c.image_url.url) {
+                  return { type: 'image_url', image_url: c.image_url };
+                }
+                const url = typeof c.image_url === 'string' ? c.image_url : (c.url || (c.source?.data ? `data:${c.source.media_type || 'image/png'};base64,${c.source.data}` : ''));
+                return { type: 'image_url', image_url: { url } };
+              }
               return c;
             });
           } else {
@@ -2469,17 +2485,66 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
         });
       } else if (itemType === 'message' || item.role || itemType === 'agent_message') {
         const rawRole = item.role || (itemType === 'agent_message' ? 'assistant' : 'user');
-        let text = '';
+        let content = '';
         if (typeof item.content === 'string') {
-          text = item.content;
+          content = item.content;
         } else if (Array.isArray(item.content)) {
-          text = item.content.map(c => typeof c === 'string' ? c : (c.text || '')).join('\n');
+          const hasImages = item.content.some(c => c && (c.type === 'input_image' || c.type === 'image_url' || c.type === 'image' || (c.source && c.source.type)));
+          if (hasImages) {
+            content = item.content.map(c => {
+              if (typeof c === 'string') return { type: 'text', text: c };
+              if (c.type === 'input_text' || c.type === 'text') return { type: 'text', text: c.text || '' };
+              if (c.type === 'input_image' || c.type === 'image_url' || c.type === 'image' || (c.source && c.source.type)) {
+                if (c.source && c.source.type) {
+                  return c;
+                }
+                const imgUrl = c.image_url?.url || (typeof c.image_url === 'string' ? c.image_url : '') || c.url || '';
+                if (typeof imgUrl === 'string' && imgUrl.startsWith('data:')) {
+                  const m = imgUrl.match(/^data:([^;]+);base64,(.+)$/);
+                  if (m) {
+                    return {
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: m[1],
+                        data: m[2]
+                      }
+                    };
+                  }
+                }
+                if (c.data && (c.media_type || c.mime_type || c.format)) {
+                  const mediaType = c.media_type || c.mime_type || (c.format ? `image/${c.format}` : 'image/png');
+                  return {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: mediaType,
+                      data: c.data
+                    }
+                  };
+                }
+                return {
+                  type: 'image',
+                  source: {
+                    type: 'url',
+                    url: imgUrl
+                  }
+                };
+              }
+              return c;
+            });
+          } else {
+            content = item.content.map(c => typeof c === 'string' ? c : (c.text || '')).join('\n');
+          }
         }
 
         if (rawRole === 'developer' || rawRole === 'system') {
-          system = system ? (system + '\n' + text) : text;
+          const textContent = Array.isArray(content)
+            ? content.filter(c => c && c.type === 'text').map(c => c.text).join('\n')
+            : String(content || '');
+          system = system ? (system + '\n' + textContent) : textContent;
         } else {
-          rawMessages.push({ role: rawRole, content: text });
+          rawMessages.push({ role: rawRole, content });
         }
       }
     }
