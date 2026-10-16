@@ -207,7 +207,7 @@ setInterval(() => {
       }
     }
   }
-}, 600000);
+}, 600000).unref();
 
 let rrIndex = 0;
 
