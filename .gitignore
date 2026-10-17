@@ -30,4 +30,5 @@ nas_ssh_helper.py
 sync_nas.py
 run_nas_tests.py
 compression-stats.json
+compression-history.json
 .agents/

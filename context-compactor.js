@@ -730,6 +730,20 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
 }
 
 const STATS_FILE = path.join(__dirname, 'compression-stats.json');
+const HISTORY_FILE = path.join(__dirname, 'compression-history.json');
+
+const BUCKET_DEFINITIONS = {
+  m5: { intervalMs: 5 * 60 * 1000, maxBuckets: 12, maxAgeMs: 60 * 60 * 1000 },
+  h1: { intervalMs: 60 * 60 * 1000, maxBuckets: 24, maxAgeMs: 24 * 60 * 60 * 1000 },
+  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 7, maxAgeMs: 7 * 24 * 60 * 60 * 1000 }
+};
+
+const RANGE_CONFIG = {
+  '1h': { tier: 'm5', windowMs: 60 * 60 * 1000, label: '过去 1 小时' },
+  '24h': { tier: 'h1', windowMs: 24 * 60 * 60 * 1000, label: '过去 24 小时' },
+  '7d': { tier: 'd1', windowMs: 7 * 24 * 60 * 60 * 1000, label: '过去 7 天' },
+  'all': { tier: null, windowMs: Infinity, label: '全部历史累计' }
+};
 
 let compressionStats = {
   totalOriginalChars: 0,
@@ -749,6 +763,130 @@ let compressionStats = {
   lastResetAt: new Date().toISOString(),
   updatedAt: new Date().toISOString()
 };
+
+let compressionHistory = {
+  all: compressionStats,
+  buckets: {
+    m5: [],
+    h1: [],
+    d1: []
+  },
+  lastResetAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+};
+
+function createEmptyBucket(startTime, endTime) {
+  return {
+    startTime,
+    endTime,
+    totalOriginalChars: 0,
+    totalCompressedChars: 0,
+    totalSavedChars: 0,
+    savedTokens: 0,
+    savedCostUSD: 0,
+    modules: {
+      rtk: { savedChars: 0, savedTokens: 0 },
+      headroom: { savedChars: 0, savedTokens: 0 },
+      schema: { savedChars: 0, savedTokens: 0, alignedRounds: 0, alignedToolsCount: 0 },
+      cacheZone: { savedChars: 0, savedTokens: 0 },
+      powershell: { savedChars: 0, savedTokens: 0 }
+    },
+    byModel: {}
+  };
+}
+
+function pruneExpiredBuckets(now = Date.now()) {
+  if (!compressionHistory || !compressionHistory.buckets) {
+    compressionHistory.buckets = { m5: [], h1: [], d1: [] };
+    return;
+  }
+  for (const [tier, def] of Object.entries(BUCKET_DEFINITIONS)) {
+    let list = compressionHistory.buckets[tier];
+    if (!Array.isArray(list)) {
+      compressionHistory.buckets[tier] = [];
+      continue;
+    }
+    const cutoff = now - def.maxAgeMs;
+    list = list.filter(b => b && typeof b.endTime === 'number' && b.endTime > cutoff && b.startTime <= now + def.intervalMs);
+    list.sort((a, b) => a.startTime - b.startTime);
+    if (list.length > def.maxBuckets) {
+      list = list.slice(list.length - def.maxBuckets);
+    }
+    compressionHistory.buckets[tier] = list;
+  }
+}
+
+function getOrCreateBucket(tier, ts, now = Date.now()) {
+  const def = BUCKET_DEFINITIONS[tier];
+  if (!def) return null;
+  if (ts < now - def.maxAgeMs) return null;
+
+  const start = Math.floor(ts / def.intervalMs) * def.intervalMs;
+  const end = start + def.intervalMs;
+
+  let list = compressionHistory.buckets[tier];
+  if (!Array.isArray(list)) {
+    list = [];
+    compressionHistory.buckets[tier] = list;
+  }
+
+  let bucket = list.find(b => b.startTime === start);
+  if (!bucket) {
+    bucket = createEmptyBucket(start, end);
+    list.push(bucket);
+    list.sort((a, b) => a.startTime - b.startTime);
+    if (list.length > def.maxBuckets) {
+      list = list.slice(list.length - def.maxBuckets);
+      compressionHistory.buckets[tier] = list;
+    }
+  }
+  return bucket;
+}
+
+function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelName) {
+  const bucket = getOrCreateBucket(tier, ts);
+  if (!bucket) return;
+
+  bucket.totalOriginalChars += validOrig;
+  bucket.totalCompressedChars += (validOrig - validSaved);
+  bucket.totalSavedChars += validSaved;
+
+  if (moduleName && bucket.modules && bucket.modules[moduleName]) {
+    bucket.modules[moduleName].savedChars += validSaved;
+    bucket.modules[moduleName].savedTokens = Math.round(bucket.modules[moduleName].savedChars / 3.8);
+  }
+
+  if (modelName) {
+    const model = normalizeModelName(modelName);
+    if (model) {
+      if (!bucket.byModel) bucket.byModel = {};
+      if (!bucket.byModel[model]) {
+        bucket.byModel[model] = {
+          savedChars: 0,
+          savedTokens: 0,
+          savedCostUSD: 0,
+          originalChars: 0,
+          ratePer1M: getModelRate(model)
+        };
+      }
+      const mEntry = bucket.byModel[model];
+      mEntry.savedChars += validSaved;
+      mEntry.originalChars += validOrig;
+      mEntry.savedTokens = Math.round(mEntry.savedChars / 3.8);
+      mEntry.ratePer1M = getModelRate(model);
+      mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
+    }
+  }
+}
+
+function recordBucketSchemaAlignment(tier, ts, rounds = 1, toolsCount = 0) {
+  const bucket = getOrCreateBucket(tier, ts);
+  if (!bucket) return;
+  if (!bucket.modules.schema.alignedRounds) bucket.modules.schema.alignedRounds = 0;
+  if (!bucket.modules.schema.alignedToolsCount) bucket.modules.schema.alignedToolsCount = 0;
+  bucket.modules.schema.alignedRounds += rounds;
+  bucket.modules.schema.alignedToolsCount += toolsCount;
+}
 
 function computeDerivedStats(stats) {
   const modulesSum = Object.values(stats.modules || {}).reduce((sum, m) => sum + (Number(m.savedChars) || 0), 0);
@@ -802,9 +940,30 @@ function computeDerivedStats(stats) {
 
 function saveStatsToDisk() {
   try {
-    const tmp = `${STATS_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmp, JSON.stringify(compressionStats, null, 2), 'utf8');
-    fs.renameSync(tmp, STATS_FILE);
+    pruneExpiredBuckets();
+    compressionHistory.all = compressionStats;
+    compressionHistory.lastResetAt = compressionStats.lastResetAt;
+    compressionHistory.updatedAt = new Date().toISOString();
+
+    let historyJson = JSON.stringify(compressionHistory, null, 2);
+    // Boundary guard: Strictly enforce < 200KB disk limit to eliminate memory/disk bloat
+    if (Buffer.byteLength(historyJson, 'utf8') > 190 * 1024) {
+      for (const tier of ['d1', 'h1', 'm5']) {
+        if (compressionHistory.buckets[tier] && compressionHistory.buckets[tier].length > 4) {
+          compressionHistory.buckets[tier] = compressionHistory.buckets[tier].slice(-4);
+        }
+      }
+      historyJson = JSON.stringify(compressionHistory, null, 2);
+    }
+
+    const tmpHist = `${HISTORY_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmpHist, historyJson, 'utf8');
+    fs.renameSync(tmpHist, HISTORY_FILE);
+
+    // Save legacy compression-stats.json for 100% compatibility with existing test assertions
+    const tmpStats = `${STATS_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmpStats, JSON.stringify(compressionStats, null, 2), 'utf8');
+    fs.renameSync(tmpStats, STATS_FILE);
   } catch (err) {
     // Non-fatal, sandbox logged
   }
@@ -829,53 +988,80 @@ function flushStatsToDisk() {
 
 function loadStatsFromDisk() {
   try {
+    let loadedHistory = null;
+    if (fs.existsSync(HISTORY_FILE)) {
+      try {
+        const rawHist = fs.readFileSync(HISTORY_FILE, 'utf8');
+        loadedHistory = JSON.parse(rawHist);
+      } catch (_) {}
+    }
+
+    let loadedStats = null;
     if (fs.existsSync(STATS_FILE)) {
-      const raw = fs.readFileSync(STATS_FILE, 'utf8');
-      const loaded = JSON.parse(raw);
-      if (loaded && typeof loaded === 'object') {
-        let loadedByModel = {};
-        if (loaded.byModel && typeof loaded.byModel === 'object') {
-          for (const [m, data] of Object.entries(loaded.byModel)) {
-            if (data && typeof data === 'object') {
-              const cleanM = normalizeModelName(m) || m;
-              loadedByModel[cleanM] = {
-                savedChars: Number(data.savedChars) || 0,
-                savedTokens: Number(data.savedTokens) || 0,
-                savedCostUSD: Number(data.savedCostUSD) || 0,
-                originalChars: Number(data.originalChars) || 0,
-                ratePer1M: typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(cleanM)
-              };
-            }
+      try {
+        const rawStats = fs.readFileSync(STATS_FILE, 'utf8');
+        loadedStats = JSON.parse(rawStats);
+      } catch (_) {}
+    }
+
+    const sourceStats = (loadedHistory && loadedHistory.all && typeof loadedHistory.all === 'object')
+      ? loadedHistory.all
+      : (loadedStats && typeof loadedStats === 'object' ? loadedStats : null);
+
+    if (sourceStats) {
+      let loadedByModel = {};
+      if (sourceStats.byModel && typeof sourceStats.byModel === 'object') {
+        for (const [m, data] of Object.entries(sourceStats.byModel)) {
+          if (data && typeof data === 'object') {
+            const cleanM = normalizeModelName(m) || m;
+            loadedByModel[cleanM] = {
+              savedChars: Number(data.savedChars) || 0,
+              savedTokens: Number(data.savedTokens) || 0,
+              savedCostUSD: Number(data.savedCostUSD) || 0,
+              originalChars: Number(data.originalChars) || 0,
+              ratePer1M: typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(cleanM)
+            };
           }
         }
-
-        compressionStats = {
-          totalOriginalChars: Number(loaded.totalOriginalChars) || 0,
-          totalCompressedChars: Number(loaded.totalCompressedChars) || 0,
-          totalSavedChars: Number(loaded.totalSavedChars) || 0,
-          savedTokens: Number(loaded.savedTokens) || 0,
-          savedCostUSD: Number(loaded.savedCostUSD) || 0,
-          compressionRatio: Number(loaded.compressionRatio) || 0,
-          byModel: loadedByModel,
-          modules: {
-            rtk: { savedChars: (loaded.modules && loaded.modules.rtk && loaded.modules.rtk.savedChars) || 0, savedTokens: 0, percentage: 0 },
-            headroom: { savedChars: (loaded.modules && loaded.modules.headroom && loaded.modules.headroom.savedChars) || 0, savedTokens: 0, percentage: 0 },
-            schema: {
-              savedChars: (loaded.modules && loaded.modules.schema && loaded.modules.schema.savedChars) || 0,
-              savedTokens: 0,
-              percentage: 0,
-              alignedRounds: (loaded.modules && loaded.modules.schema && loaded.modules.schema.alignedRounds) || 0,
-              alignedToolsCount: (loaded.modules && loaded.modules.schema && loaded.modules.schema.alignedToolsCount) || 0
-            },
-            cacheZone: { savedChars: (loaded.modules && loaded.modules.cacheZone && loaded.modules.cacheZone.savedChars) || 0, savedTokens: 0, percentage: 0 },
-            powershell: { savedChars: (loaded.modules && loaded.modules.powershell && loaded.modules.powershell.savedChars) || 0, savedTokens: 0, percentage: 0 }
-          },
-          lastResetAt: loaded.lastResetAt || new Date().toISOString(),
-          updatedAt: loaded.updatedAt || new Date().toISOString()
-        };
-        computeDerivedStats(compressionStats);
       }
+
+      compressionStats = {
+        totalOriginalChars: Number(sourceStats.totalOriginalChars) || 0,
+        totalCompressedChars: Number(sourceStats.totalCompressedChars) || 0,
+        totalSavedChars: Number(sourceStats.totalSavedChars) || 0,
+        savedTokens: Number(sourceStats.savedTokens) || 0,
+        savedCostUSD: Number(sourceStats.savedCostUSD) || 0,
+        compressionRatio: Number(sourceStats.compressionRatio) || 0,
+        byModel: loadedByModel,
+        modules: {
+          rtk: { savedChars: (sourceStats.modules && sourceStats.modules.rtk && sourceStats.modules.rtk.savedChars) || 0, savedTokens: 0, percentage: 0 },
+          headroom: { savedChars: (sourceStats.modules && sourceStats.modules.headroom && sourceStats.modules.headroom.savedChars) || 0, savedTokens: 0, percentage: 0 },
+          schema: {
+            savedChars: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.savedChars) || 0,
+            savedTokens: 0,
+            percentage: 0,
+            alignedRounds: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.alignedRounds) || 0,
+            alignedToolsCount: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.alignedToolsCount) || 0
+          },
+          cacheZone: { savedChars: (sourceStats.modules && sourceStats.modules.cacheZone && sourceStats.modules.cacheZone.savedChars) || 0, savedTokens: 0, percentage: 0 },
+          powershell: { savedChars: (sourceStats.modules && sourceStats.modules.powershell && sourceStats.modules.powershell.savedChars) || 0, savedTokens: 0, percentage: 0 }
+        },
+        lastResetAt: sourceStats.lastResetAt || (loadedHistory && loadedHistory.lastResetAt) || new Date().toISOString(),
+        updatedAt: sourceStats.updatedAt || (loadedHistory && loadedHistory.updatedAt) || new Date().toISOString()
+      };
+      computeDerivedStats(compressionStats);
     }
+
+    if (loadedHistory && loadedHistory.buckets && typeof loadedHistory.buckets === 'object') {
+      compressionHistory.buckets = {
+        m5: Array.isArray(loadedHistory.buckets.m5) ? loadedHistory.buckets.m5 : [],
+        h1: Array.isArray(loadedHistory.buckets.h1) ? loadedHistory.buckets.h1 : [],
+        d1: Array.isArray(loadedHistory.buckets.d1) ? loadedHistory.buckets.d1 : []
+      };
+      compressionHistory.lastResetAt = loadedHistory.lastResetAt || compressionStats.lastResetAt;
+    }
+    compressionHistory.all = compressionStats;
+    pruneExpiredBuckets();
   } catch (e) {
     // Non-fatal, use initialized memory stats
   }
@@ -883,7 +1069,7 @@ function loadStatsFromDisk() {
 
 loadStatsFromDisk();
 
-function recordModelSavings(modelName, savedChars, originalChars = 0) {
+function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp = Date.now()) {
   const model = normalizeModelName(modelName);
   if (!model || (savedChars <= 0 && originalChars <= 0)) return;
   const validSaved = Math.max(0, savedChars);
@@ -910,21 +1096,28 @@ function recordModelSavings(modelName, savedChars, originalChars = 0) {
   pruneByModelEntriesIfNeeded();
 }
 
-function recordModuleOnlySavings(moduleName, deltaChars) {
+function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now()) {
   if (deltaChars <= 0) return;
+  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += deltaChars;
     compressionStats.totalOriginalChars += deltaChars;
     compressionStats.updatedAt = new Date().toISOString();
     computeDerivedStats(compressionStats);
+
+    recordBucketSavings('m5', ts, moduleName, deltaChars, deltaChars, null);
+    recordBucketSavings('h1', ts, moduleName, deltaChars, deltaChars, null);
+    recordBucketSavings('d1', ts, moduleName, deltaChars, deltaChars, null);
+    pruneExpiredBuckets();
     persistStatsThrottled();
   }
 }
 
-function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null) {
+function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null, timestamp = Date.now()) {
   if (deltaChars <= 0 && originalChars <= 0) return;
   const validSaved = Math.max(0, deltaChars);
   const validOrig = Math.max(validSaved, originalChars);
+  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
 
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += validSaved;
@@ -932,24 +1125,312 @@ function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = nu
   compressionStats.totalOriginalChars += validOrig;
   compressionStats.totalCompressedChars += (validOrig - validSaved);
   if (modelName) {
-    recordModelSavings(modelName, validSaved, validOrig);
+    recordModelSavings(modelName, validSaved, validOrig, ts);
   }
   compressionStats.updatedAt = new Date().toISOString();
   computeDerivedStats(compressionStats);
+
+  // Synchronously record to all 3 ring-buffer time tiers
+  recordBucketSavings('m5', ts, moduleName, validSaved, validOrig, modelName);
+  recordBucketSavings('h1', ts, moduleName, validSaved, validOrig, modelName);
+  recordBucketSavings('d1', ts, moduleName, validSaved, validOrig, modelName);
+
+  pruneExpiredBuckets();
   persistStatsThrottled();
 }
 
-function recordOverallSavings(origLen, compLen) {
+function recordOverallSavings(origLen, compLen, timestamp = Date.now()) {
   if (origLen <= compLen) return;
+  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
+  const validSaved = origLen - compLen;
   compressionStats.totalOriginalChars += origLen;
   compressionStats.totalCompressedChars += compLen;
   compressionStats.updatedAt = new Date().toISOString();
   computeDerivedStats(compressionStats);
+
+  recordBucketSavings('m5', ts, null, validSaved, origLen, null);
+  recordBucketSavings('h1', ts, null, validSaved, origLen, null);
+  recordBucketSavings('d1', ts, null, validSaved, origLen, null);
+  pruneExpiredBuckets();
   persistStatsThrottled();
 }
 
+function recordCompressionEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  const {
+    module = null,
+    savedChars = 0,
+    deltaChars = 0,
+    originalChars = 0,
+    model = null,
+    modelName = null,
+    timestamp = Date.now()
+  } = event;
+  const actualSaved = savedChars || deltaChars || 0;
+  const actualOrig = Math.max(actualSaved, originalChars || 0);
+  const actualModel = model || modelName || null;
+  recordSavings(module, actualSaved, actualOrig, actualModel, timestamp);
+}
+
+function formatTimeSeriesLabel(ts, range) {
+  const d = new Date(ts);
+  const pad = n => (n < 10 ? '0' + n : '' + n);
+  if (range === '1h') {
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  if (range === '24h') {
+    return `${pad(d.getHours())}:00`;
+  }
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
+  const normRange = (range && typeof range === 'string' && RANGE_CONFIG[range.toLowerCase()]) ? range.toLowerCase() : 'all';
+  const series = [];
+
+  let intervalMs;
+  let count;
+
+  if (normRange === '1h') {
+    intervalMs = 5 * 60 * 1000; // 5 min intervals
+    count = 12;
+  } else if (normRange === '24h') {
+    intervalMs = 60 * 60 * 1000; // 1 hour intervals
+    count = 24;
+  } else if (normRange === '7d') {
+    intervalMs = 24 * 60 * 60 * 1000; // 1 day intervals
+    count = 7;
+  } else {
+    // 'all' tier: provide daily slots (7 days window)
+    intervalMs = 24 * 60 * 60 * 1000;
+    count = 7;
+  }
+
+  const currentSlot = Math.floor(now / intervalMs) * intervalMs;
+  const bucketMap = new Map();
+  if (Array.isArray(matchingBuckets)) {
+    for (const b of matchingBuckets) {
+      if (b && typeof b.startTime === 'number') {
+        const slotKey = Math.floor(b.startTime / intervalMs) * intervalMs;
+        bucketMap.set(slotKey, b);
+      }
+    }
+  }
+
+  for (let i = count - 1; i >= 0; i--) {
+    const slotTime = currentSlot - (i * intervalMs);
+    const existing = bucketMap.get(slotTime);
+    const label = formatTimeSeriesLabel(slotTime, normRange);
+
+    if (existing) {
+      const origChars = Number(existing.totalOriginalChars) || 0;
+      const compChars = Number(existing.totalCompressedChars) || 0;
+      let savedChars = Number(existing.totalSavedChars) || 0;
+      const modSum = Object.values(existing.modules || {}).reduce((s, m) => s + (Number(m.savedChars) || 0), 0);
+      savedChars = Math.max(savedChars, origChars - compChars, modSum);
+      const savedTokens = Math.round(savedChars / 3.8);
+
+      const byModelData = {};
+      let modelCostSum = 0;
+      let modelTokensSum = 0;
+      if (existing.byModel && typeof existing.byModel === 'object') {
+        for (const [m, mInfo] of Object.entries(existing.byModel)) {
+          if (!mInfo) continue;
+          const cleanM = normalizeModelName(m) || m;
+          const sTokens = Math.round((Number(mInfo.savedChars) || 0) / 3.8);
+          const rate = getModelRate(cleanM);
+          const sCost = Number(((sTokens / 1000000) * rate).toFixed(7));
+          byModelData[cleanM] = {
+            savedChars: Number(mInfo.savedChars) || 0,
+            savedTokens: sTokens,
+            savedCostUSD: sCost,
+            ratePer1M: rate
+          };
+          modelCostSum += sCost;
+          modelTokensSum += sTokens;
+        }
+      }
+      const unassignedTokens = Math.max(0, savedTokens - modelTokensSum);
+      const savedCostUSD = Number((modelCostSum + (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
+
+      series.push({
+        time: slotTime,
+        label,
+        savedTokens,
+        savedCostUSD,
+        savedChars,
+        originalChars: origChars,
+        byModel: byModelData
+      });
+    } else {
+      series.push({
+        time: slotTime,
+        label,
+        savedTokens: 0,
+        savedCostUSD: 0,
+        savedChars: 0,
+        originalChars: 0,
+        byModel: {}
+      });
+    }
+  }
+
+  // If in 'all' mode and all buckets are 0 but global stats have savings, inject into the latest point
+  if (normRange === 'all') {
+    const allZero = series.every(p => p.savedTokens === 0);
+    if (allZero && (compressionStats.savedTokens > 0 || compressionStats.totalSavedChars > 0)) {
+      const lastPoint = series[series.length - 1];
+      if (lastPoint) {
+        lastPoint.savedTokens = compressionStats.savedTokens;
+        lastPoint.savedCostUSD = compressionStats.savedCostUSD;
+        lastPoint.savedChars = compressionStats.totalSavedChars;
+        lastPoint.originalChars = compressionStats.totalOriginalChars;
+        lastPoint.byModel = JSON.parse(JSON.stringify(compressionStats.byModel || {}));
+      }
+    }
+  }
+
+  return series;
+}
+
+function getStatsByRange(range = 'all', now = Date.now()) {
+  const normRange = (range && typeof range === 'string' && RANGE_CONFIG[range.toLowerCase()]) ? range.toLowerCase() : 'all';
+  const cfg = RANGE_CONFIG[normRange];
+
+  if (normRange === 'all' || !cfg.tier) {
+    const base = computeDerivedStats(compressionStats);
+    const d1Buckets = (compressionHistory && compressionHistory.buckets && compressionHistory.buckets.d1) || [];
+    const timeSeries = buildTimeSeries('all', d1Buckets, now);
+    return {
+      range: 'all',
+      rangeLabel: cfg.label,
+      totalOriginalChars: base.totalOriginalChars,
+      totalCompressedChars: base.totalCompressedChars,
+      totalSavedChars: base.totalSavedChars,
+      savedTokens: base.savedTokens,
+      savedCostUSD: base.savedCostUSD,
+      compressionRatio: base.compressionRatio,
+      modules: {
+        rtk: { ...base.modules.rtk },
+        headroom: { ...base.modules.headroom },
+        schema: { ...base.modules.schema },
+        cacheZone: { ...base.modules.cacheZone },
+        powershell: { ...base.modules.powershell }
+      },
+      byModel: JSON.parse(JSON.stringify(base.byModel || {})),
+      timeSeries,
+      lastResetAt: compressionStats.lastResetAt || compressionHistory.lastResetAt,
+      updatedAt: compressionStats.updatedAt || new Date().toISOString()
+    };
+  }
+
+  pruneExpiredBuckets(now);
+  const cutoff = now - cfg.windowMs;
+  const list = (compressionHistory && compressionHistory.buckets && compressionHistory.buckets[cfg.tier]) || [];
+  const matching = list.filter(b => b && b.endTime > cutoff && b.startTime <= now);
+
+  let totalOriginalChars = 0;
+  let totalCompressedChars = 0;
+  let totalSavedChars = 0;
+  const modules = {
+    rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    schema: { savedChars: 0, savedTokens: 0, percentage: 0, alignedRounds: 0, alignedToolsCount: 0 },
+    cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    powershell: { savedChars: 0, savedTokens: 0, percentage: 0 }
+  };
+  const byModel = {};
+
+  for (const b of matching) {
+    totalOriginalChars += (Number(b.totalOriginalChars) || 0);
+    totalCompressedChars += (Number(b.totalCompressedChars) || 0);
+    totalSavedChars += (Number(b.totalSavedChars) || 0);
+
+    for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
+      if (b.modules && b.modules[modKey]) {
+        modules[modKey].savedChars += (Number(b.modules[modKey].savedChars) || 0);
+        if (modKey === 'schema') {
+          modules.schema.alignedRounds += (Number(b.modules.schema.alignedRounds) || 0);
+          modules.schema.alignedToolsCount += (Number(b.modules.schema.alignedToolsCount) || 0);
+        }
+      }
+    }
+
+    if (b.byModel && typeof b.byModel === 'object') {
+      for (const [m, mData] of Object.entries(b.byModel)) {
+        if (!mData) continue;
+        const cleanM = normalizeModelName(m) || m;
+        if (!byModel[cleanM]) {
+          byModel[cleanM] = {
+            savedChars: 0,
+            savedTokens: 0,
+            savedCostUSD: 0,
+            originalChars: 0,
+            ratePer1M: getModelRate(cleanM)
+          };
+        }
+        byModel[cleanM].savedChars += (Number(mData.savedChars) || 0);
+        byModel[cleanM].originalChars += (Number(mData.originalChars) || 0);
+      }
+    }
+  }
+
+  const modulesSum = Object.values(modules).reduce((sum, m) => sum + (Number(m.savedChars) || 0), 0);
+  const diffSavedChars = Math.max(0, totalOriginalChars - totalCompressedChars);
+  totalSavedChars = Math.max(diffSavedChars, modulesSum, totalSavedChars);
+  if (totalOriginalChars < totalSavedChars) {
+    totalOriginalChars = totalSavedChars;
+  }
+  const savedTokens = Math.round(totalSavedChars / 3.8);
+
+  let modelTokensSum = 0;
+  let modelCostSum = 0;
+  for (const [m, data] of Object.entries(byModel)) {
+    data.savedTokens = Math.round(data.savedChars / 3.8);
+    const officialRate = getModelRate(m);
+    data.ratePer1M = officialRate;
+    data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
+    modelTokensSum += data.savedTokens;
+    modelCostSum += data.savedCostUSD;
+  }
+
+  const unassignedTokens = Math.max(0, savedTokens - modelTokensSum);
+  const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
+  const savedCostUSD = Number((modelCostSum + unassignedCost).toFixed(6));
+
+  const compressionRatio = totalOriginalChars > 0
+    ? Number(((totalSavedChars / totalOriginalChars) * 100).toFixed(1))
+    : 0;
+
+  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
+    const mod = modules[modKey];
+    mod.savedTokens = Math.round(mod.savedChars / 3.8);
+    mod.percentage = totalSavedChars > 0
+      ? Number(((mod.savedChars / totalSavedChars) * 100).toFixed(1))
+      : 0;
+  }
+
+  const timeSeries = buildTimeSeries(normRange, matching, now);
+
+  return {
+    range: normRange,
+    rangeLabel: cfg.label,
+    totalOriginalChars,
+    totalCompressedChars,
+    totalSavedChars,
+    savedTokens,
+    savedCostUSD,
+    compressionRatio,
+    modules,
+    byModel,
+    timeSeries,
+    lastResetAt: compressionStats.lastResetAt || compressionHistory.lastResetAt,
+    updatedAt: new Date().toISOString()
+  };
+}
+
 function getCompressionStats() {
-  return computeDerivedStats(compressionStats);
+  return getStatsByRange('all');
 }
 
 function resetCompressionStats() {
@@ -960,6 +1441,8 @@ function resetCompressionStats() {
   try {
     sessionCompressionMemo.clear();
   } catch (_) {}
+
+  const nowIso = new Date().toISOString();
   compressionStats = {
     totalOriginalChars: 0,
     totalCompressedChars: 0,
@@ -975,9 +1458,21 @@ function resetCompressionStats() {
       cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 },
       powershell: { savedChars: 0, savedTokens: 0, percentage: 0 }
     },
-    lastResetAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    lastResetAt: nowIso,
+    updatedAt: nowIso
   };
+
+  compressionHistory = {
+    all: compressionStats,
+    buckets: {
+      m5: [],
+      h1: [],
+      d1: []
+    },
+    lastResetAt: nowIso,
+    updatedAt: nowIso
+  };
+
   saveStatsToDisk();
   return compressionStats;
 }
@@ -2242,6 +2737,10 @@ function compactToolsList(tools, opts = {}) {
       }
       compressionStats.modules.schema.alignedToolsCount += tools.length;
 
+      recordBucketSchemaAlignment('m5', Date.now(), 1, tools.length);
+      recordBucketSchemaAlignment('h1', Date.now(), 1, tools.length);
+      recordBucketSchemaAlignment('d1', Date.now(), 1, tools.length);
+
       // KV Cache Prefix Lock baseline benefit:
       // Even if schema was already minified (deltaChars == 0), deterministic prefix alignment
       // locks prompt cache upstream (saving 80%~90% KV Cache tokens on upstream).
@@ -2423,6 +2922,48 @@ function compactText(text, options = {}, sessionId = null) {
       if (modelName) {
         recordModelSavings(modelName, totalSaved, origLen);
       }
+
+      // Synchronously record to all 3 ring-buffer time tiers
+      const textTs = Date.now();
+      for (const tier of ['m5', 'h1', 'd1']) {
+        const bucket = getOrCreateBucket(tier, textTs);
+        if (bucket) {
+          bucket.totalOriginalChars += origLen;
+          bucket.totalCompressedChars += compLen;
+          bucket.totalSavedChars += totalSaved;
+          if (rtkDelta > 0 && bucket.modules && bucket.modules.rtk) {
+            bucket.modules.rtk.savedChars += rtkDelta;
+            bucket.modules.rtk.savedTokens = Math.round(bucket.modules.rtk.savedChars / 3.8);
+          }
+          if (headroomDelta > 0 && bucket.modules && bucket.modules.headroom) {
+            bucket.modules.headroom.savedChars += headroomDelta;
+            bucket.modules.headroom.savedTokens = Math.round(bucket.modules.headroom.savedChars / 3.8);
+          }
+          if (powershellDelta > 0 && bucket.modules && bucket.modules.powershell) {
+            bucket.modules.powershell.savedChars += powershellDelta;
+            bucket.modules.powershell.savedTokens = Math.round(bucket.modules.powershell.savedChars / 3.8);
+          }
+          if (modelName) {
+            if (!bucket.byModel) bucket.byModel = {};
+            if (!bucket.byModel[modelName]) {
+              bucket.byModel[modelName] = {
+                savedChars: 0,
+                savedTokens: 0,
+                savedCostUSD: 0,
+                originalChars: 0,
+                ratePer1M: getModelRate(modelName)
+              };
+            }
+            const mEntry = bucket.byModel[modelName];
+            mEntry.savedChars += totalSaved;
+            mEntry.originalChars += origLen;
+            mEntry.savedTokens = Math.round(mEntry.savedChars / 3.8);
+            mEntry.ratePer1M = getModelRate(modelName);
+            mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
+          }
+        }
+      }
+      pruneExpiredBuckets(textTs);
 
       compressionStats.updatedAt = new Date().toISOString();
       computeDerivedStats(compressionStats);
@@ -3192,6 +3733,16 @@ module.exports = {
   normalizeCompressionOptions,
   getCompressionStats,
   resetCompressionStats,
+  getStatsByRange,
+  buildTimeSeries,
+  formatTimeSeriesLabel,
+  recordCompressionEvent,
+  pruneExpiredBuckets,
+  BUCKET_DEFINITIONS,
+  RANGE_CONFIG,
+  compressionHistory,
+  HISTORY_FILE,
+  createEmptyBucket,
   recordSavings,
   STATS_FILE,
   stripAnsi,

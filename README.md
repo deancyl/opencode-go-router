@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.5.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.6.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-140%2F140%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-141%2F141%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,19 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.5.0 (当前最新版：现代侧边栏 SPA 布局重构与 Windows 原生独立桌面客户端程序)
+### 🚀 v3.6.0 (当前最新版：Token 压缩中枢时间分片分析、多分辨率环形分桶与历史持久化)
+- **Token 压缩中枢时间分片分析 (Time-Range Slicing & Multi-Resolution Bucketing)**：
+  - 增设 4 大时间窗口胶囊切换：`1h`（1小时）、`24h`（24小时）、`7d`（7天）、`all`（历史累计，默认）；
+  - 多分辨率环形时间分桶（Ring-buffer Bucketing）：`m5`（12 个 5 分钟分桶覆盖最近 1 小时）、`h1`（24 个 1 小时分桶覆盖最近 24 小时）、`d1`（7 个 1 天分桶覆盖最近 7 天）以及全局历史累计池；
+  - 自动滑动淘汰过期分桶，限制内存开销与常驻尺寸；
+  - 双轨磁盘持久化：原子化安全写入 `compression-history.json`（严格限制在 200KB 以内），同时向下兼容保留 `compression-stats.json`；
+  - 统计接口扩展：`GET /balancer/api/compression/stats?range={1h|24h|7d|all}`，支持按指定时间范围聚合字符节约、Token 节约、费率预估与 Schema 对齐指标；
+  - 现代化 UI 胶囊交互：在 Token 压缩中枢（`#/compression`）右上角增设高光胶囊按钮组与动态标题徽章，支持 10 秒防抖轮询与优雅空状态呈现；
+- **自动化测试套件扩展 (Test 141)**：
+  - 新增 Test 141 覆盖时间窗口隔离、多分辨率分桶与 LRU 淘汰、双轨磁盘持久化、HTTP 代理时间分片查询、Web UI DOM 元素以及 3.6.0 版本校验；
+  - 本地 141 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.5.0 (现代侧边栏 SPA 布局重构与 Windows 原生独立桌面客户端程序)
 - **现代左侧专业侧边栏 SPA 架构 (`server.js`)**：
   - 将原有长单页布局彻底重构为左侧专业侧边栏 + 右侧主内容区的现代 SPA 架构；
   - 划分 6 大独立业务模块：`#/overview`（总览与向导）、`#/compression`（Token 压缩中枢）、`#/clients`（客户端接入）、`#/accounts`（订阅账号与配额）、`#/doctor`（系统体检与修复）、`#/settings`（系统设置与更新）；

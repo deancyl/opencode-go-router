@@ -4479,6 +4479,38 @@ function renderDashboardHtml(config) {
       font-weight: 600;
       box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
     }
+    .comp-range-group {
+      display: inline-flex;
+      align-items: center;
+      background: #0b1329;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 3px;
+      gap: 3px;
+    }
+    .comp-range-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: #94a3b8;
+      padding: 4px 11px;
+      border-radius: 16px;
+      font-size: 0.76rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      white-space: nowrap;
+    }
+    .comp-range-btn:hover {
+      color: #f1f5f9;
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .comp-range-btn.active {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(52, 211, 153, 0.22));
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.45);
+      font-weight: 600;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+    }
     .comp-metrics-dashboard {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -4536,10 +4568,72 @@ function renderDashboardHtml(config) {
     .comp-module-card.module-disabled .comp-module-desc { opacity: 0.5; }
     .comp-module-card.module-disabled .comp-module-contrib { opacity: 0.4; }
     #compression-card.comp-master-disabled .comp-modules-grid,
-    #compression-card.comp-master-disabled .comp-presets-wrapper {
+    #compression-card.comp-master-disabled .comp-presets-wrapper,
+    #compression-card.comp-master-disabled .comp-chart-card {
       opacity: 0.45;
       pointer-events: none;
       filter: grayscale(80%);
+    }
+
+    /* Compression Time-Series Chart Styles */
+    .comp-chart-card {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      position: relative;
+      transition: border-color 0.2s;
+    }
+    .comp-chart-card:hover { border-color: #475569; }
+    .chart-btn-group {
+      display: inline-flex;
+      background: #1e293b;
+      padding: 2px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+    }
+    .chart-pill-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 3px 9px;
+      font-size: 0.72rem;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .chart-pill-btn:hover { color: #f1f5f9; background: rgba(255, 255, 255, 0.05); }
+    .chart-pill-btn.active {
+      background: linear-gradient(135deg, rgba(249, 115, 22, 0.25), rgba(234, 179, 8, 0.25));
+      color: #fb923c;
+      font-weight: 600;
+      border: 1px solid rgba(249, 115, 22, 0.45);
+      box-shadow: 0 0 8px rgba(249, 115, 22, 0.25);
+    }
+    .chart-metric-btn.active {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(52, 211, 153, 0.22));
+      color: #38bdf8;
+      font-weight: 600;
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+    }
+    .chart-svg-root {
+      width: 100%;
+      height: 100%;
+      display: block;
+      user-select: none;
+    }
+    .chart-bar-rect {
+      transition: opacity 0.15s ease, filter 0.15s ease;
+      cursor: pointer;
+    }
+    .chart-bar-rect:hover {
+      opacity: 0.85;
+      filter: brightness(1.2);
     }
 
     /* Toast */
@@ -5062,7 +5156,21 @@ function renderDashboardHtml(config) {
           </div>
         </div>
 
-        <!-- 实时节省 Token 数据大盘 (Metrics Dashboard) -->
+        <!-- 实时节省 Token 数据大盘与时间段维度切换 (Metrics Dashboard & Time Range) -->
+        <div class="comp-dashboard-header" id="comp-dashboard-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 0.95rem; font-weight: 600; color: #f1f5f9;">📊 实时节省数据大盘</span>
+            <span class="preset-badge" id="comp-range-badge" style="font-size: 0.75rem; color: #38bdf8; padding: 2px 8px; background: rgba(56,189,248,0.12); border-radius: 6px; border: 1px solid rgba(56,189,248,0.3);">
+              全部历史累计
+            </span>
+          </div>
+          <div class="comp-range-group" id="comp-range-group">
+            <button type="button" class="comp-range-btn" id="comp-range-1h" onclick="switchCompRange('1h')">⏱️ 过去 1 小时</button>
+            <button type="button" class="comp-range-btn" id="comp-range-24h" onclick="switchCompRange('24h')">📅 过去 24 小时</button>
+            <button type="button" class="comp-range-btn" id="comp-range-7d" onclick="switchCompRange('7d')">🗓️ 过去 7 天</button>
+            <button type="button" class="comp-range-btn active" id="comp-range-all" onclick="switchCompRange('all')">🌐 全部历史累计</button>
+          </div>
+        </div>
         <div class="comp-metrics-dashboard" id="comp-metrics-dashboard">
           <div class="comp-metric-card">
             <div class="comp-metric-label">
@@ -5092,6 +5200,51 @@ function renderDashboardHtml(config) {
             </div>
             <div class="comp-metric-val" id="stat-original-chars" style="color: #f1f5f9;">0 Chars</div>
             <div class="comp-metric-sub" id="stat-compressed-chars-sub">压缩后: 0 字符</div>
+          </div>
+        </div>
+
+        <!-- 📈 实时节省趋势与时序分布图表 (Time-Series Chart) -->
+        <div class="comp-chart-card" id="comp-chart-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 0.92rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 6px;">
+                <span id="chart-type-icon">📊</span>
+                <span>消耗与节约分布趋势</span>
+              </span>
+              <span id="chart-summary-badge" style="font-size: 0.72rem; color: #10b981; background: rgba(16,185,129,0.12); padding: 2px 7px; border-radius: 5px; border: 1px solid rgba(16,185,129,0.3);">
+                时序就绪
+              </span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <!-- 视图形态切换：柱状图 vs 面积图 -->
+              <div class="chart-btn-group">
+                <button type="button" class="chart-pill-btn active" id="btn-chart-mode-bar" onclick="switchChartMode('bar')" title="切换为离散柱状分布图">📊 柱状图</button>
+                <button type="button" class="chart-pill-btn" id="btn-chart-mode-area" onclick="switchChartMode('area')" title="切换为平滑面积趋势图">📈 面积图</button>
+              </div>
+              <!-- 统计度量切换：By Tokens vs By Cost vs By Chars -->
+              <div class="chart-btn-group">
+                <button type="button" class="chart-pill-btn chart-metric-btn active" id="btn-chart-metric-tokens" onclick="switchChartMetric('tokens')" title="按节约 Token 数统计">By Tokens</button>
+                <button type="button" class="chart-pill-btn chart-metric-btn" id="btn-chart-metric-cost" onclick="switchChartMetric('cost')" title="按动态加权节约金额 ($) 统计">By Cost</button>
+                <button type="button" class="chart-pill-btn chart-metric-btn" id="btn-chart-metric-chars" onclick="switchChartMetric('chars')" title="按处理字符数统计">By Chars</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- SVG 图表视口 -->
+          <div id="comp-chart-viewport" style="width: 100%; height: 210px; position: relative;">
+            <!-- 由客户端 renderCompressionChart() 原生渲染 SVG -->
+          </div>
+
+          <!-- 交互悬浮 Tooltip 气泡 -->
+          <div id="comp-chart-tooltip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: rgba(15, 23, 42, 0.94); backdrop-filter: blur(8px); border: 1px solid #475569; border-radius: 8px; padding: 8px 12px; font-size: 0.75rem; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.6); transition: opacity 0.1s ease; min-width: 160px;">
+          </div>
+
+          <!-- 图例区 -->
+          <div id="comp-chart-legends" style="display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; font-size: 0.75rem; color: #94a3b8;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="display: inline-block; width: 10px; height: 10px; background: #f97316; border-radius: 2px;"></span>
+              <span>deepseek-v4.1-flash</span>
+            </div>
           </div>
         </div>
 
@@ -6082,17 +6235,377 @@ function renderDashboardHtml(config) {
         tag.innerText = isHidden
           ? '收起明细 ▴'
           : (count !== '0' ? (count + ' 款模型 ▾') : '分模型明细 ▾');
+    // ==========================================
+    // 时序图表引擎状态与渲染逻辑 (Zero-Dependency Native SVG Chart)
+    // ==========================================
+    let currentChartMode = (typeof localStorage !== 'undefined' && localStorage.getItem('router_comp_chart_mode')) || 'bar'; // 'bar' | 'area'
+    let currentChartMetric = (typeof localStorage !== 'undefined' && localStorage.getItem('router_comp_chart_metric')) || 'tokens'; // 'tokens' | 'cost' | 'chars'
+    let cachedTimeSeriesData = [];
+    let cachedTimeSeriesRange = 'all';
+    let cachedTimeSeriesStats = null;
+
+    const MODEL_PALETTE = {
+      'deepseek': '#f97316', // 活力橙 (与参考图一致)
+      'claude': '#38bdf8',   // 天空蓝
+      'kimi': '#a855f7',     // 紫罗兰
+      'glm': '#eab308',      // 亮金黄
+      'gpt': '#10b981',      // 翡翠绿
+      'default': '#f97316'
+    };
+    const FALLBACK_COLORS = ['#f97316', '#38bdf8', '#10b981', '#a855f7', '#eab308', '#ec4899', '#06b6d4', '#84cc16'];
+
+    function getModelColor(modelName, index = 0) {
+      if (!modelName) return MODEL_PALETTE['default'];
+      const lower = String(modelName).toLowerCase();
+      for (const [k, c] of Object.entries(MODEL_PALETTE)) {
+        if (k !== 'default' && lower.includes(k)) return c;
       }
+      return FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+    }
+
+    function switchChartMode(mode) {
+      if (mode !== 'bar' && mode !== 'area') mode = 'bar';
+      currentChartMode = mode;
+      try { localStorage.setItem('router_comp_chart_mode', mode); } catch (_) {}
+      const barBtn = document.getElementById('btn-chart-mode-bar');
+      const areaBtn = document.getElementById('btn-chart-mode-area');
+      const iconEl = document.getElementById('chart-type-icon');
+      if (barBtn) barBtn.classList.toggle('active', mode === 'bar');
+      if (areaBtn) areaBtn.classList.toggle('active', mode === 'area');
+      if (iconEl) iconEl.innerText = mode === 'bar' ? '📊' : '📈';
+      renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
+    }
+
+    function switchChartMetric(metric) {
+      if (metric !== 'tokens' && metric !== 'cost' && metric !== 'chars') metric = 'tokens';
+      currentChartMetric = metric;
+      try { localStorage.setItem('router_comp_chart_metric', metric); } catch (_) {}
+      ['tokens', 'cost', 'chars'].forEach(m => {
+        const btn = document.getElementById('btn-chart-metric-' + m);
+        if (btn) btn.classList.toggle('active', m === metric);
+      });
+      renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
+    }
+
+    function renderCompressionTimeSeriesChart(series = [], range = 'all', stats = {}) {
+      cachedTimeSeriesData = series;
+      cachedTimeSeriesRange = range;
+      cachedTimeSeriesStats = stats;
+
+      const viewport = document.getElementById('comp-chart-viewport');
+      if (!viewport) return;
+
+      const summaryBadge = document.getElementById('chart-summary-badge');
+      if (summaryBadge && stats) {
+        if (currentChartMetric === 'cost') {
+          const costVal = Number(stats.savedCostUSD || 0);
+          summaryBadge.innerText = '总节约: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+        } else if (currentChartMetric === 'chars') {
+          summaryBadge.innerText = '总节约: ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
+        } else {
+          summaryBadge.innerText = '总节约: ~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+        }
+      }
+
+      if (!Array.isArray(series) || series.length === 0) {
+        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:0.85rem;">暂无时序数据</div>';
+        return;
+      }
+
+      const modelSet = new Set();
+      series.forEach(pt => {
+        if (pt.byModel && typeof pt.byModel === 'object') {
+          Object.keys(pt.byModel).forEach(m => modelSet.add(m));
+        }
+      });
+      const activeModels = Array.from(modelSet);
+      if (activeModels.length === 0) {
+        activeModels.push('deepseek-v4.1-flash');
+      }
+
+      const legendsEl = document.getElementById('comp-chart-legends');
+      if (legendsEl) {
+        legendsEl.innerHTML = activeModels.map((m, idx) => {
+          const color = getModelColor(m, idx);
+          return '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;">' +
+            '<span style="display:inline-block;width:9px;height:9px;background:' + color + ';border-radius:2px;"></span>' +
+            '<span style="font-family:monospace;color:#cbd5e1;">' + escapeHtml(m) + '</span>' +
+            '</div>';
+        }).join('');
+      }
+
+      const getValue = (pt) => {
+        if (!pt) return 0;
+        if (currentChartMetric === 'cost') return Number(pt.savedCostUSD || 0);
+        if (currentChartMetric === 'chars') return Number(pt.savedChars || 0);
+        return Number(pt.savedTokens || 0);
+      };
+
+      const values = series.map(getValue);
+      const rawMax = Math.max(...values, 0);
+      const isAllZero = rawMax === 0;
+
+      let maxVal = rawMax;
+      if (isAllZero) {
+        maxVal = currentChartMetric === 'cost' ? 0.001 : (currentChartMetric === 'chars' ? 500 : 100);
+      } else {
+        maxVal = maxVal * 1.15;
+      }
+
+      const svgW = 800;
+      const svgH = 200;
+      const padL = currentChartMetric === 'cost' ? 68 : 55;
+      const padR = 20;
+      const padT = 20;
+      const padB = 30;
+      const chartW = svgW - padL - padR;
+      const chartH = svgH - padT - padB;
+      const n = series.length;
+
+      const formatYTick = (val) => {
+        if (val === 0) return '0';
+        if (currentChartMetric === 'cost') {
+          return '$' + (val < 0.001 ? val.toFixed(4) : val.toFixed(3));
+        }
+        if (val >= 1000000) return (val / 1000000).toFixed(1) + 'M';
+        if (val >= 1000) return (val / 1000).toFixed(1) + 'k';
+        return String(Math.round(val));
+      };
+
+      let gridLinesSvg = '';
+      const gridLevels = [0, 0.33, 0.66, 1.0];
+      gridLevels.forEach(lvl => {
+        const y = padT + chartH * (1 - lvl);
+        const tickVal = maxVal * lvl;
+        gridLinesSvg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (padL + chartW) + '" y2="' + y + '" stroke="#1e293b" stroke-width="1" stroke-dasharray="3,3" />' +
+          '<text x="' + (padL - 8) + '" y="' + (y + 3) + '" fill="#64748b" font-size="10" text-anchor="end" font-family="monospace">' + formatYTick(tickVal) + '</text>';
+      });
+
+      const xBaseY = padT + chartH;
+      let xLabelsSvg = '<line x1="' + padL + '" y1="' + xBaseY + '" x2="' + (padL + chartW) + '" y2="' + xBaseY + '" stroke="#334155" stroke-width="1" />';
+
+      const step = n <= 8 ? 1 : (n <= 14 ? 2 : 4);
+      series.forEach((pt, i) => {
+        if (i % step === 0 || i === n - 1) {
+          const x = padL + (i + 0.5) * (chartW / n);
+          xLabelsSvg += '<text x="' + x + '" y="' + (xBaseY + 16) + '" fill="#64748b" font-size="9.5" text-anchor="middle" font-family="monospace">' + escapeHtml(pt.label) + '</text>';
+        }
+      });
+
+      let contentSvg = '';
+
+      if (currentChartMode === 'bar') {
+        const slotW = chartW / n;
+        const barW = Math.max(4, Math.min(24, slotW * 0.6));
+
+        series.forEach((pt, i) => {
+          const totalVal = getValue(pt);
+          const xCenter = padL + (i + 0.5) * slotW;
+          const barX = xCenter - barW / 2;
+
+          if (totalVal > 0) {
+            const barH = Math.max(3, (totalVal / maxVal) * chartH);
+            const barY = xBaseY - barH;
+
+            const modelEntries = Object.entries(pt.byModel || {});
+            if (modelEntries.length > 1) {
+              let currentY = xBaseY;
+              modelEntries.forEach(([m, mData], mIdx) => {
+                let mVal = 0;
+                if (currentChartMetric === 'cost') mVal = Number(mData.savedCostUSD || 0);
+                else if (currentChartMetric === 'chars') mVal = Number(mData.savedChars || 0);
+                else mVal = Number(mData.savedTokens || 0);
+
+                if (mVal > 0) {
+                  const segH = Math.max(1.5, (mVal / maxVal) * chartH);
+                  const segY = currentY - segH;
+                  const color = getModelColor(m, mIdx);
+                  contentSvg += '<rect class="chart-bar-rect" data-index="' + i + '" x="' + barX + '" y="' + segY + '" width="' + barW + '" height="' + segH + '" fill="' + color + '" rx="2" />';
+                  currentY = segY;
+                }
+              });
+            } else {
+              const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : MODEL_PALETTE['default'];
+              contentSvg += '<rect class="chart-bar-rect" data-index="' + i + '" x="' + barX + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="3" ry="3" />';
+            }
+          } else {
+            contentSvg += '<rect data-index="' + i + '" x="' + barX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#334155" opacity="0.4" rx="1" />';
+          }
+        });
+      } else {
+        const points = series.map((pt, i) => {
+          const val = getValue(pt);
+          const x = padL + (i + 0.5) * (chartW / n);
+          const y = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
+          return { x, y, val };
+        });
+
+        let pathD = 'M ' + points[0].x + ' ' + points[0].y;
+        for (let i = 0; i < points.length - 1; i++) {
+          const p0 = i > 0 ? points[i - 1] : points[i];
+          const p1 = points[i];
+          const p2 = points[i + 1];
+          const p3 = i < points.length - 2 ? points[i + 2] : p2;
+
+          const cp1x = p1.x + (p2.x - p0.x) / 6;
+          const cp1y = p1.y + (p2.y - p0.y) / 6;
+          const cp2x = p2.x - (p3.x - p1.x) / 6;
+          const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+          pathD += ' C ' + cp1x.toFixed(1) + ' ' + cp1y.toFixed(1) + ', ' + cp2x.toFixed(1) + ' ' + cp2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
+        }
+
+        const areaD = pathD + ' L ' + points[points.length - 1].x + ' ' + xBaseY + ' L ' + points[0].x + ' ' + xBaseY + ' Z';
+        const themeColor = '#f97316';
+        contentSvg += '<defs>' +
+          '<linearGradient id="compAreaGrad" x1="0" y1="0" x2="0" y2="1">' +
+          '<stop offset="0%" stop-color="' + themeColor + '" stop-opacity="0.38"/>' +
+          '<stop offset="100%" stop-color="' + themeColor + '" stop-opacity="0.02"/>' +
+          '</linearGradient>' +
+          '</defs>' +
+          '<path d="' + areaD + '" fill="url(#compAreaGrad)" />' +
+          '<path d="' + pathD + '" fill="none" stroke="' + themeColor + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />';
+
+        points.forEach((p, i) => {
+          if (p.val > 0) {
+            contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="' + themeColor + '" stroke="#0f172a" stroke-width="1.8" />';
+          }
+        });
+      }
+
+      let emptyOverlaySvg = '';
+      if (isAllZero) {
+        emptyOverlaySvg = '<g transform="translate(' + (padL + chartW / 2) + ', ' + (padT + chartH / 2) + ')">' +
+          '<rect x="-180" y="-18" width="360" height="36" rx="18" fill="rgba(15,23,42,0.85)" stroke="#334155" stroke-width="1" />' +
+          '<text x="0" y="5" fill="#94a3b8" font-size="11.5" text-anchor="middle">💤 当前时间段内暂无压缩数据，发起对话后将实时呈现时序波形</text>' +
+          '</g>';
+      }
+
+      const interactiveSvg = '<g id="comp-chart-crosshair-group" style="display:none;">' +
+        '<line id="comp-chart-crosshair" x1="0" y1="' + padT + '" x2="0" y2="' + xBaseY + '" stroke="#38bdf8" stroke-width="1" stroke-dasharray="3,3" />' +
+        '<circle id="comp-chart-hover-dot" cx="0" cy="0" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="2" />' +
+        '</g>' +
+        '<rect id="comp-chart-overlay" x="' + padL + '" y="' + padT + '" width="' + chartW + '" height="' + chartH + '" fill="transparent" style="cursor:crosshair;" />';
+
+      viewport.innerHTML = '<svg class="chart-svg-root" viewBox="0 0 ' + svgW + ' ' + svgH + '" preserveAspectRatio="none">' +
+        gridLinesSvg +
+        xLabelsSvg +
+        contentSvg +
+        emptyOverlaySvg +
+        interactiveSvg +
+        '</svg>';
+
+      const overlayEl = document.getElementById('comp-chart-overlay');
+      const crosshairGroup = document.getElementById('comp-chart-crosshair-group');
+      const crosshairLine = document.getElementById('comp-chart-crosshair');
+      const hoverDot = document.getElementById('comp-chart-hover-dot');
+      const tooltipEl = document.getElementById('comp-chart-tooltip');
+
+      if (overlayEl && tooltipEl && crosshairGroup) {
+        overlayEl.addEventListener('mousemove', function(e) {
+          const rect = overlayEl.getBoundingClientRect();
+          const mouseXRel = (e.clientX - rect.left) / rect.width;
+          const idx = Math.max(0, Math.min(n - 1, Math.floor(mouseXRel * n)));
+          const pt = series[idx];
+          if (!pt) return;
+
+          const slotW = chartW / n;
+          const xPos = padL + (idx + 0.5) * slotW;
+          const val = getValue(pt);
+          const yPos = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
+
+          crosshairGroup.style.display = 'block';
+          if (crosshairLine) {
+            crosshairLine.setAttribute('x1', xPos);
+            crosshairLine.setAttribute('x2', xPos);
+          }
+          if (hoverDot) {
+            hoverDot.setAttribute('cx', xPos);
+            hoverDot.setAttribute('cy', yPos);
+          }
+
+          let modelDetailsHtml = '';
+          const mEntries = Object.entries(pt.byModel || {});
+          if (mEntries.length > 0) {
+            modelDetailsHtml = '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;">' +
+              mEntries.map(([m, mData], mIdx) => {
+                const col = getModelColor(m, mIdx);
+                const sTokens = Number(mData.savedTokens || 0).toLocaleString();
+                const sCost = Number(mData.savedCostUSD || 0).toFixed(6);
+                return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:0.72rem;margin-top:2px;">' +
+                  '<span><span style="color:' + col + ';">■</span> ' + escapeHtml(m) + '</span>' +
+                  '<span style="color:#cbd5e1;font-family:monospace;">~' + sTokens + 'T ($' + sCost + ')</span>' +
+                  '</div>';
+              }).join('') +
+              '</div>';
+          }
+
+          const timeLabel = new Date(pt.time).toLocaleString('zh-CN', { hour12: false });
+          const tokenStr = Number(pt.savedTokens || 0).toLocaleString();
+          const costStr = Number(pt.savedCostUSD || 0).toFixed(6);
+          const charsStr = Number(pt.savedChars || 0).toLocaleString();
+
+          tooltipEl.innerHTML = '<div style="font-weight:600;color:#f1f5f9;margin-bottom:4px;display:flex;align-items:center;gap:6px;">' +
+            '<span>⏱️ ' + escapeHtml(pt.label) + '</span>' +
+            '<span style="font-size:0.68rem;color:#64748b;font-weight:normal;">(' + escapeHtml(timeLabel) + ')</span>' +
+            '</div>' +
+            '<div style="color:#38bdf8;">🪙 节约: ~' + tokenStr + ' Tokens</div>' +
+            '<div style="color:#34d399;">💵 费用: ~$' + costStr + ' USD</div>' +
+            '<div style="color:#cbd5e1;">📝 字符: ' + charsStr + ' Chars</div>' +
+            modelDetailsHtml;
+
+          tooltipEl.style.display = 'block';
+
+          const card = viewport.closest('.comp-chart-card');
+          if (card) {
+            const cardRect = card.getBoundingClientRect();
+            const screenX = e.clientX - cardRect.left;
+            const screenY = e.clientY - cardRect.top;
+            tooltipEl.style.left = Math.max(90, Math.min(cardRect.width - 90, screenX)) + 'px';
+            tooltipEl.style.top = Math.max(10, screenY - 14) + 'px';
+          }
+        });
+
+        overlayEl.addEventListener('mouseleave', function() {
+          crosshairGroup.style.display = 'none';
+          tooltipEl.style.display = 'none';
+        });
+      }
+    }
+
+    let currentCompRange = 'all';
+
+    function switchCompRange(range) {
+      if (!range) range = 'all';
+      currentCompRange = range;
+      const buttons = document.querySelectorAll('.comp-range-btn');
+      buttons.forEach(btn => btn.classList.remove('active'));
+      const activeBtn = document.getElementById('comp-range-' + range);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const rangeLabels = {
+        '1h': '过去 1 小时',
+        '24h': '过去 24 小时',
+        '7d': '过去 7 天',
+        'all': '全部历史累计'
+      };
+      const badgeEl = document.getElementById('comp-range-badge');
+      if (badgeEl) {
+        badgeEl.innerText = rangeLabels[range] || range;
+      }
+      fetchCompressionStats();
     }
 
     async function fetchCompressionStats() {
       if (document.hidden) return;
       try {
-        const res = await fetch('/balancer/api/compression/stats', { headers: apiHeaders() });
+        const queryParam = currentCompRange ? '?range=' + encodeURIComponent(currentCompRange) : '';
+        const res = await fetch('/balancer/api/compression/stats' + queryParam, { headers: apiHeaders() });
         if (!res.ok) return;
         const data = await res.json();
         if (!data || !data.stats) return;
         const stats = data.stats;
+        const hasData = (stats.totalOriginalChars || 0) > 0 || (stats.totalSavedChars || 0) > 0;
 
         const tokensEl = document.getElementById('stat-saved-tokens');
         const costEl = document.getElementById('stat-saved-cost');
@@ -6115,7 +6628,11 @@ function renderDashboardHtml(config) {
         }
         if (ratioEl) ratioEl.innerText = (stats.compressionRatio || 0) + '%';
         if (origEl) origEl.innerText = Number(stats.totalOriginalChars || 0).toLocaleString() + ' Chars';
-        if (savedCharsSub) savedCharsSub.innerText = '已节约 ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
+        if (savedCharsSub) {
+          savedCharsSub.innerText = hasData
+            ? ('已节约 ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符')
+            : (currentCompRange === 'all' ? '已节约 0 字符' : '此时间段内暂无压缩数据');
+        }
         if (compCharsSub) compCharsSub.innerText = '压缩后: ' + Number(stats.totalCompressedChars || 0).toLocaleString() + ' 字符';
 
         // Update By-Model breakdown telemetry
@@ -6135,7 +6652,10 @@ function renderDashboardHtml(config) {
         const tbody = document.getElementById('by-model-table-body');
         if (tbody) {
           if (byModelEntries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>';
+            const rangeNote = (data.rangeLabel || (currentCompRange === 'all' ? '全部历史累计' : currentCompRange));
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">' +
+              (hasData ? '暂无分模型调用数据（发起请求后将实时归集并动态加权测算）' : ('此时间段（' + escapeHtml(rangeNote) + '）内暂无压缩数据')) +
+              '</td></tr>';
           } else {
             byModelEntries.sort((a, b) => (b[1].savedCostUSD || 0) - (a[1].savedCostUSD || 0) || (b[1].savedTokens || 0) - (a[1].savedTokens || 0));
             tbody.innerHTML = byModelEntries.map(([m, mData]) => {
@@ -6186,6 +6706,10 @@ function renderDashboardHtml(config) {
             }
           });
         }
+
+        // Update Time-Series Trend & Distribution Chart
+        const seriesData = data.timeSeries || stats.timeSeries || [];
+        renderCompressionTimeSeriesChart(seriesData, data.range || currentCompRange, stats);
       } catch (e) {}
     }
 
@@ -8074,6 +8598,23 @@ function renderDashboardHtml(config) {
     initSidebarState();
     initRouter();
     initCardCollapseStates();
+
+    // Initialize chart UI buttons from user preferences
+    if (typeof currentChartMode === 'string') {
+      const bBtn = document.getElementById('btn-chart-mode-bar');
+      const aBtn = document.getElementById('btn-chart-mode-area');
+      const iEl = document.getElementById('chart-type-icon');
+      if (bBtn) bBtn.classList.toggle('active', currentChartMode === 'bar');
+      if (aBtn) aBtn.classList.toggle('active', currentChartMode === 'area');
+      if (iEl) iEl.innerText = currentChartMode === 'bar' ? '📊' : '📈';
+    }
+    if (typeof currentChartMetric === 'string') {
+      ['tokens', 'cost', 'chars'].forEach(m => {
+        const btn = document.getElementById('btn-chart-metric-' + m);
+        if (btn) btn.classList.toggle('active', m === currentChartMetric);
+      });
+    }
+
     fetchConfig();
     fetchStatus();
     fetchCompressionStats();
@@ -8085,7 +8626,7 @@ function renderDashboardHtml(config) {
     }, 2000);
     setInterval(() => {
       if (!document.hidden) fetchCompressionStats();
-    }, 5000);
+    }, 10000);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
         fetchStatus();
@@ -8427,13 +8968,20 @@ const server = http.createServer((req, res) => {
 
   // Get compression metrics stats API
   if (reqUrl.pathname === '/balancer/api/compression/stats' && req.method === 'GET') {
+    const range = (reqUrl.query && reqUrl.query.range) || (reqUrl.searchParams && reqUrl.searchParams.get('range')) || 'all';
+    const stats = contextCompactor.getStatsByRange
+      ? contextCompactor.getStatsByRange(range)
+      : contextCompactor.getCompressionStats();
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*'
     });
     res.end(JSON.stringify({
       success: true,
-      stats: contextCompactor.getCompressionStats()
+      range: stats.range || range,
+      rangeLabel: stats.rangeLabel || (range === '1h' ? '过去 1 小时' : range === '24h' ? '过去 24 小时' : range === '7d' ? '过去 7 天' : '全部历史累计'),
+      timeSeries: stats.timeSeries || [],
+      stats
     }));
     return;
   }

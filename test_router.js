@@ -6740,12 +6740,219 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(packageJson140.version, '3.5.0', 'package.json version must be 3.5.0');
+    assert.ok(['3.5.0', '3.6.0'].includes(packageJson140.version), 'package.json version must be 3.5.0 or 3.6.0');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
-    console.log('✓ Launchers & Tray prioritizations & package.json v3.5.0 verified');
+    console.log('✓ Launchers & Tray prioritizations & package.json verified');
+
+    // [Test 141] Testing Token Compression Time-Range Slicing, Ring-Buffer Bucketing, Disk Pruning & Web UI (v3.6.0)
+    console.log('\n[Test 141] Testing Token Compression Time-Range Slicing, Ring-Buffer Bucketing, Disk Pruning & Web UI (v3.6.0)...');
+
+    // 1. Reset compression stats & buckets via API
+    const resetRes141 = await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+    assert.strictEqual(resetRes141.statusCode, 200);
+    const resetJson141 = JSON.parse(resetRes141.body);
+    assert.strictEqual(resetJson141.success, true);
+    assert.strictEqual(resetJson141.stats.totalSavedChars, 0);
+
+    // 2. Initial state verification: all 4 ranges return 0
+    for (const r of ['1h', '24h', '7d', 'all']) {
+      const getInitial = await request(`/balancer/api/compression/stats?range=${r}`, { method: 'GET' });
+      assert.strictEqual(getInitial.statusCode, 200);
+      const getInitialJson = JSON.parse(getInitial.body);
+      assert.strictEqual(getInitialJson.success, true);
+      assert.strictEqual(getInitialJson.range, r);
+      assert.strictEqual(getInitialJson.stats.totalSavedChars, 0);
+      assert.strictEqual(getInitialJson.stats.savedTokens, 0);
+    }
+    console.log('✓ Initial zero-state across 1h, 24h, 7d, all verified');
+
+    // 3. Engine-level: Record simulated time-offset compression events & verify isolation
+    contextCompactor.resetCompressionStats();
+    const testNow = Date.now();
+    const t10m = testNow - 10 * 60 * 1000;          // 10 minutes ago: in 1h, 24h, 7d, all
+    const t3h = testNow - 3 * 3600 * 1000;          // 3 hours ago: in 24h, 7d, all
+    const t2d = testNow - 2 * 24 * 3600 * 1000;     // 2 days ago: in 7d, all
+    const t10d = testNow - 10 * 24 * 3600 * 1000;   // 10 days ago: in all only
+
+    // Event 1: rtk on deepseek (10m ago)
+    contextCompactor.recordSavings('rtk', 1900, 3800, 'deepseek-v4.1-flash', t10m);
+    // Event 2: headroom on claude (3h ago)
+    contextCompactor.recordSavings('headroom', 3800, 7600, 'claude-haiku-5-5', t3h);
+    // Event 3: powershell on deepseek (2d ago)
+    contextCompactor.recordSavings('powershell', 1140, 2280, 'deepseek-v4.1-flash', t2d);
+    // Event 4: cacheZone on claude (10d ago)
+    contextCompactor.recordSavings('cacheZone', 760, 1520, 'claude-haiku-5-5', t10d);
+
+    // Also record an event via recordCompressionEvent
+    contextCompactor.recordCompressionEvent({
+      module: 'schema',
+      savedChars: 380,
+      originalChars: 760,
+      model: 'deepseek-v4.1-flash',
+      timestamp: t10m
+    });
+
+    // 4. Verify Engine-level 1h slice isolation
+    const stats1h = contextCompactor.getStatsByRange('1h', testNow);
+    assert.strictEqual(stats1h.range, '1h');
+    assert.strictEqual(stats1h.rangeLabel, '过去 1 小时');
+    assert.strictEqual(stats1h.totalSavedChars, 2280, '1h totalSavedChars must be 2280');
+    assert.strictEqual(stats1h.savedTokens, 600, '1h savedTokens must be 600 (~2280/3.8)');
+    assert.strictEqual(stats1h.modules.rtk.savedChars, 1900);
+    assert.strictEqual(stats1h.modules.schema.savedChars, 380);
+    assert.strictEqual(stats1h.modules.headroom.savedChars, 0, '1h headroom must be 0');
+    assert.ok(stats1h.byModel['deepseek-v4.1-flash'], '1h byModel must contain deepseek');
+    assert.strictEqual(stats1h.byModel['claude-haiku-5-5'], undefined, '1h byModel must NOT contain claude');
+    console.log('✓ Engine getStatsByRange(1h) slice isolation verified');
+
+    // 5. Verify Engine-level 24h slice aggregation
+    const stats24h = contextCompactor.getStatsByRange('24h', testNow);
+    assert.strictEqual(stats24h.range, '24h');
+    assert.strictEqual(stats24h.rangeLabel, '过去 24 小时');
+    assert.strictEqual(stats24h.totalSavedChars, 6080, '24h totalSavedChars must be 6080');
+    assert.strictEqual(stats24h.savedTokens, 1600, '24h savedTokens must be 1600 (~6080/3.8)');
+    assert.strictEqual(stats24h.modules.headroom.savedChars, 3800);
+    assert.strictEqual(stats24h.modules.powershell.savedChars, 0, '24h powershell must be 0');
+    assert.ok(stats24h.byModel['deepseek-v4.1-flash'], '24h byModel must contain deepseek');
+    assert.ok(stats24h.byModel['claude-haiku-5-5'], '24h byModel must contain claude');
+    console.log('✓ Engine getStatsByRange(24h) slice aggregation verified');
+
+    // 6. Verify Engine-level 7d slice aggregation
+    const stats7d = contextCompactor.getStatsByRange('7d', testNow);
+    assert.strictEqual(stats7d.range, '7d');
+    assert.strictEqual(stats7d.rangeLabel, '过去 7 天');
+    assert.strictEqual(stats7d.totalSavedChars, 7220, '7d totalSavedChars must be 7220');
+    assert.strictEqual(stats7d.savedTokens, 1900, '7d savedTokens must be 1900 (~7220/3.8)');
+    assert.strictEqual(stats7d.modules.powershell.savedChars, 1140);
+    assert.strictEqual(stats7d.modules.cacheZone.savedChars, 0, '7d cacheZone must be 0');
+    console.log('✓ Engine getStatsByRange(7d) slice aggregation verified');
+
+    // 7. Verify Engine-level all range cumulative aggregation
+    const statsAll = contextCompactor.getStatsByRange('all', testNow);
+    assert.strictEqual(statsAll.range, 'all');
+    assert.strictEqual(statsAll.rangeLabel, '全部历史累计');
+    assert.strictEqual(statsAll.totalSavedChars, 7980, 'all totalSavedChars must be 7980');
+    assert.strictEqual(statsAll.savedTokens, 2100, 'all savedTokens must be 2100 (~7980/3.8)');
+    assert.strictEqual(statsAll.modules.cacheZone.savedChars, 760);
+    console.log('✓ Engine getStatsByRange(all) cumulative aggregation verified');
+
+    // 8. Test HTTP Proxy End-to-End time range API querying
+    const httpDsRes141 = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [
+          { role: 'user', content: 'HTTP time range test 1' },
+          { role: 'tool', content: '\u001b[32m' + 'Log line with ANSI green '.repeat(20) + '\u001b[0m' }
+        ]
+      })
+    });
+    assert.strictEqual(httpDsRes141.statusCode, 200);
+
+    const httpClaudeRes141 = await request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-5-5',
+        messages: [
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't_range_1', content: '\u001b[33m' + 'Log line with ANSI yellow '.repeat(20) + '\u001b[0m' }] }
+        ]
+      })
+    });
+    assert.strictEqual(httpClaudeRes141.statusCode, 200);
+
+    // 8a. Query HTTP API with range=1h
+    const res1h = await request('/balancer/api/compression/stats?range=1h', { method: 'GET' });
+    assert.strictEqual(res1h.statusCode, 200);
+    const json1h = JSON.parse(res1h.body);
+    assert.strictEqual(json1h.range, '1h');
+    assert.strictEqual(json1h.rangeLabel, '过去 1 小时');
+    assert.ok(json1h.stats.totalSavedChars > 0, '1h totalSavedChars must be positive');
+    assert.ok(json1h.stats.savedTokens > 0, '1h savedTokens must be positive');
+    assert.ok(json1h.stats.modules.rtk.savedChars > 0, '1h rtk savings must be positive');
+    assert.ok(json1h.stats.byModel['deepseek-v4.1-flash'], '1h byModel must have deepseek');
+    assert.ok(json1h.stats.byModel['claude-haiku-5-5'], '1h byModel must have claude');
+
+    // 8b. Query HTTP API with range=24h
+    const res24h = await request('/balancer/api/compression/stats?range=24h', { method: 'GET' });
+    const json24h = JSON.parse(res24h.body);
+    assert.strictEqual(json24h.range, '24h');
+    assert.strictEqual(json24h.rangeLabel, '过去 24 小时');
+    assert.strictEqual(json24h.stats.totalSavedChars, json1h.stats.totalSavedChars);
+
+    // 8c. Query HTTP API with range=7d
+    const res7d = await request('/balancer/api/compression/stats?range=7d', { method: 'GET' });
+    const json7d = JSON.parse(res7d.body);
+    assert.strictEqual(json7d.range, '7d');
+    assert.strictEqual(json7d.rangeLabel, '过去 7 天');
+    assert.strictEqual(json7d.stats.totalSavedChars, json1h.stats.totalSavedChars);
+
+    // 8d. Query HTTP API with range=all and default
+    const resAll = await request('/balancer/api/compression/stats?range=all', { method: 'GET' });
+    const jsonAll = JSON.parse(resAll.body);
+    assert.strictEqual(jsonAll.range, 'all');
+    assert.strictEqual(jsonAll.rangeLabel, '全部历史累计');
+    assert.strictEqual(jsonAll.stats.totalSavedChars, json1h.stats.totalSavedChars);
+
+    const resDefault = await request('/balancer/api/compression/stats', { method: 'GET' });
+    const jsonDefault = JSON.parse(resDefault.body);
+    assert.strictEqual(jsonDefault.range, 'all', 'Omitting range must default to all for backward compatibility');
+    assert.strictEqual(jsonDefault.stats.totalSavedChars, jsonAll.stats.totalSavedChars);
+    console.log('✓ HTTP Proxy End-to-End time range API queries (1h, 24h, 7d, all) verified');
+
+    // 8. Test Bucket Pruning & Disk Persistence (<200KB)
+    contextCompactor.pruneExpiredBuckets(testNow);
+    contextCompactor.flushStatsToDisk();
+
+    const historyFilePath = path.join(__dirname, 'compression-history.json');
+    assert.ok(fs.existsSync(historyFilePath), 'compression-history.json must exist');
+    const histStats = fs.statSync(historyFilePath);
+    assert.ok(histStats.size > 0 && histStats.size < 200 * 1024, `compression-history.json (${histStats.size} bytes) must be strictly < 200KB`);
+
+    const statsFilePath141 = path.join(__dirname, 'compression-stats.json');
+    assert.ok(fs.existsSync(statsFilePath141), 'compression-stats.json must exist');
+    const statsStat141 = fs.statSync(statsFilePath141);
+    assert.ok(statsStat141.size > 0 && statsStat141.size < 200 * 1024, `compression-stats.json (${statsStat141.size} bytes) must be strictly < 200KB`);
+    console.log(`✓ Bucket pruning & disk persistence verified (history: ${histStats.size}B, stats: ${statsStat141.size}B, both <200KB)`);
+
+    // 9. Test Web UI Dashboard elements
+    const uiRes141 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes141.statusCode, 200);
+    assert.ok(uiRes141.body.includes('id="comp-range-1h"'), 'UI must contain comp-range-1h button');
+    assert.ok(uiRes141.body.includes('id="comp-range-24h"'), 'UI must contain comp-range-24h button');
+    assert.ok(uiRes141.body.includes('id="comp-range-7d"'), 'UI must contain comp-range-7d button');
+    assert.ok(uiRes141.body.includes('id="comp-range-all"'), 'UI must contain comp-range-all button');
+    assert.ok(uiRes141.body.includes('id="comp-range-badge"'), 'UI must contain comp-range-badge');
+    assert.ok(uiRes141.body.includes('switchCompRange('), 'UI script must contain switchCompRange function');
+    assert.ok(uiRes141.body.includes('currentCompRange'), 'UI script must contain currentCompRange state');
+
+    // Verify script compilation integrity
+    const uiScriptMatch141 = uiRes141.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(uiScriptMatch141, 'Web UI must contain inline script');
+    assert.doesNotThrow(() => {
+      new Function(uiScriptMatch141[1]);
+    }, 'Client script in Web UI must compile cleanly without SyntaxError');
+    console.log('✓ Web UI Dashboard Time Range pills, badge, and client scripts verified');
+
+    // 10. Test Reset via API completely purges both cumulative and all time-range buckets
+    const finalResetRes = await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+    assert.strictEqual(finalResetRes.statusCode, 200);
+    for (const r of ['1h', '24h', '7d', 'all']) {
+      const getPostReset = await request(`/balancer/api/compression/stats?range=${r}`, { method: 'GET' });
+      const getPostResetJson = JSON.parse(getPostReset.body);
+      assert.strictEqual(getPostResetJson.stats.totalSavedChars, 0, `Post-reset range ${r} must be 0`);
+      assert.strictEqual(getPostResetJson.stats.savedTokens, 0, `Post-reset range ${r} tokens must be 0`);
+    }
+    console.log('✓ POST /balancer/api/compression/stats/reset purged all time-range buckets verified');
+
+    // 11. Verify v3.6.0 version declaration in package.json
+    const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(packageJson141.version, '3.6.0', 'package.json version must be 3.6.0');
+    console.log('✓ package.json version 3.6.0 verified');
 
     console.log('\n======================================================');
-    console.log('🎉 ALL 140 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 141 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
@@ -6777,6 +6984,9 @@ $ProgressPreference = 'SilentlyContinue'
     } catch (e) {}
     if (fs.existsSync(path.join(__dirname, 'compression-stats.json'))) {
       try { fs.unlinkSync(path.join(__dirname, 'compression-stats.json')); } catch (e) {}
+    }
+    if (fs.existsSync(path.join(__dirname, 'compression-history.json'))) {
+      try { fs.unlinkSync(path.join(__dirname, 'compression-history.json')); } catch (e) {}
     }
   }
 }
