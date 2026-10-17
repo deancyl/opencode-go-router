@@ -8,6 +8,7 @@ const { fork, execSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
+const psOptimizer = require('./powershell-optimizer');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -22,6 +23,17 @@ function getFreePort() {
 
 async function runTests() {
   console.log('--- Starting OpenCode Go Router Verification Suite ---');
+
+  const prodStatsPath = path.join(__dirname, 'compression-stats.json');
+  const prodStatsBakPath = path.join(__dirname, 'compression-stats.prod.backup.json');
+  if (fs.existsSync(prodStatsPath) && !fs.existsSync(prodStatsBakPath)) {
+    try { fs.copyFileSync(prodStatsPath, prodStatsBakPath); } catch (_) {}
+  }
+  const prodHistPath = path.join(__dirname, 'compression-history.json');
+  const prodHistBakPath = path.join(__dirname, 'compression-history.prod.backup.json');
+  if (fs.existsSync(prodHistPath) && !fs.existsSync(prodHistBakPath)) {
+    try { fs.copyFileSync(prodHistPath, prodHistBakPath); } catch (_) {}
+  }
 
   const mockPort = await getFreePort();
   const routerPort = await getFreePort();
@@ -6740,7 +6752,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0 or 3.6.1');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1 or 3.7.0');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6986,7 +6998,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0 version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1'].includes(packageJson141.version), 'package.json version must be 3.6.0 or 3.6.1');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1 or 3.7.0');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7115,8 +7127,211 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(finalStats143.modules.headroom.savedChars > 0, 'Codex Responses conversion must attribute Headroom savings');
     console.log(`✓ Codex Responses end-to-end conversion attribution verified (PowerShell: ${finalStats143.modules.powershell.savedChars}, Headroom: ${finalStats143.modules.headroom.savedChars})`);
 
+    // [Test 144] Testing Windows PowerShell Escaping Optimization, $() Subexpression Guard, Script File Injection Helper & PS7 Denoising
+    console.log('\n[Test 144] Testing Windows PowerShell Escaping Optimization, $() Subexpression Guard, Script File Injection Helper & PS7 Denoising...');
+
+    // 1. $() Subexpression escaping inside double quotes (fix for thread 01a1422d-b84c-7920-8b16-ace7091dee2e)
+    const adbRawCmd = 'adb shell "su -c \'for p in $(pgrep -f venus.pub); do kill -9 $p; done\'"';
+    const adbFixedCmd = psOptimizer.fixPowerShellCommandEscaping(adbRawCmd, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
+    assert.ok(adbFixedCmd.includes('`$(pgrep -f venus.pub)'), 'Must escape $(...) to `$(`...) inside double quotes to prevent local Windows PowerShell evaluation');
+
+    // 2. Variable syntax ${VAR} inside double quotes
+    const braceCmd = 'wsl -e bash -c "echo ${MY_VAR} > /tmp/out"';
+    const braceFixed = psOptimizer.fixPowerShellCommandEscaping(braceCmd, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
+    assert.ok(braceFixed.includes('`${MY_VAR}'), 'Must escape ${...} to `${...} inside double quotes');
+
+    // 3. Single-quoted strings MUST NOT be altered (PowerShell treats single quotes as verbatim)
+    const singleQuoteCmd = "adb shell 'for p in $(pgrep -f venus); do kill -9 $p; done'";
+    const singleQuoteFixed = psOptimizer.fixPowerShellCommandEscaping(singleQuoteCmd, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
+    assert.strictEqual(singleQuoteFixed, singleQuoteCmd, 'Single-quoted commands must remain 100% untouched');
+
+    // 4. Pre-escaped `$(var) must not be double escaped
+    const preEscaped = 'cmd /c "echo `$(whoami)"';
+    const preEscapedFixed = psOptimizer.fixPowerShellCommandEscaping(preEscaped, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
+    assert.strictEqual(preEscapedFixed, preEscaped, 'Already escaped `$( must not be double escaped');
+
+    // 5. Script File Injection Helper detection & execution wrapper
+    const simpleCmd = 'dir C:\\Windows';
+    assert.strictEqual(psOptimizer.isComplexCommandNeedingScriptFile(simpleCmd), false, 'Simple command must not trigger script file injection');
+
+    const multiLineScript = 'for ($i = 0; $i -lt 10; $i++) {\n  Write-Output "Step: $i"\n  Start-Sleep -Milliseconds 100\n}';
+    assert.strictEqual(psOptimizer.isComplexCommandNeedingScriptFile(multiLineScript), true, 'Multiline script (>=3 lines) must trigger script file injection');
+
+    const nestedCmdWithLoop = 'docker run --rm alpine sh -c "for pkg in $(apk info); do echo \\"Found: $pkg\\"; done"';
+    assert.strictEqual(psOptimizer.isComplexCommandNeedingScriptFile(nestedCmdWithLoop), true, 'Nested quotes with subshell loop must trigger script file helper');
+
+    const wrappedPs1 = psOptimizer.wrapInScriptFileExecution(multiLineScript, '.ps1');
+    assert.ok(wrappedPs1.includes('$__tmpScript = [System.IO.Path]::Combine'), 'Wrapper must construct temporary script path');
+    assert.ok(wrappedPs1.includes("@'\r\n" + multiLineScript + "\r\n'@"), 'Wrapper must use @\' ... \'@ verbatim here-string to avoid expansion');
+    assert.ok(wrappedPs1.includes('Remove-Item -Force $__tmpScript'), 'Wrapper must clean up temporary script in finally block');
+
+    // 6. PowerShell 7 Boilerplate Noise Cleaning
+    const ps7ErrorNoise = "PowerShell 7.6.4 on Windows_NT\r\n" +
+      "Get-Process : The term 'pgrep' is not recognized as a name of a cmdlet, function, script file, or executable program.\r\n" +
+      "Line |\r\n" +
+      "   1 |  … for p in $(pgrep -f venus.pub); do kill -9 $p; done …\r\n" +
+      "     |             ~~~~~\r\n" +
+      "     | \r\n" +
+      "Check the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\n";
+    const cleanedPs7 = psOptimizer.cleanCliXmlNoise(ps7ErrorNoise);
+    assert.ok(!cleanedPs7.includes('PowerShell 7.6.4'), 'Must strip interactive banner');
+    assert.ok(!cleanedPs7.includes('Line |'), 'Must strip PowerShell 7 Line | column noise');
+    assert.ok(!cleanedPs7.includes('~~~~~'), 'Must strip PowerShell 7 squiggly tildes');
+    assert.ok(!cleanedPs7.includes('Check the spelling of the name'), 'Must strip verbose boilerplate recommendation');
+    assert.ok(cleanedPs7.includes("The term 'pgrep' is not recognized"), 'Must preserve the root error message');
+    console.log(`✓ PowerShell 7 error boilerplate cleaning verified (reduced ${ps7ErrorNoise.length}B -> ${cleanedPs7.length}B)`);
+
+    // 7. PowerShell Prompt Guard Directive
+    const guardDirective = psOptimizer.generatePowerShellGuardDirective();
+    assert.ok(guardDirective.includes('Quoting Redline'), 'Guard directive must include Quoting Redline');
+    assert.ok(guardDirective.includes('Script File Injection'), 'Guard directive must include Script File Injection advice');
+    assert.ok(guardDirective.includes('curl.exe'), 'Guard directive must advise curl.exe');
+
+    // 8. End-to-end Payload Optimization across Chat, Responses & Anthropic with $() escaping
+    const chatReqPayload = {
+      messages: [
+        { role: 'user', content: 'run adb' },
+        {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: 'call_adb_1',
+              type: 'function',
+              function: {
+                name: 'execute_command',
+                arguments: JSON.stringify({ command: adbRawCmd })
+              }
+            }
+          ]
+        }
+      ]
+    };
+    const optimizedChat = psOptimizer.optimizeChatPayload(chatReqPayload, { targetPlatform: 'win32' });
+    const fixedArgs = JSON.parse(optimizedChat.messages[1].tool_calls[0].function.arguments);
+    assert.ok(fixedArgs.command.includes('`$(pgrep -f venus.pub)'), 'optimizeChatPayload must escape $(...) in tool arguments');
+
+    const responsesReqPayload = {
+      input: [
+        {
+          type: 'function_call',
+          id: 'call_res_1',
+          name: 'execute',
+          arguments: JSON.stringify({ cmd: adbRawCmd })
+        }
+      ]
+    };
+    const optimizedResponses = psOptimizer.optimizeResponsesPayload(responsesReqPayload, { targetPlatform: 'win32' });
+    const fixedResArgs = JSON.parse(optimizedResponses.input[0].arguments);
+    assert.ok(fixedResArgs.cmd.includes('`$(pgrep -f venus.pub)'), 'optimizeResponsesPayload must escape $(...) in tool arguments');
+
+    const anthropicReqPayload = {
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_1',
+              name: 'bash',
+              input: { command: adbRawCmd }
+            }
+          ]
+        }
+      ]
+    };
+    const optimizedAnthropic = psOptimizer.optimizeAnthropicPayload(anthropicReqPayload, { targetPlatform: 'win32' });
+    assert.ok(optimizedAnthropic.messages[0].content[0].input.command.includes('`$(pgrep -f venus.pub)'), 'optimizeAnthropicPayload must escape $(...) in tool input');
+    console.log('✓ Windows PowerShell Escaping Optimization, $() Subexpression Guard & Script File Injection verified');
+
+    // [Test 145] Testing Sandbox Isolation via COMPRESSION_STATS_FILE, Dual-Write & .bak Disaster Recovery Self-Healing
+    console.log('\n[Test 145] Testing Sandbox Isolation via COMPRESSION_STATS_FILE, Dual-Write & .bak Disaster Recovery Self-Healing...');
+
+    // 1. Production Historical Baseline Verification
+    const prodBackupFile = path.join(__dirname, 'compression-stats.prod.backup.json');
+    assert.ok(fs.existsSync(prodBackupFile), 'compression-stats.prod.backup.json baseline must exist');
+    const prodBaseline = JSON.parse(fs.readFileSync(prodBackupFile, 'utf8'));
+    assert.strictEqual(prodBaseline.totalOriginalChars, 281463, 'Production baseline totalOriginalChars must be 281,463');
+    assert.strictEqual(prodBaseline.totalCompressedChars, 61292, 'Production baseline totalCompressedChars must be 61,292');
+    assert.strictEqual(prodBaseline.totalSavedChars, 220171, 'Production baseline totalSavedChars must be 220,171');
+    assert.strictEqual(prodBaseline.savedTokens, 57940, 'Production baseline savedTokens must be 57,940');
+    assert.strictEqual(prodBaseline.compressionRatio, 78.2, 'Production baseline compressionRatio must be 78.2%');
+    console.log('✓ Production historical baseline stats (281,463 chars, 78.2% ratio) confirmed intact');
+
+    // 2. Dual-Write (.bak) Verification
+    contextCompactor.flushStatsToDisk();
+    const mainStatsPath = path.join(__dirname, 'compression-stats.json');
+    const bakStatsPath = `${mainStatsPath}.bak`;
+    assert.ok(fs.existsSync(bakStatsPath), 'compression-stats.json.bak must exist via dual-write');
+    const mainContent = fs.readFileSync(mainStatsPath, 'utf8');
+    const bakContent = fs.readFileSync(bakStatsPath, 'utf8');
+    assert.strictEqual(mainContent, bakContent, 'compression-stats.json and .bak must be identical upon flush');
+
+    // 3. Disaster Recovery Self-Healing: Corrupt main file and test automatic recovery from .bak
+    fs.writeFileSync(mainStatsPath, 'CORRUPTED_NON_JSON_DATA_0xDEADBEEF', 'utf8');
+    const healedStats = contextCompactor.loadStatsFromDisk();
+    assert.ok(healedStats && healedStats.totalOriginalChars > 0, 'loadStatsFromDisk must self-heal from .bak when main file is corrupted');
+    const repairedMainContent = fs.readFileSync(mainStatsPath, 'utf8');
+    assert.ok(!repairedMainContent.includes('CORRUPTED'), 'Main file must be automatically rewritten with healthy data from .bak');
+    console.log('✓ Dual-write & .bak disaster recovery self-healing verified');
+
+    // [Test 146] Dynamic Bilingual Token Estimation Model, Anti-Inflation 100% Circuit Breaker & 4-Tier Presets Differentiation
+    console.log('\n[Test 146] Dynamic Bilingual Token Estimation Model, Anti-Inflation 100% Circuit Breaker & 4-Tier Presets Differentiation...');
+
+    // 1. Dynamic Bilingual Token Estimation Model
+    const pureEnglish = "The quick brown fox jumps over the lazy dog. 1234567890";
+    const englishTokens = contextCompactor.estimateTokens(pureEnglish);
+    assert.strictEqual(englishTokens, Math.round(pureEnglish.length / 3.8), 'Pure ASCII/code text must estimate at ~3.8 chars/Token');
+
+    const pureChinese = "这是一段纯中文测试文本用于验证动态双语分词模型分值"; // 25 CJK chars
+    const chineseTokens = contextCompactor.estimateTokens(pureChinese);
+    assert.strictEqual(chineseTokens, Math.round(25 / 1.25), 'Pure Chinese text must estimate at ~1.25 chars/Token (25/1.25=20)');
+
+    const mixedBilingual = "OpenCode 路由引擎：节约了 50000 字符"; // 16 non-cjk + 8 cjk = 24 chars
+    const cjkMatches146 = mixedBilingual.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g);
+    const cjkCount146 = cjkMatches146 ? cjkMatches146.length : 0;
+    const nonCjkCount146 = mixedBilingual.length - cjkCount146;
+    const expectedBilingual = Math.round(cjkCount146 / 1.25 + nonCjkCount146 / 3.8);
+    assert.strictEqual(contextCompactor.estimateTokens(mixedBilingual), expectedBilingual, 'Mixed bilingual text must calculate combined weighted tokens');
+
+    assert.strictEqual(contextCompactor.estimateTokens(""), 0, 'Empty string must return 0 tokens');
+    assert.strictEqual(contextCompactor.estimateTokens(380), 100, 'Numeric input must estimate at 3.8 baseline (380/3.8=100)');
+    console.log('✓ Dynamic bilingual Token estimation model (~1.25 CJK / ~3.8 Code) verified');
+
+    // 2. Anti-Inflation 100% Circuit Breaker (Never inflate output)
+    const shortTextNoSavings = "Normal code line without ANSI or noise;\n";
+    const compResultSame = contextCompactor.compactText(shortTextNoSavings, { enabled: true });
+    assert.strictEqual(compResultSame, shortTextNoSavings, 'When no compression occurs, circuit breaker must return original text reference');
+    assert.ok(compResultSame.length <= shortTextNoSavings.length, 'Compacted output must never exceed original length (100% anti-inflation)');
+
+    // 3. Anti-Downgrade Exemption Safety Barrier for Code Diffs & Patches
+    const gitDiffHeader = "diff --git a/server.js b/server.js\nindex 1234..5678 100644\n--- a/server.js\n+++ b/server.js\n@@ -10,5 +10,6 @@\n+const x = 1;\n";
+    assert.strictEqual(contextCompactor.compactText(gitDiffHeader, { enabled: true, foldStructuredData: true }), gitDiffHeader, 'Git diff blocks must be 100% exempt from folding');
+
+    const codexPatch = "*** Begin Patch\n*** Update File: server.js\n@@ -1,3 +1,4 @@\n+console.log('patch');\n*** End Patch\n";
+    assert.strictEqual(contextCompactor.compactText(codexPatch, { enabled: true, foldStructuredData: true }), codexPatch, 'Codex patch blocks must be 100% exempt from folding');
+    console.log('✓ Anti-Inflation circuit breaker & Anti-Downgrade diff exemptions verified');
+
+    // 4. 4-Tier Presets Differentiation & Web UI Verification
+    const presets146 = contextCompactor.COMPRESSION_PRESETS;
+    assert.ok(presets146.conservative, 'Conservative preset must exist');
+    assert.ok(presets146.balanced, 'Balanced preset must exist');
+    assert.ok(presets146.aggressive, 'Aggressive preset must exist');
+    assert.strictEqual(presets146.conservative.modules.headroom.enabled, false, 'Conservative preset must disable headroom');
+    assert.strictEqual(presets146.conservative.modules.headroom.foldStructuredData, false, 'Conservative preset must not fold structured data');
+    assert.strictEqual(presets146.conservative.modules.cacheZone.enabled, false, 'Conservative preset must disable cacheZone');
+    assert.strictEqual(presets146.aggressive.modules.headroom.maxStructuredItems, 15, 'Aggressive preset must have maxStructuredItems=15');
+    assert.strictEqual(presets146.aggressive.modules.schema.schemaCharThreshold, 8000, 'Aggressive preset must have schemaCharThreshold=8000');
+
+    // Web UI Elements for Presets and Escaping
+    const uiRes146 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes146.statusCode, 200);
+    assert.ok(uiRes146.body.includes('id="preset-desc-card"'), 'Web UI must render preset explanation card (#preset-desc-card)');
+    assert.ok(uiRes146.body.includes('id="cfg-comp-ps-subexpression"'), 'Web UI must render fixSubexpressionEscaping switch');
+    assert.ok(uiRes146.body.includes('基于中英双语动态模型'), 'Web UI must display dynamic bilingual token model subtitle');
+    console.log('✓ 4-Tier Presets differentiation & Web UI explanation card verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 143 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 146 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
@@ -7146,11 +7361,38 @@ $ProgressPreference = 'SilentlyContinue'
         }
       }
     } catch (e) {}
-    if (fs.existsSync(path.join(__dirname, 'compression-stats.json'))) {
-      try { fs.unlinkSync(path.join(__dirname, 'compression-stats.json')); } catch (e) {}
+    // Restore production statistics and history from backups
+    try {
+      const prodStatsBak = path.join(__dirname, 'compression-stats.prod.backup.json');
+      const prodStatsTarget = path.join(__dirname, 'compression-stats.json');
+      if (fs.existsSync(prodStatsBak)) {
+        fs.copyFileSync(prodStatsBak, prodStatsTarget);
+        fs.copyFileSync(prodStatsBak, `${prodStatsTarget}.bak`);
+      }
+      const prodHistBak = path.join(__dirname, 'compression-history.prod.backup.json');
+      const prodHistTarget = path.join(__dirname, 'compression-history.json');
+      if (fs.existsSync(prodHistBak)) {
+        fs.copyFileSync(prodHistBak, prodHistTarget);
+        fs.copyFileSync(prodHistBak, `${prodHistTarget}.bak`);
+      }
+    } catch (e) {
+      console.warn('Warning: Failed to restore production stats in teardown:', e.message);
     }
-    if (fs.existsSync(path.join(__dirname, 'compression-history.json'))) {
-      try { fs.unlinkSync(path.join(__dirname, 'compression-history.json')); } catch (e) {}
+    // Clean up temporary sandbox test files
+    const testSandboxFiles = [
+      path.join(__dirname, 'compression-stats.test.json'),
+      path.join(__dirname, 'compression-stats.test.json.bak'),
+      path.join(__dirname, 'compression-history.test.json'),
+      path.join(__dirname, 'compression-history.test.json.bak'),
+      path.join(__dirname, 'compression-stats.sandbox.json'),
+      path.join(__dirname, 'compression-stats.sandbox.json.bak'),
+      path.join(__dirname, 'compression-history.sandbox.json'),
+      path.join(__dirname, 'compression-history.sandbox.json.bak')
+    ];
+    for (const f of testSandboxFiles) {
+      if (fs.existsSync(f)) {
+        try { fs.unlinkSync(f); } catch (_) {}
+      }
     }
   }
 }

@@ -31,11 +31,14 @@ const DEFAULT_POWERSHELL_CONFIG = {
   enabled: true,
   autoDetectPlatform: true,
   cleanCliXmlNoise: true,
+  cleanPowerShell7Noise: true,
   fixQuoteEscaping: true,
   fixCurlAlias: true,
   fixTrailingSlash: true,
   fixAndOperator: true,
   fixLineContinuation: true,
+  fixSubexpressionEscaping: true,
+  scriptFileInjectionHelper: true,
   injectPowerShellGuard: true
 };
 
@@ -235,6 +238,19 @@ function cleanPowerShellNoise(text) {
       }
     }
 
+    // 6. Clean PowerShell 7 repetitive syntax / cmdlet error boilerplate noise
+    // Strips redundant "Line | ... ~~~~" and "Check the spelling of the name..." while preserving the core error
+    if (result.includes('Line |') || result.includes('Check the spelling of the name')) {
+      const lineNoiseRegex = /Line\s*\|\r?\n\s*\d+\s*\|\s*…[^\r\n]*\r?\n\s*\|\s*~+\r?\n\s*\|\s*/g;
+      const stripped1 = result.replace(lineNoiseRegex, '');
+      const adviceRegex = /\r?\n?Check the spelling of the name, or if a path was included, verify that the path is correct and try again\.\r?\n?/g;
+      const stripped2 = stripped1.replace(adviceRegex, '\n');
+      if (stripped2 !== result) {
+        result = stripped2;
+        modified = true;
+      }
+    }
+
     if (!modified || result.trim() === '') {
       return text;
     }
@@ -341,11 +357,86 @@ function fixPowerShellCommandEscaping(cmd, options = {}) {
       }
     }
 
+    // 5. Fix PowerShell Subexpression Local Evaluation ($() and ${} inside double quotes)
+    // In PowerShell, strings in double quotes "..." evaluate $(...) locally on Windows.
+    // When executing subshell/remote commands (adb shell, ssh, bash, su, wsl, docker, etc.)
+    // PowerShell evaluates $(...) locally on Windows, failing with "The term '...' is not recognized".
+    // Solution: If an unescaped $( or ${ is inside double quotes, escape $ with backtick: `$(` or `${`
+    if (cfg.fixSubexpressionEscaping !== false && (result.includes('$(') || result.includes('${'))) {
+      let inSingleQuote = false;
+      let inDoubleQuote = false;
+      let buffer = '';
+      for (let i = 0; i < result.length; i++) {
+        const char = result[i];
+        const prevChar = i > 0 ? result[i - 1] : '';
+        if (char === "'" && !inDoubleQuote) {
+          inSingleQuote = !inSingleQuote;
+          buffer += char;
+        } else if (char === '"' && !inSingleQuote) {
+          if (prevChar !== '`') {
+            inDoubleQuote = !inDoubleQuote;
+          }
+          buffer += char;
+        } else if (inDoubleQuote && char === '$' && (result[i + 1] === '(' || result[i + 1] === '{')) {
+          if (prevChar !== '`') {
+            buffer += '`$';
+          } else {
+            buffer += char;
+          }
+        } else {
+          buffer += char;
+        }
+      }
+      result = buffer;
+    }
+
     return result;
   } catch (err) {
     console.warn('[PowerShellOptimizer] fixPowerShellCommandEscaping error, returning original:', err.message);
     return cmd;
   }
+}
+
+/**
+ * Detects whether a command has high escaping complexity that would benefit from script file injection.
+ * (e.g. multi-line scripts, nested loops with quotes and subexpressions, heredocs).
+ * @param {string} cmd
+ * @returns {boolean}
+ */
+function isComplexCommandNeedingScriptFile(cmd) {
+  if (typeof cmd !== 'string') return false;
+  const lineCount = (cmd.match(/\r?\n/g) || []).length;
+  if (lineCount >= 3) return true;
+  // Complex nested quotes and subexpressions or heredocs
+  const hasNestedQuotes = /["'].*?["'].*?["']/.test(cmd);
+  const hasSubshellLoop = /for\s+\w+\s+in\s+\$\(/.test(cmd) || /while\s+read/.test(cmd);
+  const hasHeredoc = /<<\s*['"]?[A-Za-z0-9_]+['"]?/.test(cmd);
+  return (hasNestedQuotes && (hasSubshellLoop || hasHeredoc)) || cmd.length > 500;
+}
+
+/**
+ * Wraps or converts a complex PowerShell script into a safe temporary script file execution wrapper
+ * using PowerShell single-quoted here-strings (@' ... '@) which guarantees 0 variable/subexpression expansion.
+ * @param {string} scriptContent
+ * @param {string} [extension='.ps1']
+ * @returns {string}
+ */
+function wrapInScriptFileExecution(scriptContent, extension = '.ps1') {
+  if (typeof scriptContent !== 'string') return scriptContent;
+  const ext = extension.startsWith('.') ? extension : `.${extension}`;
+  return [
+    `& {`,
+    `  $__tmpScript = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "opencode_inj_" + [System.Guid]::NewGuid().ToString("N") + "${ext}");`,
+    `  [System.IO.File]::WriteAllText($__tmpScript, @'`,
+    scriptContent,
+    `'@, [System.Text.Encoding]::UTF8);`,
+    `  try {`,
+    `    & $__tmpScript`,
+    `  } finally {`,
+    `    Remove-Item -Force $__tmpScript -ErrorAction SilentlyContinue`,
+    `  }`,
+    `}`
+  ].join('\r\n');
 }
 
 /**
@@ -356,12 +447,18 @@ function fixPowerShellCommandEscaping(cmd, options = {}) {
 function generatePowerShellGuardDirective() {
   return [
     '<!-- [Windows PowerShell Execution & Escaping Guard] -->',
-    'Host Environment is Windows with PowerShell. Strictly follow these escaping standards to avoid syntax failures:',
-    '1. Use `curl.exe` instead of `curl` (PowerShell 5.1 aliases `curl` to `Invoke-WebRequest` with incompatible parameters).',
-    '2. Chain multiple commands using `;` or `; if ($?) { ... }` instead of `&&` or `||` (PowerShell 5.1 does not support `&&`).',
-    '3. For inline Python or Node.js code, prefer wrapping code in single quotes (\'...\') to prevent PowerShell from expanding `$`, or write to a script file.',
-    '4. Never leave a trailing backslash before a closing quote (e.g. `"C:\\dir\\"` eats the quote; use `"C:\\dir\\\\"` or `"C:\\dir"`).',
-    '5. Use backtick (`) for PowerShell string escaping and line continuations, not backslash (\\).'
+    'Host Environment is Windows with PowerShell. Strictly follow these escaping and execution standards to eliminate syntax crashes:',
+    '1. Quoting Redline: In PowerShell, double quotes ("...") EVALUATE `$()` and `$variables` locally on Windows!',
+    '   - NEVER pass subshell/remote commands (e.g. `adb shell`, `ssh`, `docker exec`, `su -c`, `bash -c`, `wsl`) containing `$(...)`, `${...}`, or `$var` in double quotes.',
+    '   - Always wrap commands containing `$` in verbatim single quotes (\'...\') or escape `$` with backtick (`$).',
+    '2. Script File Injection (Eliminate Escaping Hell):',
+    '   - For complex multi-line scripts, loops (`for ... in $(...)`), heredocs, or nested quotes, avoid fragile inline command strings!',
+    '   - Write the script to a script file (e.g. `.ps1` on Windows, or `.sh` pushed to remote/container) and execute that file directly.',
+    '3. Command Compatibility:',
+    '   - Use `curl.exe` instead of `curl` (PowerShell 5.1 aliases `curl` to `Invoke-WebRequest` with incompatible flags).',
+    '   - Chain commands using `;` or `; if ($?) { ... }` instead of `&&` or `||` (PowerShell 5.1 does not support `&&`).',
+    '   - Use backtick (`) for PowerShell string escaping and line continuations, not backslash (\\).',
+    '   - Never leave a trailing backslash before a closing quote (`"C:\\dir\\\\"` instead of `"C:\\dir\\"`).'
   ].join('\n');
 }
 
@@ -399,7 +496,7 @@ function optimizeChatPayload(payload, options = {}, req = null) {
 
       // Clean CLIXML noise in tool output messages
       if ((msg.role === 'tool' || msg.role === 'function') && cfg.cleanCliXmlNoise !== false) {
-        if (typeof msg.content === 'string' && (msg.content.includes('#< CLIXML') || msg.content.includes('CategoryInfo'))) {
+        if (typeof msg.content === 'string' && (msg.content.includes('#< CLIXML') || msg.content.includes('CategoryInfo') || msg.content.includes('PowerShell ') || msg.content.includes('Line |'))) {
           return { ...msg, content: cleanCliXmlNoise(msg.content) };
         }
       }
@@ -487,7 +584,7 @@ function optimizeResponsesPayload(payload, options = {}, req = null) {
 
         // Clean tool output CLIXML
         if (cfg.cleanCliXmlNoise !== false && typeof item.output === 'string') {
-          if (item.output.includes('#< CLIXML') || item.output.includes('CategoryInfo')) {
+          if (item.output.includes('#< CLIXML') || item.output.includes('CategoryInfo') || item.output.includes('PowerShell ') || item.output.includes('Line |')) {
             return { ...item, output: cleanCliXmlNoise(item.output) };
           }
         }
@@ -570,7 +667,7 @@ function optimizeAnthropicPayload(payload, options = {}, req = null) {
 
           // Clean CLIXML noise inside tool_result
           if (block.type === 'tool_result' && cfg.cleanCliXmlNoise !== false) {
-            if (typeof block.content === 'string' && (block.content.includes('#< CLIXML') || block.content.includes('CategoryInfo'))) {
+            if (typeof block.content === 'string' && (block.content.includes('#< CLIXML') || block.content.includes('CategoryInfo') || block.content.includes('PowerShell ') || block.content.includes('Line |'))) {
               return { ...block, content: cleanCliXmlNoise(block.content) };
             }
           }
@@ -613,6 +710,8 @@ module.exports = {
   cleanCliXmlNoise,
   fixPowerShellCommandEscaping,
   generatePowerShellGuardDirective,
+  isComplexCommandNeedingScriptFile,
+  wrapInScriptFileExecution,
   optimizeChatPayload,
   optimizeResponsesPayload,
   optimizeAnthropicPayload

@@ -3,6 +3,7 @@ config.json
 config.json.bak
 *.pre-audit.bak
 *.bak
+*.backup.json
 
 # Logs
 *.log

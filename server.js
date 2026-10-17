@@ -4479,6 +4479,17 @@ function renderDashboardHtml(config) {
       font-weight: 600;
       box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
     }
+    .preset-desc-card {
+      margin-top: 10px;
+      padding: 10px 14px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      border-radius: 8px;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: #94a3b8;
+      width: 100%;
+    }
     .comp-range-group {
       display: inline-flex;
       align-items: center;
@@ -5188,16 +5199,32 @@ function renderDashboardHtml(config) {
               <span>启用上下文优化与 Token 压缩总开关 (Master Compression Switch)</span>
             </label>
           </div>
-          <div class="comp-presets-wrapper">
-            <span class="presets-title">一键快捷预设:</span>
-            <div class="comp-presets-group" id="comp-presets-group">
-              <button type="button" class="preset-btn ${(compCfg.preset === 'balanced' || !compCfg.preset) ? 'active' : ''}" id="preset-btn-balanced" onclick="applyPreset('balanced')">🌟 平衡标准档 (推荐)</button>
-              <button type="button" class="preset-btn ${(compCfg.preset === 'aggressive') ? 'active' : ''}" id="preset-btn-aggressive" onclick="applyPreset('aggressive')">🚀 极致省Token档</button>
-              <button type="button" class="preset-btn ${(compCfg.preset === 'conservative') ? 'active' : ''}" id="preset-btn-conservative" onclick="applyPreset('conservative')">🛡️ 保守只去噪档</button>
-              <button type="button" class="preset-btn ${(compCfg.preset === 'custom') ? 'active' : ''}" id="preset-btn-custom" onclick="applyPreset('custom')">⚙️ 自定义模式</button>
-              <span class="preset-badge" id="preset-active-badge" style="font-size: 0.75rem; color: var(--primary); padding: 4px 8px; background: rgba(56,189,248,0.1); border-radius: 6px; border: 1px solid rgba(56,189,248,0.3);">
-                当前: ${(compCfg.preset === 'aggressive') ? '🚀 极致省Token档' : (compCfg.preset === 'conservative') ? '🛡️ 保守只去噪档' : (compCfg.preset === 'custom') ? '⚙️ 自定义模式' : '🌟 平衡标准档'}
-              </span>
+          <div class="comp-presets-wrapper" style="width: 100%;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="presets-title">一键快捷预设:</span>
+              <div class="comp-presets-group" id="comp-presets-group">
+                <button type="button" class="preset-btn ${(compCfg.preset === 'balanced' || !compCfg.preset) ? 'active' : ''}" id="preset-btn-balanced" onclick="applyPreset('balanced')">🌟 平衡标准档 (推荐)</button>
+                <button type="button" class="preset-btn ${(compCfg.preset === 'aggressive') ? 'active' : ''}" id="preset-btn-aggressive" onclick="applyPreset('aggressive')">🚀 极致省Token档</button>
+                <button type="button" class="preset-btn ${(compCfg.preset === 'conservative') ? 'active' : ''}" id="preset-btn-conservative" onclick="applyPreset('conservative')">🛡️ 保守只去噪档</button>
+                <button type="button" class="preset-btn ${(compCfg.preset === 'custom') ? 'active' : ''}" id="preset-btn-custom" onclick="applyPreset('custom')">⚙️ 自定义模式</button>
+                <span class="preset-badge" id="preset-active-badge" style="font-size: 0.75rem; color: var(--primary); padding: 4px 8px; background: rgba(56,189,248,0.1); border-radius: 6px; border: 1px solid rgba(56,189,248,0.3);">
+                  当前: ${(compCfg.preset === 'aggressive') ? '🚀 极致省Token档' : (compCfg.preset === 'conservative') ? '🛡️ 保守只去噪档' : (compCfg.preset === 'custom') ? '⚙️ 自定义模式' : '🌟 平衡标准档'}
+                </span>
+              </div>
+            </div>
+            <div class="preset-desc-card" id="preset-desc-card">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+                <span style="font-weight: 600; color: #38bdf8; font-size: 0.85rem;">🌟 平衡标准档 (推荐)</span>
+                <span style="font-size: 0.75rem; color: #94a3b8; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
+                  预期压缩率: <strong style="color: #38bdf8;">65% ~ 80%</strong>
+                </span>
+              </div>
+              <div style="font-size: 0.78rem; color: #cbd5e1; margin-bottom: 4px;">
+                <strong style="color: #94a3b8;">压缩策略:</strong> 启用 RTK 终端去噪、Headroom 锁文件折叠、Schema 结构精简 (阈值 15,000)、Cache-Zone 缓存冻结与 PowerShell 跨平台转义修复。
+              </div>
+              <div style="font-size: 0.78rem; color: #cbd5e1;">
+                <strong style="color: #94a3b8;">潜在风险:</strong> <span style="color: #94a3b8;">极低。严格豁免 Git 冲突区、Diff 补丁与运行时堆栈，兼顾极致压缩与代码语义无损。</span>
+              </div>
             </div>
           </div>
         </div>
@@ -5223,7 +5250,7 @@ function renderDashboardHtml(config) {
               <span>🪙 累计节约 Token 预估</span>
             </div>
             <div class="comp-metric-val" id="stat-saved-tokens">~0 Tokens</div>
-            <div class="comp-metric-sub" id="stat-saved-tokens-sub">基于 3.8 字符/Token 启发模型</div>
+            <div class="comp-metric-sub" id="stat-saved-tokens-sub">基于中英双语动态模型 (~1.25 中文 / ~3.8 英文代码 字符/Token)</div>
           </div>
           <div class="comp-metric-card" id="card-saved-cost" style="cursor: pointer;" onclick="toggleByModelDrawer()" title="点击展开/收起分模型节约明细">
             <div class="comp-metric-label" style="display: flex; justify-content: space-between; align-items: center;">
@@ -5586,6 +5613,13 @@ function renderDashboardHtml(config) {
                   <span>多行续行符修正 (fixLineContinuation)</span>
                 </label>
                 <div class="sub-tip">将 Bash 风格的多行末尾续行反斜杠 (\) 转换为 PowerShell 原生反引号 (\`) 续行</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-subexpression" ${(mCfg.powershell && mCfg.powershell.fixSubexpressionEscaping !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>PowerShell 双引号子表达式反引号转义防御 (fixSubexpressionEscaping)</span>
+                </label>
+                <div class="sub-tip">自愈 Windows PowerShell 双引号内 &#36;() / &#36;{} 被本机提前求值陷阱，自动转义为 &#96;&#36;( 与 &#96;&#36;{，保障目标命令完整传递</div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
@@ -6089,6 +6123,37 @@ function renderDashboardHtml(config) {
       updateWizardStatusBadges();
     }
 
+    const PRESET_DESCRIPTIONS = {
+      balanced: {
+        title: '🌟 平衡标准档 (推荐)',
+        ratio: '65% ~ 80%',
+        policy: '启用 RTK 终端去噪、Headroom 锁文件折叠、Schema 结构精简 (阈值 15,000)、Cache-Zone 缓存冻结与 PowerShell 跨平台转义修复。',
+        risk: '极低。严格豁免 Git 冲突区、Diff 补丁与运行时堆栈，兼顾极致压缩与代码语义无损。',
+        badgeColor: '#38bdf8'
+      },
+      aggressive: {
+        title: '🚀 极致省Token档',
+        ratio: '80% ~ 92%',
+        policy: '全力压缩模式。更早折叠巨型 JSON 结构 (上限 15 项)、极低 Schema 触发阈值 (8,000 字符)、激进合并重复长轮次上下文。',
+        risk: '低至中等。超大型数据结构的内部细节将被折叠截断（仍保留键名提示与代码补丁保护），适合重度长会话开发。',
+        badgeColor: '#f97316'
+      },
+      conservative: {
+        title: '🛡️ 保守只去噪档',
+        ratio: '20% ~ 40%',
+        policy: '纯净安全模式。仅清除 ANSI 转义颜色码、终端进度条噪点及 PowerShell 7 冗余报错，不折叠锁文件与数据结构，不使用冻结缓存。',
+        risk: '零风险。100% 保持所有历史正文与结构化字段原汁原味，适合高敏感严校验场景。',
+        badgeColor: '#34d399'
+      },
+      custom: {
+        title: '⚙️ 自定义模式',
+        ratio: '自定义',
+        policy: '自由组合 5 大引擎模块（RTK、Headroom、Schema、Cache-Zone、PowerShell）与各项细分开关。',
+        risk: '取决于具体勾选配置与自定义阈值。',
+        badgeColor: '#a78bfa'
+      }
+    };
+
     function setPresetUI(presetName) {
       currentPreset = presetName;
       ['balanced', 'aggressive', 'conservative', 'custom'].forEach(p => {
@@ -6107,6 +6172,22 @@ function renderDashboardHtml(config) {
           custom: '⚙️ 自定义模式'
         };
         badge.innerText = '当前: ' + (titles[presetName] || presetName);
+      }
+      const descCard = document.getElementById('preset-desc-card');
+      if (descCard) {
+        const info = PRESET_DESCRIPTIONS[presetName] || PRESET_DESCRIPTIONS['balanced'];
+        descCard.innerHTML = '<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">' +
+          '<span style="font-weight: 600; color: ' + info.badgeColor + '; font-size: 0.85rem;">' + info.title + '</span>' +
+          '<span style="font-size: 0.75rem; color: #94a3b8; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">' +
+            '预期压缩率: <strong style="color: #38bdf8;">' + info.ratio + '</strong>' +
+          '</span>' +
+        '</div>' +
+        '<div style="font-size: 0.78rem; color: #cbd5e1; margin-bottom: 4px;">' +
+          '<strong style="color: #94a3b8;">压缩策略:</strong> ' + info.policy +
+        '</div>' +
+        '<div style="font-size: 0.78rem; color: #cbd5e1;">' +
+          '<strong style="color: #94a3b8;">潜在风险:</strong> <span style="color: ' + (presetName === 'aggressive' ? '#f59e0b' : presetName === 'conservative' ? '#34d399' : '#94a3b8') + ';">' + info.risk + '</span>' +
+        '</div>';
       }
       updateWizardStatusBadges();
     }
@@ -6141,6 +6222,7 @@ function renderDashboardHtml(config) {
         setCheck('cfg-comp-ps-curl-alias', true);
         setCheck('cfg-comp-ps-and-operator', true);
         setCheck('cfg-comp-ps-line-continuation', true);
+        setCheck('cfg-comp-ps-subexpression', true);
         setCheck('cfg-comp-ps-guard-directive', true);
       } else if (presetName === 'aggressive') {
         setCheck('cfg-module-rtk-enabled', true);
@@ -6171,6 +6253,7 @@ function renderDashboardHtml(config) {
         setCheck('cfg-comp-ps-curl-alias', true);
         setCheck('cfg-comp-ps-and-operator', true);
         setCheck('cfg-comp-ps-line-continuation', true);
+        setCheck('cfg-comp-ps-subexpression', true);
         setCheck('cfg-comp-ps-guard-directive', true);
       } else if (presetName === 'conservative') {
         setCheck('cfg-module-rtk-enabled', true);
@@ -6201,6 +6284,7 @@ function renderDashboardHtml(config) {
         setCheck('cfg-comp-ps-curl-alias', true);
         setCheck('cfg-comp-ps-and-operator', true);
         setCheck('cfg-comp-ps-line-continuation', true);
+        setCheck('cfg-comp-ps-subexpression', true);
         setCheck('cfg-comp-ps-guard-directive', false);
       } else if (presetName === 'custom') {
         // Keeps current user configuration intact and highlights custom mode
@@ -6245,8 +6329,9 @@ function renderDashboardHtml(config) {
       const isPsCurl = getChecked('cfg-comp-ps-curl-alias');
       const isPsAnd = getChecked('cfg-comp-ps-and-operator');
       const isPsLine = getChecked('cfg-comp-ps-line-continuation');
+      const isPsSub = getChecked('cfg-comp-ps-subexpression');
       const isPsGuard = getChecked('cfg-comp-ps-guard-directive');
-      const isPsFull = isPs && isPsClixml && isPsTrailingSlash && isPsCurl && isPsAnd && isPsLine;
+      const isPsFull = isPs && isPsClixml && isPsTrailingSlash && isPsCurl && isPsAnd && isPsLine && isPsSub;
 
       if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 15000 && isCacheZone && isFreeze && isPsFull && isPsGuard) {
         setPresetUI('balanced');
@@ -7803,6 +7888,7 @@ function renderDashboardHtml(config) {
       const compPsCurlAlias = document.getElementById('cfg-comp-ps-curl-alias') ? document.getElementById('cfg-comp-ps-curl-alias').checked : true;
       const compPsAndOperator = document.getElementById('cfg-comp-ps-and-operator') ? document.getElementById('cfg-comp-ps-and-operator').checked : true;
       const compPsLineContinuation = document.getElementById('cfg-comp-ps-line-continuation') ? document.getElementById('cfg-comp-ps-line-continuation').checked : true;
+      const compPsSubexpression = document.getElementById('cfg-comp-ps-subexpression') ? document.getElementById('cfg-comp-ps-subexpression').checked : true;
       const compPsGuardDirective = document.getElementById('cfg-comp-ps-guard-directive') ? document.getElementById('cfg-comp-ps-guard-directive').checked : true;
 
       const compression = {
@@ -7843,6 +7929,7 @@ function renderDashboardHtml(config) {
             fixTrailingSlash: compPsTrailingSlash,
             fixAndOperator: compPsAndOperator,
             fixLineContinuation: compPsLineContinuation,
+            fixSubexpressionEscaping: compPsSubexpression,
             injectPowerShellGuard: compPsGuardDirective
           }
         },

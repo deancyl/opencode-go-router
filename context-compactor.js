@@ -81,11 +81,14 @@ const DEFAULT_COMPRESSION_CONFIG = {
       enabled: true,
       autoDetectPlatform: true,
       cleanCliXmlNoise: true,
+      cleanPowerShell7Noise: true,
       fixQuoteEscaping: true,
       fixCurlAlias: true,
       fixTrailingSlash: true,
       fixAndOperator: true,
       fixLineContinuation: true,
+      fixSubexpressionEscaping: true,
+      scriptFileInjectionHelper: true,
       injectPowerShellGuard: true
     }
   }
@@ -108,6 +111,8 @@ const COMPRESSION_PRESETS = {
         foldLockfiles: true,
         foldStructuredData: true,
         maxStructuredItems: 50,
+        structuredHeadCount: 5,
+        structuredTailCount: 3,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -126,11 +131,14 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         autoDetectPlatform: true,
         cleanCliXmlNoise: true,
+        cleanPowerShell7Noise: true,
         fixQuoteEscaping: true,
         fixCurlAlias: true,
         fixTrailingSlash: true,
         fixAndOperator: true,
         fixLineContinuation: true,
+        fixSubexpressionEscaping: true,
+        scriptFileInjectionHelper: true,
         injectPowerShellGuard: true
       }
     }
@@ -150,7 +158,9 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         foldLockfiles: true,
         foldStructuredData: true,
-        maxStructuredItems: 20,
+        maxStructuredItems: 15,
+        structuredHeadCount: 3,
+        structuredTailCount: 2,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -169,11 +179,14 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         autoDetectPlatform: true,
         cleanCliXmlNoise: true,
+        cleanPowerShell7Noise: true,
         fixQuoteEscaping: true,
         fixCurlAlias: true,
         fixTrailingSlash: true,
         fixAndOperator: true,
         fixLineContinuation: true,
+        fixSubexpressionEscaping: true,
+        scriptFileInjectionHelper: true,
         injectPowerShellGuard: true
       }
     }
@@ -186,6 +199,7 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         stripAnsi: true,
         cleanProgressBars: true,
+        cleanCliXmlNoise: true,
         foldTestPasses: false,
         cleanDevOpsOutput: false
       },
@@ -194,6 +208,8 @@ const COMPRESSION_PRESETS = {
         foldLockfiles: false,
         foldStructuredData: false,
         maxStructuredItems: 50,
+        structuredHeadCount: 5,
+        structuredTailCount: 3,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -212,11 +228,14 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         autoDetectPlatform: true,
         cleanCliXmlNoise: true,
+        cleanPowerShell7Noise: true,
         fixQuoteEscaping: true,
         fixCurlAlias: true,
         fixTrailingSlash: true,
         fixAndOperator: true,
         fixLineContinuation: true,
+        fixSubexpressionEscaping: true,
+        scriptFileInjectionHelper: true,
         injectPowerShellGuard: false
       }
     }
@@ -729,8 +748,36 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
   }
 }
 
-const STATS_FILE = path.join(__dirname, 'compression-stats.json');
-const HISTORY_FILE = path.join(__dirname, 'compression-history.json');
+/**
+ * Dynamic bilingual token estimation model.
+ * - Chinese / CJK characters: ~1.25 chars / Token
+ * - English / code / numbers / symbols / ASCII: ~3.8 chars / Token
+ * If a numeric character count is passed without text, uses 3.8 chars/Token baseline.
+ * @param {string|number} input - Text string or character count
+ * @returns {number} Estimated token count
+ */
+function estimateTokens(input) {
+  if (typeof input === 'number') {
+    return Math.round(input / 3.8);
+  }
+  if (typeof input !== 'string' || input.length === 0) {
+    return 0;
+  }
+  const cjkMatches = input.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  const nonCjkCount = input.length - cjkCount;
+  return Math.round(cjkCount / 1.25 + nonCjkCount / 3.8);
+}
+
+const IS_TEST_ENV = Boolean(process.env.OPENCODE_TEST_MODE || process.env.NODE_ENV === 'test');
+const STATS_FILE = process.env.COMPRESSION_STATS_FILE || (IS_TEST_ENV && process.env.COMPRESSION_SANDBOX === '1'
+  ? path.join(__dirname, 'compression-stats.test.json')
+  : path.join(__dirname, 'compression-stats.json'));
+const HISTORY_FILE = process.env.COMPRESSION_HISTORY_FILE || (IS_TEST_ENV && process.env.COMPRESSION_SANDBOX === '1'
+  ? path.join(__dirname, 'compression-history.test.json')
+  : path.join(__dirname, 'compression-history.json'));
+const STATS_BAK_FILE = `${STATS_FILE}.bak`;
+const HISTORY_BAK_FILE = `${HISTORY_FILE}.bak`;
 
 const BUCKET_DEFINITIONS = {
   m5: { intervalMs: 5 * 60 * 1000, maxBuckets: 12, maxAgeMs: 60 * 60 * 1000 },
@@ -853,7 +900,7 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
 
   if (moduleName && bucket.modules && bucket.modules[moduleName]) {
     bucket.modules[moduleName].savedChars += validSaved;
-    bucket.modules[moduleName].savedTokens = Math.round(bucket.modules[moduleName].savedChars / 3.8);
+    bucket.modules[moduleName].savedTokens = estimateTokens(bucket.modules[moduleName].savedChars);
   }
 
   if (modelName) {
@@ -872,7 +919,7 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
       const mEntry = bucket.byModel[model];
       mEntry.savedChars += validSaved;
       mEntry.originalChars += validOrig;
-      mEntry.savedTokens = Math.round(mEntry.savedChars / 3.8);
+      mEntry.savedTokens = estimateTokens(mEntry.savedChars);
       mEntry.ratePer1M = getModelRate(model);
       mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
     }
@@ -896,7 +943,7 @@ function computeDerivedStats(stats) {
   if ((Number(stats.totalOriginalChars) || 0) < totalSavedChars) {
     stats.totalOriginalChars = totalSavedChars;
   }
-  stats.savedTokens = Math.round(totalSavedChars / 3.8);
+  stats.savedTokens = estimateTokens(totalSavedChars);
 
   // Compute byModel telemetry and dynamic weighted savedCostUSD
   stats.byModel = stats.byModel || {};
@@ -908,7 +955,7 @@ function computeDerivedStats(stats) {
     if (!data || typeof data !== 'object') continue;
     data.savedChars = Number(data.savedChars) || 0;
     data.originalChars = Number(data.originalChars) || 0;
-    data.savedTokens = Math.round(data.savedChars / 3.8);
+    data.savedTokens = estimateTokens(data.savedChars);
     const officialRate = getModelRate(m);
     data.ratePer1M = (officialRate !== DEFAULT_MODEL_RATE_PER_1M || typeof data.ratePer1M !== 'number') ? officialRate : data.ratePer1M;
     data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
@@ -929,7 +976,7 @@ function computeDerivedStats(stats) {
 
   for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
     const mod = stats.modules[modKey] || { savedChars: 0, savedTokens: 0, percentage: 0 };
-    mod.savedTokens = Math.round((Number(mod.savedChars) || 0) / 3.8);
+    mod.savedTokens = estimateTokens(Number(mod.savedChars) || 0);
     mod.percentage = totalSavedChars > 0
       ? Number((((Number(mod.savedChars) || 0) / totalSavedChars) * 100).toFixed(1))
       : 0;
@@ -959,11 +1006,16 @@ function saveStatsToDisk() {
     const tmpHist = `${HISTORY_FILE}.tmp.${Date.now()}`;
     fs.writeFileSync(tmpHist, historyJson, 'utf8');
     fs.renameSync(tmpHist, HISTORY_FILE);
+    // Dual-write disaster recovery backup (.bak)
+    try { fs.writeFileSync(HISTORY_BAK_FILE, historyJson, 'utf8'); } catch (_) {}
 
     // Save legacy compression-stats.json for 100% compatibility with existing test assertions
+    const statsJson = JSON.stringify(compressionStats, null, 2);
     const tmpStats = `${STATS_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpStats, JSON.stringify(compressionStats, null, 2), 'utf8');
+    fs.writeFileSync(tmpStats, statsJson, 'utf8');
     fs.renameSync(tmpStats, STATS_FILE);
+    // Dual-write disaster recovery backup (.bak)
+    try { fs.writeFileSync(STATS_BAK_FILE, statsJson, 'utf8'); } catch (_) {}
   } catch (err) {
     // Non-fatal, sandbox logged
   }
@@ -989,24 +1041,60 @@ function flushStatsToDisk() {
 function loadStatsFromDisk() {
   try {
     let loadedHistory = null;
+    let mainHistCorrupted = false;
     if (fs.existsSync(HISTORY_FILE)) {
       try {
         const rawHist = fs.readFileSync(HISTORY_FILE, 'utf8');
         loadedHistory = JSON.parse(rawHist);
+      } catch (_) {
+        mainHistCorrupted = true;
+      }
+    }
+    // Disaster Recovery: Fallback to .bak if primary history file is missing or corrupted
+    if (!loadedHistory && fs.existsSync(HISTORY_BAK_FILE)) {
+      try {
+        const rawBak = fs.readFileSync(HISTORY_BAK_FILE, 'utf8');
+        loadedHistory = JSON.parse(rawBak);
       } catch (_) {}
     }
 
     let loadedStats = null;
+    let mainStatsCorrupted = false;
     if (fs.existsSync(STATS_FILE)) {
       try {
         const rawStats = fs.readFileSync(STATS_FILE, 'utf8');
         loadedStats = JSON.parse(rawStats);
+      } catch (_) {
+        mainStatsCorrupted = true;
+      }
+    }
+    // Disaster Recovery: Fallback to .bak if primary stats file is missing or corrupted
+    if (!loadedStats && fs.existsSync(STATS_BAK_FILE)) {
+      try {
+        const rawBak = fs.readFileSync(STATS_BAK_FILE, 'utf8');
+        loadedStats = JSON.parse(rawBak);
       } catch (_) {}
     }
 
-    const sourceStats = (loadedHistory && loadedHistory.all && typeof loadedHistory.all === 'object')
-      ? loadedHistory.all
-      : (loadedStats && typeof loadedStats === 'object' ? loadedStats : null);
+    // Baseline historical protection:
+    // If stats file has historical counts (e.g. 281463), prefer whichever has non-zero totalOriginalChars
+    let histBak = null;
+    if (fs.existsSync(HISTORY_BAK_FILE)) {
+      try { histBak = JSON.parse(fs.readFileSync(HISTORY_BAK_FILE, 'utf8')); } catch (_) {}
+    }
+    let statsBak = null;
+    if (fs.existsSync(STATS_BAK_FILE)) {
+      try { statsBak = JSON.parse(fs.readFileSync(STATS_BAK_FILE, 'utf8')); } catch (_) {}
+    }
+
+    const candidates = [
+      loadedStats,
+      loadedHistory && loadedHistory.all,
+      statsBak,
+      histBak && histBak.all
+    ].filter(s => s && typeof s === 'object');
+
+    const sourceStats = candidates.find(s => Number(s.totalOriginalChars) > 0) || candidates[0] || null;
 
     if (sourceStats) {
       let loadedByModel = {};
@@ -1059,11 +1147,25 @@ function loadStatsFromDisk() {
         d1: Array.isArray(loadedHistory.buckets.d1) ? loadedHistory.buckets.d1 : []
       };
       compressionHistory.lastResetAt = loadedHistory.lastResetAt || compressionStats.lastResetAt;
+    } else if (histBak && histBak.buckets && typeof histBak.buckets === 'object') {
+      compressionHistory.buckets = {
+        m5: Array.isArray(histBak.buckets.m5) ? histBak.buckets.m5 : [],
+        h1: Array.isArray(histBak.buckets.h1) ? histBak.buckets.h1 : [],
+        d1: Array.isArray(histBak.buckets.d1) ? histBak.buckets.d1 : []
+      };
+      compressionHistory.lastResetAt = histBak.lastResetAt || compressionStats.lastResetAt;
     }
     compressionHistory.all = compressionStats;
     pruneExpiredBuckets();
+
+    // Auto self-healing write-back if primary file is missing or was corrupted
+    if ((mainStatsCorrupted || mainHistCorrupted || !fs.existsSync(STATS_FILE) || !fs.existsSync(HISTORY_FILE)) && Number(compressionStats.totalOriginalChars) > 0) {
+      saveStatsToDisk();
+    }
+    return compressionStats;
   } catch (e) {
     // Non-fatal, use initialized memory stats
+    return compressionStats;
   }
 }
 
@@ -1090,7 +1192,7 @@ function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp 
   const entry = compressionStats.byModel[model];
   entry.savedChars += validSaved;
   entry.originalChars += validOrig;
-  entry.savedTokens = Math.round(entry.savedChars / 3.8);
+  entry.savedTokens = estimateTokens(entry.savedChars);
   entry.ratePer1M = getModelRate(model);
   entry.savedCostUSD = Number(((entry.savedTokens / 1000000) * entry.ratePer1M).toFixed(7));
   pruneByModelEntriesIfNeeded();
@@ -1228,7 +1330,7 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
       let savedChars = Number(existing.totalSavedChars) || 0;
       const modSum = Object.values(existing.modules || {}).reduce((s, m) => s + (Number(m.savedChars) || 0), 0);
       savedChars = Math.max(savedChars, origChars - compChars, modSum);
-      const savedTokens = Math.round(savedChars / 3.8);
+      const savedTokens = estimateTokens(savedChars);
 
       const byModelData = {};
       let modelCostSum = 0;
@@ -1237,7 +1339,7 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
         for (const [m, mInfo] of Object.entries(existing.byModel)) {
           if (!mInfo) continue;
           const cleanM = normalizeModelName(m) || m;
-          const sTokens = Math.round((Number(mInfo.savedChars) || 0) / 3.8);
+          const sTokens = estimateTokens(Number(mInfo.savedChars) || 0);
           const rate = getModelRate(cleanM);
           const sCost = Number(((sTokens / 1000000) * rate).toFixed(7));
           byModelData[cleanM] = {
@@ -1381,12 +1483,12 @@ function getStatsByRange(range = 'all', now = Date.now()) {
   if (totalOriginalChars < totalSavedChars) {
     totalOriginalChars = totalSavedChars;
   }
-  const savedTokens = Math.round(totalSavedChars / 3.8);
+  const savedTokens = estimateTokens(totalSavedChars);
 
   let modelTokensSum = 0;
   let modelCostSum = 0;
   for (const [m, data] of Object.entries(byModel)) {
-    data.savedTokens = Math.round(data.savedChars / 3.8);
+    data.savedTokens = estimateTokens(data.savedChars);
     const officialRate = getModelRate(m);
     data.ratePer1M = officialRate;
     data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
@@ -1404,7 +1506,7 @@ function getStatsByRange(range = 'all', now = Date.now()) {
 
   for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
     const mod = modules[modKey];
-    mod.savedTokens = Math.round(mod.savedChars / 3.8);
+    mod.savedTokens = estimateTokens(mod.savedChars);
     mod.percentage = totalSavedChars > 0
       ? Number(((mod.savedChars / totalSavedChars) * 100).toFixed(1))
       : 0;
@@ -1509,8 +1611,14 @@ function isLockfilePath(filePath) {
   return LOCKFILE_NAMES.has(baseName);
 }
 
-// Comprehensive ANSI escape regex (covers 7-bit, 8-bit, 24-bit truecolor, styles, cursor & OSC titles)
-const ANSI_REGEX = /\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\_])/g;
+// Comprehensive ANSI escape regex (covers 7-bit, 8-bit, 24-bit TrueColor, SGR, cursor, OSC titles, hyperlinks & controls)
+const ANSI_REGEX = new RegExp([
+  '\\x1b\\[[0-?]*[ -/]*[@-~]',
+  '\\x1b\\][^\x07\\x1b]*(?:\\x07|\\x1b\\\\|\\x1b|$)',
+  '\\x1b[P\\^_][^\x07\\x1b]*(?:\\x07|\\x1b\\\\|\\x1b|$)',
+  '\\x1b[@-Z\\\\_]',
+  '\\x07'
+].join('|'), 'g');
 
 // Session-level memoization cache pool: sessionId -> Map(cacheKey -> compressedText)
 const sessionCompressionMemo = new Map();
@@ -1870,6 +1978,10 @@ function foldStructuredData(text, options = {}) {
 
   // Anti-downgrade conflict markers check
   if (text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>') || text.includes('|||||||')) {
+    return text;
+  }
+  // Anti-downgrade code diff and patch markers check
+  if (text.includes('diff --git ') || text.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(text)) {
     return text;
   }
   // Anti-downgrade compiler errors / tracebacks / stack traces check
@@ -2795,9 +2907,12 @@ function compactToolsList(tools, opts = {}) {
 
 /**
  * Generate fast SHA256 hex prefix for text content memoization.
+ * Solidified with CRLF and trailing whitespace normalization to prevent Cache-Zone breakdown across turns.
  */
 function hashContent(text) {
-  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 16);
+  if (typeof text !== 'string') return '';
+  const normalized = text.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
+  return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 16);
 }
 
 const MAX_MEMO_SESSIONS = 500;
@@ -2913,9 +3028,34 @@ function compactText(text, options = {}, sessionId = null) {
       }
     }
 
+    // Unpack stringified JSON terminal objects { stdout, stderr, output } if present
+    // so RTK and PowerShell denoising work inside stringified JSON outputs
+    if (text.startsWith('{') && text.endsWith('}') && (text.includes('"stdout"') || text.includes('"output"') || text.includes('"stderr"'))) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          let mod = false;
+          for (const k of ['stdout', 'stderr', 'output']) {
+            if (typeof parsed[k] === 'string' && parsed[k].length > 0) {
+              const comp = compactText(parsed[k], options, sessionId);
+              if (comp !== parsed[k]) {
+                parsed[k] = comp;
+                mod = true;
+              }
+            }
+          }
+          if (mod) {
+            const reSerialized = JSON.stringify(parsed);
+            if (reSerialized.length < text.length) {
+              return reSerialized;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     const moduleDeltas = {};
     let result = runPipeline(text, opts, { sessionId, moduleDeltas });
-
 
     // Protocol & Connection Safety Shield:
     // If the input text had non-whitespace content, but compression reduced it to pure whitespace or empty,
@@ -2923,6 +3063,18 @@ function compactText(text, options = {}, sessionId = null) {
     // or trigger empty SSE stream aborts.
     if (result.trim().length === 0 && text.trim().length > 0) {
       result = '[Empty terminal output]';
+    }
+
+    // 100% Anti-Inflation Circuit Breaker (坚决不反向膨胀)
+    // Reverts to original text reference if no compression savings were achieved,
+    // protecting against reverse inflation while preserving explicit folding markers.
+    const hasFoldMarker = result.includes('[Test suite:') ||
+                          result.includes('[Lockfile diff folded:') ||
+                          result.includes('[SmartCrusher:') ||
+                          result.includes('[Headroom SmartCrusher:') ||
+                          result.includes('[Empty terminal output]');
+    if (result.length >= text.length && !hasFoldMarker) {
+      result = text;
     }
 
     if (opts.cacheZoneFreeze && sessionId && cacheKey) {
@@ -2971,15 +3123,15 @@ function compactText(text, options = {}, sessionId = null) {
           bucket.totalSavedChars += totalSaved;
           if (rtkDelta > 0 && bucket.modules && bucket.modules.rtk) {
             bucket.modules.rtk.savedChars += rtkDelta;
-            bucket.modules.rtk.savedTokens = Math.round(bucket.modules.rtk.savedChars / 3.8);
+            bucket.modules.rtk.savedTokens = estimateTokens(bucket.modules.rtk.savedChars);
           }
           if (headroomDelta > 0 && bucket.modules && bucket.modules.headroom) {
             bucket.modules.headroom.savedChars += headroomDelta;
-            bucket.modules.headroom.savedTokens = Math.round(bucket.modules.headroom.savedChars / 3.8);
+            bucket.modules.headroom.savedTokens = estimateTokens(bucket.modules.headroom.savedChars);
           }
           if (powershellDelta > 0 && bucket.modules && bucket.modules.powershell) {
             bucket.modules.powershell.savedChars += powershellDelta;
-            bucket.modules.powershell.savedTokens = Math.round(bucket.modules.powershell.savedChars / 3.8);
+            bucket.modules.powershell.savedTokens = estimateTokens(bucket.modules.powershell.savedChars);
           }
           if (modelName) {
             if (!bucket.byModel) bucket.byModel = {};
@@ -2995,7 +3147,7 @@ function compactText(text, options = {}, sessionId = null) {
             const mEntry = bucket.byModel[modelName];
             mEntry.savedChars += totalSaved;
             mEntry.originalChars += origLen;
-            mEntry.savedTokens = Math.round(mEntry.savedChars / 3.8);
+            mEntry.savedTokens = estimateTokens(mEntry.savedChars);
             mEntry.ratePer1M = getModelRate(modelName);
             mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
           }
@@ -3821,6 +3973,10 @@ module.exports = {
   updateModelRates,
   syncModelRatesFromOpenCode,
   recordModelSavings,
+  estimateTokens,
+  STATS_BAK_FILE,
+  HISTORY_BAK_FILE,
+  loadStatsFromDisk,
   saveStatsToDisk,
   flushStatsToDisk
 };

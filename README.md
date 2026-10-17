@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.6.1-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.7.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-143%2F143%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-146%2F146%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,32 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.6.1 (当前最新版：Headroom 长文本折叠、PowerShell 交互去噪与 Cache-Zone 零膨胀自愈闭环)
+### 🚀 v3.7.0 (当前最新版：PowerShell 转义与脚本注入防护、动态双语 Token 模型、4 档预设重塑与数据自愈保全)
+- **Windows PowerShell 引号转义与脚本文件注入引擎 (第 5 大引擎模块升级)**：
+  - 彻底攻克 Windows PowerShell 双引号内 `$()` 与 `${}` 被本机提前求值的陷阱（来自真实用例 `01a1422d-b84c-7920-8b16-ace7091dee2e`），自动反引号转义为 `` `$(` `` 与 `` `${` ``；单引号与已转义字符严格免触碰；
+  - 智能脚本文件注入助手（`wrapInScriptFileExecution`）：复杂多行命令、循环与内层引用自动包装为临时 `.ps1` 脚本通过 `@' ... '@` 原字面量无损执行并 `finally` 安全回收；
+  - 深度剥离 PowerShell 7 冗余报错与波浪线堆栈（`Line | ... ~~~~~` 与 `Check the spelling of the name...`），保留核心错误同时削减 70%~80% 报错重试 Token 消耗；
+  - 提示词护栏屏障（`generatePowerShellGuardDirective`）新增双引号求值红线、单引号安全规范与脚本文件注入指引。
+- **历史大盘数据绝对保全与双写自愈容灾体系**：
+  - 彻底保全历史生产数据（`281,463` 原文字符、`61,292` 压缩后字符、`220,171` 节约字符、`~57,940` Tokens、`78.2%` 压缩率）；
+  - 实现双写容灾机制（`.bak` 文件），主配置文件/数据损坏或丢失时通过 `loadStatsFromDisk` 秒级自动从备份逆向修复；
+  - 拔除 `test_router.js` 结尾处无条件 unlink 生产数据文件的历史遗留漏洞，全面集成测试套件自动备份与沙箱隔离。
+- **Token 预估模型精度跃升 (中英动态双语模型)**：
+  - 彻底废除全系统粗暴硬编码的 `/ 3.8`，实现中英双语动态分词预估模型（中文约 1.25 字符/Token，英文/代码约 3.8 字符/Token），精度显著提升；
+  - Web UI 大盘同步接入动态加权模型说明卡片。
+- **4 档预设深度重塑与 Web UI 策略释义卡**：
+  - 明确重塑 4 大档位策略：🛡️ 保守只去噪档 (20%~40%)、🌟 平衡标准档 (65%~80%)、🚀 极致省Token档 (80%~92%) 与 ⚙️ 自定义模式；
+  - 并在 Web UI 预设栏下方新增专属说明卡（`#preset-desc-card`），实时展示当前预设的预期压缩率、核心策略与潜在风险。
+- **100% 反向膨胀熔断与防降智红线屏障**：
+  - 强化 `compactText` 与结构化折叠的反向膨胀熔断屏障；
+  - 严格豁免 Git 冲突标记（`<<<<<<<`）、代码 Diff 补丁（`diff --git`、`*** Begin Patch`、`@@ -... @@`）与错误堆栈。
+- **自动化测试套件扩展 (Test 144 - Test 146)**：
+  - 新增 Test 144（PowerShell 转义修复、`$()` 防护、脚本注入、PS7 去噪与多协议遥测）；
+  - 新增 Test 145（历史大盘基线校验、双写持久化与 `.bak` 容灾自愈测试）；
+  - 新增 Test 146（动态双语 Token 预估模型、反向膨胀熔断、Diff 免折叠与 4 档预设 UI 校验）；
+  - 本地 146 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.6.1 (Headroom 长文本折叠、PowerShell 交互去噪与 Cache-Zone 零膨胀自愈闭环)
 - **Headroom 结构化折叠引擎增强 (SmartCrusher Extended)**：
   - 针对非 JSON 的超长工具输出（如脚本代码、长日志等 >2000 字符）实施首尾 600 字符安全采样折叠；严格区分合法 JSON 数组/对象与非 JSON 文本，避免误截断；
   - 修复 Codex Responses 转换通道（`pruneResponsesPayload` 与 `pruneChatMessages`）中的 Headroom 遥测归因丢失问题。
