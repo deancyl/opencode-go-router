@@ -30,6 +30,14 @@
 - **原因**：OpenChamber 更新后覆盖了前端静态文件，导致离线解析补丁未挂载。
 - **解决**：在 Web 控制台点击 **【⚡ 一键修复】**，或执行 `.\patch-openchamber-office.ps1 -Install`（Linux 下运行 `./patch-openchamber-office.sh install`），网关会自动重新挂载 100% 纯本地离线解析引擎。
 
+### Q7: Windows 下终端报错 `#< CLIXML`、`&&` 无法识别或路径末尾引号被吞？
+- **原因**：Windows PowerShell 原生环境与 Bash 语法差异（如 5.1 不支持 `&&`、末尾反斜杠转义吃引号、curl 默认被别名为 Invoke-WebRequest）。
+- **解决**：最新网关内置 Card 5 Windows PowerShell 转义优化引擎，在 Windows 环境下全自动修复上述陷阱，并深度去噪 `#< CLIXML` 报错，无需人工手动改动命令。
+
+### Q8: OpenCode 2.0+ 或 Claude Code 提示 `Upstream request failed: Go requires a credential`？
+- **原因**：上游 Zen 聚合层对 `/v1/messages` 接口强制校验 `x-api-key` 与 `anthropic-version` 请求头。
+- **解决**：网关在 `v3.4.1` 中已内置双轨鉴权装配，在代理 `/messages` 路由时自动注入 `x-api-key: <key>` 与 `anthropic-version: 2023-06-01`，无缝解决上游鉴权拒绝。
+
 ---
 
 ## 🆘 终极自愈：一键恢复

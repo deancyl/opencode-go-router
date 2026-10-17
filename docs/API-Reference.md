@@ -27,8 +27,10 @@ OpenCode Go Router 在 `4010` 端口上暴露了完备的 RESTful API 与反向�
 | `/balancer/api/updates/check` | GET | 是 | 检查 5 大组件最新版本与破坏性兼容性评级 |
 | `/balancer/api/updates/apply` | POST | 是 | 执行指定或全量组件安全更新（升级前自动打快照） |
 | `/balancer/api/updates/rollback` | POST | 是 | 执行指定历史快照的秒级无损回滚 |
-| `/balancer/api/compression/stats` | GET | 是 | 获取实时压缩指标大盘数据（累计节约 Token、费用预估、压缩率及各模块贡献度） |
-| `/balancer/api/compression/stats/reset` | POST | 是 | 一键清零累计 Token 压缩与节省指标统计数据并原子写盘 |
+| `/balancer/api/compression/stats` | GET | 是 | 获取实时压缩指标大盘数据（累计节约 Token、基于各模型官方实时费率动态加权测算的费用预估、5大模块贡献度及 `byModel` 细粒度分模型遥测数据） |
+| `/balancer/api/compression/stats/reset` | POST | 是 | 一键清零累计 Token 压缩指标、分模型明细并联动清空内存记忆池 |
+| `/balancer/api/compression/doctor` | GET | 是 | 压缩引擎健康体检，返回防降智红线、三端客户端兼容性、安全门限等诊断状态 |
+| `/balancer/api/compression/repair` | POST | 是 | 执行压缩引擎一键自愈修复，恢复安全推荐档并消除不安全配置 |
 | `/balancer/api/auth/login` | POST | 否 | 控制台密码登录（颁发安全 Cookie 与 Token） |
 | `/balancer/api/auth/logout` | POST | 否 | 注销登录并清除凭证 |
 

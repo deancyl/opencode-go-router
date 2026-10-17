@@ -20,10 +20,20 @@ flowchart TD
         Auth["局域网安全鉴权门禁 (Cookie + Bearer Token)"]
         
         subgraph ProtocolBridge["智能双向协议桥 (Protocol Bridges)"]
-            P_Responses["OpenAI Responses API 桥"]
-            P_Chat["OpenAI ChatCompletions 桥"]
-            P_Anthropic["Anthropic Messages 桥"]
+            P_Responses["OpenAI Responses API 桥 (Codex 专用)"]
+            P_Chat["OpenAI ChatCompletions 代理桥"]
+            P_Anthropic["Anthropic Messages 代理桥 (x-api-key 双轨鉴权)"]
             P_Direct["原生透传反向代理"]
+        end
+
+        subgraph CompactorCore["无损上下文优化与 Token 压缩引擎 (Context Compactor)"]
+            Card1["Card 1: RTK 终端去噪 (ANSI / 进度条 / 测试项正向折叠)"]
+            Card2["Card 2: Headroom 结构化折叠 (Lockfiles / SmartCrusher JSON采样)"]
+            Card3["Card 3: 工具定义优化 (CacheAligner 字典序锁 KV Cache / Schema 瘦身)"]
+            Card4["Card 4: llmtrim 会话缓存固化 (sessionCompressionMemo / True LRU)"]
+            Card5["Card 5: Windows PowerShell 优化 (转义自愈 / CLIXML 去噪 / 平台自适应)"]
+            Telemetry["大盘遥测: 官方模型费率字典感知 + By-Model 动态加权费用测算"]
+            CompDoctor["压缩体检: Compression Doctor & Auto-Repair 防降智防断联屏障"]
         end
         
         subgraph FlowControl["流量治理与自愈内核 (Resilience Kernel)"]
@@ -51,7 +61,8 @@ flowchart TD
 
     ClientLayer --> Auth
     Auth --> ProtocolBridge
-    ProtocolBridge --> FlowControl
+    ProtocolBridge --> CompactorCore
+    CompactorCore --> FlowControl
     FlowControl --> LoadBalancer
     LoadBalancer --> UpstreamLayer
 ```
@@ -82,8 +93,10 @@ flowchart TD
 - **错误清洗屏障**：拦截非 200 响应，强制剥离 `content-encoding` 干扰，将上游 0 字节 SSE 空流或非标裸 JSON 统一包装为规范的 OpenAI Error 结构，消除客户端红框气泡与空气泡。
 
 ### 6. 无损上下文优化与多层 Token 压缩引擎 (Context Compactor)
-- **多维去噪**：剔除 ANSI 控制字符、合并 `\r` 覆盖式终端进度条并严格保全 Windows CRLF 换行、安全折叠 Docker 镜像拉取与推送、Kubectl Pod 与发布轮转状态（严密保全 CrashLoopBackOff 等故障状态）、Terraform 资源与数据源状态刷新输出；
-- **Lockfile 智能折叠**：自动折叠巨型 lockfile 差异（覆盖 npm, yarn, pnpm, cargo, bun, uv, pdm, pubspec, gradle, go.sum 等），遇到 Git 冲突标记（`<<<<<<<` 等）精准豁免折叠，保障代码语法与求解能力；
-- **测试通过项正向安全折叠**：严密匹配算法绝不错杀源码变量行与代码断言，仅折叠明确成功的用例（✓/PASS/ok/gtest/unittest/ctest 及自定义正则），遇失败断言、报错及堆栈全量原样留存；
-- **Prompt Cache 字典序对齐与超大 Schema 瘦身**：深度遍历参数架构（包含 patternProperties 与 additionalProperties），50层深度递归防溢出护栏，字典序排序并去除繁冗 Markdown 样例，锁定上游 KV 缓存前缀；
-- **可插拔管道体系、动态插件缓存签名与真 LRU 会话池**：支持自定义转换器插拔，全管道零外部依赖原生沙盒运行，任何异常纯净旁路绝不影响正常业务转发；动态派生插件级缓存键签名，杜绝脏缓存漂移。
+- **Card 1 终端与日志去噪 (RTK / Token-Saver)**：剔除 ANSI 控制字符、合并 `\r` 覆盖式终端进度条并严格保全 Windows CRLF 换行、正向匹配折叠测试通过用例（原样保留所有失败断言与堆栈）、安全折叠 DevOps 运维输出（Docker/Terraform）；
+- **Card 2 结构化与代码折叠 (Headroom SmartCrusher)**：自动折叠巨型 lockfile 差异（覆盖 npm, yarn, pnpm, cargo, bun, uv 等）；针对 >50 项同构 JSON 数组执行智能采样；遇到 Git 冲突标记（`<<<<<<<` 等）100% 绝对豁免免折叠，严格恪守防降智红线；
+- **Card 3 工具定义优化 (CacheAligner & mcp-compressor)**：Tools Schema 字典序排序与去除冗余空白，锁定上游 KV Cache 前缀（命中率提升至 80%~90%）；超大 Schema 自动裁剪多行 Markdown 代码样例；
+- **Card 4 会话缓存区固化 (llmtrim Cache-Zone)**：多轮对话历史消息单次压缩固化在 `sessionCompressionMemo`，复用字节级一致文本避免重新计算；配备 Bounded True LRU 内存防护；
+- **Card 5 Windows 平台自适应与 PowerShell 转义自愈**：自愈路径末尾反斜杠吃引号、curl.exe 别名修正、`&&` 操作符转换为兼容语法、反斜杠续行转换为反引号；去噪 `#< CLIXML` 冗长报错与 hex 转义；在 Linux/NAS 自动保持零开销休眠旁路；
+- **官方费率动态感知字典与分模型动态加权测算**：实时追踪 `byModel` 模型独立节约指标，按 OpenCode 官方实时费率动态加权精确计算 USD 金额；
+- **压缩体检与自愈诊断 (Compression Doctor & Repair)**：提供 `/balancer/api/compression/doctor` 与 `/balancer/api/compression/repair`，秒级自检 3 大客户端兼容性与安全红线，一键自愈恢复安全配置。

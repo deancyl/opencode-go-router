@@ -13,7 +13,7 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.4.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.4.1-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
   <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-139%2F139%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
@@ -30,10 +30,11 @@
 | ⚡ **[快速开始 (Quick Start)](docs/Quick-Start.md)** | Windows 桌面双击向导、Linux/NAS 极速一键部署、30秒完成双账号与生态绑定 | 新手首选 |
 | 🏛️ **[系统架构与核心机制 (Architecture)](docs/Architecture.md)** | 网关架构、会话亲和性 (Prompt Cache)、429 智能故障转移、动态 Session 隔离 | 架构与深入 |
 | 🤖 **[OpenAI Codex CLI 智能接入 (Codex Integration)](docs/Codex-Integration.md)** | Responses <-> ChatCompletions 实时双向流协议转换、思考等级全解锁、中文语言锁定、PLM 自愈 | Codex / ChatGPT 开发者 |
+| ⚡ **[无损上下文优化与 Token 压缩 (Context Compression)](docs/Context-Compression.md)** | 5大引擎(RTK去噪/Headroom折叠/Schema锁KV Cache/llmtrim固化/PowerShell自愈)、分模型动态加权计费与压缩体检 | 追求极速与低费率的开发者 |
 | 🐧 **[Linux 与 NAS 服务器部署 (Linux/NAS Guide)](docs/Linux-NAS-Deployment.md)** | systemd 用户级常驻守护、多卷挂载探测（fnOS、群晖 DSM、TrueNAS）、局域网安全鉴权 | NAS 与私有云用户 |
 | 🪟 **[Windows 桌面端无黑框体验 (Windows Guide)](docs/Windows-Desktop-Guide.md)** | C# 原生托盘守护、全栈快捷方式引导器、独立桌面 App 模式（Edge --app）、开机自启 | Windows 桌面用户 |
 | 📄 **[Air-Gapped Office 离线安全预览 (Office Engine)](docs/Air-Gapped-Office.md)** | 纯本地离线 DOCX/XLSX/PPTX 高保真解析沙箱、安全红线隔离、双轨本地原厂 Office/WPS 联动 | 办公文档与私有安全用户 |
-| 🩺 **[全链路体检诊断与自动自愈 (Doctor & Repair)](docs/Doctor-Self-Healing.md)** | 端口死链自愈、配置单复数冲突合流、单实例互斥锁释放、动态异构模型白名单跃迁 | 运维与系统自愈 |
+| 🩺 **[全链路体检诊断与自动自愈 (Doctor & Repair)](docs/Doctor-Self-Healing.md)** | 端口死链自愈、配置单复数冲突合流、单实例互斥锁释放、动态异构模型白名单跃迁、压缩健康体检 | 运维与系统自愈 |
 | 📦 **[组件安全更新与快照回滚 (Updater & Rollback)](docs/Updater-Rollback.md)** | 5 大核心组件跨版本监测、破坏性变更深度分析、升级前全量快照与秒级无损回滚 | 长期维护者 |
 | 🔌 **[API 接口参考清单 (API Reference)](docs/API-Reference.md)** | 网关控制台 API、官方配额监测 API、模型热同步 API、文件安全打开 API 与健康探针 | API 二次开发 |
 | ❓ **[常见问题与排障速查 (FAQ & Troubleshooting)](docs/FAQ-Troubleshooting.md)** | 高频报错排查速查表、上游模型名限制报错应对、网络超时与空流排障 | 常见疑问速查 |
@@ -281,43 +282,19 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.3.1 (当前最新版：OpenCode 官方模型费率字典与动态感知、分模型精细化节约归因与动态加权费用大盘、全套 138 项全绿测试)
-- **OpenCode 官方模型实时费率字典与动态感知引擎 (`context-compactor.js` & `server.js`)**：
-  - **内置主流全系费率表**：高保真内置 42 款主流模型基准费率（如 `deepseek-v4.1-flash` ~$0.14/1M、`deepseek-v4-pro` ~$0.55/1M、`glm-5.3-flash` ~$0.10/1M、`glm-5.3` ~$0.35/1M、`kimi-k3` ~$0.60/1M、`claude-haiku-5-5` ~$1.25/1M、`gpt-5.6-luna` ~$1.50/1M 等），未知模型 $0.25/1M 安全兜底；
-  - **守护服务动态感知同步**：支持从本地及 NAS OpenCode 守护进程 `/api/model` 动态感知并提取 `cost.input` 费率元数据，与官方上游费率无缝对齐；
-- **分模型精细化节约与动态加权费用测算引擎 (`context-compactor.js`)**：
-  - **细粒度按模型遥测 (`stats.byModel`)**：跨 OpenAI ChatCompletions、Anthropic Messages 与 OpenAI Codex Responses 三大协议，请求进入压缩管道时自动提取规范化模型标识，分别记录处理字符数、节约 Tokens、官方费率与对应节约金额；
-  - **动态加权总费用测算**：总费用彻底告别单一粗糙假设，升级为各模型真实单价动态加权累计之和 `sum(byModel[m].savedCostUSD)`；
-  - **安全持久化与一键干净重置**：`compression-stats.json` 磁盘数据结构无缝平滑迁移；调用重置 API 时自动连同分模型明细一键清零；
-- **Web 控制台分模型数据大盘与自适应抽屉 (`server.js`)**：
-  - **动态加权卡片指示**：费用卡片说明更新为“基于各模型官方实时费率动态加权测算”，增加“分模型明细 ▾”交互标签；
-  - **交互式分模型明细抽屉 (By Model Breakdown Drawer)**：点击费用卡片即可平滑展开/收起明细表格，直观呈现各模型的调用名称、处理原字符数、节约 Token 预估、官方费率参考 ($/1M Tokens) 及各自节约金额 (USD)；
-  - **移动端与桌面端自适应排版**：全面适配手机竖屏浏览器横向流畅滑动与大屏桌面展开，不破坏既有任何 DOM 与事件；
-- **全套 138 项自动化集成测试 100% 绿灯全通**。
+### 🚀 v3.4.1 (当前最新版：Anthropic 协议双轨鉴权加固、会话记忆原子清零、实机多客户端实测验证套件与防降智防断联全要素核验)
+- **Anthropic Messages 协议双轨鉴权加固 (`server.js`)**：
+  - 在网关直连代理 `/v1/messages` 时，自动装配 `'x-api-key': account.apiKey.trim()` 与 `'anthropic-version': '2023-06-01'`，彻底消除 OpenCode / Claude Code 客户端直连上游时的 `401 Upstream request failed: Go requires a credential` 阻断；
+- **统计清零机制原子闭环 (`context-compactor.js`)**：
+  - 在 `resetCompressionStats()` 中联动 `sessionCompressionMemo.clear()`，确保统计重置时多轮会话记忆池同步原子清空，杜绝新会话误命中旧缓存；
+- **新增多客户端实机真实流量全要素核验套件 (`test_live_clients_verification.js`)**：
+  - **Stage 0 (基线清零)**：断言初始 `savedChars=0`, `savedTokens=0`；
+  - **Stage 1 (Codex Responses 实测)**：构建标准 Codex Responses 报文（挂载 Codex 原生工具、CLIXML 报错与 ANSI 进度条），实测 HTTP 200，SSE 平稳闭环到达 `completed`，零断流；
+  - **Stage 2 (OpenCode 2.0+ Anthropic & Chat 实测)**：注入 60 项超长同构 JSON（触发 Headroom SmartCrusher）与单元测试日志（RTK 折叠通过项，保留真实失败报错），模型 100% 精准识别真实报错断言（防降智通过），发起第二轮对话验证 llmtrim Cache-Zone 固化节约 5,907 字符；
+  - **Stage 3 (OpenChamber 离线沙箱与冲突保真专项)**：构建带有真实 Git 冲突标记（`<<<<<<< HEAD ... ======= ... >>>>>>>`）的复杂代码，网关 100% 豁免冲突标记，模型输出正确合并后的无冲突代码；
+  - **Stage 4 (网关大盘与 Doctor API 实时核验)**：断言 5 大卡片独立统计均有效大于 0（RTK、Headroom、Schema、CacheZone、PowerShell）、综合压缩率 77.7%、`byModel['deepseek-v4.1-flash']` 动态费率计算准确、Web UI 前端渲染 Card 5 与指示灯无误、Doctor 体检 `healthy: true` 且 0 issues；
+- **全套 139 项全量集成测试持续 100% 绿灯全通**。
 
-### 🚀 v3.3.0 (高频会话 O(1) LRU 淘汰、Anthropic 深度推演看门狗防误杀、监听器防泄漏屏障、上下文计算开销优化与 4 层极限压测)
-- **高频会话 O(1) LRU 增量淘汰引擎 (`server.js`)**：
-  - 彻底重构当 `sessionMap.size > 5000` 时因全量遍历、多次数组拷贝与复杂排序导致的 Node.js 事件循环挂死与高延迟瓶颈（由 O(K×M) 降低为 O(1)）；
-  - 引入 Map 原生插入顺序 LRU 机制（`touchSession` 与 `deleteSessionRecord`）结合 `sessionFallbackKeyMap` 二级索引，实现会话瞬时常数级增量淘汰；
-- **Anthropic 协议深度推演看门狗与长思考防误杀 (`codex-adapter.js`)**：
-  - 全面接入 Anthropic `thinking`（深度推演/思考）协议块事件解析与分发（`response.reasoning_text.delta` 等）；
-  - 自适应长推演看门狗：对 `xhigh` / `opus` / `thinking` 模型或处于推演阶段的长流动态放宽门限至 600 秒（普通流 300 秒），并在收到数据分块时严格刷新活动时间戳，彻底杜绝长思考被看门狗误杀；
-- **客户端连接异常与多轮重试监听器防泄漏屏障 (`server.js` & `codex-adapter.js`)**：
-  - 在故障转移（429、401、502/503、Socket ECONNRESET）与动态协议网关中，全面打通并严格解绑 `clientRes` 的 `close` 与 `error` 监听器，彻底根除跨轮次重试引发的 `MaxListenersExceededWarning` 与内存挂死；
-  - 引入 `MAX_ERR_BYTES = 256 * 1024` 上游错误流上限截断，杜绝畸形巨幅错误 payload 撑爆堆内存；
-- **首包延迟 (TTFT) 与正则/序列化计算开销优化 (`context-compactor.js`)**：
-  - 缓存动态正则编译（`dynamicRegexCache` / `getCachedRegex`）并预编译提升 20+ 个核心判定静态正则表达式，大幅消除单行扫描中的重复编译开销；
-  - 在工具模式深拷贝与处理中采用 `structuredClone` 优先与引用不变性短路（避免无谓 `JSON.stringify` 运算），降低 CPU 占用并显著压减首包延迟；
-- **四层并发与故障自愈压测套件 (`test_stress_regression.js`) 与既有 137 项集成测试 100% 双百全绿通**。
-
-### 🚀 v3.2.3 (Card 2 Headroom 原始锁文件安全折叠与结构化对象采样、Card 3 CacheAligner 工具去重排序与 KV Cache 锁定贡献度精准归因、全套 137 项全绿测试)
-- **Card 2 Headroom 代码与结构化折叠引擎指标激活 (`context-compactor.js` & `server.js`)**：
-  - **原始锁文件安全折叠**：除原先 git diff 模式外，新增对工具读取的原始 Lockfile（`package-lock.json`、`yarn.lock`、`pnpm-lock.yaml`、`cargo.lock`、`go.sum`）深度安全折叠，严格豁免 Git 冲突标记；
-  - **结构化超大对象折叠支持**：`foldStructuredData` 扩展至 >50 个顶层键的大型字典对象采样折叠，彻底解决日常查看巨型 JSON/配置显示 0% · ~0 Tokens 痛点；
-  - **多协议全链路归因**：OpenAI ChatCompletions、Anthropic Messages 与 OpenAI Codex Responses 三大协议工具输出深度解析与 Headroom 归因对齐；
-- **Card 3 CacheAligner & mcp-compressor 工具定义优化指标激活 (`context-compactor.js` & `server.js`)**：
-  - **工具排序与去重即时归因**：重构 `compactToolsList`，消除原先在排序对齐后才计算字符长度导致贡献被丢弃的缺陷；自动去重同名工具并统计规整字符；
-  - **KV Cache 前缀锁定轮次看板**：记录并持久化 `alignedRounds` 与 `alignedToolsCount`，当工具对齐生效时 Web UI 动态呈现 `(X 轮锁定)` 与 100% 绿色激活进度条；
 ### 🚀 v3.4.0 (Windows PowerShell 转义深度优化、CLIXML 报错去噪、跨平台环境自适应与 Web UI Card 5)
 - **Windows PowerShell 转义陷阱深度自愈 (`powershell-optimizer.js`)**：
   - **路径末尾反斜杠防吞噬引号**：自愈 Windows CRT `CommandLineToArgvW` 陷阱，将 `"C:\dir\"` 自动转换为 `"C:\dir\\"`，彻底防止闭合双引号被意外吃掉导致后续参数拼接错位；

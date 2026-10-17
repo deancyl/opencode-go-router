@@ -77,3 +77,11 @@ wire_api = "responses"
 
 ### 2. 界面显示英文？
 - **自愈**：在 Web 控制台点击【⚡ 一键接入 Codex】再次应用，网关会自动补齐 `[desktop].localeOverride = "zh-CN"` 并写入 Chromium 语言覆盖环境，重启后即恢复纯正简体中文。
+
+### 3. Windows 下终端命令因反斜杠、curl 别名或 && 解析报错？
+- **机制**：网关内置 Windows PowerShell 转义优化引擎，在 Codex 发送 `execute_command` 工具调用时自动修正路径末尾反斜杠防吃闭合引号、将 `curl` 别名映射为 `curl.exe`、将 `&&` 转义为兼容语法；在终端返回 `#< CLIXML` 报错时自动去噪 hex 编码与堆栈，削减 70%~90% 终端试错 Token 开销。
+
+### 4. Codex Responses 实机实测检验指标
+- **协议兼容性**：Responses 双向流协议无缝转换，HTTP 200，SSE 平稳闭环到达 `completed`，0 断流；
+- **多模块独立节约**：Codex 单轮实测节约 435 字符（~114 Tokens），其中 PowerShell 贡献 340 字符、RTK 贡献 57 字符、Schema 规范化贡献 38 字符。
+

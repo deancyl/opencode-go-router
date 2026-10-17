@@ -22,8 +22,10 @@ flowchart LR
     Scan --> D8["8. Codex 桌面端简体中文语言锁定 (Locale Override)"]
     Scan --> D9["9. Windows PLM 挂起与未捕获线程唤醒 (PLM Suspension)"]
     Scan --> D10["10. 上游异构推理节点模型白名单动态跃迁 (In-Flight Fallback)"]
+    Scan --> D11["11. 上下文压缩引擎健康度与防降智防断联屏障 (Compression Doctor)"]
+    Scan --> D12["12. OpenCode 2.0 原生凭据与后台守护自愈 (Anti-Invalid Credential)"]
 
-    D1 & D2 & D3 & D4 & D5 & D6 & D7 & D8 & D9 & D10 --> Fix["⚡ One-Click Auto-Repair (一键秒级自愈变绿)"]
+    D1 & D2 & D3 & D4 & D5 & D6 & D7 & D8 & D9 & D10 & D11 & D12 --> Fix["⚡ One-Click Auto-Repair (一键秒级自愈变绿)"]
 ```
 
 ---
@@ -45,6 +47,14 @@ flowchart LR
 ### 4. 上游模型受限报错动态自愈
 - **病症**：上游返回 `The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash`；
 - **自愈**：动态正则提取支持的模型池，按同梯级等位推导并透明重放当前请求，向客户端无感输出。
+
+### 5. 上下文压缩引擎健康自检与防降智防断联屏障 (Compression Doctor)
+- **病症**：开发者误改配置导致安全门限过低、关闭了 Git 冲突豁免 (`exemptMergeConflicts`)，或客户端配置异常引发断流；
+- **自愈**：专用子体检接口 `/balancer/api/compression/doctor` 与修复接口 `/balancer/api/compression/repair`；秒级核验 Codex、OpenCode、OpenChamber 三端兼容性状态，一键强制恢复至黄金“平衡标准档”安全配置，杜绝模型降智与代码语法破损。
+
+### 6. OpenCode 2.0 原生凭据与后台守护自愈 (Anti-Invalid Credential)
+- **病症**：OpenCode 发送消息时报错 `Upstream request failed: Invalid credential`，因原生 SQLite 凭据库与用户配置脱节；
+- **自愈**：原生利用 Node.js `node:sqlite` 同步写入 `opencode.db` 的 `credential` 表与 `auth.json`，在 Linux NAS 自动配置 `opencode-server.service` 环境变量并平滑重启，在 Windows 端持久化写入当前用户环境变量 `OPENCODE_API_KEY`；100% 完整保护既有第三方凭据。
 
 ---
 

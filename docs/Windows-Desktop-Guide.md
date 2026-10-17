@@ -45,6 +45,13 @@
 =====================================================
 ```
 
+### 3. Windows PowerShell 转义优化与环境自适应防护 (Card 5)
+Windows 下使用各种编程智能体（Codex / OpenCode / OpenChamber）时，PowerShell 往往是语法报错与命令失效的重灾区。网关内置了自适应 PowerShell 优化层：
+- **末尾反斜杠防吃引号**：防止 `"C:\dir\"` 导致 Windows 传参吃掉闭合双引号引发解析混乱；
+- **curl/wget 别名修正**：自动将原生命令重定向为 `curl.exe`，避免因 PowerShell 默认别名为 `Invoke-WebRequest` 发生崩溃；
+- **&& 操作符兼容自愈**：将 Windows PowerShell 5.1 不支持的 `&&` 转换为 `; if ($?) { ... }`；
+- **CLIXML 报错深度去噪**：剔除 `#< CLIXML` 冗长标签与 hex 转义，大幅减少重试 Token 开销。
+
 ---
 
 ## 🚀 开机自启机制
