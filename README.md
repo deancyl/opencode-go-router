@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.1.5-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.2.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-131%2F131%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-134%2F134%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -90,15 +90,17 @@ OpenCode Go Router 是专为开发者与团队量身打造的 **OpenCode 全栈�
     - 清洗废弃的复数 `providers` 键，第三方模型无损合流进单数 `provider`，配置清理后秒级变绿；
     - npm / bun 国内镜像源容灾（`npmmirror`），保障更新 100% 成功。
 12. **全自动健康体检与故障自愈 (Doctor Engine)**：
-    - 涵盖端口死链排查、单复数冲突清洗、僵死进程清理、单实例互斥锁释放、语言锁定修复、异构模型跃迁等 10 大维度，一键秒级恢复全绿。
+    - 涵盖端口死链排查、单复数冲突清洗、僵死进程清理、单实例互斥锁释放、语言锁定修复、异构模型跃迁等 10 大维度，一键秒级恢复全绿；
+    - **OpenCode 2.0 原生凭据与后台守护进程自愈 (Anti-Invalid Credential)**：彻底根除日常 `Upstream request failed: Invalid credential` 异常；原生利用 Node.js `node:sqlite` 同步增量写入 `opencode.db` 的 `credential` 表与 `auth.json`，在 Linux NAS 端自动配置 `opencode-server.service` 环境变量并平滑重启，在 Windows 端持久化写入当前用户环境变量 `OPENCODE_API_KEY`；严格执行红线，100% 完整保留已有第三方凭据（如 shtech、aixforge、deepseek 等）。
 13. **无损上下文优化与多层 Token 压缩引擎 (Context Compactor & Token Optimization)**：
     - 吸收借鉴 Headroom、llmtrim、RTK 与 MCP-Compressor 的工程精髓，纯 Node.js 18+ 原生零外部依赖实现；
     - **终端与日志去噪**：ANSI 颜色转义与控制符剥离 (`stripAnsi`)，`\r` 覆盖式终端进度条去噪 (`cleanProgressBars`)；
     - **DevOps 运维日志折叠**：Docker 镜像拉取层状态去噪折叠 (`cleanDockerOutput`)，Terraform 资源状态刷新去噪折叠 (`cleanTerraformOutput`)；
     - **锁定文件安全折叠**：巨型 Lockfile（package-lock、yarn、cargo、bun、uv 等）Diff 安全折叠 (`foldLockfiles`)，探测到 `<<<<<<<` 冲突或 `/dev/null` 时精准豁免与安全命名，100% 保护代码解决能力；
+    - **Headroom 结构化超长 JSON 数组折叠引擎 (SmartCrusher / foldStructuredData)**：针对超长同构 JSON 列表（如 >30 项的文件树、日志、实体列表等），智能保留前 5 项与后 3 项，中间注入结构体摘要对象提取样本字段（sampleFields），折叠字符直接计入 Headroom 节省统计（告别日常 0% 痛点）；遇 Git 冲突标记或异常堆栈时 100% 绝对放弃折叠，确保防降智红线；
     - **正向匹配测试项折叠**：安全反转设计 (`foldTestPasses`)，原生支持 Jest/Vitest/Mocha、TAP、Pytest、Cargo、Go test、GoogleTest（`[ OK ]`）、Python unittest、CTest，支持配置自定义正则；遇失败、错误堆栈全量原样留存；
-    - **Prompt Cache 对齐与超大 Schema 深度瘦身**：工具 Schema 字典序排序对齐 (`alignToolsSchema`) 锁定上游 KV Cache 前缀，超大 Schema 深度递归裁剪示例代码 (`slimToolsSchema`)，会话缓存区字节固化 (`sessionCompressionMemo`)；
-    - **可扩展管道体系与安全沙盒**：内置 Pluggable Pipeline 接口（`registerTransformer`, `runPipeline`），支持第三方自定义转换器插拔，全管道 100% 安全沙盒包裹，异常静默旁路绝不阻断正常业务。
+    - **Prompt Cache 对齐、KV Cache 锁定与超大 Schema 深度瘦身**：Web 控制中心清晰呈现 `🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)` 与门限引导；工具 Schema 字典序排序对齐 (`alignToolsSchema`) 锁定上游 KV Cache 前缀，超大 Schema 深度递归裁剪示例代码 (`slimToolsSchema`)，会话缓存区字节固化 (`sessionCompressionMemo`)；
+    - **流式套接字异常加固与安全沙盒**：全面加固 clientRes 错误监听，防止客户端提前挂断引发未捕获套接字异常；内置 Pluggable Pipeline 接口（`registerTransformer`, `runPipeline`），支持第三方自定义转换器插拔，全管道 100% 安全沙盒包裹，异常静默旁路绝不阻断正常业务。
 
 ---
 

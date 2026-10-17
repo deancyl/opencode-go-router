@@ -2543,6 +2543,521 @@ async function probeOpenChamberServices(port = null, timeoutMs = 2000) {
   return result;
 }
 
+/**
+ * Helper to query and execute SQLite database safely across environments
+ */
+function openSqliteDb(dbPath) {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    return new DatabaseSync(dbPath);
+  } catch (_) {
+    return null;
+  }
+}
+
+function querySqliteRows(dbPath, sql, params = []) {
+  if (!fs.existsSync(dbPath)) return [];
+  const db = openSqliteDb(dbPath);
+  if (db) {
+    try {
+      const stmt = db.prepare(sql);
+      const rows = stmt.all(...params);
+      db.close();
+      return rows;
+    } catch (e) {
+      try { db.close(); } catch (_) {}
+    }
+  }
+  // Fallback to python sqlite3
+  try {
+    const script = [
+      'import sqlite3, json, sys',
+      'con = sqlite3.connect(sys.argv[1])',
+      'cur = con.cursor()',
+      'params = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else []',
+      'cur.execute(sys.argv[2], tuple(params))',
+      'cols = [c[0] for c in cur.description] if cur.description else []',
+      'rows = [dict(zip(cols, r)) for r in cur.fetchall()]',
+      'con.close()',
+      'print(json.dumps(rows))'
+    ].join('; ');
+    const res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    if (res.success && res.output) {
+      return JSON.parse(res.output);
+    }
+  } catch (_) {}
+  return [];
+}
+
+function execSqliteQuery(dbPath, sql, params = []) {
+  const db = openSqliteDb(dbPath);
+  if (db) {
+    try {
+      if (params && params.length > 0) {
+        const stmt = db.prepare(sql);
+        stmt.run(...params);
+      } else {
+        db.exec(sql);
+      }
+      db.close();
+      return true;
+    } catch (e) {
+      try { db.close(); } catch (_) {}
+    }
+  }
+  // Fallback to python sqlite3
+  try {
+    const script = [
+      'import sqlite3, json, sys',
+      'con = sqlite3.connect(sys.argv[1])',
+      'cur = con.cursor()',
+      'params = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else []',
+      'if params: cur.execute(sys.argv[2], tuple(params))',
+      'else: cur.execute(sys.argv[2])',
+      'con.commit()',
+      'con.close()',
+      'print("OK")'
+    ].join('; ');
+    const res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    return res.success && res.output.includes('OK');
+  } catch (_) {}
+  return false;
+}
+
+/**
+ * Discovers candidates for OpenCode 2.0 credential databases and environment files
+ */
+function findOpenCodeCredentialPaths(customOptions = {}) {
+  let dbPath = customOptions.dbPath || null;
+  if (!dbPath) {
+    const dbCandidates = [
+      path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db'),
+      path.join(process.env.LOCALAPPDATA || '', 'opencode', 'opencode.db'),
+      path.join(process.env.APPDATA || '', 'opencode', 'opencode.db'),
+      path.join(os.homedir(), '.opencode', 'opencode.db')
+    ];
+    for (const cand of dbCandidates) {
+      if (fs.existsSync(cand)) {
+        dbPath = cand;
+        break;
+      }
+    }
+    if (!dbPath) {
+      dbPath = dbCandidates[0];
+    }
+  }
+
+  let authPath = customOptions.authPath || null;
+  if (!authPath) {
+    const authCandidates = [
+      path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
+      path.join(process.env.LOCALAPPDATA || '', 'opencode', 'auth.json'),
+      path.join(process.env.APPDATA || '', 'opencode', 'auth.json')
+    ];
+    for (const cand of authCandidates) {
+      if (fs.existsSync(cand)) {
+        authPath = cand;
+        break;
+      }
+    }
+    if (!authPath) {
+      authPath = authCandidates[0];
+    }
+  }
+
+  let servicePath = customOptions.servicePath || null;
+  if (!servicePath) {
+    const sCandidates = [
+      path.join(os.homedir(), '.config', 'systemd', 'user', 'opencode-server.service'),
+      '/etc/systemd/system/opencode-server.service'
+    ];
+    for (const cand of sCandidates) {
+      if (fs.existsSync(cand)) {
+        servicePath = cand;
+        break;
+      }
+    }
+  }
+
+  return { dbPath, authPath, servicePath };
+}
+
+/**
+ * Checks if OpenCode 2.0 native credential table (opencode.db) and daemon environment
+ * have active credentials for opencode-go and opencode, while identifying existing third-party credentials.
+ */
+function checkOpenCodeCredentials(expectedApiKeyOrOptions, customOptions = {}) {
+  let expectedApiKey = 'local-router';
+  let opts = {};
+  if (typeof expectedApiKeyOrOptions === 'object' && expectedApiKeyOrOptions !== null) {
+    opts = expectedApiKeyOrOptions;
+    expectedApiKey = opts.expectedApiKey || opts.apiKey || 'local-router';
+  } else {
+    expectedApiKey = expectedApiKeyOrOptions || 'local-router';
+    opts = customOptions || {};
+  }
+
+  const isWindows = opts.isWindows !== undefined ? opts.isWindows : (process.platform === 'win32');
+  const isLinux = opts.isLinux !== undefined ? opts.isLinux : (process.platform === 'linux');
+  const { dbPath, authPath, servicePath } = findOpenCodeCredentialPaths(opts);
+
+  const report = {
+    expectedApiKey: expectedApiKey || null,
+    dbPath,
+    hasDb: fs.existsSync(dbPath),
+    dbExists: fs.existsSync(dbPath),
+    dbCredentialActive: false,
+    activeInDb: false,
+    authPath,
+    hasAuthJson: fs.existsSync(authPath),
+    authExists: fs.existsSync(authPath),
+    authJsonActive: false,
+    authKeyPresent: false,
+    servicePath,
+    serviceExists: Boolean(servicePath && fs.existsSync(servicePath)),
+    hasServiceEnv: false,
+    serviceEnvActive: false,
+    winEnvVar: null,
+    winEnvActive: false,
+    envKeyPresent: false,
+    thirdPartyIntegrations: [],
+    otherCredentials: [],
+    hasOtherCredentials: false,
+    healthy: true,
+    issues: []
+  };
+
+  if (!expectedApiKey || typeof expectedApiKey !== 'string' || !expectedApiKey.trim()) {
+    report.healthy = true;
+    report.skipped = true;
+    report.reason = '网关未配置有效 API Key';
+    return report;
+  }
+  const cleanKey = expectedApiKey.trim();
+
+  // 1. Check opencode.db credential table
+  if (report.hasDb) {
+    try {
+      const rows = querySqliteRows(dbPath, "SELECT * FROM credential");
+      if (Array.isArray(rows) && rows.length > 0) {
+        let opencodeGoActive = false;
+        let opencodeActive = false;
+        for (const row of rows) {
+          const integ = row.integration_id || row.id;
+          const act = Number(row.active) === 1;
+          const val = String(row.value || row.key || row.token || '');
+          const hasKey = val.includes(cleanKey);
+
+          if (integ === 'opencode-go' && act && hasKey) {
+            opencodeGoActive = true;
+          } else if (integ === 'opencode' && act && hasKey) {
+            opencodeActive = true;
+          } else if (integ !== 'opencode-go' && integ !== 'opencode') {
+            if (!report.thirdPartyIntegrations.includes(integ)) {
+              report.thirdPartyIntegrations.push(integ);
+            }
+          }
+        }
+        report.dbCredentialActive = (opencodeGoActive && opencodeActive);
+        report.activeInDb = report.dbCredentialActive;
+      }
+    } catch (e) {
+      report.dbError = e.message;
+    }
+  }
+
+  // 2. Check auth.json
+  if (report.hasAuthJson) {
+    try {
+      const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+      const goVal = auth['opencode-go'] ? (auth['opencode-go'].key || auth['opencode-go'].apiKey || auth['opencode-go'].value) : null;
+      const ocVal = auth['opencode'] ? (auth['opencode'].key || auth['opencode'].apiKey || auth['opencode'].value) : null;
+      const goActive = Boolean(goVal && String(goVal).includes(cleanKey));
+      const ocActive = Boolean(ocVal && String(ocVal).includes(cleanKey));
+      report.authJsonActive = goActive && ocActive;
+      report.authKeyPresent = report.authJsonActive;
+      for (const k of Object.keys(auth)) {
+        if (k !== 'opencode-go' && k !== 'opencode' && !report.thirdPartyIntegrations.includes(k)) {
+          report.thirdPartyIntegrations.push(k);
+        }
+      }
+    } catch (_) {}
+  }
+
+  report.otherCredentials = report.thirdPartyIntegrations;
+  report.hasOtherCredentials = report.thirdPartyIntegrations.length > 0;
+
+  // 3. Check Linux NAS systemd service
+  if (isLinux || servicePath) {
+    if (servicePath && fs.existsSync(servicePath)) {
+      report.hasServiceEnv = true;
+      try {
+        const sContent = fs.readFileSync(servicePath, 'utf8');
+        const match = sContent.match(/Environment=["']?OPENCODE_API_KEY=([^"'\r\n]+)["']?/);
+        if (match && match[1].trim() === cleanKey) {
+          report.serviceEnvActive = true;
+        }
+      } catch (_) {}
+    }
+    if (opts.envApiKey !== undefined && opts.envApiKey === cleanKey) {
+      report.serviceEnvActive = true;
+    }
+  }
+
+  // 4. Check Windows User environment variable
+  if (isWindows) {
+    try {
+      let userKey = null;
+      if (opts.envApiKey !== undefined) {
+        userKey = opts.envApiKey;
+      } else if (opts.winUserEnv !== undefined) {
+        userKey = opts.winUserEnv;
+      } else {
+        const res = runCmd('powershell.exe -NoProfile -NonInteractive -Command "[System.Environment]::GetEnvironmentVariable(\'OPENCODE_API_KEY\', \'User\')"', 2500);
+        if (res.success && res.output) userKey = res.output.trim();
+        if (!userKey && process.env.OPENCODE_API_KEY) {
+          userKey = process.env.OPENCODE_API_KEY.trim();
+        }
+      }
+      report.winEnvVar = userKey;
+      report.winEnvActive = Boolean(userKey === cleanKey);
+    } catch (_) {}
+  }
+
+  report.envKeyPresent = isWindows ? report.winEnvActive : report.serviceEnvActive;
+
+  const dbOk = report.hasDb ? report.dbCredentialActive : false;
+  const authOk = report.hasAuthJson ? report.authJsonActive : false;
+  const isCredentialStoreOk = dbOk || authOk;
+
+  let serviceOrEnvOk = true;
+  if (isLinux && report.servicePath) {
+    serviceOrEnvOk = report.serviceEnvActive;
+  } else if (isWindows) {
+    serviceOrEnvOk = report.winEnvActive;
+  }
+
+  if (!isCredentialStoreOk || !serviceOrEnvOk) {
+    report.healthy = false;
+    const reasons = [];
+    if (!report.dbCredentialActive) reasons.push('opencode.db credential 未激活');
+    if (isLinux && report.servicePath && !report.serviceEnvActive) reasons.push('opencode-server.service 缺少 OPENCODE_API_KEY');
+    if (isWindows && !report.winEnvActive) reasons.push('Windows 用户环境变量缺少 OPENCODE_API_KEY');
+
+    report.issues.push({
+      id: 'opencode_credential_inactive',
+      severity: 'high',
+      title: 'OpenCode 2.0 原生凭据或后台守护进程 API Key 未激活',
+      desc: `检测到 ${reasons.join('、')}，会导致日常会话抛出 "Upstream request failed: Invalid credential" 异常，一键修复即可安全增量同步并保留已有第三方凭据`
+    });
+  }
+
+  return report;
+}
+
+/**
+ * Performs incremental synchronization of credentials to opencode.db and auth.json,
+ * updates opencode-server.service on Linux NAS with smooth restart,
+ * and sets OPENCODE_API_KEY persistently in Windows User environment variables.
+ * STRICT REDLINE: Preserves all existing third-party credentials (shtech, aixforge, etc.)!
+ */
+function repairOpenCodeCredentials(apiKeyOrOptions, customOptions = {}) {
+  let apiKey = 'local-router';
+  let opts = {};
+  if (typeof apiKeyOrOptions === 'object' && apiKeyOrOptions !== null) {
+    opts = apiKeyOrOptions;
+    apiKey = opts.apiKey || opts.key || 'local-router';
+  } else {
+    apiKey = apiKeyOrOptions || 'local-router';
+    opts = customOptions || {};
+  }
+
+  const isWindows = opts.isWindows !== undefined ? opts.isWindows : (process.platform === 'win32');
+  const isLinux = opts.isLinux !== undefined ? opts.isLinux : (process.platform === 'linux');
+  const { dbPath, authPath, servicePath } = findOpenCodeCredentialPaths(opts);
+
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    return { success: false, message: '未提供有效的 API Key' };
+  }
+  const cleanKey = apiKey.trim();
+
+  const results = {
+    success: true,
+    dbRepaired: false,
+    authRepaired: false,
+    serviceRepaired: false,
+    envRepaired: false,
+    preservedThirdParty: [],
+    serviceReloaded: false,
+    message: ''
+  };
+
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const valJson = JSON.stringify({ type: 'key', key: cleanKey });
+
+  // 1. Repair opencode.db (strictly preserving existing third-party credentials!)
+  try {
+    const dbDir = path.dirname(dbPath);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+
+    const createTableSql = `CREATE TABLE IF NOT EXISTS credential (
+      id text PRIMARY KEY,
+      integration_id text,
+      key text,
+      label text,
+      value text,
+      connector_id text,
+      method_id text,
+      active integer,
+      time_created integer,
+      time_updated integer,
+      updated_at text
+    )`;
+    execSqliteQuery(dbPath, createTableSql);
+
+    const tableInfo = querySqliteRows(dbPath, "PRAGMA table_info(credential)");
+    const colNames = Array.isArray(tableInfo) ? tableInfo.map(c => c.name) : [];
+    const hasCol = (c) => colNames.length === 0 || colNames.includes(c);
+
+    const existingRows = querySqliteRows(dbPath, "SELECT * FROM credential");
+    const existingMap = new Map();
+    if (Array.isArray(existingRows)) {
+      for (const r of existingRows) {
+        const integ = r.integration_id || r.id;
+        existingMap.set(integ, r);
+        if (integ !== 'opencode-go' && integ !== 'opencode') {
+          if (!results.preservedThirdParty.includes(integ)) {
+            results.preservedThirdParty.push(integ);
+          }
+        }
+      }
+    }
+
+    const upsertCred = (integId, defaultId) => {
+      const row = existingMap.get(integId);
+      if (row) {
+        const matchCol = hasCol('id') && row.id ? 'id' : (hasCol('integration_id') ? 'integration_id' : (colNames[0] || 'id'));
+        const matchVal = row.id || row.integration_id;
+        const setClauses = ['active = 1'];
+        const setParams = [];
+        if (hasCol('key')) { setClauses.push('key = ?'); setParams.push(cleanKey); }
+        if (hasCol('value')) { setClauses.push('value = ?'); setParams.push(valJson); }
+        if (hasCol('updated_at')) { setClauses.push('updated_at = ?'); setParams.push(nowIso); }
+        if (hasCol('time_updated')) { setClauses.push('time_updated = ?'); setParams.push(now); }
+        setParams.push(matchVal);
+        execSqliteQuery(dbPath, `UPDATE credential SET ${setClauses.join(', ')} WHERE ${matchCol} = ?`, setParams);
+      } else {
+        const insertCols = [];
+        const insertPlaceholders = [];
+        const insertVals = [];
+        if (hasCol('id')) { insertCols.push('id'); insertPlaceholders.push('?'); insertVals.push(defaultId); }
+        if (hasCol('integration_id')) { insertCols.push('integration_id'); insertPlaceholders.push('?'); insertVals.push(integId); }
+        if (hasCol('label')) { insertCols.push('label'); insertPlaceholders.push('?'); insertVals.push(integId); }
+        if (hasCol('key')) { insertCols.push('key'); insertPlaceholders.push('?'); insertVals.push(cleanKey); }
+        if (hasCol('value')) { insertCols.push('value'); insertPlaceholders.push('?'); insertVals.push(valJson); }
+        if (hasCol('connector_id')) { insertCols.push('connector_id'); insertPlaceholders.push('?'); insertVals.push(''); }
+        if (hasCol('method_id')) { insertCols.push('method_id'); insertPlaceholders.push('?'); insertVals.push(''); }
+        if (hasCol('active')) { insertCols.push('active'); insertPlaceholders.push('?'); insertVals.push(1); }
+        if (hasCol('time_created')) { insertCols.push('time_created'); insertPlaceholders.push('?'); insertVals.push(now); }
+        if (hasCol('time_updated')) { insertCols.push('time_updated'); insertPlaceholders.push('?'); insertVals.push(now); }
+        if (hasCol('updated_at')) { insertCols.push('updated_at'); insertPlaceholders.push('?'); insertVals.push(nowIso); }
+        execSqliteQuery(dbPath, `INSERT INTO credential (${insertCols.join(', ')}) VALUES (${insertPlaceholders.join(', ')})`, insertVals);
+      }
+    };
+
+    upsertCred('opencode-go', 'cred_opencode_go_active');
+    upsertCred('opencode', 'cred_opencode_console_active');
+
+    results.dbRepaired = true;
+  } catch (dbErr) {
+    console.warn('[Updater] opencode.db repair notice:', dbErr.message);
+  }
+
+  // 2. Repair auth.json (strictly preserving existing third-party keys)
+  try {
+    const authDir = path.dirname(authPath);
+    if (!fs.existsSync(authDir)) {
+      fs.mkdirSync(authDir, { recursive: true });
+    }
+    let authObj = {};
+    if (fs.existsSync(authPath)) {
+      try {
+        authObj = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+      } catch (_) {}
+    }
+    for (const k of Object.keys(authObj)) {
+      if (k !== 'opencode-go' && k !== 'opencode') {
+        if (!results.preservedThirdParty.includes(k)) {
+          results.preservedThirdParty.push(k);
+        }
+      }
+    }
+    authObj['opencode-go'] = { type: 'api', key: cleanKey };
+    authObj['opencode'] = { type: 'api', key: cleanKey };
+    fs.writeFileSync(authPath, JSON.stringify(authObj, null, 2), 'utf8');
+    results.authRepaired = true;
+  } catch (authErr) {
+    console.warn('[Updater] auth.json repair notice:', authErr.message);
+  }
+
+  // 3. Linux NAS opencode-server.service injection & smooth reload
+  if (isLinux || servicePath) {
+    if (servicePath && fs.existsSync(servicePath)) {
+      try {
+        let content = fs.readFileSync(servicePath, 'utf8');
+        const envPattern = /Environment=["']?OPENCODE_API_KEY=[^"'\r\n]+["']?/;
+        if (envPattern.test(content)) {
+          content = content.replace(envPattern, `Environment="OPENCODE_API_KEY=${cleanKey}"`);
+        } else if (content.includes('[Service]')) {
+          content = content.replace('[Service]', `[Service]\nEnvironment="OPENCODE_API_KEY=${cleanKey}"`);
+        } else {
+          content += `\n[Service]\nEnvironment="OPENCODE_API_KEY=${cleanKey}"\n`;
+        }
+        fs.writeFileSync(servicePath, content, 'utf8');
+        results.serviceRepaired = true;
+
+        if (customOptions.skipServiceRestart !== true) {
+          runCmd('systemctl --user daemon-reload', 5000);
+          const rRes = runCmd('systemctl --user restart opencode-server.service', 15000);
+          results.serviceReloaded = rRes.success;
+        }
+      } catch (svcErr) {
+        console.warn('[Updater] service repair notice:', svcErr.message);
+      }
+    }
+  }
+
+  // 4. Windows User environment variable persistence
+  if (isWindows) {
+    try {
+      if (customOptions.skipWinEnv !== true) {
+        const psCmd = `[System.Environment]::SetEnvironmentVariable('OPENCODE_API_KEY', '${cleanKey}', 'User')`;
+        const enc = Buffer.from(psCmd, 'utf16le').toString('base64');
+        runCmd(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, 5000);
+      }
+      process.env.OPENCODE_API_KEY = cleanKey;
+      results.envRepaired = true;
+    } catch (winErr) {
+      console.warn('[Updater] win env repair notice:', winErr.message);
+    }
+  }
+
+  const parts = [];
+  if (results.dbRepaired) parts.push('opencode.db credential 已增量激活');
+  if (results.authRepaired) parts.push('auth.json 已同步');
+  if (results.serviceRepaired) parts.push('Linux 守护服务已注入 OPENCODE_API_KEY' + (results.serviceReloaded ? ' 并平滑重载' : ''));
+  if (results.envRepaired) parts.push('Windows 用户环境变量 OPENCODE_API_KEY 已持久化');
+  if (results.preservedThirdParty.length > 0) {
+    parts.push(`已保留第三方服务商凭据: ${results.preservedThirdParty.join(', ')}`);
+  }
+
+  results.message = parts.join('；');
+  return results;
+}
+
 module.exports = {
   runCmd,
   runCmdSync,
@@ -2557,6 +3072,12 @@ module.exports = {
   probeOpenChamberServices,
   fetchOfficialModels,
   ALL_38_SLUGS,
+  findOpenCodeCredentialPaths,
+  openSqliteDb,
+  querySqliteRows,
+  execSqliteQuery,
+  checkOpenCodeCredentials,
+  repairOpenCodeCredentials,
   detectLocalVersions,
   fetchAllRemoteVersions,
   analyzeCompatibility,

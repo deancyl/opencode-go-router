@@ -265,6 +265,21 @@ if (Test-Path $opencodeConfig) {
                 })
             } else {
                 Write-Host "  ✔ 提供商配置满足双轨 Schema 镜像规范 (CLI 与桌面端双兼容)" -ForegroundColor Green
+    # 检测 OpenCode 2.0 原生凭据与后台守护进程环境变量
+    try {
+        $credJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.checkOpenCodeCredentials({ isWindows: true })));" 2>$null
+        if ($credJson) {
+            $credObj = $credJson | ConvertFrom-Json
+            if (-not $credObj.healthy) {
+                Write-Host "  ⚠ OpenCode 2.0 原生凭据未激活或缺少 OPENCODE_API_KEY ($($credObj.issues -join '; '))" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "opencode_credential_inactive"
+                    Title = "OpenCode 2.0 原生凭据未激活或后台守护进程缺少 OPENCODE_API_KEY 环境变量"
+                    Severity = "High"
+                    FixDesc = "自动增量写入 opencode.db / auth.json 原生凭据并持久化配置用户环境变量 OPENCODE_API_KEY"
+                })
+            } else {
+                Write-Host "  ✔ OpenCode 2.0 原生凭据与后台守护进程环境变量已就绪" -ForegroundColor Green
             }
         }
     } catch {}
@@ -707,6 +722,32 @@ foreach ($iss in $issuesFound) {
                 }
             } catch {
                 Write-Host "    ⚠ 压缩引擎一键自愈请求失败: $_" -ForegroundColor Red
+            }
+        }
+        "opencode_credential_inactive" {
+            Write-Host " -> 正在增量激活 OpenCode 2.0 原生凭据与配置后台守护进程环境变量..." -ForegroundColor Yellow
+            try {
+                $updaterScript = Join-Path $PSScriptRoot "updater.js"
+                if (Test-Path $updaterScript) {
+                    $resJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.repairOpenCodeCredentials({ isWindows: true })));" 2>$null
+                    if ($resJson) {
+                        $repObj = $resJson | ConvertFrom-Json
+                        if ($repObj.success) {
+                            Write-Host "    ✔ OpenCode 2.0 原生凭据已增量激活，环境变量 OPENCODE_API_KEY 已配置" -ForegroundColor Green
+                        } else {
+                            Write-Host "    ⚠ 原生凭据自愈返回: $($repObj.error)" -ForegroundColor Yellow
+                        }
+                    }
+                }
+                # 确保当前 Windows 用户环境变量亦同步注入
+                $currentKey = [System.Environment]::GetEnvironmentVariable("OPENCODE_API_KEY", "User")
+                if (-not $currentKey) {
+                    [System.Environment]::SetEnvironmentVariable("OPENCODE_API_KEY", "local-router", "User")
+                    $env:OPENCODE_API_KEY = "local-router"
+                    Write-Host "    ✔ 当前用户环境变量 OPENCODE_API_KEY=local-router 已持久化" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ 原生凭据自愈执行异常: $_" -ForegroundColor Red
             }
         }
         "dead_port_3001" {

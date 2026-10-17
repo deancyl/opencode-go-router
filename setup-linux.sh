@@ -727,6 +727,10 @@ run_repair() {
         const ocPath = path.join(ocDir, "opencode.jsonc");
         const harm = updater.harmonizeOpencodeConfig(ocPath, port);
         console.log("✔ 本地已完成 opencode.jsonc 离线修复 (清除 providers 冲突，全量补齐 38 款模型)");
+        const credRepair = updater.repairOpenCodeCredentials({ isLinux: true });
+        if (credRepair && credRepair.success) {
+          console.log("✔ 本地已完成 OpenCode 2.0 原生凭据与守护进程环境变量离线自愈");
+        }
       } catch (err) {
         console.log("本地离线自愈提示:", err.message);
       }

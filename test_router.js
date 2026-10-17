@@ -5468,8 +5468,324 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Client Compatibility Degradation, Master Switch Auto-Healing & Language Exception Protection verified');
 
+    // [Test 132] Testing OpenCode 2.0 Credential & Daemon Environment Detection & Auto-Repair
+    console.log('\n[Test 132] Testing OpenCode 2.0 Credential & Daemon Environment Detection & Auto-Repair...');
+    const updaterMod = require('./updater');
+    const testTempDir = path.join(os.tmpdir(), 'opencode_test_cred_' + Date.now());
+    fs.mkdirSync(testTempDir, { recursive: true });
+    const mockDbPath = path.join(testTempDir, 'opencode.db');
+    const mockAuthPath = path.join(testTempDir, 'auth.json');
+    const mockServicePath = path.join(testTempDir, 'opencode-server.service');
+
+    try {
+      // 1. Initialize SQLite Database & Insert existing 3rd party credentials (shtech, aixforge)
+      updaterMod.execSqliteQuery(mockDbPath, `
+        CREATE TABLE IF NOT EXISTS credential (
+          integration_id TEXT PRIMARY KEY,
+          key TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      updaterMod.execSqliteQuery(mockDbPath, `
+        INSERT INTO credential (integration_id, key, active, updated_at) VALUES
+        ('shtech', 'sk-third-party-shtech-key', 1, '2026-01-01T00:00:00.000Z'),
+        ('aixforge', 'sk-third-party-aix-key', 1, '2026-01-01T00:00:00.000Z');
+      `);
+
+      fs.writeFileSync(mockAuthPath, JSON.stringify({
+        shtech: { key: 'sk-third-party-shtech-key' },
+        aixforge: { key: 'sk-third-party-aix-key' }
+      }, null, 2), 'utf8');
+
+      // 2. Detect unactivated credentials (opencode-go missing)
+      const credCheckBefore = updaterMod.checkOpenCodeCredentials({
+        dbPath: mockDbPath,
+        authPath: mockAuthPath,
+        servicePath: mockServicePath,
+        isWindows: true
+      });
+      assert.strictEqual(credCheckBefore.healthy, false, 'Credentials must be flagged unhealthy before repair');
+      assert.strictEqual(credCheckBefore.activeInDb, false, 'opencode-go must not be active before repair');
+      assert.strictEqual(credCheckBefore.hasOtherCredentials, true, 'Existing third-party credentials must be detected');
+      assert.ok(credCheckBefore.otherCredentials.includes('shtech'), 'shtech must be listed in otherCredentials');
+      assert.ok(credCheckBefore.otherCredentials.includes('aixforge'), 'aixforge must be listed in otherCredentials');
+
+      // 3. Perform Incremental Repair (Windows environment simulation)
+      const repairResWin = updaterMod.repairOpenCodeCredentials({
+        dbPath: mockDbPath,
+        authPath: mockAuthPath,
+        servicePath: mockServicePath,
+        isWindows: true
+      });
+      assert.strictEqual(repairResWin.success, true, 'Windows credential repair must succeed');
+
+      // 4. Verify SQLite contents: opencode-go and opencode added, shtech and aixforge preserved
+      const dbRowsAfter = updaterMod.querySqliteRows(mockDbPath, 'SELECT * FROM credential ORDER BY integration_id ASC');
+      assert.ok(dbRowsAfter.length >= 4, 'Database must have at least 4 credentials');
+      const opencodeGoRow = dbRowsAfter.find(r => r.integration_id === 'opencode-go');
+      assert.ok(opencodeGoRow, 'opencode-go must exist in credential table');
+      assert.strictEqual(Number(opencodeGoRow.active), 1, 'opencode-go must be active');
+      assert.strictEqual(opencodeGoRow.key, 'local-router');
+
+      const opencodeRow = dbRowsAfter.find(r => r.integration_id === 'opencode');
+      assert.ok(opencodeRow, 'opencode must exist in credential table');
+      assert.strictEqual(Number(opencodeRow.active), 1, 'opencode must be active');
+
+      const shtechRow = dbRowsAfter.find(r => r.integration_id === 'shtech');
+      assert.ok(shtechRow, 'Third-party credential "shtech" must be strictly preserved');
+      assert.strictEqual(Number(shtechRow.active), 1, 'shtech must remain active');
+      assert.strictEqual(shtechRow.key, 'sk-third-party-shtech-key');
+
+      const aixRow = dbRowsAfter.find(r => r.integration_id === 'aixforge');
+      assert.ok(aixRow, 'Third-party credential "aixforge" must be strictly preserved');
+      assert.strictEqual(Number(aixRow.active), 1, 'aixforge must remain active');
+
+      // 5. Verify auth.json incremental preservation
+      const authAfter = JSON.parse(fs.readFileSync(mockAuthPath, 'utf8'));
+      assert.strictEqual(authAfter['opencode-go'].key, 'local-router');
+      assert.strictEqual(authAfter['opencode'].key, 'local-router');
+      assert.strictEqual(authAfter['shtech'].key, 'sk-third-party-shtech-key', 'shtech in auth.json must be preserved');
+      assert.strictEqual(authAfter['aixforge'].key, 'sk-third-party-aix-key', 'aixforge in auth.json must be preserved');
+
+      // 6. Test Linux systemd unit injection
+      fs.writeFileSync(mockServicePath, [
+        '[Unit]',
+        'Description=OpenCode Server',
+        '[Service]',
+        'Type=simple',
+        'ExecStart=/usr/local/bin/opencode serve',
+        '[Install]',
+        'WantedBy=default.target'
+      ].join('\n'), 'utf8');
+
+      const repairResLinux = updaterMod.repairOpenCodeCredentials({
+        dbPath: mockDbPath,
+        authPath: mockAuthPath,
+        servicePath: mockServicePath,
+        isLinux: true
+      });
+      assert.strictEqual(repairResLinux.success, true, 'Linux service credential repair must succeed');
+      const serviceAfter = fs.readFileSync(mockServicePath, 'utf8');
+      assert.ok(serviceAfter.includes('Environment="OPENCODE_API_KEY=local-router"'), 'systemd service must have OPENCODE_API_KEY injected');
+
+      // 7. Verify checkOpenCodeCredentials passes with envApiKey specified
+      const credCheckAfter = updaterMod.checkOpenCodeCredentials({
+        dbPath: mockDbPath,
+        authPath: mockAuthPath,
+        servicePath: mockServicePath,
+        envApiKey: 'local-router',
+        isWindows: true
+      });
+      assert.strictEqual(credCheckAfter.healthy, true, 'Credentials must be healthy after repair and env set');
+      assert.strictEqual(credCheckAfter.issues.length, 0);
+
+      // 8. Gateway Doctor Integration check
+      const docRes = await request('/balancer/api/doctor', { method: 'GET' });
+      assert.strictEqual(docRes.statusCode, 200);
+      const docJson = JSON.parse(docRes.body);
+      assert.ok(docJson.opencode, 'Doctor must include opencode report');
+      assert.ok(docJson.opencode.credentials, 'Doctor must include credentials report');
+    } finally {
+      try { fs.rmSync(testTempDir, { recursive: true, force: true }); } catch (_) {}
+    }
+    console.log('✓ OpenCode 2.0 Credential & Daemon Environment Detection & Auto-Repair verified');
+
+    // [Test 133] Testing Headroom SmartCrusher (foldStructuredData) Long Homogeneous JSON Array Folding
+    console.log('\n[Test 133] Testing Headroom SmartCrusher (foldStructuredData) Long Homogeneous JSON Array Folding...');
+    // 1. Create large homogeneous JSON array (>30 items, e.g. 45 items)
+    const testItems45 = [];
+    for (let i = 1; i <= 45; i++) {
+      testItems45.push({
+        id: i,
+        uuid: `item-uuid-tag-${i}-abc`,
+        name: `Repository Entity Index ${i}`,
+        status: i % 2 === 0 ? 'active' : 'idle',
+        score: (i * 1.5).toFixed(2),
+        extra: { code: 200 + i, verified: true }
+      });
+    }
+    const rawJson45 = JSON.stringify(testItems45, null, 2);
+    assert.ok(rawJson45.length > 2500, 'Raw JSON string should be >2500 characters');
+
+    // 2. Fold raw JSON array using SmartCrusher
+    const folded45 = contextCompactor.foldStructuredData(rawJson45, { maxStructuredItems: 30 });
+    assert.ok(folded45.length < rawJson45.length, 'Folded JSON must be substantially shorter');
+    const parsedFolded45 = JSON.parse(folded45);
+    assert.strictEqual(parsedFolded45.length, 9, 'Folded array must have 9 elements (5 head + 1 summary + 3 tail)');
+    assert.strictEqual(parsedFolded45[0].id, 1, 'First head item must be id 1');
+    assert.strictEqual(parsedFolded45[4].id, 5, 'Fifth head item must be id 5');
+    assert.strictEqual(parsedFolded45[6].id, 43, 'First tail item must be id 43');
+    assert.strictEqual(parsedFolded45[8].id, 45, 'Last tail item must be id 45');
+
+    // 3. Verify crusher summary descriptor structure
+    const crusherDescriptor = parsedFolded45[5];
+    assert.strictEqual(crusherDescriptor._headroom_smart_crusher, true);
+    assert.strictEqual(crusherDescriptor.totalCount, 45);
+    assert.strictEqual(crusherDescriptor.foldedCount, 37);
+    assert.ok(Array.isArray(crusherDescriptor.sampleFields));
+    assert.ok(crusherDescriptor.sampleFields.includes('id'));
+    assert.ok(crusherDescriptor.sampleFields.includes('uuid'));
+    assert.ok(crusherDescriptor.sampleFields.includes('name'));
+
+    // 4. Markdown code block wrapping test (```json [...] ```)
+    const mdJson = 'Here is the command output:\n```json\n' + rawJson45 + '\n```\nEnd of output.';
+    const foldedMd = contextCompactor.foldStructuredData(mdJson, { maxStructuredItems: 30 });
+    assert.ok(foldedMd.includes('```json'), 'Must preserve ```json block wrapper');
+    assert.ok(foldedMd.includes('_headroom_smart_crusher'), 'Must fold inside markdown block');
+    assert.ok(foldedMd.includes('End of output.'), 'Must preserve trailing text');
+
+    // 5. Anti-Degradation Red Line: Git merge conflict protection (100% untouched)
+    const conflictData = [
+      '<<<<<<< HEAD',
+      rawJson45,
+      '=======',
+      rawJson45,
+      '>>>>>>> branch-experiment'
+    ].join('\n');
+    const foldedConflict = contextCompactor.foldStructuredData(conflictData, { maxStructuredItems: 30 });
+    assert.strictEqual(foldedConflict, conflictData, 'Data with Git merge conflicts must NEVER be folded');
+
+    // 6. Anti-Degradation Red Line: Error traceback & assertion failure protection
+    const errorTraceData = 'Traceback (most recent call last):\n  File "cli.py", line 42, in run\n' + rawJson45;
+    const foldedTrace = contextCompactor.foldStructuredData(errorTraceData, { maxStructuredItems: 30 });
+    assert.strictEqual(foldedTrace, errorTraceData, 'Data with error tracebacks must NEVER be folded');
+
+    // 7. Boundaries & Edge cases
+    // <=30 items: NOT folded
+    const items30 = testItems45.slice(0, 30);
+    const raw30 = JSON.stringify(items30, null, 2);
+    assert.strictEqual(contextCompactor.foldStructuredData(raw30, { maxStructuredItems: 30 }), raw30, '<=30 items must NOT be folded');
+
+    // 31 items: IS folded
+    const items31 = testItems45.slice(0, 31);
+    const raw31 = JSON.stringify(items31, null, 2);
+    const folded31 = contextCompactor.foldStructuredData(raw31, { maxStructuredItems: 30 });
+    assert.ok(folded31.includes('_headroom_smart_crusher'), '31 items must be folded');
+
+    // Empty array: untouched
+    assert.strictEqual(contextCompactor.foldStructuredData('[]'), '[]');
+
+    // Idempotency: folding an already folded string must not corrupt or double fold
+    const doubleFolded = contextCompactor.foldStructuredData(folded45, { maxStructuredItems: 30 });
+    assert.strictEqual(doubleFolded, folded45, 'SmartCrusher must be strictly idempotent');
+
+    // 8. Pipeline compactMessagesPayload & Headroom attribution verification
+    const statsBefore = contextCompactor.getCompressionStats();
+    const prevHeadroomChars = (statsBefore.modules && statsBefore.modules.headroom) ? statsBefore.modules.headroom.savedChars : 0;
+
+    const toolMsgPayload = {
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'user', content: 'List entities' },
+        { role: 'tool', content: rawJson45 }
+      ]
+    };
+    const compactedPayload = contextCompactor.compactChatPayload(toolMsgPayload, {
+      enabled: true,
+      foldStructuredData: true,
+      maxStructuredItems: 30
+    });
+    assert.ok(compactedPayload.messages[1].content.includes('_headroom_smart_crusher'), 'Pipeline must run foldStructuredData');
+
+    const statsAfter = contextCompactor.getCompressionStats();
+    const newHeadroomChars = statsAfter.modules.headroom.savedChars;
+    assert.ok(newHeadroomChars > prevHeadroomChars, 'Headroom module savedChars must increase after SmartCrusher runs');
+    console.log(`✓ Headroom SmartCrusher verified (Headroom saved: ${newHeadroomChars - prevHeadroomChars} chars)`);
+
+    // [Test 134] Testing Web UI KV Cache Lock Indicators & Headroom SmartCrusher Integration
+    console.log('\n[Test 134] Testing Web UI KV Cache Lock Indicators & Headroom SmartCrusher Integration...');
+    // 1. Fetch Web UI
+    const uiRes134 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes134.statusCode, 200);
+    const uiHtml134 = uiRes134.body;
+
+    // 2. Check UI HTML Elements
+    assert.ok(uiHtml134.includes('id="cfg-comp-fold-structured"'), 'UI must contain cfg-comp-fold-structured checkbox');
+    assert.ok(uiHtml134.includes('SmartCrusher / foldStructuredData'), 'UI must describe SmartCrusher');
+    assert.ok(uiHtml134.includes('🔒 KV Cache 前缀已锁定'), 'UI must show locked KV Cache indicator');
+    assert.ok(uiHtml134.includes('提升上游 80%~90% 缓存命中，字符无损'), 'UI must explain KV Cache benefits');
+    assert.ok(uiHtml134.includes('tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀'), 'UI must explain 15,000 threshold');
+
+    // 3. Check UI JavaScript Bindings
+    assert.ok(uiHtml134.includes("setCheck('cfg-comp-fold-structured'"), 'applyPreset must bind cfg-comp-fold-structured');
+    assert.ok(uiHtml134.includes("getChecked('cfg-comp-fold-structured')"), 'handleSubOptionChange must check cfg-comp-fold-structured');
+    assert.ok(uiHtml134.includes("document.getElementById('cfg-comp-fold-structured').checked"), 'load & save must access cfg-comp-fold-structured');
+
+    // 4. Test /balancer/api/config update with foldStructuredData
+    const updateConfigRes = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accounts: testConfig.accounts,
+        compression: {
+          enabled: true,
+          foldStructuredData: false,
+          modules: {
+            headroom: {
+              enabled: true,
+              foldStructuredData: false
+            }
+          }
+        }
+      })
+    });
+    assert.strictEqual(updateConfigRes.statusCode, 200, 'Config update must succeed');
+
+    const restoreConfigRes = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accounts: testConfig.accounts,
+        compression: {
+          enabled: true,
+          foldStructuredData: true,
+          modules: {
+            headroom: {
+              enabled: true,
+              foldStructuredData: true
+            }
+          }
+        }
+      })
+    });
+    assert.strictEqual(restoreConfigRes.statusCode, 200, 'Config restore must succeed');
+
+    // 5. Test Client Socket Abrupt Disconnect (Resilience verification)
+    await new Promise((resolve) => {
+      const abortReq = http.request({
+        hostname: '127.0.0.1',
+        port: routerPort,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-key'
+        }
+      });
+      abortReq.on('error', () => {
+        // Expected client-side error when destroying socket
+        resolve();
+      });
+      abortReq.write(JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'test socket disconnect' }]
+      }));
+      // Abruptly destroy the socket before waiting for response
+      setTimeout(() => {
+        abortReq.destroy(new Error('Simulated client abruptly dropped TCP connection'));
+      }, 20);
+    });
+
+    // Wait 150ms and verify the server is still healthy and responsive
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const healthPostAbort134 = await request('/health', { method: 'GET' });
+    assert.strictEqual(healthPostAbort134.statusCode, 200, 'Server must remain completely healthy after client disconnect');
+
+    console.log('✓ Web UI KV Cache Lock Indicators & Headroom SmartCrusher Integration verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 131 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 134 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

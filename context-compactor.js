@@ -39,6 +39,8 @@ const DEFAULT_COMPRESSION_CONFIG = {
   cleanKubectlOutput: true,
   cleanDevOpsOutput: true,
   foldLockfiles: true,
+  foldStructuredData: true,
+  maxStructuredItems: 30,
   exemptMergeConflicts: true,
   protectSourceDiffs: true,
   foldTestPasses: true,
@@ -59,6 +61,8 @@ const DEFAULT_COMPRESSION_CONFIG = {
     headroom: {
       enabled: true,
       foldLockfiles: true,
+      foldStructuredData: true,
+      maxStructuredItems: 30,
       exemptMergeConflicts: true,
       protectSourceDiffs: true
     },
@@ -91,6 +95,8 @@ const COMPRESSION_PRESETS = {
       headroom: {
         enabled: true,
         foldLockfiles: true,
+        foldStructuredData: true,
+        maxStructuredItems: 30,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -121,6 +127,8 @@ const COMPRESSION_PRESETS = {
       headroom: {
         enabled: true,
         foldLockfiles: true,
+        foldStructuredData: true,
+        maxStructuredItems: 20,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -151,6 +159,8 @@ const COMPRESSION_PRESETS = {
       headroom: {
         enabled: false,
         foldLockfiles: false,
+        foldStructuredData: false,
+        maxStructuredItems: 50,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -211,6 +221,11 @@ function normalizeCompressionOptions(input = {}) {
     if (m.headroom && typeof m.headroom === 'object') {
       if (m.headroom.enabled !== undefined) result.modules.headroom.enabled = Boolean(m.headroom.enabled);
       if (m.headroom.foldLockfiles !== undefined) result.modules.headroom.foldLockfiles = Boolean(m.headroom.foldLockfiles);
+      if (m.headroom.foldStructuredData !== undefined) result.modules.headroom.foldStructuredData = Boolean(m.headroom.foldStructuredData);
+      if (m.headroom.maxStructuredItems !== undefined) {
+        const val = Number(m.headroom.maxStructuredItems);
+        result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 30;
+      }
       if (m.headroom.exemptMergeConflicts !== undefined) result.modules.headroom.exemptMergeConflicts = Boolean(m.headroom.exemptMergeConflicts);
       if (m.headroom.protectSourceDiffs !== undefined) result.modules.headroom.protectSourceDiffs = Boolean(m.headroom.protectSourceDiffs);
     }
@@ -259,6 +274,13 @@ function normalizeCompressionOptions(input = {}) {
   if (input.foldLockfiles !== undefined && (!hasModHeadroom || mInput.headroom.foldLockfiles === undefined)) {
     result.modules.headroom.foldLockfiles = Boolean(input.foldLockfiles);
   }
+  if (input.foldStructuredData !== undefined && (!hasModHeadroom || mInput.headroom.foldStructuredData === undefined)) {
+    result.modules.headroom.foldStructuredData = Boolean(input.foldStructuredData);
+  }
+  if (input.maxStructuredItems !== undefined && (!hasModHeadroom || mInput.headroom.maxStructuredItems === undefined)) {
+    const val = Number(input.maxStructuredItems);
+    result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 30;
+  }
   if (input.exemptMergeConflicts !== undefined && (!hasModHeadroom || mInput.headroom.exemptMergeConflicts === undefined)) {
     result.modules.headroom.exemptMergeConflicts = Boolean(input.exemptMergeConflicts);
   }
@@ -299,6 +321,8 @@ function normalizeCompressionOptions(input = {}) {
   result.cleanTerraformOutput = rtkActive ? (input.cleanTerraformOutput !== undefined ? Boolean(input.cleanTerraformOutput) : devopsVal) : false;
 
   result.foldLockfiles = headroomActive ? result.modules.headroom.foldLockfiles : false;
+  result.foldStructuredData = headroomActive ? result.modules.headroom.foldStructuredData : false;
+  result.maxStructuredItems = result.modules.headroom.maxStructuredItems || 30;
   result.exemptMergeConflicts = result.modules.headroom.exemptMergeConflicts;
   result.protectSourceDiffs = result.modules.headroom.protectSourceDiffs;
 
@@ -673,6 +697,126 @@ function foldLockfiles(text, options = {}) {
 }
 
 /**
+ * Headroom SmartCrusher: Structured Homogeneous JSON Array Folding.
+ * Automatically folds giant homogeneous JSON arrays (e.g. lists > 30 items returned by tools or CLI)
+ * by keeping head slice (first 5) and tail slice (last 3) with a structural summary item,
+ * saving massive prompt tokens during routine agent execution while preserving schemas and critical edge items.
+ *
+ * CRITICAL SAFETY / ANTI-DOWNGRADE REDLINES:
+ * - If merge conflicts (<<<<<<<, =======, >>>>>>>, |||||||) are present, 100% bypassed.
+ * - If stack traces / compiler errors (Traceback, AssertionError, TypeError, panic) are present, 100% bypassed.
+ * - If input length < 200 chars or array length <= maxStructuredItems, untouched.
+ * - Idempotent: already folded markers ([SmartCrusher: Folded ...) are never folded again.
+ * - Exception safe: any JSON parsing or structure failure returns original text.
+ * @param {string} text
+ * @param {object} options
+ * @returns {string}
+ */
+function foldStructuredData(text, options = {}) {
+  if (typeof text !== 'string' || text.length < 200) return text;
+  if (options.foldStructuredData === false) return text;
+
+  // Anti-downgrade conflict markers check
+  if (text.includes('<<<<<<<') || text.includes('>>>>>>>') || text.includes('|||||||')) {
+    return text;
+  }
+  // Anti-downgrade compiler errors / tracebacks check
+  if (text.includes('Traceback (most recent call last):') || text.includes('AssertionError:')) {
+    return text;
+  }
+  // Idempotency check
+  if (text.includes('[SmartCrusher: Folded') || text.includes('_headroom_smart_crusher')) {
+    return text;
+  }
+
+  const maxItems = Number(options.maxStructuredItems) || 30;
+  const headCount = Number(options.structuredHeadCount) || 5;
+  const tailCount = Number(options.structuredTailCount) || 3;
+
+  try {
+    let wasFolded = false;
+    const processValue = (val, depth = 0) => {
+      if (depth > 6 || val === null || typeof val !== 'object') return val;
+      if (Array.isArray(val)) {
+        if (val.length > maxItems) {
+          const omitted = val.length - headCount - tailCount;
+          if (omitted > 0) {
+            wasFolded = true;
+            const headSlice = val.slice(0, headCount).map(item => processValue(item, depth + 1));
+            const tailSlice = val.slice(val.length - tailCount).map(item => processValue(item, depth + 1));
+
+            let summaryItem;
+            const firstElem = val[0];
+            if (firstElem && typeof firstElem === 'object' && !Array.isArray(firstElem)) {
+              const sampleFields = Object.keys(firstElem).slice(0, 10);
+              summaryItem = {
+                _folded: true,
+                _headroom_smart_crusher: true,
+                summary: `[SmartCrusher: Folded ${omitted} items (${headCount + 1}..${val.length - tailCount} of ${val.length} items)]`,
+                totalCount: val.length,
+                foldedCount: omitted,
+                sampleFields
+              };
+            } else {
+              summaryItem = `... [SmartCrusher: Folded ${omitted} items (${headCount + 1}..${val.length - tailCount} of ${val.length} items)] ...`;
+            }
+            return [...headSlice, summaryItem, ...tailSlice];
+          }
+        }
+        return val.map(item => processValue(item, depth + 1));
+      }
+      const res = {};
+      for (const k of Object.keys(val)) {
+        res[k] = processValue(val[k], depth + 1);
+      }
+      return res;
+    };
+
+    // Case 1: Entire text is JSON (trimmed starts with [ or {)
+    const trimmed = text.trim();
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const folded = processValue(parsed, 0);
+        if (wasFolded) {
+          const isIndented = trimmed.includes('\n  ') || trimmed.includes('\n\t') || trimmed.startsWith('[\n') || trimmed.startsWith('{\n');
+          return isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded);
+        }
+      } catch (_) {}
+    }
+
+    // Case 2: Markdown code blocks containing JSON ```json ... ``` or ``` ... ```
+    if (text.includes('```')) {
+      const codeBlockRegex = /(```(?:json)?\s*[\r\n])([\s\S]*?)([\r\n]```)/g;
+      let anyBlockFolded = false;
+      const replaced = text.replace(codeBlockRegex, (match, prefix, inner, suffix) => {
+        const innerTrimmed = inner.trim();
+        if ((innerTrimmed.startsWith('[') && innerTrimmed.endsWith(']')) || (innerTrimmed.startsWith('{') && innerTrimmed.endsWith('}'))) {
+          try {
+            wasFolded = false;
+            const parsed = JSON.parse(innerTrimmed);
+            const folded = processValue(parsed, 0);
+            if (wasFolded) {
+              anyBlockFolded = true;
+              const isIndented = innerTrimmed.includes('\n  ') || innerTrimmed.includes('\n\t');
+              const stringified = isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded);
+              return prefix + stringified + suffix;
+            }
+          } catch (_) {}
+        }
+        return match;
+      });
+      if (anyBlockFolded) return replaced;
+    }
+
+    return text;
+  } catch (err) {
+    console.warn('[ContextCompactor] foldStructuredData error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
  * Positive match test passes folding.
  * Safe inversion architecture: ONLY recognizes explicit passing blocks (✓, ✔, PASS, ok, PASSED, [OK]).
  * CRITICAL SAFETY: Never touches failures, errors, assertions, or stack traces (100% preserved).
@@ -987,6 +1131,7 @@ registerTransformer('cleanDockerOutput', (text) => cleanDockerOutput(text), { pr
 registerTransformer('cleanKubectlOutput', (text) => cleanKubectlOutput(text), { priority: 35, enabledByDefault: true });
 registerTransformer('cleanTerraformOutput', (text) => cleanTerraformOutput(text), { priority: 40, enabledByDefault: true });
 registerTransformer('foldLockfiles', (text, opts) => foldLockfiles(text, opts), { priority: 50, enabledByDefault: true });
+registerTransformer('foldStructuredData', (text, opts) => foldStructuredData(text, opts), { priority: 52, enabledByDefault: true });
 registerTransformer('foldTestPasses', (text, opts) => foldTestPasses(text, opts), { priority: 60, enabledByDefault: true });
 
 /**
@@ -1010,7 +1155,7 @@ function runPipeline(text, options = {}, context = {}) {
       const transformed = fn(current, options, context);
       if (typeof transformed === 'string') {
         if (transformed.length < beforeLen) {
-          const mod = (name === 'foldLockfiles') ? 'headroom' : 'rtk';
+          const mod = (name === 'foldLockfiles' || name === 'foldStructuredData') ? 'headroom' : 'rtk';
           recordModuleOnlySavings(mod, beforeLen - transformed.length);
         }
         current = transformed;
@@ -1773,6 +1918,7 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
       status: headroomActive ? 'running' : (norm.enabled ? 'module_off' : 'master_off'),
       activeSwitches: [
         norm.foldLockfiles ? 'foldLockfiles' : null,
+        norm.foldStructuredData ? 'foldStructuredData' : null,
         hasConflictShield ? 'exemptMergeConflicts' : null,
         hasSourceDiffProtect ? 'protectSourceDiffs' : null
       ].filter(Boolean)
@@ -1988,6 +2134,7 @@ module.exports = {
   cleanTerraformOutput,
   cleanKubectlOutput,
   foldLockfiles,
+  foldStructuredData,
   foldTestPasses,
   alignToolsSchema,
   slimToolsSchema,

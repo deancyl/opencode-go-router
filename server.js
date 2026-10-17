@@ -1267,7 +1267,11 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
   };
 
+  let clientErrorHandler = null;
   const clientCloseHandler = () => {
+    if (clientErrorHandler) {
+      clientRes.removeListener('error', clientErrorHandler);
+    }
     if (!clientRes.writableEnded) {
       clientAborted = true;
       if (!proxyReq.destroyed) {
@@ -1280,7 +1284,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     finishRequest();
   };
 
+  clientErrorHandler = (err) => {
+    clientCloseHandler();
+  };
+
   clientRes.once('close', clientCloseHandler);
+  clientRes.on('error', clientErrorHandler);
 
   proxyReq.on('timeout', () => {
     console.error(`[Upstream Timeout] Request to ${account.name} timed out after 300s`);
@@ -1603,7 +1612,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
   };
 
+  let clientErrorHandler = null;
   const clientCloseHandler = () => {
+    if (clientErrorHandler) {
+      clientRes.removeListener('error', clientErrorHandler);
+    }
     if (!clientRes.writableEnded) {
       clientAborted = true;
       if (!proxyReq.destroyed) {
@@ -1616,7 +1629,12 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     finishRequest();
   };
 
+  clientErrorHandler = (err) => {
+    clientCloseHandler();
+  };
+
   clientRes.once('close', clientCloseHandler);
+  clientRes.on('error', clientErrorHandler);
 
   proxyReq.on('timeout', () => {
     console.error(`[Bridge Timeout] Upstream chat request for model "${reqModel}" timed out after 300s`);
@@ -1936,7 +1954,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     }
   };
 
+  let clientErrorHandler = null;
   const clientCloseHandler = () => {
+    if (clientErrorHandler) {
+      clientRes.removeListener('error', clientErrorHandler);
+    }
     if (!clientRes.writableEnded) {
       clientAborted = true;
       if (!proxyReq.destroyed) {
@@ -1949,7 +1971,12 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     finishRequest();
   };
 
+  clientErrorHandler = (err) => {
+    clientCloseHandler();
+  };
+
   clientRes.once('close', clientCloseHandler);
+  clientRes.on('error', clientErrorHandler);
 
   proxyReq.on('timeout', () => {
     console.error(`[Bridge Timeout] Upstream Anthropic request for model "${reqModel}" timed out after 300s`);
@@ -2786,6 +2813,22 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     }
   } catch (e) {}
 
+  // 8.5 Check OpenCode 2.0 Credential & Daemon Key Health (Anti-Invalid Credential)
+  try {
+    const updater = require('./updater');
+    let validApiKey = '';
+    const validAccount = config.accounts && config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+    if (validAccount) validApiKey = validAccount.apiKey.trim();
+    const credStatus = updater.checkOpenCodeCredentials(validApiKey);
+    report.opencodeCredentials = credStatus;
+    if (report.opencode) {
+      report.opencode.credentials = credStatus;
+    }
+    if (scope === 'all' && credStatus.issues && credStatus.issues.length > 0) {
+      report.issues.push(...credStatus.issues);
+    }
+  } catch (e) {}
+
   return report;
 }
 
@@ -2907,6 +2950,24 @@ async function executeSystemRepair(options = {}) {
     });
   } catch (e) {
     results.push({ item: 'OpenCode Config', success: false, message: '修复 opencode.jsonc 失败: ' + e.message });
+  }
+
+  // 2.1 Sync & Activate OpenCode 2.0 Credentials in opencode.db / auth.json and daemon environment
+  try {
+    const updater = require('./updater');
+    let validApiKey = '';
+    const validAccount = config.accounts && config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+    if (validAccount) validApiKey = validAccount.apiKey.trim();
+    if (validApiKey) {
+      const repRes = updater.repairOpenCodeCredentials(validApiKey);
+      results.push({
+        item: 'OpenCode Credential & Daemon Key',
+        success: repRes.success,
+        message: repRes.message || '已增量激活 OpenCode 原生凭据与守护进程环境变量'
+      });
+    }
+  } catch (credErr) {
+    results.push({ item: 'OpenCode Credential & Daemon Key', success: false, message: '修复 OpenCode 原生凭据异常: ' + credErr.message });
   }
 
   // 2.5 Auto-Patch OMO v2 Compatibility & Clean Deadlocks
@@ -3688,6 +3749,13 @@ const server = http.createServer((req, res) => {
               if (payload.compression.foldLockfiles !== undefined && mergedModules.headroom) {
                 mergedModules.headroom.foldLockfiles = Boolean(payload.compression.foldLockfiles);
               }
+              if (payload.compression.foldStructuredData !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.foldStructuredData = Boolean(payload.compression.foldStructuredData);
+              }
+              if (payload.compression.maxStructuredItems !== undefined && mergedModules.headroom) {
+                const val = Number(payload.compression.maxStructuredItems);
+                mergedModules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 30;
+              }
               if (payload.compression.exemptMergeConflicts !== undefined && mergedModules.headroom) {
                 mergedModules.headroom.exemptMergeConflicts = Boolean(payload.compression.exemptMergeConflicts);
               }
@@ -3717,7 +3785,7 @@ const server = http.createServer((req, res) => {
               modules: mergedModules || undefined
             };
             for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
-                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
                             'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
                             'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
                             'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
@@ -5405,7 +5473,7 @@ function renderDashboardHtml(config) {
                 </div>
               </div>
             </div>
-            <div class="comp-module-desc">针对 Git Diff 中的超长依赖锁定文件提供安全摘要折叠，保全代码行号与冲突防御。</div>
+            <div class="comp-module-desc">针对超大结构化数据与 Git Diff 中的锁定文件提供安全摘要折叠，保全代码行号与冲突防御。</div>
             <div class="comp-module-body" id="module-body-headroom">
               <div class="comp-sub-item">
                 <label class="switch-label">
@@ -5413,6 +5481,13 @@ function renderDashboardHtml(config) {
                   <span>依赖锁定文件 Diff 安全折叠 (foldLockfiles)</span>
                 </label>
                 <div class="sub-tip">折叠 package-lock/yarn/pnpm/Cargo/uv 等超大锁定文件，节省海量 Token</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-fold-structured" ${(mCfg.headroom && mCfg.headroom.foldStructuredData !== false && compCfg.foldStructuredData !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>超长同构 JSON 数组结构摘要折叠 (SmartCrusher / foldStructuredData)</span>
+                </label>
+                <div class="sub-tip">针对工具返回的超大 JSON 列表（&gt; 30 项）智能提取首尾切片与结构摘要，海量节省日常推理 Token</div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
@@ -5443,7 +5518,7 @@ function renderDashboardHtml(config) {
               <div class="comp-module-header-right">
                 <span class="badge ${(mCfg.schema && mCfg.schema.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-schema">${(mCfg.schema && mCfg.schema.enabled === false) ? '已停用/旁路' : '运行中'}</span>
                 <div class="comp-module-contrib">
-                  <span class="contrib-text" id="contrib-text-schema">贡献度: 0% · 0 Tokens</span>
+                  <span class="contrib-text" id="contrib-text-schema">🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)</span>
                   <div class="comp-progress-bar">
                     <div class="comp-progress-fill" id="progress-fill-schema" style="width: 0%;"></div>
                   </div>
@@ -5470,6 +5545,7 @@ function renderDashboardHtml(config) {
                 <div>
                   <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 500;">瘦身触发字符阈值 (schemaCharThreshold)</span>
                   <div class="sub-tip">当 tools 总序列化长度超过该字符阈值时自动触发深度瘦身</div>
+                  <div class="sub-tip" style="margin-top: 4px; color: #94a3b8; font-size: 0.78rem;">💡 门限引导：tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀，享受上游极速缓存命中与零损耗；仅在超巨型 tools &gt; 15,000 字符时自动触发 Schema 深度瘦身削减冗余描述。</div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
                   <input type="number" id="cfg-comp-threshold" class="form-control" style="width: 100px; text-align: right; padding: 4px 8px; font-size: 0.85rem;" value="${(mCfg.schema && mCfg.schema.schemaCharThreshold) || compCfg.schemaCharThreshold || 15000}" min="1000" step="1000" onchange="handleSubOptionChange()">
@@ -5630,6 +5706,7 @@ function renderDashboardHtml(config) {
 
         setCheck('cfg-module-headroom-enabled', true);
         setCheck('cfg-comp-fold-lockfiles', true);
+        setCheck('cfg-comp-fold-structured', true);
         setCheck('cfg-comp-exempt-conflicts', true);
         setCheck('cfg-comp-protect-diffs', true);
 
@@ -5650,6 +5727,7 @@ function renderDashboardHtml(config) {
 
         setCheck('cfg-module-headroom-enabled', true);
         setCheck('cfg-comp-fold-lockfiles', true);
+        setCheck('cfg-comp-fold-structured', true);
         setCheck('cfg-comp-exempt-conflicts', true);
         setCheck('cfg-comp-protect-diffs', true);
 
@@ -5670,6 +5748,7 @@ function renderDashboardHtml(config) {
 
         setCheck('cfg-module-headroom-enabled', false);
         setCheck('cfg-comp-fold-lockfiles', false);
+        setCheck('cfg-comp-fold-structured', false);
         setCheck('cfg-comp-exempt-conflicts', true);
         setCheck('cfg-comp-protect-diffs', true);
 
@@ -5708,6 +5787,7 @@ function renderDashboardHtml(config) {
 
       const isHeadroom = getChecked('cfg-module-headroom-enabled');
       const isLock = getChecked('cfg-comp-fold-lockfiles');
+      const isStruct = getChecked('cfg-comp-fold-structured');
 
       const isSchema = getChecked('cfg-module-schema-enabled');
       const isAlign = getChecked('cfg-comp-align-schema');
@@ -5717,11 +5797,11 @@ function renderDashboardHtml(config) {
       const isCacheZone = getChecked('cfg-module-cachezone-enabled');
       const isFreeze = getChecked('cfg-comp-cache-freeze');
 
-      if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isSchema && isAlign && isSlim && threshold === 15000 && isCacheZone && isFreeze) {
+      if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 15000 && isCacheZone && isFreeze) {
         setPresetUI('balanced');
-      } else if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isSchema && isAlign && isSlim && threshold === 8000 && isCacheZone && isFreeze) {
+      } else if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 8000 && isCacheZone && isFreeze) {
         setPresetUI('aggressive');
-      } else if (isRtk && isStrip && isClean && !isTests && !isDevops && !isHeadroom && !isLock && isSchema && isAlign && !isSlim && threshold === 15000 && !isCacheZone && !isFreeze) {
+      } else if (isRtk && isStrip && isClean && !isTests && !isDevops && !isHeadroom && !isLock && !isStruct && isSchema && isAlign && !isSlim && threshold === 15000 && !isCacheZone && !isFreeze) {
         setPresetUI('conservative');
       } else {
         setPresetUI('custom');
@@ -5762,7 +5842,11 @@ function renderDashboardHtml(config) {
             const textEl = document.getElementById('contrib-text-' + mod);
             const fillEl = document.getElementById('progress-fill-' + mod);
             if (textEl) {
-              textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens';
+              if (mod === 'schema' && (m.savedTokens || 0) === 0) {
+                textEl.innerText = '🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)';
+              } else {
+                textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens';
+              }
             }
             if (fillEl) {
               fillEl.style.width = Math.min(100, Math.max(0, m.percentage || 0)) + '%';
@@ -6277,6 +6361,9 @@ function renderDashboardHtml(config) {
           if (document.getElementById('cfg-comp-fold-lockfiles')) {
             document.getElementById('cfg-comp-fold-lockfiles').checked = (m.headroom ? m.headroom.foldLockfiles !== false : comp.foldLockfiles !== false);
           }
+          if (document.getElementById('cfg-comp-fold-structured')) {
+            document.getElementById('cfg-comp-fold-structured').checked = (m.headroom ? m.headroom.foldStructuredData !== false : comp.foldStructuredData !== false);
+          }
           if (document.getElementById('cfg-comp-exempt-conflicts')) {
             document.getElementById('cfg-comp-exempt-conflicts').checked = (m.headroom ? m.headroom.exemptMergeConflicts !== false : comp.exemptMergeConflicts !== false);
           }
@@ -6678,6 +6765,7 @@ function renderDashboardHtml(config) {
 
       const headroomEnabled = document.getElementById('cfg-module-headroom-enabled') ? document.getElementById('cfg-module-headroom-enabled').checked : true;
       const compFoldLockfiles = document.getElementById('cfg-comp-fold-lockfiles') ? document.getElementById('cfg-comp-fold-lockfiles').checked : true;
+      const compFoldStructured = document.getElementById('cfg-comp-fold-structured') ? document.getElementById('cfg-comp-fold-structured').checked : true;
       const compExemptConflicts = document.getElementById('cfg-comp-exempt-conflicts') ? document.getElementById('cfg-comp-exempt-conflicts').checked : true;
       const compProtectDiffs = document.getElementById('cfg-comp-protect-diffs') ? document.getElementById('cfg-comp-protect-diffs').checked : true;
 
@@ -6704,6 +6792,7 @@ function renderDashboardHtml(config) {
           headroom: {
             enabled: headroomEnabled,
             foldLockfiles: compFoldLockfiles,
+            foldStructuredData: compFoldStructured,
             exemptMergeConflicts: compExemptConflicts,
             protectSourceDiffs: compProtectDiffs
           },
@@ -6727,6 +6816,7 @@ function renderDashboardHtml(config) {
         cleanKubectlOutput: (compEnabled && rtkEnabled) ? compCleanDevOps : false,
         cleanTerraformOutput: (compEnabled && rtkEnabled) ? compCleanDevOps : false,
         foldLockfiles: (compEnabled && headroomEnabled) ? compFoldLockfiles : false,
+        foldStructuredData: (compEnabled && headroomEnabled) ? compFoldStructured : false,
         exemptMergeConflicts: compExemptConflicts,
         protectSourceDiffs: compProtectDiffs,
         alignToolsSchema: (compEnabled && schemaEnabled) ? compAlignSchema : false,
