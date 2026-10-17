@@ -423,11 +423,47 @@ const OPENCODE_GO_MODEL_RATES = {
 
 const dynamicModelRates = { ...OPENCODE_GO_MODEL_RATES };
 
+const MAX_BY_MODEL_ENTRIES = 120;
+
+function pruneByModelEntriesIfNeeded() {
+  if (!compressionStats.byModel) return;
+  const entries = Object.entries(compressionStats.byModel);
+  if (entries.length <= MAX_BY_MODEL_ENTRIES) return;
+
+  // Evict lowest-contributing non-official models first
+  entries.sort((a, b) => {
+    const aIsOfficial = a[0] in OPENCODE_GO_MODEL_RATES;
+    const bIsOfficial = b[0] in OPENCODE_GO_MODEL_RATES;
+    if (aIsOfficial !== bIsOfficial) {
+      return aIsOfficial ? 1 : -1; // non-official comes first (eviction priority)
+    }
+    return (a[1].savedCostUSD || 0) - (b[1].savedCostUSD || 0) || (a[1].savedTokens || 0) - (b[1].savedTokens || 0);
+  });
+
+  while (Object.keys(compressionStats.byModel).length > MAX_BY_MODEL_ENTRIES && entries.length > 0) {
+    const toRemove = entries.shift();
+    if (toRemove) {
+      delete compressionStats.byModel[toRemove[0]];
+    }
+  }
+}
+
 function normalizeModelName(rawModel) {
   if (!rawModel || typeof rawModel !== 'string') return null;
   let clean = rawModel.trim().toLowerCase();
+  clean = clean.replace(/\\/g, '/');
   if (clean.includes('/')) {
     clean = clean.split('/').pop().trim();
+  }
+  // Strip tags, query parameters, colons or version at-signs (e.g. :free, :latest, @2026-03, ?cache=1)
+  if (clean.includes(':')) {
+    clean = clean.split(':')[0].trim();
+  }
+  if (clean.includes('@')) {
+    clean = clean.split('@')[0].trim();
+  }
+  if (clean.includes('?')) {
+    clean = clean.split('?')[0].trim();
   }
   return clean || null;
 }
@@ -438,8 +474,10 @@ function getModelRate(rawModel) {
   if (typeof dynamicModelRates[model] === 'number') {
     return dynamicModelRates[model];
   }
-  for (const [key, rate] of Object.entries(dynamicModelRates)) {
-    if (model === key || model.startsWith(key + '-') || key.startsWith(model + '-')) {
+  // Longest-prefix match (LPM) on candidate keys sorted by length descending
+  const sortedEntries = Object.entries(dynamicModelRates).sort((a, b) => b[0].length - a[0].length);
+  for (const [key, rate] of sortedEntries) {
+    if (model === key || model.startsWith(key + '-') || (model.length >= 3 && key.startsWith(model + '-'))) {
       return rate;
     }
   }
@@ -448,11 +486,20 @@ function getModelRate(rawModel) {
 
 function updateModelRates(newRates) {
   if (!newRates || typeof newRates !== 'object') return dynamicModelRates;
+  let updatedAny = false;
   for (const [rawModel, rate] of Object.entries(newRates)) {
     const clean = normalizeModelName(rawModel);
     if (clean && typeof rate === 'number' && rate > 0) {
       dynamicModelRates[clean] = rate;
+      if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
+        compressionStats.byModel[clean].ratePer1M = rate;
+        updatedAny = true;
+      }
     }
+  }
+  if (updatedAny) {
+    computeDerivedStats(compressionStats);
+    persistStatsThrottled();
   }
   return dynamicModelRates;
 }
@@ -464,71 +511,113 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
   try {
     let p = port;
     let pwd = password;
-    if (!p) {
+    let desktopPort = null;
+    let sInfo = null;
+
+    try {
+      const updater = require('./updater');
+      sInfo = updater.detectOpenCodeServiceInfo();
+      if (sInfo) {
+        if (!p && sInfo.port) p = sInfo.port;
+        if (!pwd && sInfo.password) pwd = sInfo.password;
+      }
+    } catch (_) {}
+
+    try {
+      const sPath = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+      if (fs.existsSync(sPath)) {
+        const s = JSON.parse(fs.readFileSync(sPath, 'utf8'));
+        if (s.desktopLocalPort) desktopPort = s.desktopLocalPort;
+        if (!pwd && s.opencodePassword) pwd = s.opencodePassword;
+      }
+    } catch (_) {}
+
+    if (!pwd) {
       try {
-        const updater = require('./updater');
-        const sInfo = updater.detectOpenCodeServiceInfo();
-        if (sInfo && sInfo.port) {
-          p = sInfo.port;
-          pwd = pwd || sInfo.password;
+        const ocServicePath = path.join(os.homedir(), '.config', 'opencode', 'service.json');
+        if (fs.existsSync(ocServicePath)) {
+          const ocService = JSON.parse(fs.readFileSync(ocServicePath, 'utf8'));
+          if (ocService.password) pwd = ocService.password;
         }
       } catch (_) {}
     }
-    if (!p) p = process.platform === 'linux' ? 4096 : 3000;
+
+    if (!pwd && process.env.OPENCODE_PASSWORD) {
+      pwd = process.env.OPENCODE_PASSWORD;
+    }
+
+    const portsToTry = port
+      ? [port]
+      : Array.from(new Set([desktopPort, p, process.platform === 'linux' ? 4096 : 3000].filter(Boolean)));
 
     const http = require('node:http');
-    return new Promise((resolve) => {
-      const headers = { 'User-Agent': 'opencode-go-router-compactor' };
-      if (pwd) {
-        headers['Authorization'] = `Basic ${Buffer.from('opencode:' + pwd).toString('base64')}`;
-      }
-      const req = http.request({
-        host: '127.0.0.1',
-        port: p,
-        path: '/api/model',
-        method: 'GET',
-        headers,
-        timeout: 2500
-      }, (res) => {
-        let raw = '';
-        res.on('data', chunk => raw += chunk);
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const data = JSON.parse(raw);
-              let modelsList = [];
-              if (Array.isArray(data)) modelsList = data;
-              else if (Array.isArray(data.models)) modelsList = data.models;
-              else if (data && typeof data === 'object') {
-                for (const val of Object.values(data)) {
-                  if (Array.isArray(val)) modelsList.push(...val);
-                  else if (val && typeof val === 'object' && (val.id || val.cost)) modelsList.push(val);
+
+    const tryFetchPort = (targetPort) => {
+      return new Promise((resolve) => {
+        const headers = { 'User-Agent': 'opencode-go-router-compactor' };
+        if (pwd) {
+          headers['Authorization'] = `Basic ${Buffer.from('opencode:' + pwd).toString('base64')}`;
+        }
+        const req = http.request({
+          host: '127.0.0.1',
+          port: targetPort,
+          path: '/api/model',
+          method: 'GET',
+          headers,
+          timeout: 2500
+        }, (res) => {
+          let raw = '';
+          res.on('data', chunk => raw += chunk);
+          res.on('end', () => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                const data = JSON.parse(raw);
+                let modelsList = [];
+                if (Array.isArray(data)) modelsList = data;
+                else if (Array.isArray(data.data)) modelsList = data.data;
+                else if (Array.isArray(data.models)) modelsList = data.models;
+                else if (data && typeof data === 'object') {
+                  for (const val of Object.values(data)) {
+                    if (Array.isArray(val)) modelsList.push(...val);
+                    else if (val && typeof val === 'object' && (val.id || val.cost)) modelsList.push(val);
+                  }
                 }
-              }
-              const fetchedRates = {};
-              for (const m of modelsList) {
-                if (!m || typeof m !== 'object') continue;
-                const mId = m.id || m.name || m.slug;
-                const rawCost = m.cost?.input ?? m.pricing?.input ?? m.input_cost_per_million ?? m.cost?.prompt;
-                if (mId && typeof rawCost === 'number' && rawCost > 0) {
-                  const r = rawCost < 0.005 ? Number((rawCost * 1000000).toFixed(4)) : Number(rawCost.toFixed(4));
-                  const cleanId = normalizeModelName(mId);
-                  if (cleanId) fetchedRates[cleanId] = r;
+                const fetchedRates = {};
+                for (const m of modelsList) {
+                  if (!m || typeof m !== 'object') continue;
+                  const mId = m.id || m.name || m.slug;
+                  const costObj = (Array.isArray(m.cost) ? m.cost[0] : m.cost) || {};
+                  const pricingObj = (Array.isArray(m.pricing) ? m.pricing[0] : m.pricing) || {};
+                  const rawCost = costObj.input ?? pricingObj.input ?? m.input_cost_per_million ?? costObj.prompt ?? pricingObj.prompt ?? m.cost_per_million_input;
+                  const numCost = typeof rawCost === 'number' ? rawCost : (typeof rawCost === 'string' ? parseFloat(rawCost.replace(/[^0-9.]/g, '')) : null);
+                  if (mId && numCost !== null && !isNaN(numCost) && numCost > 0) {
+                    const r = numCost < 0.005 ? Number((numCost * 1000000).toFixed(4)) : Number(numCost.toFixed(4));
+                    const cleanId = normalizeModelName(mId);
+                    if (cleanId) fetchedRates[cleanId] = r;
+                  }
                 }
-              }
-              if (Object.keys(fetchedRates).length > 0) {
-                updateModelRates(fetchedRates);
-                return resolve({ success: true, count: Object.keys(fetchedRates).length, rates: fetchedRates });
-              }
-            } catch (_) {}
-          }
-          resolve({ success: false, reason: `HTTP ${res.statusCode}` });
+                if (Object.keys(fetchedRates).length > 0) {
+                  updateModelRates(fetchedRates);
+                  return resolve({ success: true, count: Object.keys(fetchedRates).length, rates: fetchedRates, port: targetPort });
+                }
+              } catch (_) {}
+            }
+            resolve({ success: false, reason: `HTTP ${res.statusCode}` });
+          });
         });
+        req.on('error', () => resolve({ success: false, reason: 'unreachable' }));
+        req.on('timeout', () => { req.destroy(); resolve({ success: false, reason: 'timeout' }); });
+        req.end();
       });
-      req.on('error', () => resolve({ success: false, reason: 'unreachable' }));
-      req.on('timeout', () => { req.destroy(); resolve({ success: false, reason: 'timeout' }); });
-      req.end();
-    });
+    };
+
+    for (const testPort of portsToTry) {
+      const fetchRes = await tryFetchPort(testPort);
+      if (fetchRes && fetchRes.success) {
+        return fetchRes;
+      }
+    }
+    return { success: false, reason: 'No responding model service endpoint' };
   } catch (e) {
     return { success: false, reason: e.message };
   }
@@ -566,6 +655,7 @@ function computeDerivedStats(stats) {
 
   // Compute byModel telemetry and dynamic weighted savedCostUSD
   stats.byModel = stats.byModel || {};
+  pruneByModelEntriesIfNeeded();
   let modelTokensSum = 0;
   let modelCostSum = 0;
 
@@ -574,7 +664,8 @@ function computeDerivedStats(stats) {
     data.savedChars = Number(data.savedChars) || 0;
     data.originalChars = Number(data.originalChars) || 0;
     data.savedTokens = Math.round(data.savedChars / 3.8);
-    data.ratePer1M = typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(m);
+    const officialRate = getModelRate(m);
+    data.ratePer1M = (officialRate !== DEFAULT_MODEL_RATE_PER_1M || typeof data.ratePer1M !== 'number') ? officialRate : data.ratePer1M;
     data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
     modelTokensSum += data.savedTokens;
     modelCostSum += data.savedCostUSD;
@@ -708,6 +799,7 @@ function recordModelSavings(modelName, savedChars, originalChars = 0) {
   entry.savedTokens = Math.round(entry.savedChars / 3.8);
   entry.ratePer1M = getModelRate(model);
   entry.savedCostUSD = Number(((entry.savedTokens / 1000000) * entry.ratePer1M).toFixed(7));
+  pruneByModelEntriesIfNeeded();
 }
 
 function recordModuleOnlySavings(moduleName, deltaChars) {
@@ -753,6 +845,10 @@ function getCompressionStats() {
 }
 
 function resetCompressionStats() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
   compressionStats = {
     totalOriginalChars: 0,
     totalCompressedChars: 0,
@@ -1737,7 +1833,8 @@ function runPipeline(text, options = {}, context = {}) {
           if (context && context.moduleDeltas) {
             context.moduleDeltas[mod] = (context.moduleDeltas[mod] || 0) + savedChars;
           } else {
-            recordSavings(mod, savedChars, beforeLen);
+            const modelName = normalizeModelName(options.model || (context && context.model) || null);
+            recordSavings(mod, savedChars, beforeLen, modelName);
           }
         }
         current = transformed;
@@ -2941,6 +3038,8 @@ module.exports = {
   checkCompressionHealth,
   repairCompressionConfig,
   DEFAULT_MODEL_RATE_PER_1M,
+  MAX_BY_MODEL_ENTRIES,
+  pruneByModelEntriesIfNeeded,
   OPENCODE_GO_MODEL_RATES,
   dynamicModelRates,
   normalizeModelName,

@@ -6261,10 +6261,39 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(stats138.byModel['unknown-custom-model-x'], 'byModel must contain unknown-custom-model-x');
     assert.strictEqual(stats138.byModel['unknown-custom-model-x'].ratePer1M, 0.25, 'Unknown model rate must fallback to 0.25');
 
-    // 2e. Assert dynamic weighted sum: total savedCostUSD strictly equals sum of model saved costs
-    const expectedWeightedSum = Object.values(stats138.byModel).reduce((sum, m) => sum + m.savedCostUSD, 0);
-    assert.strictEqual(stats138.savedCostUSD, Number(expectedWeightedSum.toFixed(6)), 'totalSavedCostUSD must strictly match weighted sum of all models');
-    console.log(`✓ Engine level per-model savings & dynamic weighted cost verified (${Object.keys(stats138.byModel).length} models tracked, totalSavedCost: $${stats138.savedCostUSD})`);
+    // 2e. Assert model tag and delimiter normalization
+    assert.strictEqual(contextCompactor.getModelRate('deepseek-v4.1-flash:free'), 0.14, 'Colon tag :free must normalize to 0.14');
+    assert.strictEqual(contextCompactor.getModelRate('claude-haiku-5-5:latest'), 1.25, 'Colon tag :latest must normalize to 1.25');
+    assert.strictEqual(contextCompactor.getModelRate('deepseek-v4-pro@2026-03'), 0.55, 'At-version @ tag must normalize to 0.55');
+    assert.strictEqual(contextCompactor.getModelRate('opencode-go\\deepseek-v4.1-flash'), 0.14, 'Backslash path must normalize to 0.14');
+
+    // 2f. Assert direct runPipeline with model attribution
+    contextCompactor.runPipeline('\u001b[32m' + 'Log output with green ANSI '.repeat(20) + '\u001b[0m', { enabled: true, model: 'glm-5.3-flash' });
+    stats138 = contextCompactor.getCompressionStats();
+    assert.ok(stats138.byModel['glm-5.3-flash'], 'runPipeline must attribute savings to glm-5.3-flash');
+    assert.strictEqual(stats138.byModel['glm-5.3-flash'].ratePer1M, 0.10, 'glm-5.3-flash rate must be 0.10');
+
+    // 2g. Assert updateModelRates dynamically refreshes existing byModel rates & cost
+    contextCompactor.updateModelRates({ 'glm-5.3-flash': 0.12 });
+    stats138 = contextCompactor.getCompressionStats();
+    assert.strictEqual(stats138.byModel['glm-5.3-flash'].ratePer1M, 0.12, 'byModel rate must dynamically update to 0.12');
+    contextCompactor.updateModelRates({ 'glm-5.3-flash': 0.10 }); // restore official
+
+    // 2h. Assert bounded byModel dictionary (DoS resistance)
+    for (let i = 0; i < 150; i++) {
+      contextCompactor.recordModelSavings('eval-rand-model-' + i, 100, 100);
+    }
+    stats138 = contextCompactor.getCompressionStats();
+    assert.ok(Object.keys(stats138.byModel).length <= contextCompactor.MAX_BY_MODEL_ENTRIES, `byModel must be bounded under ${contextCompactor.MAX_BY_MODEL_ENTRIES}`);
+    assert.ok(stats138.byModel['deepseek-v4.1-flash'], 'Official model deepseek-v4.1-flash must never be evicted');
+    assert.ok(stats138.byModel['claude-haiku-5-5'], 'Official model claude-haiku-5-5 must never be evicted');
+
+    // 2i. Assert dynamic weighted sum: total savedCostUSD strictly equals sum of model saved costs + unassigned
+    const expectedModelSum = Object.values(stats138.byModel).reduce((sum, m) => sum + m.savedCostUSD, 0);
+    const expectedModelTokens = Object.values(stats138.byModel).reduce((sum, m) => sum + m.savedTokens, 0);
+    const expectedUnassignedCost = (Math.max(0, stats138.savedTokens - expectedModelTokens) / 1000000) * contextCompactor.DEFAULT_MODEL_RATE_PER_1M;
+    assert.strictEqual(stats138.savedCostUSD, Number((expectedModelSum + expectedUnassignedCost).toFixed(6)), 'totalSavedCostUSD must strictly match weighted sum of all models and unassigned baseline');
+    console.log(`✓ Engine level per-model savings, tag normalization, DoS bounding & dynamic weighted cost verified (${Object.keys(stats138.byModel).length} models tracked, totalSavedCost: $${stats138.savedCostUSD})`);
 
     // 3. End-to-end HTTP pipeline requests through router
     await request('/balancer/api/compression/stats/reset', { method: 'POST' });

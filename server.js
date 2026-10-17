@@ -5237,7 +5237,8 @@ function renderDashboardHtml(config) {
             tbody.innerHTML = byModelEntries.map(([m, mData]) => {
               const costVal = Number(mData.savedCostUSD || 0);
               const costStr = costVal < 0.0001 && costVal > 0 ? costVal.toFixed(7) : costVal.toFixed(6);
-              const rateStr = Number(mData.ratePer1M || 0).toFixed(2);
+              const rateVal = Number(mData.ratePer1M || 0);
+              const rateStr = (rateVal > 0 && rateVal < 0.01) ? rateVal.toFixed(4) : (rateVal % 0.01 !== 0 && rateVal < 1 ? rateVal.toFixed(3) : rateVal.toFixed(2));
               const origStr = Number(mData.originalChars || 0).toLocaleString();
               const tokensStr = Number(mData.savedTokens || 0).toLocaleString();
               return '<tr style="border-bottom: 1px solid #1e293b; transition: background 0.15s;">' +

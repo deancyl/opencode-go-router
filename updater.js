@@ -2425,6 +2425,18 @@ function detectOpenCodeServiceInfo() {
     }
   }
 
+  // 3.5 Check native opencode service.json
+  if (!password) {
+    try {
+      const ocServicePath = path.join(os.homedir(), '.config', 'opencode', 'service.json');
+      if (fs.existsSync(ocServicePath)) {
+        const ocService = JSON.parse(fs.readFileSync(ocServicePath, 'utf8'));
+        if (ocService.password) password = ocService.password;
+        if (ocService.port && !port) port = ocService.port;
+      }
+    } catch (_) {}
+  }
+
   // 4. Environment variables
   if (!port && process.env.OPENCODE_PORT) {
     port = parseInt(process.env.OPENCODE_PORT, 10);
