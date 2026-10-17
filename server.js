@@ -3816,6 +3816,8 @@ function renderDashboardHtml(config) {
     :root {
       --bg: #0b1120;
       --card-bg: #1e293b;
+      --sidebar-bg: #0f172a;
+      --sidebar-border: #1e293b;
       --border: #334155;
       --primary: #38bdf8;
       --primary-hover: #0284c7;
@@ -3831,10 +3833,322 @@ function renderDashboardHtml(config) {
       background: var(--bg);
       color: var(--text);
       margin: 0;
-      padding: 1.5rem;
+      padding: 0;
       line-height: 1.5;
+      overflow-x: hidden;
     }
-    .container { max-width: 1040px; margin: 0 auto; }
+    .app-layout {
+      display: flex;
+      min-height: 100vh;
+      width: 100%;
+    }
+    .app-sidebar {
+      width: 240px;
+      height: 100vh;
+      position: fixed;
+      left: 0;
+      top: 0;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--sidebar-border);
+      display: flex;
+      flex-direction: column;
+      z-index: 100;
+      transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), left 0.25s ease;
+      box-shadow: 2px 0 12px rgba(0,0,0,0.25);
+    }
+    .sidebar-header {
+      padding: 16px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--sidebar-border);
+      min-height: 64px;
+    }
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow: hidden;
+      text-decoration: none;
+    }
+    .sidebar-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      box-shadow: 0 0 14px rgba(16,185,129,0.35);
+      flex-shrink: 0;
+    }
+    .sidebar-title-box {
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .sidebar-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      line-height: 1.2;
+    }
+    .sidebar-subtitle {
+      font-size: 0.72rem;
+      color: var(--primary);
+      font-weight: 500;
+    }
+    .sidebar-collapse-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 4px 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sidebar-collapse-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+    .sidebar-version-badge {
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.6);
+      border-bottom: 1px solid rgba(51, 65, 85, 0.35);
+      font-size: 0.75rem;
+    }
+    .sidebar-nav {
+      flex: 1;
+      padding: 12px 8px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 8px;
+      color: #94a3b8;
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: all 0.18s ease;
+      position: relative;
+      user-select: none;
+    }
+    .nav-item:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: #f1f5f9;
+      transform: translateX(2px);
+    }
+    .nav-item.active {
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.18) 0%, rgba(56, 189, 248, 0.05) 100%);
+      color: #38bdf8;
+      font-weight: 600;
+      border-left: 3px solid #38bdf8;
+      box-shadow: inset 0 0 12px rgba(56, 189, 248, 0.08);
+    }
+    .nav-icon {
+      font-size: 1.15rem;
+      flex-shrink: 0;
+      width: 22px;
+      text-align: center;
+    }
+    .nav-label {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .nav-badge {
+      font-size: 0.7rem;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      background: rgba(56, 189, 248, 0.15);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      white-space: nowrap;
+    }
+    .sidebar-footer {
+      padding: 12px 14px;
+      border-top: 1px solid var(--sidebar-border);
+      background: rgba(15, 23, 42, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .sidebar-host-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.76rem;
+      color: var(--muted);
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .status-indicator {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #34d399;
+      box-shadow: 0 0 6px #34d399;
+      flex-shrink: 0;
+    }
+    .sidebar-logout-btn {
+      padding: 2px 8px;
+      font-size: 0.75rem;
+    }
+
+    /* Collapsed Sidebar Mode */
+    body.sidebar-collapsed .app-sidebar {
+      width: 68px;
+    }
+    body.sidebar-collapsed .sidebar-title-box,
+    body.sidebar-collapsed .sidebar-subtitle,
+    body.sidebar-collapsed .sidebar-version-badge,
+    body.sidebar-collapsed .nav-label,
+    body.sidebar-collapsed .nav-badge,
+    body.sidebar-collapsed .sidebar-host-status .sidebar-port-label {
+      display: none !important;
+    }
+    body.sidebar-collapsed .sidebar-header {
+      justify-content: center;
+      padding: 14px 6px;
+    }
+    body.sidebar-collapsed .sidebar-collapse-btn .collapse-icon {
+      transform: rotate(180deg);
+    }
+    body.sidebar-collapsed .nav-item {
+      justify-content: center;
+      padding: 10px 0;
+    }
+    body.sidebar-collapsed .nav-icon {
+      margin: 0;
+    }
+    body.sidebar-collapsed .app-main {
+      margin-left: 68px;
+      width: calc(100% - 68px);
+    }
+
+    /* Main Content Area */
+    .app-main {
+      margin-left: 240px;
+      width: calc(100% - 240px);
+      min-height: 100vh;
+      padding: 1.5rem 2rem 3rem;
+      transition: margin-left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .container { max-width: 1160px; margin: 0 auto; }
+
+    /* Top Action Bar (Persistent) */
+    .top-action-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .top-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .current-route-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+    .route-icon { font-size: 1.3rem; }
+    .top-baseurl-box {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border);
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+    }
+    .top-baseurl-box code {
+      color: var(--primary);
+      font-family: monospace;
+    }
+    .baseurl-tag { color: var(--muted); }
+    .top-bar-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* View Sections (SPA Transitions) */
+    .view-section {
+      display: none;
+      animation: fadeInView 0.18s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+    .view-section.active {
+      display: block;
+    }
+    @keyframes fadeInView {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Mobile Header (Hidden on PC) */
+    .mobile-header {
+      display: none;
+      position: sticky;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 52px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+      padding: 0 12px;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 90;
+    }
+    .hamburger-btn {
+      background: transparent;
+      border: 1px solid #334155;
+      color: #f1f5f9;
+      font-size: 1.25rem;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .mobile-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      color: #f1f5f9;
+      font-size: 1rem;
+    }
+    .mobile-brand img { width: 28px; height: 28px; border-radius: 6px; }
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      z-index: 95;
+      backdrop-filter: blur(2px);
+    }
     header {
       display: flex;
       justify-content: space-between;
@@ -4350,59 +4664,211 @@ function renderDashboardHtml(config) {
 
     /* Responsive */
     @media (max-width: 768px) {
-      body { padding: 0.75rem; }
-      .container { max-width: 100%; }
-      .accounts-grid, .comp-modules-grid, .config-grid, .wizard-grid { grid-template-columns: 1fr; }
-      .header-actions { width: 100%; gap: 6px; }
-      .header-actions .btn { flex: 1 1 calc(50% - 6px); justify-content: center; font-size: 0.75rem; padding: 6px 8px; }
-      header { flex-direction: column; align-items: flex-start; }
+      .mobile-header { display: flex; }
+      .app-sidebar {
+        left: -270px;
+        width: 260px;
+        box-shadow: 4px 0 24px rgba(0,0,0,0.6);
+      }
+      .app-sidebar.drawer-open {
+        left: 0;
+      }
+      .sidebar-overlay.active {
+        display: block;
+      }
+      .app-main {
+        margin-left: 0 !important;
+        width: 100% !important;
+        padding: 0.85rem;
+      }
+      .top-action-bar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .top-bar-right {
+        width: 100%;
+        gap: 6px;
+      }
+      .top-bar-right .btn {
+        flex: 1 1 calc(50% - 6px);
+        justify-content: center;
+      }
+      .accounts-grid, .comp-modules-grid, .config-grid, .wizard-grid {
+        grid-template-columns: 1fr;
+      }
       .acc-title-input { width: 85%; }
       .banner { flex-direction: column; align-items: flex-start; }
     }
     @media (max-width: 420px) {
-      .header-actions .btn { flex: 1 1 100%; }
+      .top-bar-right .btn { flex: 1 1 100%; }
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <div class="title-group" style="display:flex; align-items:center; gap:14px;">
-        <img src="/assets/logo.png" alt="OpenCode Gateway Logo" style="width:48px; height:48px; border-radius:10px; box-shadow:0 0 18px rgba(16,185,129,0.35); flex-shrink:0;">
-        <div>
-          <h1 style="margin:0; font-size:1.45rem;">OpenCode 智能路由网关与调度中心</h1>
-          <p style="margin:3px 0 0 0;">原生专用双订阅智能路由与负载均衡 (本地端口: <strong>${config.port}</strong>)</p>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button id="btn-save-config" class="btn btn-primary btn-sm" onclick="saveConfig()" title="立即将当前账号与系统修改写入磁盘保存">💾 保存配置</button>
-        <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
-        <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()" title="测试所有订阅账号的连通性与响应速度">⚡ 全部测速</button>
-        <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas(false, true)" title="从官方实时穿透刷新 5小时/周/月限额">📊 刷新配额</button>
-        <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()" title="解除因 429 限频进入冷却的账号">🔄 重置限频</button>
-        <button class="btn btn-secondary btn-sm" onclick="checkUpdates()" title="在线检测生态各组件最新版本与兼容性状态">📦 检查更新</button>
-        <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')" title="全面扫描系统运行环境与后台死锁状态">🩺 一键体检</button>
-        <button class="btn btn-secondary btn-sm" onclick="bindCodexQuick()" title="一键将本地网关锁定为 OpenAI Codex 默认配置">🤖 接入 Codex</button>
-        <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logoutAdmin()" title="安全退出管理员会话" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出登录</button>
-      </div>
-    </header>
-
-    <div class="banner">
-      <div style="display:flex; flex-direction:column; gap:6px;">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <span class="pulse-dot" style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#34d399; box-shadow: 0 0 8px #34d399;"></span>
-          <strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。
-        </div>
-        <div style="font-size:0.83rem; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <span>🌐 智能网关端点 (Base URL): <code id="lbl-baseurl" style="color:var(--primary); font-family:monospace; background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;">http://127.0.0.1:${config.port}</code></span>
-          <button id="btn-copy-baseurl" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="copyBaseUrl()" title="复制智能网关端点 URL">📋 复制端点 (Copy)</button>
-          <span id="lbl-host-status" class="badge badge-healthy" style="font-size:0.7rem;">本地监听 (127.0.0.1)</span>
-        </div>
-      </div>
-      <div>
-        <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
-      </div>
+  <!-- Mobile Header Bar (shown only < 768px) -->
+  <header class="mobile-header">
+    <button type="button" class="hamburger-btn" onclick="toggleSidebarDrawer()" title="打开菜单">☰</button>
+    <div class="mobile-brand">
+      <img src="/assets/logo.png" alt="Logo">
+      <span>OpenCode 智能网关</span>
     </div>
+    <div class="mobile-actions">
+      <button type="button" class="btn btn-primary btn-sm" onclick="saveConfig()" title="保存当前配置">💾</button>
+    </div>
+  </header>
+
+  <!-- Sidebar Overlay for Mobile -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebarDrawer()"></div>
+
+  <div class="app-layout">
+    <!-- Left Sidebar Navigation -->
+    <aside class="app-sidebar" id="app-sidebar">
+      <div class="sidebar-header">
+        <a href="#/overview" class="sidebar-brand" onclick="switchTab('overview')">
+          <img src="/assets/logo.png" alt="Logo" class="sidebar-logo">
+          <div class="sidebar-title-box">
+            <div class="sidebar-title">OpenCode Go</div>
+            <div class="sidebar-subtitle">智能高可用网关</div>
+          </div>
+        </a>
+        <button type="button" class="sidebar-collapse-btn" onclick="toggleSidebarCollapse()" title="折叠/展开侧边栏">
+          <span class="collapse-icon">◀</span>
+        </button>
+      </div>
+
+      <div class="sidebar-version-badge">
+        <span class="badge badge-healthy" style="font-size:0.7rem; padding:2px 6px;">v3.5.0 Pro</span>
+        <span style="display:flex; align-items:center; gap:4px; color:var(--muted); font-size:0.7rem;">
+          <span class="status-indicator"></span> 运行中
+        </span>
+      </div>
+
+      <!-- Navigation Menu Items (6 大业务模块) -->
+      <nav class="sidebar-nav">
+        <a href="#/overview" class="nav-item active" id="nav-item-overview" onclick="switchTab('overview')">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">总览与向导</span>
+          <span class="nav-badge" id="nav-badge-overview">就绪</span>
+        </a>
+        <a href="#/compression" class="nav-item" id="nav-item-compression" onclick="switchTab('compression')">
+          <span class="nav-icon">⚡</span>
+          <span class="nav-label">Token 压缩中枢</span>
+          <span class="nav-badge" id="nav-badge-compression">5 引擎</span>
+        </a>
+        <a href="#/clients" class="nav-item" id="nav-item-clients" onclick="switchTab('clients')">
+          <span class="nav-icon">🤖</span>
+          <span class="nav-label">客户端接入</span>
+          <span class="nav-badge" id="nav-badge-clients">Codex</span>
+        </a>
+        <a href="#/accounts" class="nav-item" id="nav-item-accounts" onclick="switchTab('accounts')">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">订阅账号与配额</span>
+          <span class="nav-badge" id="nav-badge-accounts">多账号</span>
+        </a>
+        <a href="#/doctor" class="nav-item" id="nav-item-doctor" onclick="switchTab('doctor')">
+          <span class="nav-icon">🩺</span>
+          <span class="nav-label">系统体检与修复</span>
+          <span class="nav-badge" id="nav-badge-doctor">健康</span>
+        </a>
+        <a href="#/settings" class="nav-item" id="nav-item-settings" onclick="switchTab('settings')">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">系统设置与更新</span>
+        </a>
+      </nav>
+
+      <!-- Sidebar Footer / Quick Status -->
+      <div class="sidebar-footer">
+        <div class="sidebar-host-status">
+          <span class="status-indicator"></span>
+          <span class="sidebar-port-label">端口: ${config.port}</span>
+        </div>
+        <button id="btn-logout" class="btn btn-danger btn-sm sidebar-logout-btn" onclick="logoutAdmin()" title="安全退出管理员会话" style="${config.uiPassword ? '' : 'display:none;'}">🚪 退出</button>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="app-main" id="main-content">
+      <div class="container">
+        <!-- Persistent Top Action Bar -->
+        <header class="top-action-bar">
+          <div class="top-bar-left">
+            <div class="current-route-title" id="current-view-title">
+              <span class="route-icon">📊</span>
+              <span class="route-name">总览与快速上手 (Overview)</span>
+            </div>
+            <div class="top-baseurl-box">
+              <span class="baseurl-tag">🌐 Base URL:</span>
+              <code id="lbl-baseurl">http://127.0.0.1:${config.port}</code>
+              <button id="btn-copy-baseurl" class="btn btn-secondary btn-sm" onclick="copyBaseUrl()" title="复制智能网关端点 URL">📋 复制端点 (Copy)</button>
+              <span id="lbl-host-status" class="badge badge-healthy">本地监听 (127.0.0.1)</span>
+            </div>
+          </div>
+          <div class="top-bar-right header-actions">
+            <button id="btn-save-config" class="btn btn-primary btn-sm" onclick="saveConfig()" title="立即将当前账号与系统修改写入磁盘保存">💾 保存配置</button>
+            <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
+            <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()" title="测试所有订阅账号的连通性与响应速度">⚡ 全部测速</button>
+            <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas(false, true)" title="从官方实时穿透刷新 5小时/周/月限额">📊 刷新配额</button>
+            <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()" title="解除因 429 限频进入冷却的账号">🔄 重置限频</button>
+            <button class="btn btn-secondary btn-sm" onclick="checkUpdates()" title="在线检测生态各组件最新版本与兼容性状态">📦 检查更新</button>
+            <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')" title="全面扫描系统运行环境与后台死锁状态">🩺 一键体检</button>
+            <button class="btn btn-secondary btn-sm" onclick="bindCodexQuick()" title="一键将本地网关锁定为 OpenAI Codex 默认配置">🤖 接入 Codex</button>
+            <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" class="btn btn-secondary btn-sm" style="color:var(--primary); text-decoration:none;" title="打开 OpenChamber 工作台">💻 OpenChamber ↗</a>
+          </div>
+        </header>
+
+        <!-- View Section 1: Overview (#/overview) -->
+        <section class="view-section active" id="view-overview">
+          <div class="banner">
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="pulse-dot" style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#34d399; box-shadow: 0 0 8px #34d399;"></span>
+                <strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。
+              </div>
+              <div style="font-size:0.83rem; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span>🌐 智能网关端点 (Base URL): <code style="color:var(--primary); font-family:monospace; background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;">http://127.0.0.1:${config.port}</code></span>
+                <span class="badge badge-healthy" style="font-size:0.7rem;">本地监听 (127.0.0.1)</span>
+              </div>
+            </div>
+            <div>
+              <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
+            </div>
+          </div>
+
+          <!-- Quick Overview Metrics Grid -->
+          <div class="overview-metrics-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:1.5rem;">
+            <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('accounts')" title="点击查看订阅账号与实时配额">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-size:0.8rem; color:var(--muted);">🔑 订阅账号池</span>
+                <span class="badge badge-healthy" id="accounts-overview-badge">🟢 账号池可用</span>
+              </div>
+              <div style="font-size:1.3rem; font-weight:700; color:#38bdf8;" id="accounts-overview-val">已就绪</div>
+              <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;" id="accounts-overview-sub">多账号 429 秒级自动漂移与配额轮转</div>
+            </div>
+            <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('compression')" title="点击查看 Token 压缩大盘与 5 大引擎">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-size:0.8rem; color:var(--muted);">🪙 Token 优化大盘</span>
+                <span class="badge badge-healthy">实时估算中</span>
+              </div>
+              <div style="font-size:1.3rem; font-weight:700; color:#34d399;" id="stat-saved-tokens-overview">~0 Tokens</div>
+              <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;" id="stat-saved-cost-overview">节约费用: ~$0.0000 USD</div>
+            </div>
+            <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('doctor')" title="点击查看系统自检与异常修复">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-size:0.8rem; color:var(--muted);">🩺 全链路健康</span>
+                <span class="badge badge-healthy">🟢 健康</span>
+              </div>
+              <div style="font-size:1.3rem; font-weight:700; color:#a78bfa;" id="doctor-overview-val">系统就绪</div>
+              <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">CLI、端口、离线安全预览与死锁防御</div>
+            </div>
+            <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('clients')" title="点击进入客户端接入中心">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-size:0.8rem; color:var(--muted);">🤖 Codex 客户端</span>
+                <span class="badge badge-healthy">🟢 5min 防断流</span>
+              </div>
+              <div style="font-size:1.3rem; font-weight:700; color:#f1f5f9;" id="codex-overview-val">38 款大模型</div>
+              <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">Responses 协议桥与高思考等级锁定</div>
+            </div>
+          </div>
 
     <!-- 🚀 新手极速向导与一键自愈看板 (Smart Quick Start & Guide) -->
     <div class="card wizard-card" id="wizard-card">
@@ -4469,197 +4935,71 @@ function renderDashboardHtml(config) {
 
       <div id="wizard-progress-box" class="doctor-box" style="display:none; margin-top:12px; font-size:0.85rem; border-color:rgba(56, 189, 248, 0.4);"></div>
     </div>
-
-    <!-- 系统自检与修复区域 -->
-    <div class="card" id="doctor-card">
-      <div class="section-title">
-        <div class="section-title-left">
-          <span>🩺 系统健康自检与异常修复 (Doctor & Repair)</span>
-          <span id="doctor-status-badge" class="badge badge-healthy">🟢 全链路健康</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')">🔍 重新检测</button>
-          <button class="btn btn-success btn-sm" onclick="runRepair('system')">🔧 一键自动修复</button>
-          <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; opacity:0.85;" onclick="runRepair('all')" title="全量自愈OpenCode、OpenChamber、OMO与Codex全部项目">🛠️ 全量彻底自愈</button>
-          <span class="collapse-toggle" onclick="toggleCardCollapse('doctor-collapse-body', this)">▼ 收起</span>
-        </div>
-      </div>
-      <div id="doctor-collapse-body">
-        <div class="plain-tip-box">
-          💡 <strong>【白话通俗解释】</strong>：全面扫描本地与远程 OpenCode 运行环境、端口占用、离线文档预览沙箱（100% 本地解析沙箱，严禁公网第三方云预览 iframe，杜绝代码和私密合同泄露）以及后台僵死锁。发现异常点击【一键自动修复】即可秒级自愈。
-        </div>
-        <div id="doctor-content" class="doctor-box">
-          <span style="color:var(--muted)">点击【重新检测】检查 OpenCode CLI、路由端口、OpenChamber 工作台、Office 离线安全沙箱与工作区状态...</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 全组件最新版本监测、兼容性诊断与安全升级区域 -->
-    <div class="card" id="updates-card">
-      <div class="section-title">
-        <div class="section-title-left">
-          <span>📦 全组件最新版本监测、兼容性诊断与安全更新 (Updates & Rollback)</span>
-          <span id="updates-status-badge" class="badge badge-healthy">🟢 版本诊断就绪</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔍 检查最新版本</button>
-          <button class="btn btn-success btn-sm" onclick="applyUpdatesClick()">🚀 一键安全更新</button>
-          <button class="btn btn-danger btn-sm" onclick="showRollbackModal()">⏪ 灾备一键回滚</button>
-          <span class="collapse-toggle" onclick="toggleCardCollapse('updates-collapse-body', this)">▼ 收起</span>
-        </div>
-      </div>
-      <div id="updates-collapse-body">
-        <div class="plain-tip-box">
-          💡 <strong>【白话通俗解释】</strong>：实时监测生态核心组件（CLI、OMO 调度插件、Goal 目标插件、OpenChamber 与智能网关）最新版本。更新前系统会自动创建灾备快照，更新后自动重放安全补丁，如有任何不兼容随时可秒级一键回滚。
-        </div>
-        <div id="updates-content" class="doctor-box">
-          <span style="color:var(--muted)">点击【检查最新版本】自动检测 OpenCode CLI、OMO 调度插件、Goal 插件、OpenChamber 及智能网关套件的最新版本与兼容性状态...</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- OpenAI Codex CLI 智能接入与全量模型调度卡片 -->
-    <div class="card" id="codex-card">
-      <div class="section-title">
-        <div class="section-title-left">
-          <span>🤖 OpenAI Codex CLI 智能接入与模型调度 (Codex Integration)</span>
-          <span id="codex-status-badge" class="badge badge-healthy">🟢 网关接入就绪</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()">🔍 Codex 专项体检</button>
-          <button class="btn btn-success btn-sm" onclick="runCodexRepair()">🛠️ Codex 专项自愈与加固</button>
-          <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔄 刷新</button>
-          <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindCodex()">⚡ 一键接入</button>
-          <button class="btn btn-secondary btn-sm" style="background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()">🔄 重启客户端</button>
-          <button class="btn btn-danger btn-sm" onclick="restoreCodex()">⏪ 还原配置</button>
-          <span class="collapse-toggle" onclick="toggleCardCollapse('codex-collapse-body', this)">▼ 收起</span>
-        </div>
-      </div>
-      <div id="codex-collapse-body">
-        <div class="plain-tip-box">
-          💡 <strong>【白话通俗解释】</strong>：将 OpenAI 官方 Codex 客户端流量无感接驳至本地 4010 智能网关，直接解锁全套 38 款大模型，并内置 5 分钟超时与防断流加固，杜绝模型在超长推理或编写复杂补丁时意外超时中断。
-        </div>
-        <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
-          <div class="form-group" style="flex:1; min-width:280px; margin-bottom:0;">
-            <label>首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)</label>
-            <select id="codex-model-select" class="form-control" style="background:#0b1120;">
-              <!-- 动态生成 38 款模型 -->
-            </select>
-          </div>
-          <div class="form-group" style="width:200px; margin-bottom:0;">
-            <label>思考等级 (Reasoning Effort)</label>
-            <select id="codex-effort-select" class="form-control" style="background:#0b1120;">
-              <option value="low">low (极速轻量思考)</option>
-              <option value="medium">medium (均衡思考)</option>
-              <option value="high" selected>high (深度思考 - 默认推荐)</option>
-              <option value="xhigh">xhigh (超强思考)</option>
-              <option value="max">max (极限思考)</option>
-            </select>
-          </div>
-        </div>
-        <div id="codex-status-content" class="doctor-box" style="margin-top:10px;">
-          <span style="color:var(--muted)">正在检测 OpenAI Codex CLI 状态与网关接入配置...</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 账号配置区域 -->
-    <div class="card" id="accounts-card">
-      <div class="section-title" style="flex-wrap:wrap; gap:10px;">
-        <div class="section-title-left">
-          <span>📋 OpenCode Go 订阅账号列表</span>
-          <span id="accounts-status-badge" class="badge badge-healthy">🟢 账号池可用</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <div class="quota-ctrl-bar">
-            <span>⏱️ 配额自动刷新:</span>
-            <select id="quota-refresh-interval" class="form-control" style="width:auto; padding:2px 8px; font-size:0.75rem; height:26px; background:#0f172a; border-color:#334155;" onchange="changeQuotaRefreshInterval(this.value)">
-              <option value="0">已关闭</option>
-              <option value="15">15 秒</option>
-              <option value="30">30 秒</option>
-              <option value="60" selected>60 秒 (默认)</option>
-              <option value="120">2 分钟</option>
-              <option value="300">5 分钟</option>
-            </select>
-            <span id="quota-countdown-badge" class="quota-countdown-badge" title="点击立即全量刷新官方配额" onclick="triggerManualQuotaRefreshAll()">⏱️ 60s</span>
-          </div>
-          <button class="btn btn-secondary btn-sm" onclick="triggerManualQuotaRefreshAll()">🔄 刷新全部配额</button>
-          <button class="btn btn-secondary btn-sm" onclick="addAccountCard()">+ 添加订阅账号</button>
-          <span class="collapse-toggle" onclick="toggleCardCollapse('accounts-collapse-body', this)">▼ 收起</span>
-        </div>
-      </div>
-      <div id="accounts-collapse-body">
-        <div class="plain-tip-box">
-          💡 <strong>【白话通俗解释】</strong>：多账号自动负载均衡池。当某个账号达到官方限额触发 429 限频时，网关会在 0.1 秒内自动无感漂移到另一个健康账号继续工作，绝不让你的编码任务报错中断。
-        </div>
-        <div id="accounts-container" class="accounts-grid">
-          <!-- 动态渲染账号卡片 -->
-        </div>
-      </div>
-    </div>
-
-    <!-- 高级策略与网络安全配置 -->
-    <div class="card" id="config-card">
-      <div class="section-title">
-        <div class="section-title-left">
-          <span>⚙️ 路由、网络绑定与安全策略配置 (高级运行参数)</span>
-          <span id="network-status-badge" class="badge badge-healthy" title="网关端口与网络监听状态">🟢 ${config.port} 监听正常 (${config.host || '127.0.0.1'})</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-          <button class="btn btn-primary btn-sm" onclick="saveConfig()" title="保存当前配置">💾 保存配置</button>
-          <span class="collapse-toggle" id="config-collapse-btn" onclick="toggleCardCollapse('config-card-body', this)">▼ 收起</span>
-        </div>
-      </div>
-      <div id="config-card-body">
-        <div class="plain-tip-box">
-          💡 <strong>【小白友好提示】</strong>：以下为高级系统运行参数，普通用户保持默认推荐值即可开箱即用。若需供局域网其他电脑或 NAS 访问，可将【监听绑定地址】设为 <code>0.0.0.0</code> 并设置【Web 访问密码】。
-        </div>
-        <div class="config-grid">
-          <div class="form-group">
-            <label>上游端点地址 (Upstream Endpoint)</label>
-            <input type="text" id="cfg-upstream" class="form-control" value="${config.upstream}" oninput="markConfigDirty()">
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">官方上游 API 接口基础端点</div>
-          </div>
-          <div class="form-group">
-            <label>监听绑定地址 (Host IP - 0.0.0.0 允许局域网/NAS访问)</label>
-            <input type="text" id="cfg-host" class="form-control" value="${config.host || '127.0.0.1'}" oninput="markConfigDirty()">
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">127.0.0.1 仅本机可用；0.0.0.0 允许局域网/手机/远程设备连接</div>
-          </div>
-          <div class="form-group">
-            <label>服务端口 (Port)</label>
-            <input type="number" id="cfg-port" class="form-control" value="${config.port}" oninput="markConfigDirty()">
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">网关核心服务监听端口，默认 4010</div>
-          </div>
-          <div class="form-group">
-            <label>Web 管理访问密码 (UI Password - 留空无限制)</label>
-            <div class="input-wrapper">
-              <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，局域网共享建议设置" value="${config.uiPassword || ''}" oninput="markConfigDirty()">
-              <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')">👁️</button>
+          <!-- 快捷模块导航卡片 -->
+          <div class="card" style="margin-top:1.5rem;">
+            <div class="section-title">
+              <div class="section-title-left">
+                <span>🧭 智能网关核心业务模块快捷入口</span>
+              </div>
             </div>
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">保护管理面板与密钥安全，留空则免密进入</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; margin-top:8px;">
+              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('compression')">
+                <div class="wizard-step-header">
+                  <span>⚡ Token 压缩中枢</span>
+                  <span class="badge badge-healthy">5 引擎</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">RTK 修剪、Headroom 折叠、Schema 规范化、CacheZone 屏障与 PowerShell 去噪</div>
+                <div style="margin-top:auto; padding-top:6px;">
+                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">调配压缩 ➔</button>
+                </div>
+              </div>
+              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('clients')">
+                <div class="wizard-step-header">
+                  <span>🤖 客户端接入中心</span>
+                  <span class="badge badge-healthy">38 款模型</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">OpenAI Codex CLI、OpenCode 终端、OpenChamber 工作台与 OMO 插件无感接驳</div>
+                <div style="margin-top:auto; padding-top:6px;">
+                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">配置接入 ➔</button>
+                </div>
+              </div>
+              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('accounts')">
+                <div class="wizard-step-header">
+                  <span>📋 订阅账号与配额</span>
+                  <span class="badge badge-healthy">多账号池</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">多账号故障秒级漂移、429 冷却自愈、官方 5h/周/月限额实时穿透监测与防抖刷新</div>
+                <div style="margin-top:auto; padding-top:6px;">
+                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">管理账号 ➔</button>
+                </div>
+              </div>
+              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('doctor')">
+                <div class="wizard-step-header">
+                  <span>🩺 系统体检与自愈</span>
+                  <span class="badge badge-healthy">离线沙箱</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">CLI 就绪探测、端口冲突自愈、纯本地离线文档预览沙箱加固与后台僵死锁清理</div>
+                <div style="margin-top:auto; padding-top:6px;">
+                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">前往体检 ➔</button>
+                </div>
+              </div>
+              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('settings')">
+                <div class="wizard-step-header">
+                  <span>⚙️ 网络设置与更新</span>
+                  <span class="badge badge-healthy">网络 & 更新</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">上游端点、局域网绑定、UI 访问密码、429 冷却时长、会话亲和性与生态组件版本更新</div>
+                <div style="margin-top:auto; padding-top:6px;">
+                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">前往设置 ➔</button>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="form-group">
-            <label>429 触发后默认冷却时长 (秒)</label>
-            <input type="number" id="cfg-cooldown" class="form-control" value="${Math.round(config.defaultCooldownMs / 1000)}" oninput="markConfigDirty()">
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：账号被限频后暂停使用的秒数，时间到后自动恢复正常</div>
-          </div>
-          <div class="form-group">
-            <label>最大故障转移重试次数 (Retries)</label>
-            <input type="number" id="cfg-retries" class="form-control" value="${config.maxFailoverRetries}" oninput="markConfigDirty()">
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：网络抖动时自动换其他账号重试的次数，默认 2 次</div>
-          </div>
-          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
-            <label class="switch-label" style="margin-bottom:4px;">
-              <input type="checkbox" id="cfg-affinity" ${config.sessionAffinityEnabled ? 'checked' : ''} onchange="markConfigDirty()">
-              <span style="font-weight:600; color:#e2e8f0;">启用会话亲和性 (保持连续对话在同一账号)</span>
-            </label>
-            <div class="sub-tip" style="margin-left:22px;">【白话】：让同一个任务的后续对话找同一个账号，AI 能记住上文并享受官方 KV 缓存折扣</div>
-          </div>
-        </div>
-      </div>
-    </div>
+        </section>
 
-    <!-- 上下文优化与 Token 压缩配置 (Context Compression v3.1.0) -->
+        <!-- View Section 2: Token Compression (#/compression) -->
+        <section class="view-section" id="view-compression">
+<!-- 上下文优化与 Token 压缩配置 (Context Compression v3.1.0) -->
     <div class="card ${(compCfg.enabled === false) ? 'comp-master-disabled' : ''}" id="compression-card">
       <div class="section-title">
         <div class="section-title-left">
@@ -5056,6 +5396,286 @@ function renderDashboardHtml(config) {
         </div>
       </div>
     </div>
+        </section>
+
+        <!-- View Section 3: Clients & Model Dispatch (#/clients) -->
+        <section class="view-section" id="view-clients">
+<!-- OpenAI Codex CLI 智能接入与全量模型调度卡片 -->
+    <div class="card" id="codex-card">
+      <div class="section-title">
+        <div class="section-title-left">
+          <span>🤖 OpenAI Codex CLI 智能接入与模型调度 (Codex Integration)</span>
+          <span id="codex-status-badge" class="badge badge-healthy">🟢 网关接入就绪</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()">🔍 Codex 专项体检</button>
+          <button class="btn btn-success btn-sm" onclick="runCodexRepair()">🛠️ Codex 专项自愈与加固</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔄 刷新</button>
+          <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindCodex()">⚡ 一键接入</button>
+          <button class="btn btn-secondary btn-sm" style="background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()">🔄 重启客户端</button>
+          <button class="btn btn-danger btn-sm" onclick="restoreCodex()">⏪ 还原配置</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('codex-collapse-body', this)">▼ 收起</span>
+        </div>
+      </div>
+      <div id="codex-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：将 OpenAI 官方 Codex 客户端流量无感接驳至本地 4010 智能网关，直接解锁全套 38 款大模型，并内置 5 分钟超时与防断流加固，杜绝模型在超长推理或编写复杂补丁时意外超时中断。
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
+          <div class="form-group" style="flex:1; min-width:280px; margin-bottom:0;">
+            <label>首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)</label>
+            <select id="codex-model-select" class="form-control" style="background:#0b1120;">
+              <!-- 动态生成 38 款模型 -->
+            </select>
+          </div>
+          <div class="form-group" style="width:200px; margin-bottom:0;">
+            <label>思考等级 (Reasoning Effort)</label>
+            <select id="codex-effort-select" class="form-control" style="background:#0b1120;">
+              <option value="low">low (极速轻量思考)</option>
+              <option value="medium">medium (均衡思考)</option>
+              <option value="high" selected>high (深度思考 - 默认推荐)</option>
+              <option value="xhigh">xhigh (超强思考)</option>
+              <option value="max">max (极限思考)</option>
+            </select>
+          </div>
+        </div>
+        <div id="codex-status-content" class="doctor-box" style="margin-top:10px;">
+          <span style="color:var(--muted)">正在检测 OpenAI Codex CLI 状态与网关接入配置...</span>
+        </div>
+      </div>
+    </div>
+          <!-- 桌面客户端与生态接入指南卡片 -->
+          <div class="card" id="clients-guide-card">
+            <div class="section-title">
+              <div class="section-title-left">
+                <span>💻 桌面客户端与开发者工具快速接入指南</span>
+              </div>
+            </div>
+            <div class="plain-tip-box">
+              💡 <strong>【无感接驳】</strong>：智能网关提供标准 OpenAI API 兼容端点 (<code>http://127.0.0.1:${config.port}/v1</code>) 与 Responses 协议桥 (<code>http://127.0.0.1:${config.port}/responses</code>)，支持任意 AI 编程工具无缝接入。
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; margin-top:10px;">
+              <div class="wizard-step">
+                <div class="wizard-step-header">
+                  <span>🖥️ OpenChamber 桌面工作台</span>
+                  <span class="badge badge-healthy">推荐</span>
+                </div>
+                <div style="font-size:0.8rem; color:var(--muted); line-height:1.5;">
+                  私有化本地 AI 编程工作台，纯本地离线文档解析沙箱，原生支持多会话与实时协同。
+                </div>
+                <div style="margin-top:auto; padding-top:8px; display:flex; gap:6px;">
+                  <button class="btn btn-primary btn-sm" onclick="bindDesktopClients()">⚡ 一键绑定生效</button>
+                  <button class="btn btn-secondary btn-sm" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')">打开工作台 ↗</button>
+                </div>
+              </div>
+              <div class="wizard-step">
+                <div class="wizard-step-header">
+                  <span>💻 OpenCode CLI 原生终端</span>
+                  <span class="badge badge-healthy">原生支持</span>
+                </div>
+                <div style="font-size:0.8rem; color:var(--muted); line-height:1.5;">
+                  命令行快速编码助手，直接使用 <code>opencode</code> 并在配置中将 upstream 指向本地网关端口。
+                </div>
+                <div style="margin-top:auto; padding-top:8px;">
+                  <button class="btn btn-secondary btn-sm" onclick="bindDesktopClients()">⚡ 一键配置 OpenCode</button>
+                </div>
+              </div>
+              <div class="wizard-step">
+                <div class="wizard-step-header">
+                  <span>🤖 Claude Code / Cursor / Windsurf</span>
+                  <span class="badge badge-healthy">标准协议</span>
+                </div>
+                <div style="font-size:0.8rem; color:var(--muted); line-height:1.5;">
+                  在客户端设置中将 Base URL 设为 <code>http://127.0.0.1:${config.port}/v1</code>，API Key 填入任意字符串即可。
+                </div>
+                <div style="margin-top:auto; padding-top:8px;">
+                  <button class="btn btn-secondary btn-sm" onclick="copyBaseUrl()">📋 复制端点 URL</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View Section 4: Accounts & Quotas (#/accounts) -->
+        <section class="view-section" id="view-accounts">
+<!-- 账号配置区域 -->
+    <div class="card" id="accounts-card">
+      <div class="section-title" style="flex-wrap:wrap; gap:10px;">
+        <div class="section-title-left">
+          <span>📋 OpenCode Go 订阅账号列表</span>
+          <span id="accounts-status-badge" class="badge badge-healthy">🟢 账号池可用</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div class="quota-ctrl-bar">
+            <span>⏱️ 配额自动刷新:</span>
+            <select id="quota-refresh-interval" class="form-control" style="width:auto; padding:2px 8px; font-size:0.75rem; height:26px; background:#0f172a; border-color:#334155;" onchange="changeQuotaRefreshInterval(this.value)">
+              <option value="0">已关闭</option>
+              <option value="15">15 秒</option>
+              <option value="30">30 秒</option>
+              <option value="60" selected>60 秒 (默认)</option>
+              <option value="120">2 分钟</option>
+              <option value="300">5 分钟</option>
+            </select>
+            <span id="quota-countdown-badge" class="quota-countdown-badge" title="点击立即全量刷新官方配额" onclick="triggerManualQuotaRefreshAll()">⏱️ 60s</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="triggerManualQuotaRefreshAll()">🔄 刷新全部配额</button>
+          <button class="btn btn-secondary btn-sm" onclick="addAccountCard()">+ 添加订阅账号</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('accounts-collapse-body', this)">▼ 收起</span>
+        </div>
+      </div>
+      <div id="accounts-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：多账号自动负载均衡池。当某个账号达到官方限额触发 429 限频时，网关会在 0.1 秒内自动无感漂移到另一个健康账号继续工作，绝不让你的编码任务报错中断。
+        </div>
+        <div id="accounts-container" class="accounts-grid">
+          <!-- 动态渲染账号卡片 -->
+        </div>
+      </div>
+    </div>
+        </section>
+
+        <!-- View Section 5: Doctor & Repair (#/doctor) -->
+        <section class="view-section" id="view-doctor">
+<!-- 系统自检与修复区域 -->
+    <div class="card" id="doctor-card">
+      <div class="section-title">
+        <div class="section-title-left">
+          <span>🩺 系统健康自检与异常修复 (Doctor & Repair)</span>
+          <span id="doctor-status-badge" class="badge badge-healthy">🟢 全链路健康</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')">🔍 重新检测</button>
+          <button class="btn btn-success btn-sm" onclick="runRepair('system')">🔧 一键自动修复</button>
+          <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; opacity:0.85;" onclick="runRepair('all')" title="全量自愈OpenCode、OpenChamber、OMO与Codex全部项目">🛠️ 全量彻底自愈</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('doctor-collapse-body', this)">▼ 收起</span>
+        </div>
+      </div>
+      <div id="doctor-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：全面扫描本地与远程 OpenCode 运行环境、端口占用、离线文档预览沙箱（100% 本地解析沙箱，严禁公网第三方云预览 iframe，杜绝代码和私密合同泄露）以及后台僵死锁。发现异常点击【一键自动修复】即可秒级自愈。
+        </div>
+        <div id="doctor-content" class="doctor-box">
+          <span style="color:var(--muted)">点击【重新检测】检查 OpenCode CLI、路由端口、OpenChamber 工作台、Office 离线安全沙箱与工作区状态...</span>
+        </div>
+      </div>
+    </div>
+        </section>
+
+        <!-- View Section 6: Settings & Updates (#/settings) -->
+        <section class="view-section" id="view-settings">
+<!-- 高级策略与网络安全配置 -->
+    <div class="card" id="config-card">
+      <div class="section-title">
+        <div class="section-title-left">
+          <span>⚙️ 路由、网络绑定与安全策略配置 (高级运行参数)</span>
+          <span id="network-status-badge" class="badge badge-healthy" title="网关端口与网络监听状态">🟢 ${config.port} 监听正常 (${config.host || '127.0.0.1'})</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn btn-primary btn-sm" onclick="saveConfig()" title="保存当前配置">💾 保存配置</button>
+          <span class="collapse-toggle" id="config-collapse-btn" onclick="toggleCardCollapse('config-card-body', this)">▼ 收起</span>
+        </div>
+      </div>
+      <div id="config-card-body">
+        <div class="plain-tip-box">
+          💡 <strong>【小白友好提示】</strong>：以下为高级系统运行参数，普通用户保持默认推荐值即可开箱即用。若需供局域网其他电脑或 NAS 访问，可将【监听绑定地址】设为 <code>0.0.0.0</code> 并设置【Web 访问密码】。
+        </div>
+        <div class="config-grid">
+          <div class="form-group">
+            <label>上游端点地址 (Upstream Endpoint)</label>
+            <input type="text" id="cfg-upstream" class="form-control" value="${config.upstream}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">官方上游 API 接口基础端点</div>
+          </div>
+          <div class="form-group">
+            <label>监听绑定地址 (Host IP - 0.0.0.0 允许局域网/NAS访问)</label>
+            <input type="text" id="cfg-host" class="form-control" value="${config.host || '127.0.0.1'}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">127.0.0.1 仅本机可用；0.0.0.0 允许局域网/手机/远程设备连接</div>
+          </div>
+          <div class="form-group">
+            <label>服务端口 (Port)</label>
+            <input type="number" id="cfg-port" class="form-control" value="${config.port}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">网关核心服务监听端口，默认 4010</div>
+          </div>
+          <div class="form-group">
+            <label>Web 管理访问密码 (UI Password - 留空无限制)</label>
+            <div class="input-wrapper">
+              <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，局域网共享建议设置" value="${config.uiPassword || ''}" oninput="markConfigDirty()">
+              <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')">👁️</button>
+            </div>
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">保护管理面板与密钥安全，留空则免密进入</div>
+          </div>
+          <div class="form-group">
+            <label>429 触发后默认冷却时长 (秒)</label>
+            <input type="number" id="cfg-cooldown" class="form-control" value="${Math.round(config.defaultCooldownMs / 1000)}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：账号被限频后暂停使用的秒数，时间到后自动恢复正常</div>
+          </div>
+          <div class="form-group">
+            <label>最大故障转移重试次数 (Retries)</label>
+            <input type="number" id="cfg-retries" class="form-control" value="${config.maxFailoverRetries}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：网络抖动时自动换其他账号重试的次数，默认 2 次</div>
+          </div>
+          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
+            <label class="switch-label" style="margin-bottom:4px;">
+              <input type="checkbox" id="cfg-affinity" ${config.sessionAffinityEnabled ? 'checked' : ''} onchange="markConfigDirty()">
+              <span style="font-weight:600; color:#e2e8f0;">启用会话亲和性 (保持连续对话在同一账号)</span>
+            </label>
+            <div class="sub-tip" style="margin-left:22px;">【白话】：让同一个任务的后续对话找同一个账号，AI 能记住上文并享受官方 KV 缓存折扣</div>
+          </div>
+        </div>
+      </div>
+    </div>
+<!-- 全组件最新版本监测、兼容性诊断与安全升级区域 -->
+    <div class="card" id="updates-card">
+      <div class="section-title">
+        <div class="section-title-left">
+          <span>📦 全组件最新版本监测、兼容性诊断与安全更新 (Updates & Rollback)</span>
+          <span id="updates-status-badge" class="badge badge-healthy">🟢 版本诊断就绪</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="checkUpdates()">🔍 检查最新版本</button>
+          <button class="btn btn-success btn-sm" onclick="applyUpdatesClick()">🚀 一键安全更新</button>
+          <button class="btn btn-danger btn-sm" onclick="showRollbackModal()">⏪ 灾备一键回滚</button>
+          <span class="collapse-toggle" onclick="toggleCardCollapse('updates-collapse-body', this)">▼ 收起</span>
+        </div>
+      </div>
+      <div id="updates-collapse-body">
+        <div class="plain-tip-box">
+          💡 <strong>【白话通俗解释】</strong>：实时监测生态核心组件（CLI、OMO 调度插件、Goal 目标插件、OpenChamber 与智能网关）最新版本。更新前系统会自动创建灾备快照，更新后自动重放安全补丁，如有任何不兼容随时可秒级一键回滚。
+        </div>
+        <div id="updates-content" class="doctor-box">
+          <span style="color:var(--muted)">点击【检查最新版本】自动检测 OpenCode CLI、OMO 调度插件、Goal 插件、OpenChamber 及智能网关套件的最新版本与兼容性状态...</span>
+        </div>
+      </div>
+    </div>
+          <!-- 系统与网关版本信息卡片 -->
+          <div class="card" id="system-info-card">
+            <div class="section-title">
+              <div class="section-title-left">
+                <span>ℹ️ 关于 OpenCode Go 智能高可用网关</span>
+                <span class="badge badge-healthy">v3.5.0 Pro</span>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; font-size:0.85rem;">
+              <div class="wizard-step">
+                <span style="color:var(--muted);">当前系统架构:</span>
+                <strong style="color:var(--text);">${process.platform} (${process.arch})</strong>
+              </div>
+              <div class="wizard-step">
+                <span style="color:var(--muted);">Node.js 运行时:</span>
+                <strong style="color:var(--text);">${process.version}</strong>
+              </div>
+              <div class="wizard-step">
+                <span style="color:var(--muted);">网关服务监听:</span>
+                <strong style="color:var(--primary);">${config.host || '127.0.0.1'}:${config.port}</strong>
+              </div>
+              <div class="wizard-step">
+                <span style="color:var(--muted);">桌面客户端形态:</span>
+                <strong style="color:#34d399;">原生独立桌面程序 (OpenCodeRouterApp.exe)</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   </div>
 
   <div id="toast" class="toast"></div>
@@ -5066,6 +5686,137 @@ function renderDashboardHtml(config) {
     var accountQuotas = (typeof accountQuotas !== 'undefined' && accountQuotas) ? accountQuotas : {};
     var currentPreset = (typeof currentPreset !== 'undefined' && currentPreset) ? currentPreset : 'balanced';
     var codexStatusData = (typeof codexStatusData !== 'undefined') ? codexStatusData : null;
+
+    var tabTitles = {
+      'overview': { icon: '📊', name: '总览与快速上手 (Overview)' },
+      'compression': { icon: '⚡', name: 'Token 压缩与上下文优化中枢 (Compression)' },
+      'clients': { icon: '🤖', name: '客户端接入与模型调度 (Clients & Codex)' },
+      'accounts': { icon: '📋', name: '订阅账号与官方实时配额 (Accounts & Quotas)' },
+      'doctor': { icon: '🩺', name: '系统运行环境自检与修复 (Doctor & Repair)' },
+      'settings': { icon: '⚙️', name: '系统网络与高级安全配置 (Settings & Updates)' }
+    };
+
+    var tabAliases = {
+      'updates': 'settings',
+      'config': 'settings',
+      'codex': 'clients',
+      'comp': 'compression'
+    };
+
+    function switchTab(tabId) {
+      if (tabAliases[tabId]) tabId = tabAliases[tabId];
+      if (!tabTitles[tabId]) tabId = 'overview';
+
+      if (typeof window !== 'undefined' && window.location) {
+        const targetHash = '#/' + tabId;
+        if (window.location.hash !== targetHash) {
+          try {
+            if (typeof history !== 'undefined' && history && history.replaceState) {
+              history.replaceState(null, '', targetHash);
+            } else {
+              window.location.hash = targetHash;
+            }
+          } catch (e) {}
+        }
+      }
+
+      const tabs = ['overview', 'compression', 'clients', 'accounts', 'doctor', 'settings'];
+      tabs.forEach(t => {
+        const navItem = document.getElementById('nav-item-' + t);
+        if (navItem && navItem.classList) {
+          if (t === tabId) navItem.classList.add('active');
+          else navItem.classList.remove('active');
+        }
+        const viewSec = document.getElementById('view-' + t);
+        if (viewSec && viewSec.classList) {
+          if (t === tabId) viewSec.classList.add('active');
+          else viewSec.classList.remove('active');
+        }
+      });
+
+      const titleBox = document.getElementById('current-view-title');
+      if (titleBox && tabTitles[tabId]) {
+        titleBox.innerHTML = '<span class="route-icon">' + tabTitles[tabId].icon + '</span><span class="route-name">' + tabTitles[tabId].name + '</span>';
+      }
+
+      closeSidebarDrawer();
+
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
+          localStorage.setItem('opencode_router_last_tab', tabId);
+        }
+      } catch (e) {}
+    }
+
+    function getHashTab() {
+      let h = (typeof window !== 'undefined' && window.location && window.location.hash) ? window.location.hash : '';
+      if (h.indexOf('#/') === 0) h = h.slice(2);
+      else if (h.indexOf('#') === 0) h = h.slice(1);
+      if (h.indexOf('?') !== -1) h = h.split('?')[0];
+      if (h.indexOf('/') !== -1) h = h.split('/')[0];
+      return h;
+    }
+
+    function initRouter() {
+      let initialTab = 'overview';
+      const hashTab = getHashTab();
+      if (hashTab) {
+        let mapped = tabAliases[hashTab] || hashTab;
+        if (tabTitles[mapped]) initialTab = mapped;
+      } else {
+        try {
+          if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function') {
+            const saved = localStorage.getItem('opencode_router_last_tab');
+            if (saved && tabTitles[saved]) initialTab = saved;
+          }
+        } catch (e) {}
+      }
+      switchTab(initialTab);
+
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('hashchange', function() {
+          const ht = getHashTab();
+          const mapped = tabAliases[ht] || ht;
+          if (tabTitles[mapped]) switchTab(mapped);
+        });
+      }
+    }
+
+    function toggleSidebarCollapse() {
+      if (typeof document !== 'undefined' && document.body && document.body.classList) {
+        const isCollapsed = document.body.classList.toggle('sidebar-collapsed');
+        try {
+          if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
+            localStorage.setItem('opencode_sidebar_collapsed', isCollapsed ? '1' : '0');
+          }
+        } catch (e) {}
+      }
+    }
+
+    function toggleSidebarDrawer() {
+      const sidebar = document.getElementById('app-sidebar');
+      const overlay = document.getElementById('sidebar-overlay');
+      if (sidebar && sidebar.classList) sidebar.classList.toggle('drawer-open');
+      if (overlay && overlay.classList) overlay.classList.toggle('active');
+    }
+
+    function closeSidebarDrawer() {
+      const sidebar = document.getElementById('app-sidebar');
+      const overlay = document.getElementById('sidebar-overlay');
+      if (sidebar && sidebar.classList) sidebar.classList.remove('drawer-open');
+      if (overlay && overlay.classList) overlay.classList.remove('active');
+    }
+
+    function initSidebarState() {
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function') {
+          if (localStorage.getItem('opencode_sidebar_collapsed') === '1' && document.body && document.body.classList) {
+            document.body.classList.add('sidebar-collapsed');
+          }
+        }
+      } catch (e) {}
+    }
+
 
     function handleCompMasterToggle(checked) {
       updateCompCardsUI();
@@ -5350,6 +6101,13 @@ function renderDashboardHtml(config) {
         if (costEl) {
           const costVal = Number(stats.savedCostUSD || 0);
           costEl.innerText = '~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+        }
+        const tokensOverviewEl = document.getElementById('stat-saved-tokens-overview');
+        const costOverviewEl = document.getElementById('stat-saved-cost-overview');
+        if (tokensOverviewEl) tokensOverviewEl.innerText = '~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+        if (costOverviewEl) {
+          const costVal = Number(stats.savedCostUSD || 0);
+          costOverviewEl.innerText = '节约费用: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
         }
         if (ratioEl) ratioEl.innerText = (stats.compressionRatio || 0) + '%';
         if (origEl) origEl.innerText = Number(stats.totalOriginalChars || 0).toLocaleString() + ' Chars';
@@ -5662,6 +6420,23 @@ function renderDashboardHtml(config) {
     }
 
     function scrollToElement(id) {
+      const elementToTabMap = {
+        'accounts-card': 'accounts',
+        'accounts-container': 'accounts',
+        'compression-card': 'compression',
+        'comp-metrics-dashboard': 'compression',
+        'codex-card': 'clients',
+        'clients-guide-card': 'clients',
+        'doctor-card': 'doctor',
+        'config-card': 'settings',
+        'updates-card': 'settings',
+        'system-info-card': 'settings',
+        'wizard-card': 'overview'
+      };
+      const targetTab = elementToTabMap[id];
+      if (targetTab && typeof switchTab === 'function') {
+        switchTab(targetTab);
+      }
       const el = document.getElementById(id);
       if (el) {
         if (typeof el.scrollIntoView === 'function') {
@@ -5670,7 +6445,7 @@ function renderDashboardHtml(config) {
         el.style.transition = 'box-shadow 0.3s ease';
         el.style.boxShadow = '0 0 20px rgba(56, 189, 248, 0.6)';
         setTimeout(() => {
-          el.style.boxShadow = '';
+          if (el && el.style) el.style.boxShadow = '';
         }, 1500);
       }
     }
@@ -5755,6 +6530,25 @@ function renderDashboardHtml(config) {
         if (wizCodexDesc) {
           wizCodexDesc.innerText = '点击【一键全能配置】或前往 Codex 卡片一键接入，解锁 38 款大模型与防断流';
         }
+      }
+
+      // Overview summary badges
+      const accOverviewBadge = document.getElementById('accounts-overview-badge');
+      const accOverviewVal = document.getElementById('accounts-overview-val');
+      const accOverviewSub = document.getElementById('accounts-overview-sub');
+      if (accOverviewBadge) {
+        accOverviewBadge.className = validAccounts.length > 0 ? 'badge badge-healthy' : 'badge badge-cooling';
+        accOverviewBadge.innerText = validAccounts.length > 0 ? '🟢 账号池可用' : '🔴 待配置密钥';
+      }
+      if (accOverviewVal) {
+        accOverviewVal.innerText = validAccounts.length > 0 ? (validAccounts.length + ' 个账号就绪') : '待配置密钥';
+      }
+      if (accOverviewSub) {
+        accOverviewSub.innerText = validAccounts.length > 0 ? '多账号 429 秒级自动漂移与配额轮转' : '请点击填入订阅 API Key 即可启动负载均衡';
+      }
+      const codexOverviewVal = document.getElementById('codex-overview-val');
+      if (codexOverviewVal) {
+        codexOverviewVal.innerText = codexBound ? '38 款大模型 (已接入)' : '38 款大模型 (待接入)';
       }
 
       // Update Network Status Badge
@@ -7257,6 +8051,8 @@ function renderDashboardHtml(config) {
         hostStatusElem.className = 'badge badge-healthy';
       }
     }
+    initSidebarState();
+    initRouter();
     initCardCollapseStates();
     fetchConfig();
     fetchStatus();

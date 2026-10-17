@@ -1,9 +1,15 @@
 # launcher.ps1: 智能检测托盘守护并唤出控制台
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { "$env:USERPROFILE\.opencode-go-router" }
-$trayScript = Join-Path $rootDir "tray-runner.ps1"
+$appExe = Join-Path $rootDir "OpenCodeRouterApp.exe"
 $port = 4010
 
+if (Test-Path $appExe) {
+    Start-Process -FilePath $appExe
+    return
+}
+
+$trayScript = Join-Path $rootDir "tray-runner.ps1"
 $running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-runner.ps1*" }
 
 if (-not $running) {

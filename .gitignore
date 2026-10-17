@@ -28,5 +28,6 @@ OpenCodeRouterTray.exe
 __pycache__/
 nas_ssh_helper.py
 sync_nas.py
+run_nas_tests.py
 compression-stats.json
 .agents/

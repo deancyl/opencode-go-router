@@ -6542,8 +6542,181 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(parsedDoc139.clientsCompatibility.openchamber.checks.some(c => c.name.includes('PowerShell')), 'OpenChamber compatibility must include PowerShell check');
     console.log('✓ Compression Doctor health & 3-client PowerShell compatibility checks verified');
 
+    // [Test 140] Testing Modern Sidebar SPA Layout, Hash Routing & Native Windows Desktop Client (v3.5.0)
+    console.log('\n[Test 140] Testing Modern Sidebar SPA Layout, Hash Routing & Native Windows Desktop Client (v3.5.0)...');
+
+    // 1. Verify Web UI Dashboard HTML contains Sidebar Nav elements & 6 SPA View Sections
+    const uiRes140 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes140.statusCode, 200);
+
+    const requiredNavItems = [
+      'id="nav-item-overview"',
+      'id="nav-item-compression"',
+      'id="nav-item-clients"',
+      'id="nav-item-accounts"',
+      'id="nav-item-doctor"',
+      'id="nav-item-settings"'
+    ];
+    for (const navId of requiredNavItems) {
+      assert.ok(uiRes140.body.includes(navId), `Dashboard must render sidebar nav item: ${navId}`);
+    }
+
+    const requiredViewSections = [
+      'id="view-overview"',
+      'id="view-compression"',
+      'id="view-clients"',
+      'id="view-accounts"',
+      'id="view-doctor"',
+      'id="view-settings"'
+    ];
+    for (const secId of requiredViewSections) {
+      assert.ok(uiRes140.body.includes(secId), `Dashboard must render SPA view section: ${secId}`);
+    }
+
+    // Verify core UI elements and responsive layout markers
+    assert.ok(uiRes140.body.includes('class="app-sidebar"'), 'Dashboard must contain app-sidebar');
+    assert.ok(uiRes140.body.includes('class="app-main"'), 'Dashboard must contain app-main');
+    assert.ok(uiRes140.body.includes('id="current-view-title"'), 'Dashboard must contain current-view-title');
+    assert.ok(uiRes140.body.includes('id="sidebar-overlay"'), 'Dashboard must contain sidebar-overlay for mobile drawer');
+    assert.ok(uiRes140.body.includes('toggleSidebarCollapse'), 'Dashboard script must include toggleSidebarCollapse');
+    assert.ok(uiRes140.body.includes('toggleSidebarDrawer'), 'Dashboard script must include toggleSidebarDrawer');
+    assert.ok(uiRes140.body.includes('closeSidebarDrawer'), 'Dashboard script must include closeSidebarDrawer');
+    assert.ok(uiRes140.body.includes('switchTab'), 'Dashboard script must include switchTab');
+    assert.ok(uiRes140.body.includes('initRouter'), 'Dashboard script must include initRouter');
+    assert.ok(uiRes140.body.includes('v3.5.0 Pro'), 'Dashboard must render v3.5.0 Pro version badge');
+    console.log('✓ Sidebar Navigation DOM & 6 SPA View Sections DOM structure verified');
+
+    // 2. Test SPA Routing & VM Script Execution
+    const scriptMatch140 = uiRes140.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch140, 'Dashboard must contain inline script');
+    const vm140 = require('node:vm');
+    const mockElements140 = {};
+    const mockDoc140 = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      cookie: '',
+      hidden: false,
+      body: {
+        classList: {
+          toggle: (cls) => {
+            if (!mockDoc140.body._classes) mockDoc140.body._classes = new Set();
+            if (mockDoc140.body._classes.has(cls)) { mockDoc140.body._classes.delete(cls); return false; }
+            mockDoc140.body._classes.add(cls);
+            return true;
+          },
+          add: (cls) => { if (!mockDoc140.body._classes) mockDoc140.body._classes = new Set(); mockDoc140.body._classes.add(cls); },
+          remove: (cls) => { if (mockDoc140.body._classes) mockDoc140.body._classes.delete(cls); },
+          contains: (cls) => Boolean(mockDoc140.body._classes && mockDoc140.body._classes.has(cls))
+        }
+      },
+      getElementById: (id) => {
+        if (!mockElements140[id]) {
+          const classSet = new Set();
+          mockElements140[id] = {
+            id,
+            checked: true,
+            value: '',
+            innerText: '',
+            innerHTML: '',
+            style: {},
+            classList: {
+              add: (c) => classSet.add(c),
+              remove: (c) => classSet.delete(c),
+              contains: (c) => classSet.has(c),
+              toggle: (c) => {
+                if (classSet.has(c)) { classSet.delete(c); return false; }
+                classSet.add(c);
+                return true;
+              }
+            },
+            querySelectorAll: () => []
+          };
+        }
+        return mockElements140[id];
+      }
+    };
+    const mockStorage140 = {};
+    const mockWin140 = {
+      location: { hash: '#/compression', hostname: '127.0.0.1' },
+      addEventListener: () => {},
+      scrollTo: () => {}
+    };
+    const ctx140 = vm140.createContext({
+      document: mockDoc140,
+      window: mockWin140,
+      localStorage: {
+        getItem: (k) => mockStorage140[k] || null,
+        setItem: (k, v) => { mockStorage140[k] = String(v); }
+      },
+      setInterval: () => {},
+      clearInterval: () => {},
+      setTimeout: () => {},
+      currentPreset: 'balanced',
+      accountQuotas: {},
+      liveStats: {},
+      currentConfig: { accounts: [{ id: 'acc-1', apiKey: 'test', enabled: true }] },
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({ stats: {} }) })
+    });
+    vm140.runInContext(scriptMatch140[1], ctx140);
+
+    // Verify initRouter activates the hash tab (#/compression)
+    ctx140.initRouter();
+    assert.strictEqual(mockElements140['nav-item-compression'].classList.contains('active'), true, 'nav-item-compression must be active');
+    assert.strictEqual(mockElements140['view-compression'].classList.contains('active'), true, 'view-compression must be active');
+    assert.strictEqual(mockElements140['nav-item-overview'].classList.contains('active'), false, 'nav-item-overview must be inactive');
+    assert.strictEqual(mockStorage140['opencode_router_last_tab'], 'compression', 'Last tab must be saved to localStorage');
+
+    // Switch to doctor tab
+    ctx140.switchTab('doctor');
+    assert.strictEqual(mockElements140['nav-item-doctor'].classList.contains('active'), true, 'nav-item-doctor must be active');
+    assert.strictEqual(mockElements140['view-doctor'].classList.contains('active'), true, 'view-doctor must be active');
+    assert.strictEqual(mockElements140['nav-item-compression'].classList.contains('active'), false, 'nav-item-compression must become inactive');
+    assert.strictEqual(mockStorage140['opencode_router_last_tab'], 'doctor', 'Doctor tab must be saved to localStorage');
+
+    // Test scrollToElement tab resolution
+    ctx140.scrollToElement('accounts-card');
+    assert.strictEqual(mockElements140['nav-item-accounts'].classList.contains('active'), true, 'scrollToElement(accounts-card) must switch to accounts tab');
+
+    // Test sidebar collapse toggle
+    ctx140.toggleSidebarCollapse();
+    assert.strictEqual(mockDoc140.body.classList.contains('sidebar-collapsed'), true, 'toggleSidebarCollapse must toggle class');
+    assert.strictEqual(mockStorage140['opencode_sidebar_collapsed'], '1', 'Sidebar collapsed state must persist to localStorage');
+    console.log('✓ SPA Client Router VM state transitions & Tab switching verified');
+
+    // 3. Verify Native Windows Desktop Client (OpenCodeRouterApp.exe & OpenCodeRouterApp.cs)
+    const appExePath = path.join(__dirname, 'OpenCodeRouterApp.exe');
+    assert.ok(fs.existsSync(appExePath), 'OpenCodeRouterApp.exe must exist in project root');
+    const exeBuf140 = fs.readFileSync(appExePath);
+    assert.ok(exeBuf140.length > 10000, `OpenCodeRouterApp.exe size (${exeBuf140.length} bytes) must exceed 10KB`);
+    assert.strictEqual(exeBuf140[0], 0x4D, 'EXE must start with DOS header signature "M"');
+    assert.strictEqual(exeBuf140[1], 0x5A, 'EXE must start with DOS header signature "Z"');
+
+    const appCsPath = path.join(__dirname, 'src', 'OpenCodeRouterApp.cs');
+    assert.ok(fs.existsSync(appCsPath), 'src/OpenCodeRouterApp.cs source must exist');
+    const appCsContent = fs.readFileSync(appCsPath, 'utf8');
+    assert.ok(appCsContent.includes('WM_SHOW_OPENCODE_ROUTER_V35'), 'OpenCodeRouterApp.cs must declare single-instance broadcast message');
+    assert.ok(appCsContent.includes('DWMWA_USE_IMMERSIVE_DARK_MODE'), 'OpenCodeRouterApp.cs must declare immersive dark mode window titlebar');
+    assert.ok(appCsContent.includes('FormClosing'), 'OpenCodeRouterApp.cs must intercept close to minimize to tray');
+    console.log('✓ Native Windows Desktop Client (OpenCodeRouterApp.exe & OpenCodeRouterApp.cs) verified');
+
+    // 4. Verify launch-gui.vbs, launcher.ps1, and tray script prioritization
+    const vbsPath = path.join(__dirname, 'launch-gui.vbs');
+    assert.ok(fs.existsSync(vbsPath), 'launch-gui.vbs must exist');
+    const vbsContent = fs.readFileSync(vbsPath, 'utf8');
+    assert.ok(vbsContent.includes('OpenCodeRouterApp.exe'), 'launch-gui.vbs must prioritize OpenCodeRouterApp.exe');
+
+    const launcherPs1Path = path.join(__dirname, 'launcher.ps1');
+    assert.ok(fs.existsSync(launcherPs1Path), 'launcher.ps1 must exist');
+    const launcherPs1Content = fs.readFileSync(launcherPs1Path, 'utf8');
+    assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
+
+    const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(packageJson140.version, '3.5.0', 'package.json version must be 3.5.0');
+    assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
+    console.log('✓ Launchers & Tray prioritizations & package.json v3.5.0 verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 139 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 140 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

@@ -382,6 +382,20 @@ namespace OpenCodeRouter
 
         static void OpenDashboard(string hash = "")
         {
+            EnsureRouterRunning();
+            string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
+            if (File.Exists(appExe))
+            {
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(appExe, string.IsNullOrEmpty(hash) ? "" : hash);
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    return;
+                }
+                catch { }
+            }
             string url = "http://127.0.0.1:" + port + "/balancer/ui" + (hash ?? "");
             try
             {

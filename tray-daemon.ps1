@@ -75,6 +75,14 @@ function Ensure-RouterRunning {
 
 function Open-Dashboard([string]$hash = "") {
     Ensure-RouterRunning
+    $appExe = Join-Path $rootDir "OpenCodeRouterApp.exe"
+    if (Test-Path $appExe) {
+        try {
+            $argList = if ($hash) { @($hash) } else { @() }
+            Start-Process -FilePath $appExe -ArgumentList $argList
+            return
+        } catch { }
+    }
     $url = "http://127.0.0.1:$port/balancer/ui$hash"
     try {
         $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"

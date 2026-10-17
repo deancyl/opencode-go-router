@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.4.1-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.5.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-139%2F139%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-140%2F140%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,25 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.4.1 (当前最新版：Anthropic 协议双轨鉴权加固、会话记忆原子清零、实机多客户端实测验证套件与防降智防断联全要素核验)
+### 🚀 v3.5.0 (当前最新版：现代侧边栏 SPA 布局重构与 Windows 原生独立桌面客户端程序)
+- **现代左侧专业侧边栏 SPA 架构 (`server.js`)**：
+  - 将原有长单页布局彻底重构为左侧专业侧边栏 + 右侧主内容区的现代 SPA 架构；
+  - 划分 6 大独立业务模块：`#/overview`（总览与向导）、`#/compression`（Token 压缩中枢）、`#/clients`（客户端接入）、`#/accounts`（订阅账号与配额）、`#/doctor`（系统体检与修复）、`#/settings`（系统设置与更新）；
+  - 零刷新 Hash 路由平滑切换，支持宽屏折叠 (240px -> 68px)、手机端 (< 768px) 汉堡抽屉导航遮罩；
+  - 顶部常驻快捷动作栏与动态路由标题更新，状态与折叠持久化记忆 (`localStorage`)；
+  - 100% 完整保留既有卡片 DOM ID、状态指示灯与全部交互函数，向下兼容零回归风险。
+- **Windows 原生独立桌面客户端程序 (`OpenCodeRouterApp.cs` / `OpenCodeRouterApp.exe`)**：
+  - 基于系统自带 `csc.exe` 纯原生编译生成轻量级独立桌面可执行程序（19KB），无需额外运行时与外部依赖；
+  - 专属任务栏独立应用图标、暗黑模式沉浸式深色标题栏 (`DWMWA_USE_IMMERSIVE_DARK_MODE`)；
+  - 窗口尺寸与屏幕位置注册表记忆，启动时自动恢复上次关闭位置；
+  - `SingleInstanceLock` 单实例互斥机制，重复双击发送专属广播消息瞬间激活并置顶已有窗口；
+  - 拦截窗体关闭事件 (`FormClosing`) 最小化至系统托盘常驻，防误关保护；
+  - 全面升级 `launch-gui.vbs`、`launcher.ps1` 与托盘菜单，优先唤出原生客户端。
+- **自动化测试套件扩展 (Test 140)**：
+  - 新增 Test 140 专项覆盖 6 大侧边栏 Nav DOM、6 个 View Section DOM、Node VM 路由状态机流转、PE 二进制结构合法性与启动器优先级；
+  - 本地 140 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.4.1 (Anthropic 协议双轨鉴权加固、会话记忆原子清零、实机多客户端实测验证套件与防降智防断联全要素核验)
 - **Anthropic Messages 协议双轨鉴权加固 (`server.js`)**：
   - 在网关直连代理 `/v1/messages` 时，自动装配 `'x-api-key': account.apiKey.trim()` 与 `'anthropic-version': '2023-06-01'`，彻底消除 OpenCode / Claude Code 客户端直连上游时的 `401 Upstream request failed: Go requires a credential` 阻断；
 - **统计清零机制原子闭环 (`context-compactor.js`)**：

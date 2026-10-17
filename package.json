@@ -1,14 +1,14 @@
 {
   "name": "opencode-go-router",
-  "version": "3.4.2",
-  "description": "OpenCode Go Multi-Subscription Smart Router, Load Balancer, Tray Daemon, Air-Gapped Office Engine, Platform-Aware Auto-Repair & Safe Updater for Windows, Linux & NAS",
+  "version": "3.5.0",
+  "description": "OpenCode Go Multi-Subscription Smart Router, Load Balancer, Tray Daemon, Native Desktop App, Air-Gapped Office Engine, Platform-Aware Auto-Repair & Safe Updater for Windows, Linux & NAS",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test": "node test_router.js",
     "doctor": "powershell -ExecutionPolicy Bypass -File ./doctor-repair.ps1",
     "wizard": "powershell -ExecutionPolicy Bypass -File ./setup-wizard.ps1",
-    "build:exe": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:winexe /win32icon:assets\\router.ico /out:OpenCodeRouterTray.exe src\\OpenCodeRouterTray.cs && C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:exe /win32icon:assets\\router.ico /out:OpenCodeWizard.exe src\\OpenCodeWizard.cs"
+    "build:exe": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:winexe /win32icon:assets\\router.ico /out:OpenCodeRouterApp.exe src\\OpenCodeRouterApp.cs && C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:winexe /win32icon:assets\\router.ico /out:OpenCodeRouterTray.exe src\\OpenCodeRouterTray.cs && C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /target:exe /win32icon:assets\\router.ico /out:OpenCodeWizard.exe src\\OpenCodeWizard.cs"
   },
   "keywords": [
     "opencode",
