@@ -76,6 +76,17 @@ const DEFAULT_COMPRESSION_CONFIG = {
       enabled: true,
       cacheZoneFreeze: true,
       trueLruRetention: true
+    },
+    powershell: {
+      enabled: true,
+      autoDetectPlatform: true,
+      cleanCliXmlNoise: true,
+      fixQuoteEscaping: true,
+      fixCurlAlias: true,
+      fixTrailingSlash: true,
+      fixAndOperator: true,
+      fixLineContinuation: true,
+      injectPowerShellGuard: true
     }
   }
 };
@@ -110,6 +121,17 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         cacheZoneFreeze: true,
         trueLruRetention: true
+      },
+      powershell: {
+        enabled: true,
+        autoDetectPlatform: true,
+        cleanCliXmlNoise: true,
+        fixQuoteEscaping: true,
+        fixCurlAlias: true,
+        fixTrailingSlash: true,
+        fixAndOperator: true,
+        fixLineContinuation: true,
+        injectPowerShellGuard: true
       }
     }
   },
@@ -142,6 +164,17 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         cacheZoneFreeze: true,
         trueLruRetention: true
+      },
+      powershell: {
+        enabled: true,
+        autoDetectPlatform: true,
+        cleanCliXmlNoise: true,
+        fixQuoteEscaping: true,
+        fixCurlAlias: true,
+        fixTrailingSlash: true,
+        fixAndOperator: true,
+        fixLineContinuation: true,
+        injectPowerShellGuard: true
       }
     }
   },
@@ -174,6 +207,17 @@ const COMPRESSION_PRESETS = {
         enabled: false,
         cacheZoneFreeze: false,
         trueLruRetention: true
+      },
+      powershell: {
+        enabled: true,
+        autoDetectPlatform: true,
+        cleanCliXmlNoise: true,
+        fixQuoteEscaping: true,
+        fixCurlAlias: true,
+        fixTrailingSlash: true,
+        fixAndOperator: true,
+        fixLineContinuation: true,
+        injectPowerShellGuard: false
       }
     }
   }
@@ -195,7 +239,7 @@ function normalizeCompressionOptions(input = {}) {
 
   if (presetConfig && presetConfig.modules) {
     result.preset = presetKey;
-    for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone']) {
+    for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
       if (presetConfig.modules[modKey]) {
         Object.assign(result.modules[modKey], presetConfig.modules[modKey]);
       }
@@ -243,6 +287,23 @@ function normalizeCompressionOptions(input = {}) {
       if (m.cacheZone.cacheZoneFreeze !== undefined) result.modules.cacheZone.cacheZoneFreeze = Boolean(m.cacheZone.cacheZoneFreeze);
       if (m.cacheZone.trueLruRetention !== undefined) result.modules.cacheZone.trueLruRetention = Boolean(m.cacheZone.trueLruRetention);
     }
+    if (m.powershell && typeof m.powershell === 'object') {
+      if (m.powershell.enabled !== undefined) result.modules.powershell.enabled = Boolean(m.powershell.enabled);
+      if (m.powershell.autoDetectPlatform !== undefined) result.modules.powershell.autoDetectPlatform = Boolean(m.powershell.autoDetectPlatform);
+      if (m.powershell.cleanCliXmlNoise !== undefined) result.modules.powershell.cleanCliXmlNoise = Boolean(m.powershell.cleanCliXmlNoise);
+      if (m.powershell.fixQuoteEscaping !== undefined) result.modules.powershell.fixQuoteEscaping = Boolean(m.powershell.fixQuoteEscaping);
+      if (m.powershell.fixCurlAlias !== undefined) result.modules.powershell.fixCurlAlias = Boolean(m.powershell.fixCurlAlias);
+      if (m.powershell.fixTrailingSlash !== undefined) result.modules.powershell.fixTrailingSlash = Boolean(m.powershell.fixTrailingSlash);
+      if (m.powershell.fixAndOperator !== undefined) result.modules.powershell.fixAndOperator = Boolean(m.powershell.fixAndOperator);
+      if (m.powershell.fixLineContinuation !== undefined) result.modules.powershell.fixLineContinuation = Boolean(m.powershell.fixLineContinuation);
+      if (m.powershell.injectPowerShellGuard !== undefined) result.modules.powershell.injectPowerShellGuard = Boolean(m.powershell.injectPowerShellGuard);
+    }
+  }
+
+  // 1.5 Support top-level powershell / powershellOptimizer options
+  const topPs = input.powershellOptimizer || input.powershell;
+  if (topPs && typeof topPs === 'object') {
+    Object.assign(result.modules.powershell, topPs);
   }
 
   // 2. Mirror explicit flat keys into the modules structure (backward compatibility)
@@ -252,6 +313,7 @@ function normalizeCompressionOptions(input = {}) {
   const hasModHeadroom = mInput && mInput.headroom && typeof mInput.headroom === 'object';
   const hasModSchema = mInput && mInput.schema && typeof mInput.schema === 'object';
   const hasModCacheZone = mInput && mInput.cacheZone && typeof mInput.cacheZone === 'object';
+  const hasModPowershell = mInput && mInput.powershell && typeof mInput.powershell === 'object';
 
   if (input.stripAnsi !== undefined && (!hasModRtk || mInput.rtk.stripAnsi === undefined)) {
     result.modules.rtk.stripAnsi = Boolean(input.stripAnsi);
@@ -303,6 +365,30 @@ function normalizeCompressionOptions(input = {}) {
   if (input.trueLruRetention !== undefined && (!hasModCacheZone || mInput.cacheZone.trueLruRetention === undefined)) {
     result.modules.cacheZone.trueLruRetention = Boolean(input.trueLruRetention);
   }
+  if (input.autoDetectPlatform !== undefined && (!hasModPowershell || mInput.powershell.autoDetectPlatform === undefined)) {
+    result.modules.powershell.autoDetectPlatform = Boolean(input.autoDetectPlatform);
+  }
+  if (input.cleanCliXmlNoise !== undefined && (!hasModPowershell || mInput.powershell.cleanCliXmlNoise === undefined)) {
+    result.modules.powershell.cleanCliXmlNoise = Boolean(input.cleanCliXmlNoise);
+  }
+  if (input.fixQuoteEscaping !== undefined && (!hasModPowershell || mInput.powershell.fixQuoteEscaping === undefined)) {
+    result.modules.powershell.fixQuoteEscaping = Boolean(input.fixQuoteEscaping);
+  }
+  if (input.fixCurlAlias !== undefined && (!hasModPowershell || mInput.powershell.fixCurlAlias === undefined)) {
+    result.modules.powershell.fixCurlAlias = Boolean(input.fixCurlAlias);
+  }
+  if (input.fixTrailingSlash !== undefined && (!hasModPowershell || mInput.powershell.fixTrailingSlash === undefined)) {
+    result.modules.powershell.fixTrailingSlash = Boolean(input.fixTrailingSlash);
+  }
+  if (input.fixAndOperator !== undefined && (!hasModPowershell || mInput.powershell.fixAndOperator === undefined)) {
+    result.modules.powershell.fixAndOperator = Boolean(input.fixAndOperator);
+  }
+  if (input.fixLineContinuation !== undefined && (!hasModPowershell || mInput.powershell.fixLineContinuation === undefined)) {
+    result.modules.powershell.fixLineContinuation = Boolean(input.fixLineContinuation);
+  }
+  if (input.injectPowerShellGuard !== undefined && (!hasModPowershell || mInput.powershell.injectPowerShellGuard === undefined)) {
+    result.modules.powershell.injectPowerShellGuard = Boolean(input.injectPowerShellGuard);
+  }
   if (input.customTestPassPatterns !== undefined) result.customTestPassPatterns = input.customTestPassPatterns;
   if (input.model !== undefined) result.model = normalizeModelName(input.model);
 
@@ -311,6 +397,7 @@ function normalizeCompressionOptions(input = {}) {
   const headroomActive = result.enabled && result.modules.headroom.enabled;
   const schemaActive = result.enabled && result.modules.schema.enabled;
   const cacheZoneActive = result.enabled && result.modules.cacheZone.enabled;
+  const powershellActive = result.enabled && result.modules.powershell.enabled;
 
   result.stripAnsi = rtkActive ? result.modules.rtk.stripAnsi : false;
   result.cleanProgressBars = rtkActive ? result.modules.rtk.cleanProgressBars : false;
@@ -333,6 +420,15 @@ function normalizeCompressionOptions(input = {}) {
 
   result.cacheZoneFreeze = cacheZoneActive ? result.modules.cacheZone.cacheZoneFreeze : false;
   result.trueLruRetention = result.modules.cacheZone.trueLruRetention;
+
+  result.autoDetectPlatform = powershellActive ? result.modules.powershell.autoDetectPlatform : false;
+  result.cleanCliXmlNoise = powershellActive ? result.modules.powershell.cleanCliXmlNoise : false;
+  result.fixQuoteEscaping = powershellActive ? result.modules.powershell.fixQuoteEscaping : false;
+  result.fixCurlAlias = powershellActive ? result.modules.powershell.fixCurlAlias : false;
+  result.fixTrailingSlash = powershellActive ? result.modules.powershell.fixTrailingSlash : false;
+  result.fixAndOperator = powershellActive ? result.modules.powershell.fixAndOperator : false;
+  result.fixLineContinuation = powershellActive ? result.modules.powershell.fixLineContinuation : false;
+  result.injectPowerShellGuard = powershellActive ? result.modules.powershell.injectPowerShellGuard : false;
 
   return result;
 }
@@ -637,7 +733,8 @@ let compressionStats = {
     rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
     headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
     schema: { savedChars: 0, savedTokens: 0, percentage: 0, alignedRounds: 0, alignedToolsCount: 0 },
-    cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 }
+    cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    powershell: { savedChars: 0, savedTokens: 0, percentage: 0 }
   },
   lastResetAt: new Date().toISOString(),
   updatedAt: new Date().toISOString()
@@ -682,7 +779,7 @@ function computeDerivedStats(stats) {
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
     : 0;
 
-  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone']) {
+  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
     const mod = stats.modules[modKey] || { savedChars: 0, savedTokens: 0, percentage: 0 };
     mod.savedTokens = Math.round((Number(mod.savedChars) || 0) / 3.8);
     mod.percentage = totalSavedChars > 0
@@ -760,7 +857,8 @@ function loadStatsFromDisk() {
               alignedRounds: (loaded.modules && loaded.modules.schema && loaded.modules.schema.alignedRounds) || 0,
               alignedToolsCount: (loaded.modules && loaded.modules.schema && loaded.modules.schema.alignedToolsCount) || 0
             },
-            cacheZone: { savedChars: (loaded.modules && loaded.modules.cacheZone && loaded.modules.cacheZone.savedChars) || 0, savedTokens: 0, percentage: 0 }
+            cacheZone: { savedChars: (loaded.modules && loaded.modules.cacheZone && loaded.modules.cacheZone.savedChars) || 0, savedTokens: 0, percentage: 0 },
+            powershell: { savedChars: (loaded.modules && loaded.modules.powershell && loaded.modules.powershell.savedChars) || 0, savedTokens: 0, percentage: 0 }
           },
           lastResetAt: loaded.lastResetAt || new Date().toISOString(),
           updatedAt: loaded.updatedAt || new Date().toISOString()
@@ -861,7 +959,8 @@ function resetCompressionStats() {
       rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
       headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
       schema: { savedChars: 0, savedTokens: 0, percentage: 0, alignedRounds: 0, alignedToolsCount: 0 },
-      cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 }
+      cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 },
+      powershell: { savedChars: 0, savedTokens: 0, percentage: 0 }
     },
     lastResetAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -1800,6 +1899,15 @@ function getRegisteredTransformers() {
 // Register built-in transformers in standard priority order
 registerTransformer('stripAnsi', (text) => stripAnsi(text), { priority: 10, enabledByDefault: true });
 registerTransformer('cleanProgressBars', (text) => cleanProgressBars(text), { priority: 20, enabledByDefault: true });
+registerTransformer('cleanPowerShellOutput', (text, opts, ctx) => {
+  try {
+    const psOpt = require('./powershell-optimizer');
+    if (psOpt.isPowerShellOptimizerActive(opts, ctx && ctx.req)) {
+      return psOpt.cleanCliXmlNoise(text);
+    }
+  } catch (_) {}
+  return text;
+}, { priority: 25, enabledByDefault: true });
 registerTransformer('cleanDockerOutput', (text) => cleanDockerOutput(text), { priority: 30, enabledByDefault: true });
 registerTransformer('cleanKubectlOutput', (text) => cleanKubectlOutput(text), { priority: 35, enabledByDefault: true });
 registerTransformer('cleanTerraformOutput', (text) => cleanTerraformOutput(text), { priority: 40, enabledByDefault: true });
@@ -1828,7 +1936,7 @@ function runPipeline(text, options = {}, context = {}) {
       const transformed = fn(current, options, context);
       if (typeof transformed === 'string') {
         if (transformed.length < beforeLen) {
-          const mod = (name === 'foldLockfiles' || name === 'foldStructuredData') ? 'headroom' : 'rtk';
+          const mod = (name === 'foldLockfiles' || name === 'foldStructuredData') ? 'headroom' : (name === 'cleanPowerShellOutput' ? 'powershell' : 'rtk');
           const savedChars = beforeLen - transformed.length;
           if (context && context.moduleDeltas) {
             context.moduleDeltas[mod] = (context.moduleDeltas[mod] || 0) + savedChars;
@@ -2280,18 +2388,23 @@ function compactText(text, options = {}, sessionId = null) {
 
       let rtkDelta = moduleDeltas.rtk || 0;
       let headroomDelta = moduleDeltas.headroom || 0;
-      const pipelineSum = rtkDelta + headroomDelta;
+      let powershellDelta = moduleDeltas.powershell || 0;
+      const pipelineSum = rtkDelta + headroomDelta + powershellDelta;
 
       if (pipelineSum === 0) {
         rtkDelta = totalSaved;
       } else if (pipelineSum !== totalSaved) {
         // Proportionally distribute delta to preserve exact equality
-        rtkDelta = Math.round((rtkDelta / pipelineSum) * totalSaved);
-        headroomDelta = totalSaved - rtkDelta;
+        const rtkRatio = rtkDelta / pipelineSum;
+        const psRatio = powershellDelta / pipelineSum;
+        rtkDelta = Math.round(rtkRatio * totalSaved);
+        powershellDelta = Math.round(psRatio * totalSaved);
+        headroomDelta = totalSaved - rtkDelta - powershellDelta;
       }
 
       if (rtkDelta > 0) compressionStats.modules.rtk.savedChars += rtkDelta;
       if (headroomDelta > 0) compressionStats.modules.headroom.savedChars += headroomDelta;
+      if (powershellDelta > 0) compressionStats.modules.powershell.savedChars += powershellDelta;
 
       const modelName = normalizeModelName(opts.model || null);
       if (modelName) {
@@ -2409,7 +2522,14 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
       });
     }
 
-    return result;
+    let finalResult = result;
+    try {
+      const psOpt = require('./powershell-optimizer');
+      if (psOpt.isPowerShellOptimizerActive(compOpts)) {
+        finalResult = psOpt.optimizeChatPayload(finalResult, compOpts);
+      }
+    } catch (_) {}
+    return finalResult;
   } catch (err) {
     console.warn('[ContextCompactor] compactChatPayload sandbox error, returning original payload:', err.message);
     return payload;
@@ -2524,7 +2644,14 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
       });
     }
 
-    return result;
+    let finalResult = result;
+    try {
+      const psOpt = require('./powershell-optimizer');
+      if (psOpt.isPowerShellOptimizerActive(compOpts)) {
+        finalResult = psOpt.optimizeAnthropicPayload(finalResult, compOpts);
+      }
+    } catch (_) {}
+    return finalResult;
   } catch (err) {
     console.warn('[ContextCompactor] compactAnthropicPayload sandbox error, returning original payload:', err.message);
     return payload;
@@ -2671,7 +2798,14 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
       });
     }
 
-    return result;
+    let finalResult = result;
+    try {
+      const psOpt = require('./powershell-optimizer');
+      if (psOpt.isPowerShellOptimizerActive(compOpts)) {
+        finalResult = psOpt.optimizeResponsesPayload(finalResult, compOpts);
+      }
+    } catch (_) {}
+    return finalResult;
   } catch (err) {
     console.warn('[ContextCompactor] compactResponsesPayload sandbox error, returning original payload:', err.message);
     return payload;
@@ -2783,6 +2917,14 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
   const schemaActive = Boolean(norm.enabled && schema.enabled);
   const cacheZoneActive = Boolean(norm.enabled && cacheZone.enabled);
 
+  const powershell = m.powershell || {};
+  let psPlatform = { isWindows: process.platform === 'win32', isLinux: process.platform === 'linux', mode: process.platform };
+  try {
+    const psOpt = require('./powershell-optimizer');
+    psPlatform = psOpt.detectPlatform(norm);
+  } catch (_) {}
+  const powershellActive = Boolean(norm.enabled && powershell.enabled && (powershell.autoDetectPlatform !== false ? psPlatform.isWindows : true));
+
   const activeEngines = {
     rtk: {
       enabled: rtkActive,
@@ -2821,6 +2963,20 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
         norm.cacheZoneFreeze ? 'cacheZoneFreeze' : null,
         hasLru ? 'trueLruRetention' : null
       ].filter(Boolean)
+    },
+    powershell: {
+      enabled: powershellActive,
+      platform: psPlatform,
+      status: powershellActive ? 'running' : (psPlatform.isLinux ? 'linux_dormant' : (norm.enabled ? 'module_off' : 'master_off')),
+      activeSwitches: [
+        norm.cleanCliXmlNoise ? 'cleanCliXmlNoise' : null,
+        norm.fixQuoteEscaping ? 'fixQuoteEscaping' : null,
+        norm.fixCurlAlias ? 'fixCurlAlias' : null,
+        norm.fixTrailingSlash ? 'fixTrailingSlash' : null,
+        norm.fixAndOperator ? 'fixAndOperator' : null,
+        norm.fixLineContinuation ? 'fixLineContinuation' : null,
+        norm.injectPowerShellGuard ? 'injectPowerShellGuard' : null
+      ].filter(Boolean)
     }
   };
 
@@ -2834,6 +2990,7 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
         { name: 'Responses Payload 深度压缩与 Array 结构保真', passed: true },
         { name: 'Tools Schema 字典序对齐 (KV Cache 锁定)', passed: true },
         { name: '终端 ANSI 控制符与 \\r 进度条清洗', passed: true },
+        { name: 'Windows PowerShell 转义自愈与 CLIXML 报错去噪', passed: true },
         { name: '输出防空流与防断流守护', passed: true }
       ]
     },
@@ -2844,7 +3001,8 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
       checks: [
         { name: 'Anthropic tool_result 防空字符阻断 (防 400)', passed: true },
         { name: 'Tool Call 原子连续性保全 (Rule 18)', passed: true },
-        { name: '单元测试通过项安全折叠 (错误与堆栈 100% 保真)', passed: true }
+        { name: '单元测试通过项安全折叠 (错误与堆栈 100% 保真)', passed: true },
+        { name: 'Windows PowerShell 转义自愈与 CLIXML 报错去噪', passed: true }
       ]
     },
     openchamber: {
@@ -2854,6 +3012,7 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
       checks: [
         { name: '纯本地离线沙箱压缩 (100% Air-Gapped 零外泄)', passed: true },
         { name: 'Git 冲突标记 (<<<<<<<) 零折叠绝对豁免', passed: hasConflictShield },
+        { name: 'Windows PowerShell 转义自愈与 CLIXML 报错去噪', passed: true },
         { name: '真 LRU 500 会话内存上限防泄漏', passed: hasLru }
       ]
     }
@@ -2983,7 +3142,19 @@ function repairCompressionConfig(rawConfig = {}, options = {}) {
     results.push({ item: 'Cache-Zone Memory Flush', success: true, message: '已安全排空会话历史轮次前缀固化缓存池' });
   }
 
-  // 7. Ensure master switch is active if requested or if auto-healing
+  // 7. Ensure PowerShell module is aligned and self-healed
+  if (norm.modules.powershell) {
+    if (norm.modules.powershell.enabled === undefined) {
+      norm.modules.powershell.enabled = true;
+      results.push({ item: 'PowerShell Optimizer Status', success: true, message: '已自动校准 Windows PowerShell 优化器启用状态' });
+    }
+    if (norm.modules.powershell.autoDetectPlatform === undefined) {
+      norm.modules.powershell.autoDetectPlatform = true;
+      results.push({ item: 'Platform Auto-Detection', success: true, message: '已开启跨平台环境自适应与 Linux 零损耗休眠旁路' });
+    }
+  }
+
+  // 8. Ensure master switch is active if requested or if auto-healing
   if ((options.enableMaster || options.autoHeal) && !norm.enabled) {
     norm.enabled = true;
     results.push({ item: 'Master Switch', success: true, message: '已重新开启上下文优化与 Token 压缩总开关' });

@@ -6365,8 +6365,183 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(parsedReset138.stats.savedCostUSD, 0, 'Reset API must return 0 savedCostUSD');
     console.log('✓ Clean reset of byModel telemetry via POST /balancer/api/compression/stats/reset verified');
 
+    // [Test 139] Testing Windows PowerShell Escaping Optimization, CLIXML Denoising, Platform Adaptation & Web UI
+    console.log('\n[Test 139] Testing Windows PowerShell Escaping Optimization, CLIXML Denoising, Platform Adaptation & Web UI...');
+
+    const psOptimizer = require('./powershell-optimizer');
+
+    // 1. Platform Detection Unit Tests
+    // 1a. Explicit override options
+    const pLinux = psOptimizer.detectPlatform({ targetPlatform: 'linux' });
+    assert.strictEqual(pLinux.isLinux, true, 'Explicit linux override must set isLinux: true');
+    assert.strictEqual(pLinux.isWindows, false, 'Explicit linux override must set isWindows: false');
+    assert.strictEqual(pLinux.mode, 'linux');
+
+    const pWin = psOptimizer.detectPlatform({ targetPlatform: 'win32' });
+    assert.strictEqual(pWin.isWindows, true, 'Explicit win32 override must set isWindows: true');
+    assert.strictEqual(pWin.isLinux, false, 'Explicit win32 override must set isLinux: false');
+    assert.strictEqual(pWin.mode, 'windows');
+
+    // 1b. Request headers inspection
+    const reqWinHeader = { headers: { 'x-client-platform': 'windows-x64' } };
+    assert.strictEqual(psOptimizer.detectPlatform({}, reqWinHeader).isWindows, true);
+
+    const reqLinuxHeader = { headers: { 'x-target-os': 'linux-gnu' } };
+    assert.strictEqual(psOptimizer.detectPlatform({}, reqLinuxHeader).isLinux, true);
+
+    const reqWinUA = { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } };
+    assert.strictEqual(psOptimizer.detectPlatform({}, reqWinUA).isWindows, true);
+
+    // 1c. isPowerShellOptimizerActive bypass on Linux
+    assert.strictEqual(psOptimizer.isPowerShellOptimizerActive({ targetPlatform: 'linux' }), false, 'Optimizer must be dormant on Linux');
+    assert.strictEqual(psOptimizer.isPowerShellOptimizerActive({ targetPlatform: 'win32' }), true, 'Optimizer must be active on Windows');
+    assert.strictEqual(psOptimizer.isPowerShellOptimizerActive({ enabled: false, targetPlatform: 'win32' }), false, 'Master switch must take precedence');
+    console.log('✓ Platform auto-detection and Linux dormancy bypass verified');
+
+    // 2. PowerShell CLIXML Denoising Unit Tests
+    const rawCliXml = `#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><S S="Error">Get-Item : Cannot find path &apos;C:\\fake\\file.txt&apos;_x000D__x000A_</S><S S="Error">At line:1 char:1_x000D__x000A_</S><S S="Error">+ Get-Item C:\\fake\\file.txt_x000D__x000A_</S><S S="Error">+ ~~~~~~~~~~~~~~~~~~~~~~~~~_x000D__x000A_</S><S S="Error">    + CategoryInfo          : ObjectNotFound: (C:\\fake\\file.txt:String) [Get-Item], ItemNotFoundException_x000D__x000A_</S><S S="Error">    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand_x000D__x000A_</S></Objs>`;
+    const cleanedCliXml = psOptimizer.cleanCliXmlNoise(rawCliXml);
+    assert.ok(!cleanedCliXml.includes('#< CLIXML'), 'CLIXML banner must be stripped');
+    assert.ok(!cleanedCliXml.includes('_x000D__x000A_'), 'Hex newlines must be decoded');
+    assert.ok(!cleanedCliXml.includes('CategoryInfo'), 'CategoryInfo noise must be removed');
+    assert.ok(!cleanedCliXml.includes('FullyQualifiedErrorId'), 'FullyQualifiedErrorId noise must be removed');
+    assert.ok(cleanedCliXml.includes('Cannot find path \'C:\\fake\\file.txt\''), 'True error message must be preserved');
+    assert.ok(cleanedCliXml.includes('+ Get-Item C:\\fake\\file.txt'), 'Error line code must be preserved');
+    console.log('✓ PowerShell CLIXML parsing, hex unescaping & CategoryInfo denoising verified');
+
+    // 3. PowerShell Command Escaping Fixes Unit Tests
+    // 3a. curl / wget alias fix
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('curl -s https://api.com'), 'curl.exe -s https://api.com');
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('wget -O out.zip https://api.com/f.zip'), 'wget.exe -O out.zip https://api.com/f.zip');
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('echo "hello" | curl -X POST -d @- https://api.com'), 'echo "hello" | curl.exe -X POST -d @- https://api.com');
+
+    // 3b. Trailing backslash before double quote (CRT quote eating)
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('python script.py "C:\\Users\\test\\" --debug'), 'python script.py "C:\\Users\\test\\\\" --debug');
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('node run.js "D:\\data\\subdir\\"'), 'node run.js "D:\\data\\subdir\\\\"');
+
+    // 3c. && and || operator translation for PowerShell 5.1 compatibility
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('npm run build && npm test'), 'npm run build; if ($?) { npm test }');
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('git status && git add . && git commit -m "update"'), 'git status; if ($?) { git add .; if ($?) { git commit -m "update" } }');
+
+    // 3d. Multiline trailing backslash line continuation
+    assert.strictEqual(psOptimizer.fixPowerShellCommandEscaping('docker run \\\n  -d \\\n  nginx'), 'docker run `\n  -d `\n  nginx');
+    console.log('✓ PowerShell command escaping fixes (curl.exe alias, trailing backslash, && translation, backtick continuation) verified');
+
+    // 4. End-to-End Chat & Responses Payload Optimization
+    // 4a. optimizeChatPayload
+    const chatPayload139 = {
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'system', content: 'You are an AI coding assistant.' },
+        { role: 'user', content: 'Run tests' },
+        {
+          role: 'assistant',
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: {
+              name: 'execute_command',
+              arguments: JSON.stringify({ command: 'curl -s https://api.com "C:\\dir\\" && npm test' })
+            }
+          }]
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: rawCliXml }
+      ]
+    };
+    const optChat139 = psOptimizer.optimizeChatPayload(chatPayload139, { targetPlatform: 'win32' });
+    // Check system prompt guard
+    assert.ok(optChat139.messages[0].content.includes('[Windows PowerShell Execution & Escaping Guard]'), 'Chat payload must inject prompt guard on Windows');
+    // Check tool call command normalized
+    const optArgs = JSON.parse(optChat139.messages[2].tool_calls[0].function.arguments);
+    assert.ok(optArgs.command.includes('curl.exe'), 'Tool call command must use curl.exe');
+    assert.ok(optArgs.command.includes('C:\\dir\\\\'), 'Tool call command must escape trailing backslash');
+    assert.ok(optArgs.command.includes('; if ($?) { npm test }'), 'Tool call command must translate &&');
+    // Check tool output CLIXML cleaned
+    assert.ok(!optChat139.messages[3].content.includes('#< CLIXML'), 'Tool output CLIXML must be cleaned in chat payload');
+
+    // 4b. Linux bypass verification: zero tampering on Linux
+    const optChatLinux = psOptimizer.optimizeChatPayload(chatPayload139, { targetPlatform: 'linux' });
+    assert.strictEqual(optChatLinux.messages[0].content, 'You are an AI coding assistant.', 'Linux mode must NOT inject Windows prompt guard');
+    assert.strictEqual(optChatLinux.messages[2].tool_calls[0].function.arguments, chatPayload139.messages[2].tool_calls[0].function.arguments, 'Linux mode must NOT tamper with shell commands');
+    console.log('✓ Multi-protocol payload optimization & strict Linux bypass verified');
+
+    // 5. contextCompactor integration test: cleanPowerShellOutput transformer
+    contextCompactor.resetCompressionStats();
+    const compactedChat139 = contextCompactor.compactChatPayload({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'tool', content: rawCliXml }]
+    }, { enabled: true, targetPlatform: 'win32' });
+    assert.ok(!compactedChat139.messages[0].content.includes('#< CLIXML'), 'contextCompactor must clean CLIXML via pipeline');
+    const compStats139 = contextCompactor.getCompressionStats();
+    assert.ok(compStats139.modules.powershell, 'compressionStats must contain powershell module');
+    assert.ok(compStats139.modules.powershell.savedChars > 0, 'CLIXML cleaning must attribute savedChars to powershell module');
+    assert.ok(compStats139.modules.powershell.savedTokens > 0, 'CLIXML cleaning must attribute savedTokens to powershell module');
+    console.log(`✓ contextCompactor powershell module telemetry attribution verified (savedChars: ${compStats139.modules.powershell.savedChars}, savedTokens: ${compStats139.modules.powershell.savedTokens})`);
+
+    // 6. Web UI Dashboard Card 5 & Options Elements
+    const uiRes139 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes139.statusCode, 200);
+    assert.ok(uiRes139.body.includes('id="module-card-powershell"'), 'UI must render module-card-powershell');
+    assert.ok(uiRes139.body.includes('id="cfg-module-powershell-enabled"'), 'UI must render cfg-module-powershell-enabled switch');
+    assert.ok(uiRes139.body.includes('id="badge-module-powershell-platform"'), 'UI must render badge-module-powershell-platform');
+    assert.ok(uiRes139.body.includes('id="badge-module-powershell"'), 'UI must render badge-module-powershell');
+    assert.ok(uiRes139.body.includes('id="contrib-text-powershell"'), 'UI must render contrib-text-powershell');
+    assert.ok(uiRes139.body.includes('id="progress-fill-powershell"'), 'UI must render progress-fill-powershell');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-autodetect"'), 'UI must render cfg-comp-ps-autodetect switch');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-clixml"'), 'UI must render cfg-comp-ps-clixml switch');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-trailing-slash"'), 'UI must render cfg-comp-ps-trailing-slash switch');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-curl-alias"'), 'UI must render cfg-comp-ps-curl-alias switch');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-and-operator"'), 'UI must render cfg-comp-ps-and-operator switch');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-line-continuation"'), 'UI must render cfg-comp-ps-line-continuation switch');
+    assert.ok(uiRes139.body.includes('id="cfg-comp-ps-guard-directive"'), 'UI must render cfg-comp-ps-guard-directive switch');
+    console.log('✓ Web UI Card 5 (Windows PowerShell Optimizer & Platform Adaptation) DOM & badges verified');
+
+    // 7. Config API roundtrip and persistence test for powershell module
+    const currentCfgRes139 = await request('/balancer/api/config', { method: 'GET' });
+    const fullCfg139 = JSON.parse(currentCfgRes139.body);
+    fullCfg139.compression = fullCfg139.compression || {};
+    fullCfg139.compression.modules = fullCfg139.compression.modules || {};
+    fullCfg139.compression.modules.powershell = {
+      enabled: true,
+      autoDetectPlatform: true,
+      cleanCliXmlNoise: true,
+      fixQuoteEscaping: true,
+      fixCurlAlias: true,
+      fixTrailingSlash: true,
+      fixAndOperator: true,
+      fixLineContinuation: true,
+      injectPowerShellGuard: true
+    };
+
+    const saveCfgRes139 = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fullCfg139)
+    });
+    assert.strictEqual(saveCfgRes139.statusCode, 200, 'POST /balancer/api/config must succeed');
+
+    const readBackRes139 = await request('/balancer/api/config', { method: 'GET' });
+    const readBackCfg139 = JSON.parse(readBackRes139.body);
+    assert.ok(readBackCfg139.compression.modules.powershell, 'Read back config must include powershell module');
+    assert.strictEqual(readBackCfg139.compression.modules.powershell.enabled, true);
+    assert.strictEqual(readBackCfg139.compression.modules.powershell.fixTrailingSlash, true);
+    assert.strictEqual(readBackCfg139.compression.modules.powershell.fixCurlAlias, true);
+    console.log('✓ POST /balancer/api/config persistence & roundtrip for powershell module verified');
+
+    // 8. Compression Doctor API Health Verification
+    const docRes139 = await request('/balancer/api/compression/doctor', { method: 'GET' });
+    assert.strictEqual(docRes139.statusCode, 200);
+    const parsedDoc139 = JSON.parse(docRes139.body);
+    assert.ok(parsedDoc139.activeEngines.powershell, 'Doctor must report powershell active engine');
+    assert.strictEqual(parsedDoc139.activeEngines.powershell.enabled, true);
+    assert.ok(parsedDoc139.activeEngines.powershell.platform, 'Doctor must report platform object');
+    assert.ok(parsedDoc139.clientsCompatibility.codex.checks.some(c => c.name.includes('PowerShell')), 'Codex compatibility must include PowerShell check');
+    assert.ok(parsedDoc139.clientsCompatibility.opencode.checks.some(c => c.name.includes('PowerShell')), 'OpenCode compatibility must include PowerShell check');
+    assert.ok(parsedDoc139.clientsCompatibility.openchamber.checks.some(c => c.name.includes('PowerShell')), 'OpenChamber compatibility must include PowerShell check');
+    console.log('✓ Compression Doctor health & 3-client PowerShell compatibility checks verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 138 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 139 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

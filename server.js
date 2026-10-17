@@ -26,6 +26,7 @@ const os = require('node:os');
 const { execSync, exec, spawn } = require('node:child_process');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
+const powershellOptimizer = require('./powershell-optimizer');
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
@@ -3772,6 +3773,11 @@ function renderLoginPage() {
 function renderDashboardHtml(config) {
   const compCfg = config.compression || contextCompactor.DEFAULT_COMPRESSION_CONFIG;
   const mCfg = compCfg.modules || {};
+  let psPlatform = { isWindows: process.platform === 'win32', isLinux: process.platform === 'linux' };
+  try {
+    psPlatform = powershellOptimizer.detectPlatform(compCfg);
+  } catch (_) {}
+  const psIsWin = psPlatform.isWindows;
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -4947,6 +4953,80 @@ function renderDashboardHtml(config) {
               </div>
             </div>
           </div>
+
+          <!-- 大项 5：Windows PowerShell 转义优化与环境自适应防护 -->
+          <div class="comp-module-card ${(mCfg.powershell && mCfg.powershell.enabled === false) ? 'module-disabled' : ''}" id="module-card-powershell">
+            <div class="comp-module-header">
+              <div class="comp-module-title-box">
+                <label class="switch-label comp-main-switch-label">
+                  <input type="checkbox" id="cfg-module-powershell-enabled" ${(mCfg.powershell && mCfg.powershell.enabled !== false) ? 'checked' : ''} onchange="toggleModuleEnabled('powershell', this.checked)">
+                  <span class="comp-module-title">5. Windows PowerShell 转义优化与环境自适应防护</span>
+                </label>
+              </div>
+              <div class="comp-module-header-right">
+                <span class="badge ${psIsWin ? 'badge-healthy' : 'badge-disabled'}" id="badge-module-powershell-platform">${psIsWin ? '🟢 Windows 原生运行中' : '🐧 Linux 休眠旁路 (零干扰)'}</span>
+                <span class="badge ${(mCfg.powershell && mCfg.powershell.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-powershell">${(mCfg.powershell && mCfg.powershell.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                <div class="comp-module-contrib">
+                  <span class="contrib-text" id="contrib-text-powershell">贡献度: 0% · 0 Tokens</span>
+                  <div class="comp-progress-bar">
+                    <div class="comp-progress-fill" id="progress-fill-powershell" style="width: 0%;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="comp-module-desc">智能区分 Linux 与 Windows 环境。Windows 下深度分析并自愈 PowerShell 转义陷阱、消灭 CLIXML 报错噪点与 Token 浪费；Linux NAS 下零干扰纯净休眠。</div>
+            <div class="comp-module-body" id="module-body-powershell">
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-autodetect" ${(mCfg.powershell && mCfg.powershell.autoDetectPlatform !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>环境自适应与休眠旁路 (autoDetectPlatform)</span>
+                </label>
+                <div class="sub-tip">自动探测操作系统（Windows 激活 / Linux NAS 保持零开销休眠旁路），亦可通过请求头自适应</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-clixml" ${(mCfg.powershell && mCfg.powershell.cleanCliXmlNoise !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>PowerShell CLIXML 报错去噪与 Hex 转义解码 (cleanCliXmlNoise)</span>
+                </label>
+                <div class="sub-tip">剥离 #&lt; CLIXML 标签与冗长 CategoryInfo 堆栈，解码 _x000D__x000A_，削减 70%~90% 报错重试 Token 浪费</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-trailing-slash" ${(mCfg.powershell && mCfg.powershell.fixTrailingSlash !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>路径末尾反斜杠防吞噬引号 (fixTrailingSlash)</span>
+                </label>
+                <div class="sub-tip">自愈 Windows CRT CommandLineToArgvW 陷阱：自动将 &quot;C:\dir\&quot; 转换为 &quot;C:\dir\\&quot; 彻底防止闭合引号被吃掉</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-curl-alias" ${(mCfg.powershell && mCfg.powershell.fixCurlAlias !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>PowerShell 5.1 curl / wget 别名陷阱规避 (fixCurlAlias)</span>
+                </label>
+                <div class="sub-tip">规避 Windows 自带 PowerShell 将 curl 别名至 Invoke-WebRequest 导致的参数崩溃，自动映射为 curl.exe</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-and-operator" ${(mCfg.powershell && mCfg.powershell.fixAndOperator !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>PowerShell 5.1 连词符兼容性自愈 (fixAndOperator)</span>
+                </label>
+                <div class="sub-tip">将 PowerShell 5.1 不支持的 &amp;&amp; 语法自愈为 ; if ($?) { ... }，消除致命语法解析错误中断</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-line-continuation" ${(mCfg.powershell && mCfg.powershell.fixLineContinuation !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>多行续行符修正 (fixLineContinuation)</span>
+                </label>
+                <div class="sub-tip">将 Bash 风格的多行末尾续行反斜杠 (\) 转换为 PowerShell 原生反引号 (\`) 续行</div>
+              </div>
+              <div class="comp-sub-item">
+                <label class="switch-label">
+                  <input type="checkbox" id="cfg-comp-ps-guard-directive" ${(mCfg.powershell && mCfg.powershell.injectPowerShellGuard !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
+                  <span>Windows 前置防踩坑指令屏障 (injectPowerShellGuard)</span>
+                </label>
+                <div class="sub-tip">在 system / instructions 中轻量注入 PowerShell 规范指南，从源头消灭 Agent 试错循环与降智风险</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -4998,7 +5078,7 @@ function renderDashboardHtml(config) {
         });
       }
 
-      ['rtk', 'headroom', 'schema', 'cacheZone'].forEach(mod => {
+      ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell'].forEach(mod => {
         const sw = document.getElementById('cfg-module-' + (mod === 'cacheZone' ? 'cachezone' : mod) + '-enabled');
         const enabled = sw ? sw.checked : true;
         const modCard = document.getElementById('module-card-' + mod);
@@ -5073,6 +5153,15 @@ function renderDashboardHtml(config) {
         setCheck('cfg-module-cachezone-enabled', true);
         setCheck('cfg-comp-cache-freeze', true);
         setCheck('cfg-comp-true-lru', true);
+
+        setCheck('cfg-module-powershell-enabled', true);
+        setCheck('cfg-comp-ps-autodetect', true);
+        setCheck('cfg-comp-ps-clixml', true);
+        setCheck('cfg-comp-ps-trailing-slash', true);
+        setCheck('cfg-comp-ps-curl-alias', true);
+        setCheck('cfg-comp-ps-and-operator', true);
+        setCheck('cfg-comp-ps-line-continuation', true);
+        setCheck('cfg-comp-ps-guard-directive', true);
       } else if (presetName === 'aggressive') {
         setCheck('cfg-module-rtk-enabled', true);
         setCheck('cfg-comp-strip-ansi', true);
@@ -5094,6 +5183,15 @@ function renderDashboardHtml(config) {
         setCheck('cfg-module-cachezone-enabled', true);
         setCheck('cfg-comp-cache-freeze', true);
         setCheck('cfg-comp-true-lru', true);
+
+        setCheck('cfg-module-powershell-enabled', true);
+        setCheck('cfg-comp-ps-autodetect', true);
+        setCheck('cfg-comp-ps-clixml', true);
+        setCheck('cfg-comp-ps-trailing-slash', true);
+        setCheck('cfg-comp-ps-curl-alias', true);
+        setCheck('cfg-comp-ps-and-operator', true);
+        setCheck('cfg-comp-ps-line-continuation', true);
+        setCheck('cfg-comp-ps-guard-directive', true);
       } else if (presetName === 'conservative') {
         setCheck('cfg-module-rtk-enabled', true);
         setCheck('cfg-comp-strip-ansi', true);
@@ -5115,6 +5213,15 @@ function renderDashboardHtml(config) {
         setCheck('cfg-module-cachezone-enabled', false);
         setCheck('cfg-comp-cache-freeze', false);
         setCheck('cfg-comp-true-lru', true);
+
+        setCheck('cfg-module-powershell-enabled', true);
+        setCheck('cfg-comp-ps-autodetect', true);
+        setCheck('cfg-comp-ps-clixml', true);
+        setCheck('cfg-comp-ps-trailing-slash', true);
+        setCheck('cfg-comp-ps-curl-alias', true);
+        setCheck('cfg-comp-ps-and-operator', true);
+        setCheck('cfg-comp-ps-line-continuation', true);
+        setCheck('cfg-comp-ps-guard-directive', false);
       } else if (presetName === 'custom') {
         // Keeps current user configuration intact and highlights custom mode
       }
@@ -5152,11 +5259,20 @@ function renderDashboardHtml(config) {
       const isCacheZone = getChecked('cfg-module-cachezone-enabled');
       const isFreeze = getChecked('cfg-comp-cache-freeze');
 
-      if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 15000 && isCacheZone && isFreeze) {
+      const isPs = getChecked('cfg-module-powershell-enabled');
+      const isPsClixml = getChecked('cfg-comp-ps-clixml');
+      const isPsTrailingSlash = getChecked('cfg-comp-ps-trailing-slash');
+      const isPsCurl = getChecked('cfg-comp-ps-curl-alias');
+      const isPsAnd = getChecked('cfg-comp-ps-and-operator');
+      const isPsLine = getChecked('cfg-comp-ps-line-continuation');
+      const isPsGuard = getChecked('cfg-comp-ps-guard-directive');
+      const isPsFull = isPs && isPsClixml && isPsTrailingSlash && isPsCurl && isPsAnd && isPsLine;
+
+      if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 15000 && isCacheZone && isFreeze && isPsFull && isPsGuard) {
         setPresetUI('balanced');
-      } else if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 8000 && isCacheZone && isFreeze) {
+      } else if (isRtk && isStrip && isClean && isTests && isDevops && isHeadroom && isLock && isStruct && isSchema && isAlign && isSlim && threshold === 8000 && isCacheZone && isFreeze && isPsFull && isPsGuard) {
         setPresetUI('aggressive');
-      } else if (isRtk && isStrip && isClean && !isTests && !isDevops && !isHeadroom && !isLock && !isStruct && isSchema && isAlign && !isSlim && threshold === 15000 && !isCacheZone && !isFreeze) {
+      } else if (isRtk && isStrip && isClean && !isTests && !isDevops && !isHeadroom && !isLock && !isStruct && isSchema && isAlign && !isSlim && threshold === 15000 && !isCacheZone && !isFreeze && isPsFull && !isPsGuard) {
         setPresetUI('conservative');
       } else {
         setPresetUI('custom');
@@ -5255,7 +5371,7 @@ function renderDashboardHtml(config) {
         }
 
         if (stats.modules) {
-          ['rtk', 'headroom', 'schema', 'cacheZone'].forEach(mod => {
+          ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell'].forEach(mod => {
             const m = stats.modules[mod] || {};
             const textEl = document.getElementById('contrib-text-' + mod);
             const fillEl = document.getElementById('progress-fill-' + mod);
@@ -6213,6 +6329,15 @@ function renderDashboardHtml(config) {
       const compCacheFreeze = document.getElementById('cfg-comp-cache-freeze') ? document.getElementById('cfg-comp-cache-freeze').checked : true;
       const compTrueLru = document.getElementById('cfg-comp-true-lru') ? document.getElementById('cfg-comp-true-lru').checked : true;
 
+      const psEnabled = document.getElementById('cfg-module-powershell-enabled') ? document.getElementById('cfg-module-powershell-enabled').checked : true;
+      const compPsAutodetect = document.getElementById('cfg-comp-ps-autodetect') ? document.getElementById('cfg-comp-ps-autodetect').checked : true;
+      const compPsClixml = document.getElementById('cfg-comp-ps-clixml') ? document.getElementById('cfg-comp-ps-clixml').checked : true;
+      const compPsTrailingSlash = document.getElementById('cfg-comp-ps-trailing-slash') ? document.getElementById('cfg-comp-ps-trailing-slash').checked : true;
+      const compPsCurlAlias = document.getElementById('cfg-comp-ps-curl-alias') ? document.getElementById('cfg-comp-ps-curl-alias').checked : true;
+      const compPsAndOperator = document.getElementById('cfg-comp-ps-and-operator') ? document.getElementById('cfg-comp-ps-and-operator').checked : true;
+      const compPsLineContinuation = document.getElementById('cfg-comp-ps-line-continuation') ? document.getElementById('cfg-comp-ps-line-continuation').checked : true;
+      const compPsGuardDirective = document.getElementById('cfg-comp-ps-guard-directive') ? document.getElementById('cfg-comp-ps-guard-directive').checked : true;
+
       const compression = {
         enabled: compEnabled,
         preset: currentPreset || 'balanced',
@@ -6241,6 +6366,17 @@ function renderDashboardHtml(config) {
             enabled: cacheZoneEnabled,
             cacheZoneFreeze: compCacheFreeze,
             trueLruRetention: compTrueLru
+          },
+          powershell: {
+            enabled: psEnabled,
+            autoDetectPlatform: compPsAutodetect,
+            cleanCliXmlNoise: compPsClixml,
+            fixQuoteEscaping: compPsTrailingSlash,
+            fixCurlAlias: compPsCurlAlias,
+            fixTrailingSlash: compPsTrailingSlash,
+            fixAndOperator: compPsAndOperator,
+            fixLineContinuation: compPsLineContinuation,
+            injectPowerShellGuard: compPsGuardDirective
           }
         },
         stripAnsi: (compEnabled && rtkEnabled) ? compStripAnsi : false,
@@ -6258,7 +6394,15 @@ function renderDashboardHtml(config) {
         slimToolsSchema: (compEnabled && schemaEnabled) ? compSlimSchema : false,
         schemaCharThreshold: compThreshold,
         cacheZoneFreeze: (compEnabled && cacheZoneEnabled) ? compCacheFreeze : false,
-        trueLruRetention: compTrueLru
+        trueLruRetention: compTrueLru,
+        autoDetectPlatform: compPsAutodetect,
+        cleanCliXmlNoise: (compEnabled && psEnabled) ? compPsClixml : false,
+        fixQuoteEscaping: (compEnabled && psEnabled) ? compPsTrailingSlash : false,
+        fixCurlAlias: (compEnabled && psEnabled) ? compPsCurlAlias : false,
+        fixTrailingSlash: (compEnabled && psEnabled) ? compPsTrailingSlash : false,
+        fixAndOperator: (compEnabled && psEnabled) ? compPsAndOperator : false,
+        fixLineContinuation: (compEnabled && psEnabled) ? compPsLineContinuation : false,
+        injectPowerShellGuard: (compEnabled && psEnabled) ? compPsGuardDirective : false
       };
 
       const payload = {
@@ -7009,13 +7153,19 @@ function renderDashboardHtml(config) {
       html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
       html += '<strong>4. llmtrim Cache-Zone:</strong> ' + (eng.cacheZone && eng.cacheZone.enabled ? '<span style="color:var(--success);">✔ 活跃会话 ' + (eng.cacheZone.activeSessions || 0) + '</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
       html += '</div>';
+      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      const psStatusText = eng.powershell && eng.powershell.enabled
+        ? '<span style="color:var(--success);">✔ ' + (eng.powershell.platform && eng.powershell.platform.isWindows ? 'Windows 原生运行' : 'Linux 旁路休眠') + '</span>'
+        : '<span style="color:var(--muted);">旁路关闭</span>';
+      html += '<strong>5. PowerShell 优化:</strong> ' + psStatusText;
+      html += '</div>';
       html += '</div>';
 
       // 3 大客户端适配保障状态
       html += '<div style="font-size:0.8rem; background:rgba(30, 41, 59, 0.6); padding:8px 10px; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">';
-      html += '<span>🤖 <strong>Codex CLI / Desktop:</strong> <span style="color:var(--success);">✔ Responses 保真 & 超时加固</span></span>';
-      html += '<span>⚡ <strong>OpenCode 2.0+:</strong> <span style="color:var(--success);">✔ Tool Call 连续性保全 & 空流阻断</span></span>';
-      html += '<span>💻 <strong>OpenChamber:</strong> <span style="color:var(--success);">✔ 100% 离线沙箱安全 & 冲突豁免</span></span>';
+      html += '<span>🤖 <strong>Codex CLI / Desktop:</strong> <span style="color:var(--success);">✔ Responses 保真 &amp; PS 转义自愈</span></span>';
+      html += '<span>⚡ <strong>OpenCode 2.0+:</strong> <span style="color:var(--success);">✔ Tool Call 连续性 &amp; CLIXML 去噪</span></span>';
+      html += '<span>💻 <strong>OpenChamber:</strong> <span style="color:var(--success);">✔ 100% 离线沙箱安全 &amp; 环境自适应</span></span>';
       html += '</div>';
 
       if (issues.length > 0) {
@@ -7311,7 +7461,8 @@ const server = http.createServer((req, res) => {
               rtk: { ...(prevComp.modules?.rtk || {}), ...(payload.compression.modules.rtk || {}) },
               headroom: { ...(prevComp.modules?.headroom || {}), ...(payload.compression.modules.headroom || {}) },
               schema: { ...(prevComp.modules?.schema || {}), ...(payload.compression.modules.schema || {}) },
-              cacheZone: { ...(prevComp.modules?.cacheZone || {}), ...(payload.compression.modules.cacheZone || {}) }
+              cacheZone: { ...(prevComp.modules?.cacheZone || {}), ...(payload.compression.modules.cacheZone || {}) },
+              powershell: { ...(prevComp.modules?.powershell || {}), ...(payload.compression.modules.powershell || {}) }
             };
             const toNormalize = {
               enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
@@ -7322,7 +7473,9 @@ const server = http.createServer((req, res) => {
                             'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
                             'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
                             'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
-                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
+                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns',
+                            'autoDetectPlatform', 'cleanCliXmlNoise', 'fixQuoteEscaping', 'fixCurlAlias',
+                            'fixTrailingSlash', 'fixAndOperator', 'fixLineContinuation', 'injectPowerShellGuard']) {
               if (payload.compression[k] !== undefined) {
                 toNormalize[k] = payload.compression[k];
               }
@@ -7376,6 +7529,16 @@ const server = http.createServer((req, res) => {
               if (payload.compression.trueLruRetention !== undefined && mergedModules.cacheZone) {
                 mergedModules.cacheZone.trueLruRetention = Boolean(payload.compression.trueLruRetention);
               }
+              if (mergedModules.powershell) {
+                if (payload.compression.autoDetectPlatform !== undefined) mergedModules.powershell.autoDetectPlatform = Boolean(payload.compression.autoDetectPlatform);
+                if (payload.compression.cleanCliXmlNoise !== undefined) mergedModules.powershell.cleanCliXmlNoise = Boolean(payload.compression.cleanCliXmlNoise);
+                if (payload.compression.fixQuoteEscaping !== undefined) mergedModules.powershell.fixQuoteEscaping = Boolean(payload.compression.fixQuoteEscaping);
+                if (payload.compression.fixCurlAlias !== undefined) mergedModules.powershell.fixCurlAlias = Boolean(payload.compression.fixCurlAlias);
+                if (payload.compression.fixTrailingSlash !== undefined) mergedModules.powershell.fixTrailingSlash = Boolean(payload.compression.fixTrailingSlash);
+                if (payload.compression.fixAndOperator !== undefined) mergedModules.powershell.fixAndOperator = Boolean(payload.compression.fixAndOperator);
+                if (payload.compression.fixLineContinuation !== undefined) mergedModules.powershell.fixLineContinuation = Boolean(payload.compression.fixLineContinuation);
+                if (payload.compression.injectPowerShellGuard !== undefined) mergedModules.powershell.injectPowerShellGuard = Boolean(payload.compression.injectPowerShellGuard);
+              }
             }
             const toNormalize = {
               enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
@@ -7386,7 +7549,9 @@ const server = http.createServer((req, res) => {
                             'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
                             'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
                             'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
-                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
+                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns',
+                            'autoDetectPlatform', 'cleanCliXmlNoise', 'fixQuoteEscaping', 'fixCurlAlias',
+                            'fixTrailingSlash', 'fixAndOperator', 'fixLineContinuation', 'injectPowerShellGuard']) {
               if (payload.compression[k] !== undefined) {
                 toNormalize[k] = payload.compression[k];
               } else if (prevComp[k] !== undefined) {

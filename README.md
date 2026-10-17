@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.3.1-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.4.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-138%2F138%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-139%2F139%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -131,6 +131,7 @@ flowchart TD
             TestFold["测试通过项正向折叠 (堆栈全量留存)"]
             CacheAlign["Schema 字典序对齐 & 瘦身 (KV Cache 锁定)"]
             MemoPool["会话缓存区冻结 (Cache-Zone Memo)"]
+            PowerShellOpt["Windows PowerShell 转义自愈 & CLIXML 去噪 (环境自适应)"]
         end
 
         subgraph CoreShield["高可用自愈屏障 (Resilience Core)"]
@@ -317,7 +318,35 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 - **Card 3 CacheAligner & mcp-compressor 工具定义优化指标激活 (`context-compactor.js` & `server.js`)**：
   - **工具排序与去重即时归因**：重构 `compactToolsList`，消除原先在排序对齐后才计算字符长度导致贡献被丢弃的缺陷；自动去重同名工具并统计规整字符；
   - **KV Cache 前缀锁定轮次看板**：记录并持久化 `alignedRounds` 与 `alignedToolsCount`，当工具对齐生效时 Web UI 动态呈现 `(X 轮锁定)` 与 100% 绿色激活进度条；
-  - **独立模块节省汇总保护**：`computeDerivedStats` 与 `recordModuleOnlySavings` 强化，防止模块级独立优化在整体 diffSavedChars 为 0 时被遮蔽；
+### 🚀 v3.4.0 (Windows PowerShell 转义深度优化、CLIXML 报错去噪、跨平台环境自适应与 Web UI Card 5)
+- **Windows PowerShell 转义陷阱深度自愈 (`powershell-optimizer.js`)**：
+  - **路径末尾反斜杠防吞噬引号**：自愈 Windows CRT `CommandLineToArgvW` 陷阱，将 `"C:\dir\"` 自动转换为 `"C:\dir\\"`，彻底防止闭合双引号被意外吃掉导致后续参数拼接错位；
+  - **PowerShell 5.1 curl/wget 别名陷阱规避**：规避 Windows 原生 PowerShell 将 `curl` 别名为 `Invoke-WebRequest` 导致的参数崩溃，自动映射为 `curl.exe`；
+  - **`&&` 和 `||` 语法解析错误自愈**：将 Windows PowerShell 5.1 不支持的 `&&` 操作符智能转换为 `; if ($?) { ... }`，消除 ParserError 语法中断；
+  - **多行续行符修正**：将 Bash 式末尾续行反斜杠 `\` 转换为 PowerShell 原生反引号 `` ` `` 续行；
+  - **PowerShell CLIXML 报错去噪与 Token 节省**：清洗 `#< CLIXML` 冗长标签与 hex 转义编码（`_x000D__x000A_`），剥离 CategoryInfo 冗余堆栈，削减 70%~90% 因报错重试消耗的 Token；
+  - **前置防踩坑指令屏障 (Prompt Guard)**：在 system / instructions 中轻量注入 PowerShell 规范指南，从源头消灭 Agent 试错循环；
+  - **防降智与代码安全绝对红线**：严禁触碰源码正文、文件 Diff 或非终端参数，仅在终端命令与 stderr 中生效。
+- **跨平台环境自适应与休眠旁路 (Platform Auto-Detection & Dormancy)**：
+  - 自动检测当前操作系统与客户端请求平台（`options.targetPlatform > client headers > User-Agent > host process.platform`）；
+  - 在 Linux NAS 环境下保持 0 开销纯净休眠旁路（零修改零篡改），在 Windows 环境下自动激活；
+  - 允许通过 Web UI 控制台总开关与 7 个独立子开关细粒度开启或关闭，默认自动检测并开启。
+- **Web 控制台升级 (Card 5: Windows PowerShell 优化与自适应防护)**：
+  - 在 Web UI 中增设专属 Card 5，直观展示操作系统运行状态徽章（`🟢 Windows 原生运行中` vs `🐧 Linux 休眠旁路`）；
+  - 7 个独立子开关支持平衡标准档、极致省Token档与保守档联动；
+  - 贡献度与节约 Token 实时归因统计与进度条同步；
+  - 接入 Doctor 健康自检（`activeEngines.powershell`）与一键配置修复。
+- **全套 139 项自动化集成测试 100% 绿灯全通**。
+
+### 🚀 v3.3.1 (分模型定价节约预估、OpenCode 官方费率动态加权测算与 Web UI 模型明细抽屉)
+- **OpenCode 官方模型费率动态感知字典**：内置主流模型基准输入费率，支持动态同步；
+- **分模型精细化节约与贡献明细 (By-Model Breakdown)**：实时统计各模型字符与 Token 节约量，总费用按各模型实际单价动态加权测算；
+- **Web UI 数据大盘交互升级**：增设分模型节约明细折叠面板与实时列表；
+- **全套 138 项自动化集成测试 100% 绿灯全通**。
+
+### 🚀 v3.3.0 (高可用转发吞吐、全链路瓶颈清除、增量淘汰与 137 项全绿回归测试)
+- **高频会话驱逐算法优化**：增量定长淘汰替代全量排序，消除事件循环阻塞；
+- **Anthropic 桥看门狗机制与监听器防泄漏**；
 - **全套 137 项自动化集成测试 100% 绿灯全通**。
 
 ### 🚀 v3.2.2 (Web UI 体验升级、KV Cache 锁原理说明、SmartCrusher 超长同构 JSON 采样折叠与全链路测试)
