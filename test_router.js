@@ -6740,7 +6740,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0'].includes(packageJson140.version), 'package.json version must be 3.5.0 or 3.6.0');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0 or 3.6.1');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6986,8 +6986,8 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0 version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(packageJson141.version, '3.6.0', 'package.json version must be 3.6.0');
-    console.log('✓ package.json version 3.6.0 verified');
+    assert.ok(['3.6.0', '3.6.1'].includes(packageJson141.version), 'package.json version must be 3.6.0 or 3.6.1');
+    console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
     // Test 142: Zero-Cache Security Headers, Dual-Tab Time-Series Chart Viewports & Ultra-Light Native Client
@@ -7037,10 +7037,86 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(appExePath142), 'OpenCodeRouterApp.exe must exist');
     const trayExePath142 = path.join(__dirname, 'OpenCodeRouterTray.exe');
     assert.ok(fs.existsSync(trayExePath142), 'OpenCodeRouterTray.exe must exist');
-    console.log('✓ Ultra-Light Desktop Client & Tray Daemon (<64MB Memory Trimming, Chrome-first & Embedded Chromium) verified');
+    // [Test 143] Testing Real-World Codex Session Compression, Zero-Inflation CRLF & 3-Engine Telemetry (Headroom, CacheZone, PowerShell)
+    console.log('\n[Test 143] Testing Real-World Codex Session Compression, Zero-Inflation CRLF & 3-Engine Telemetry (Headroom, CacheZone, PowerShell)...');
+
+    // 1. CRLF Zero-Inflation Verification: Text with mixed newlines and no passes MUST NOT inflate
+    const mixedNewlineText = "Line 0\r\nLine 1\nLine 2\nLine 3\nLine 4\n";
+    const resFoldTest = contextCompactor.foldTestPasses(mixedNewlineText);
+    assert.strictEqual(resFoldTest.length, mixedNewlineText.length, 'foldTestPasses MUST NOT inflate CRLF mixed text when no passes exist');
+    assert.strictEqual(resFoldTest, mixedNewlineText, 'foldTestPasses must return original text reference on zero-saving');
+
+    // 2. PowerShell Interactive Banner & Git CRLF Denoising Telemetry
+    contextCompactor.resetCompressionStats();
+    const psNoiseOutput = "PowerShell 7.6.4 on Windows_NT\r\nwarning: in the working copy of script.sh, LF will be replaced by CRLF the next time Git touches it\r\nDone executing.";
+    const compactedPsText = contextCompactor.compactText(psNoiseOutput, { enabled: true, powershell: { enabled: true, cleanCliXmlNoise: true } });
+    assert.ok(!compactedPsText.includes('PowerShell 7.6.4'), 'Must strip PowerShell interactive banner');
+    assert.ok(!compactedPsText.includes('LF will be replaced by CRLF'), 'Must strip Git CRLF noise');
+    const psStats143 = contextCompactor.getCompressionStats();
+    assert.ok(psStats143.modules.powershell.savedChars > 0, 'PowerShell module must record positive savedChars');
+    assert.ok(psStats143.modules.powershell.savedTokens > 0, 'PowerShell module must record positive savedTokens');
+    console.log(`✓ PowerShell interactive banner denoising & telemetry verified (saved: ${psStats143.modules.powershell.savedChars} chars, ~${psStats143.modules.powershell.savedTokens} tokens)`);
+
+    // 3. Headroom SmartCrusher Long Tool Output (>2000 chars) Folding Telemetry
+    const longScriptCode = "function mt_lib_init() {\n" + "  # shell routine logic line\n".repeat(160) + "  return 0;\n}";
+    assert.ok(longScriptCode.length > 2000, 'Test payload must be > 2000 chars');
+    const preHrStats = contextCompactor.getCompressionStats().modules.headroom.savedChars;
+    const compactedHr = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true });
+    assert.ok(compactedHr.includes('[Headroom SmartCrusher:'), 'Must fold long tool output with Headroom SmartCrusher marker');
+    assert.ok(compactedHr.length < longScriptCode.length, 'Compacted text must be strictly shorter than original');
+    const postHrStats = contextCompactor.getCompressionStats().modules.headroom.savedChars;
+    assert.ok(postHrStats > preHrStats, 'Headroom module must record positive savedChars on giant output folding');
+    console.log(`✓ Headroom SmartCrusher long tool output folding & telemetry verified (delta: ${postHrStats - preHrStats} chars)`);
+
+    // 4. Cache-Zone Multi-Turn KV Cache Freeze Telemetry
+    const testSession143 = 'session_codex_01a1422d_verify';
+    contextCompactor.resetCompressionStats();
+    // Turn 1: Process and memoize
+    const turn1Text = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
+    const turn1CacheZone = contextCompactor.getCompressionStats().modules.cacheZone.savedChars;
+    assert.strictEqual(turn1CacheZone, 0, 'Turn 1 must not record cacheZone (first seen payload)');
+
+    // Turn 2: Repeat with same history in same session
+    const turn2Text = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
+    assert.strictEqual(turn2Text, turn1Text, 'Turn 2 memo hit must return identical byte-stream text');
+    const turn2CacheZone = contextCompactor.getCompressionStats().modules.cacheZone.savedChars;
+    assert.ok(turn2CacheZone > 0, 'Turn 2 memo hit must record positive savedChars in cacheZone module');
+    assert.strictEqual(turn2CacheZone, longScriptCode.length - turn1Text.length, 'CacheZone savedChars must equal original minus memoized length');
+    console.log(`✓ Cache-Zone multi-turn memoization & KV Cache protection verified (savedChars: ${turn2CacheZone})`);
+
+    // 5. Anti-Downgrade Exemption Safety Barrier
+    const conflictBlock = "<<<<<<< HEAD\n" + "export const a = 1;\n".repeat(200) + "=======\n" + "export const a = 2;\n".repeat(200) + ">>>>>>> master\n";
+    const conflictResult = contextCompactor.compactText(conflictBlock, { enabled: true, foldStructuredData: true });
+    assert.strictEqual(conflictResult, conflictBlock, 'Git conflict markers must be 100% exempt from folding (anti-downgrade barrier)');
+
+    const exceptionBlock = "Traceback (most recent call last):\n" + "  File \"run.py\", line 42\n".repeat(150) + "TypeError: cannot unpack non-iterable\n";
+    const exceptionResult = contextCompactor.compactText(exceptionBlock, { enabled: true, foldStructuredData: true });
+    assert.strictEqual(exceptionResult, exceptionBlock, 'Error stack traces must be 100% exempt from folding (anti-downgrade barrier)');
+    console.log('✓ Anti-Downgrade safety barriers (Git conflicts & error stack exemption) verified');
+
+    // 6. End-to-End Codex Responses Payload Conversion Telemetry
+    const codexPayload143 = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Inspect library' },
+        { type: 'function_call', id: 'call_cmd', name: 'exec_command', arguments: JSON.stringify({ cmd: 'cat mt_lib.sh' }) },
+        {
+          type: 'function_call_output',
+          call_id: 'call_cmd',
+          output: 'PowerShell 7.6.4 on Windows_NT\r\n' + longScriptCode
+        }
+      ]
+    };
+    contextCompactor.resetCompressionStats();
+    const chatConverted143 = codexAdapter.convertResponsesToChatPayload(codexPayload143, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
+    assert.ok(chatConverted143.messages.length >= 3, 'Converted payload must contain valid messages');
+    const finalStats143 = contextCompactor.getCompressionStats();
+    assert.ok(finalStats143.modules.powershell.savedChars > 0, 'Codex Responses conversion must attribute PowerShell savings');
+    assert.ok(finalStats143.modules.headroom.savedChars > 0, 'Codex Responses conversion must attribute Headroom savings');
+    console.log(`✓ Codex Responses end-to-end conversion attribution verified (PowerShell: ${finalStats143.modules.powershell.savedChars}, Headroom: ${finalStats143.modules.headroom.savedChars})`);
 
     console.log('\n======================================================');
-    console.log('🎉 ALL 142 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 143 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

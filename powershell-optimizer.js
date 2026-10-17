@@ -137,23 +137,22 @@ function isPowerShellOptimizerActive(options = {}, req = null) {
 }
 
 /**
- * Cleans CLIXML error wrappers and repetitive verbose CategoryInfo from PowerShell output.
+/**
+ * Cleans CLIXML error wrappers, PowerShell interactive banner, Git CRLF noise,
+ * and repetitive CategoryInfo from PowerShell output.
  * Preserves the actual error message, file name, line numbers, and error tokens.
  * @param {string} text
  * @returns {string}
  */
-function cleanCliXmlNoise(text) {
+function cleanPowerShellNoise(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
-  if (!text.includes('#< CLIXML') && !text.includes('CategoryInfo') && !text.includes('FullyQualifiedErrorId')) {
-    return text;
-  }
 
   try {
     let result = text;
+    let modified = false;
 
     // 1. Parse and extract payload from #< CLIXML stream
     if (result.includes('#< CLIXML')) {
-      // Decode hex escape sequences like _x000D__x000A_ -> \r\n, _x0020_ -> space
       const unescapeHex = (str) => {
         return str.replace(/_x([0-9a-fA-F]{4})_/g, (_, hex) => {
           return String.fromCharCode(parseInt(hex, 16));
@@ -175,13 +174,12 @@ function cleanCliXmlNoise(text) {
 
       if (errorParts.length > 0) {
         let extractedError = errorParts.join('').trim();
-        // Strip duplicate consecutive blank lines
         extractedError = extractedError.replace(/(\r?\n){3,}/g, '$1$1');
-        // If extracted error is valid, replace the raw CLIXML blob
         result = result.replace(/#<\s*CLIXML[\s\S]*?<\/Objs>/g, extractedError ? `[PowerShell Error]:\n${extractedError}` : '');
+        modified = true;
       } else {
-        // Fallback: strip the XML envelope
         result = result.replace(/#<\s*CLIXML[\s\S]*?<\/Objs>/g, '[PowerShell Error Output Cleaned]');
+        modified = true;
       }
     }
 
@@ -191,21 +189,67 @@ function cleanCliXmlNoise(text) {
       const newline = isCrlf ? '\r\n' : '\n';
       const lines = result.split(/\r?\n/);
       const filtered = [];
+      let hadCatInfo = false;
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (/^\+\s*CategoryInfo\s*:/i.test(trimmed)) continue;
-        if (/^\+\s*FullyQualifiedErrorId\s*:/i.test(trimmed)) continue;
+        if (/^\+\s*CategoryInfo\s*:/i.test(trimmed) || /^\+\s*FullyQualifiedErrorId\s*:/i.test(trimmed)) {
+          hadCatInfo = true;
+          continue;
+        }
         filtered.push(line);
       }
-      result = filtered.join(newline);
+      if (hadCatInfo) {
+        result = filtered.join(newline);
+        modified = true;
+      }
     }
 
-    return result.trim() === '' ? text : result;
+    // 3. Clean PowerShell startup terminal banner (e.g. "PowerShell 7.6.4 on Windows_NT\r\n")
+    if (result.includes('PowerShell ') && result.includes('Windows_NT')) {
+      const bannerRegex = /^[^\r\n]*?PowerShell\s+\d+(?:\.\d+)*\s+on\s+Windows_NT\r?\n?/gm;
+      const stripped = result.replace(bannerRegex, '');
+      if (stripped !== result) {
+        result = stripped;
+        modified = true;
+      }
+    }
+
+    // 4. Clean Git CRLF replacement warning noise
+    if (result.includes('LF will be replaced by CRLF') || result.includes('CRLF will be replaced by LF')) {
+      const crlfWarnRegex = /^warning:\s*(?:in the working copy of [^\r\n]+,\s*)?(?:LF|CRLF) will be replaced by (?:CRLF|LF)[^\r\n]*\r?\n?/gm;
+      const stripped = result.replace(crlfWarnRegex, '');
+      if (stripped !== result) {
+        result = stripped;
+        modified = true;
+      }
+    }
+
+    // 5. Clean Windows Terminal ANSI window title sequences (\x1b]0;...\x07)
+    if (result.includes('\x1b]0;')) {
+      const titleRegex = /\x1b]0;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+      const stripped = result.replace(titleRegex, '');
+      if (stripped !== result) {
+        result = stripped;
+        modified = true;
+      }
+    }
+
+    if (!modified || result.trim() === '') {
+      return text;
+    }
+    return result.length < text.length ? result : text;
   } catch (err) {
-    console.warn('[PowerShellOptimizer] cleanCliXmlNoise error, bypassing:', err.message);
+    console.warn('[PowerShellOptimizer] cleanPowerShellNoise error, bypassing:', err.message);
     return text;
   }
+}
+
+/**
+ * Backward compatibility alias for cleanPowerShellNoise
+ */
+function cleanCliXmlNoise(text) {
+  return cleanPowerShellNoise(text);
 }
 
 /**
@@ -565,6 +609,7 @@ module.exports = {
   DEFAULT_POWERSHELL_CONFIG,
   detectPlatform,
   isPowerShellOptimizerActive,
+  cleanPowerShellNoise,
   cleanCliXmlNoise,
   fixPowerShellCommandEscaping,
   generatePowerShellGuardDirective,

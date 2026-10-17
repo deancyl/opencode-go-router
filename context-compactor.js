@@ -2043,6 +2043,25 @@ function foldStructuredData(text, options = {}) {
       }
     }
 
+    // Case 4: Giant Long Non-JSON Tool Output / Script / Log output folding (SmartCrusher Long Text Mode)
+    // ONLY applies to plaintext / terminal / script outputs, NEVER to valid JSON structures (which follow Case 1/2/3)
+    const isJsonDoc = (trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'));
+    if (!isJsonDoc) {
+      const maxOutputLimit = Number(options.maxOutputChars) || 2000;
+      if (text.length > maxOutputLimit && !text.includes('[Headroom SmartCrusher:') && !text.includes('智能网关自愈：已自动折叠')) {
+        const isDiff = text.includes('diff --git') || text.includes('@@ -');
+        const shouldProtectDiff = options.protectSourceDiffs !== false && isDiff;
+        if (!shouldProtectDiff) {
+          const head = text.slice(0, 600);
+          const tail = text.slice(-600);
+          const omitted = text.length - 1200;
+          if (omitted > 300) {
+            return `${head}\n\n[Headroom SmartCrusher: 折叠了 ${omitted} 字符超长工具输出（首尾关键内容已完整保留）]\n\n${tail}`;
+          }
+        }
+      }
+    }
+
     return text;
   } catch (err) {
     console.warn('[ContextCompactor] foldStructuredData error, bypassing:', err.message);
@@ -2176,9 +2195,11 @@ function foldTestPasses(text, options = {}) {
       return false;
     };
 
+    let folded = false;
     const flushRun = () => {
       if (passingRun.length >= 3) {
         result.push(`[Test suite: ${passingRun.length} passed tests folded (✓ / PASS / ok)]`);
+        folded = true;
       } else {
         result.push(...passingRun);
       }
@@ -2195,6 +2216,7 @@ function foldTestPasses(text, options = {}) {
     }
     flushRun();
 
+    if (!folded) return text;
     return result.join(newline);
   } catch (err) {
     console.warn('[ContextCompactor] foldTestPasses error, bypassing:', err.message);
@@ -2220,6 +2242,7 @@ function cleanDockerOutput(text) {
     const lines = text.split(/\r?\n/);
     const result = [];
     let dockerRun = [];
+    let folded = false;
 
     const isDockerLayerLine = (line) => {
       const trimmed = line.trim();
@@ -2231,6 +2254,7 @@ function cleanDockerOutput(text) {
     const flushRun = () => {
       if (dockerRun.length >= 5) {
         result.push(`[Docker: ${dockerRun.length} layer download/extract status lines folded]`);
+        folded = true;
       } else {
         result.push(...dockerRun);
       }
@@ -2247,6 +2271,7 @@ function cleanDockerOutput(text) {
     }
     flushRun();
 
+    if (!folded) return text;
     return result.join(newline);
   } catch (err) {
     console.warn('[ContextCompactor] cleanDockerOutput error, bypassing:', err.message);
@@ -2269,6 +2294,7 @@ function cleanTerraformOutput(text) {
     const lines = text.split(/\r?\n/);
     const result = [];
     let tfRun = [];
+    let folded = false;
 
     const isTfRefreshLine = (line) => {
       const trimmed = line.trim();
@@ -2280,6 +2306,7 @@ function cleanTerraformOutput(text) {
     const flushRun = () => {
       if (tfRun.length >= 3) {
         result.push(`[Terraform: ${tfRun.length} resources state refreshed]`);
+        folded = true;
       } else {
         result.push(...tfRun);
       }
@@ -2296,6 +2323,7 @@ function cleanTerraformOutput(text) {
     }
     flushRun();
 
+    if (!folded) return text;
     return result.join(newline);
   } catch (err) {
     console.warn('[ContextCompactor] cleanTerraformOutput error, bypassing:', err.message);
@@ -2321,6 +2349,7 @@ function cleanKubectlOutput(text) {
     const lines = text.split(/\r?\n/);
     const result = [];
     let kubeRun = [];
+    let folded = false;
 
     const isKubeStatusLine = (line) => {
       const trimmed = line.trim();
@@ -2343,6 +2372,7 @@ function cleanKubectlOutput(text) {
     const flushRun = () => {
       if (kubeRun.length >= 4) {
         result.push(`[Kubectl: ${kubeRun.length} healthy pods / rollout status lines folded (Running / Completed / Met)]`);
+        folded = true;
       } else {
         result.push(...kubeRun);
       }
@@ -2359,6 +2389,7 @@ function cleanKubectlOutput(text) {
     }
     flushRun();
 
+    if (!folded) return text;
     return result.join(newline);
   } catch (err) {
     console.warn('[ContextCompactor] cleanKubectlOutput error, bypassing:', err.message);
@@ -2411,7 +2442,7 @@ registerTransformer('cleanPowerShellOutput', (text, opts, ctx) => {
   try {
     const psOpt = require('./powershell-optimizer');
     if (psOpt.isPowerShellOptimizerActive(opts, ctx && ctx.req)) {
-      return psOpt.cleanCliXmlNoise(text);
+      return psOpt.cleanPowerShellNoise(text);
     }
   } catch (_) {}
   return text;
@@ -2868,9 +2899,15 @@ function compactText(text, options = {}, sessionId = null) {
       cacheKey = `${hash}_${optsSig}`;
       const cached = getMemo(sessionId, cacheKey);
       if (cached !== null) {
-        if (text.length > cached.length) {
-          const modelName = normalizeModelName(opts.model || null);
-          recordSavings('cacheZone', text.length - cached.length, text.length, modelName);
+        const delta = text.length - cached.length;
+        const modelName = normalizeModelName(opts.model || null);
+        if (delta > 0) {
+          recordSavings('cacheZone', delta, text.length, modelName);
+        } else {
+          if (!compressionStats.modules.cacheZone.cacheZoneHits) {
+            compressionStats.modules.cacheZone.cacheZoneHits = 0;
+          }
+          compressionStats.modules.cacheZone.cacheZoneHits += 1;
         }
         return cached;
       }
@@ -2878,6 +2915,7 @@ function compactText(text, options = {}, sessionId = null) {
 
     const moduleDeltas = {};
     let result = runPipeline(text, opts, { sessionId, moduleDeltas });
+
 
     // Protocol & Connection Safety Shield:
     // If the input text had non-whitespace content, but compression reduced it to pure whitespace or empty,

@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.6.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.6.1-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-141%2F141%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-143%2F143%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,24 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.6.0 (当前最新版：Token 压缩中枢时间分片分析、多分辨率环形分桶与历史持久化)
+### 🚀 v3.6.1 (当前最新版：Headroom 长文本折叠、PowerShell 交互去噪与 Cache-Zone 零膨胀自愈闭环)
+- **Headroom 结构化折叠引擎增强 (SmartCrusher Extended)**：
+  - 针对非 JSON 的超长工具输出（如脚本代码、长日志等 >2000 字符）实施首尾 600 字符安全采样折叠；严格区分合法 JSON 数组/对象与非 JSON 文本，避免误截断；
+  - 修复 Codex Responses 转换通道（`pruneResponsesPayload` 与 `pruneChatMessages`）中的 Headroom 遥测归因丢失问题。
+- **Cache-Zone 多轮会话缓存区固化与换行符零膨胀防御**：
+  - 彻底消除换行符膨胀诱因：在 `foldTestPasses`、`cleanDockerOutput`、`cleanTerraformOutput`、`cleanKubectlOutput` 中新增 `if (!folded) return text;`，0 折叠时 100% 返回原引用，彻底拔除将 `\n` 膨胀为 `\r\n` 导致缓存命中反向短路的病灶；
+  - 完善 `compactText` 缓存命中处理，区分真实字符节约与缓存锁定命中计数。
+- **Windows PowerShell 终端交互噪音深度清洗与遥测闭环**：
+  - 在 `powershell-optimizer.js` 中新增 `cleanPowerShellNoise(text)`，全面清除 PowerShell 交互式启动横幅（`PowerShell 7.6.4 on Windows_NT`）、Git CRLF 替换提示、ANSI 终端标题控制码与 CLIXML 堆栈；
+  - 接入 `context-compactor.js` 的 `cleanPowerShellOutput` transformer 与多协议转换，遥测归因累加至 `stats.modules.powershell`；
+  - `config.json` 补齐 `compression.modules.powershell` 声明。
+- **防降智与代码质量零损耗红线**：
+  - Git 冲突标记（`<<<<<<<`）、编译报错、Traceback、Exception 100% 免折叠豁免。
+- **自动化测试套件扩展 (Test 143)**：
+  - 新增 Test 143 验证真实 Codex 会话下的 CRLF 零膨胀、PowerShell 横幅降噪、Headroom SmartCrusher 长输出折叠、Cache-Zone 多轮缓存命中以及防降智安全豁免；
+  - 本地 143 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.6.0 (Token 压缩中枢时间分片分析、多分辨率环形分桶与历史持久化)
 - **Token 压缩中枢时间分片分析 (Time-Range Slicing & Multi-Resolution Bucketing)**：
   - 增设 4 大时间窗口胶囊切换：`1h`（1小时）、`24h`（24小时）、`7d`（7天）、`all`（历史累计，默认）；
   - 多分辨率环形时间分桶（Ring-buffer Bucketing）：`m5`（12 个 5 分钟分桶覆盖最近 1 小时）、`h1`（24 个 1 小时分桶覆盖最近 24 小时）、`d1`（7 个 1 天分桶覆盖最近 7 天）以及全局历史累计池；

@@ -1130,6 +1130,10 @@ function pruneResponsesPayload(body) {
           const newOutput = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
           input[i] = { ...item, output: newOutput };
           modified = true;
+          try {
+            const contextCompactor = require('./context-compactor');
+            contextCompactor.recordSavings('headroom', folded, outStr.length, (body && body.model) || null);
+          } catch (_) {}
         } else if (outStr !== item.output) {
           input[i] = { ...item, output: outStr };
           modified = true;
@@ -1144,6 +1148,10 @@ function pruneResponsesPayload(body) {
         const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
         input[i] = { ...curItem, content: newContent };
         modified = true;
+        try {
+          const contextCompactor = require('./context-compactor');
+          contextCompactor.recordSavings('headroom', folded, curItem.content.length, (body && body.model) || null);
+        } catch (_) {}
       }
     }
 
@@ -1227,6 +1235,10 @@ function pruneChatMessages(messages, maxTokens) {
       const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
       result[i] = { ...msg, content: newContent };
       modified = true;
+      try {
+        const contextCompactor = require('./context-compactor');
+        contextCompactor.recordSavings('headroom', folded, msg.content.length);
+      } catch (_) {}
     }
   }
 
