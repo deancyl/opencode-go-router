@@ -1095,8 +1095,10 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
 function pruneResponsesPayload(body) {
   if (!body || typeof body !== 'object') {
     const res = body || {};
-    res.modified = false;
-    res.pruned = res;
+    if (typeof res === 'object') {
+      Object.defineProperty(res, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(res, 'pruned', { value: res, writable: true, enumerable: false, configurable: true });
+    }
     return res;
   }
 
@@ -1182,8 +1184,18 @@ function pruneResponsesPayload(body) {
     cloned.input = input;
   }
 
-  cloned.modified = modified;
-  cloned.pruned = cloned;
+  Object.defineProperty(cloned, 'modified', {
+    value: modified,
+    writable: true,
+    enumerable: false,
+    configurable: true
+  });
+  Object.defineProperty(cloned, 'pruned', {
+    value: cloned,
+    writable: true,
+    enumerable: false,
+    configurable: true
+  });
   return cloned;
 }
 
@@ -1193,8 +1205,8 @@ function pruneResponsesPayload(body) {
 function pruneChatMessages(messages, maxTokens) {
   if (!Array.isArray(messages) || messages.length === 0) {
     if (Array.isArray(messages)) {
-      messages.modified = false;
-      messages.pruned = messages;
+      Object.defineProperty(messages, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
+      Object.defineProperty(messages, 'pruned', { value: messages, writable: true, enumerable: false, configurable: true });
     }
     return messages;
   }
@@ -1234,8 +1246,18 @@ function pruneChatMessages(messages, maxTokens) {
     }
   }
 
-  result.modified = modified;
-  result.pruned = result;
+  Object.defineProperty(result, 'modified', {
+    value: modified,
+    writable: true,
+    enumerable: false,
+    configurable: true
+  });
+  Object.defineProperty(result, 'pruned', {
+    value: result,
+    writable: true,
+    enumerable: false,
+    configurable: true
+  });
   return result;
 }
 
