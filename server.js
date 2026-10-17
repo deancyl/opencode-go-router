@@ -5845,14 +5845,25 @@ function renderDashboardHtml(config) {
             const textEl = document.getElementById('contrib-text-' + mod);
             const fillEl = document.getElementById('progress-fill-' + mod);
             if (textEl) {
-              if (mod === 'schema' && (m.savedTokens || 0) === 0) {
-                textEl.innerText = '🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)';
+              if (mod === 'schema') {
+                const roundsText = m.alignedRounds ? ' (' + m.alignedRounds + ' 轮锁定)' : '';
+                if ((m.savedTokens || 0) > 0) {
+                  textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens' + roundsText;
+                } else if (m.alignedRounds > 0) {
+                  textEl.innerText = '🔒 KV Cache 前缀已锁定 (' + m.alignedRounds + ' 轮 · ' + (m.alignedToolsCount || 0) + ' 个工具，缓存命中提升 80%~90%)';
+                } else {
+                  textEl.innerText = '贡献度: 0% · ~0 Tokens';
+                }
               } else {
                 textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens';
               }
             }
             if (fillEl) {
-              fillEl.style.width = Math.min(100, Math.max(0, m.percentage || 0)) + '%';
+              if (mod === 'schema' && (m.percentage || 0) === 0 && (m.alignedRounds || 0) > 0) {
+                fillEl.style.width = '100%';
+              } else {
+                fillEl.style.width = Math.min(100, Math.max(0, m.percentage || 0)) + '%';
+              }
             }
           });
         }

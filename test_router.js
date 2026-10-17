@@ -5989,8 +5989,194 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Web UI KV Cache Lock Principle Explanations, SmartCrusher Array Sampling & Anti-Downgrade Redlines verified');
 
+    // [Test 137] Testing Headroom (SmartCrusher & raw Lockfile) and Schema (CacheAligner & mcp-compressor) Effective Metrics Attribution
+    console.log('\n[Test 137] Testing Headroom & Schema Effective Metrics Attribution...');
+
+    // 1. Reset compression stats to establish clean baseline
+    contextCompactor.resetCompressionStats();
+    let stats137 = contextCompactor.getCompressionStats();
+    assert.strictEqual(stats137.modules.headroom.savedChars, 0, 'Headroom savedChars must be 0 after reset');
+    assert.strictEqual(stats137.modules.schema.savedChars, 0, 'Schema savedChars must be 0 after reset');
+
+    // 2. Test Tools Schema Alignment & Compact (Card 3 Attribution)
+    const mockTools = [
+      {
+        type: 'function',
+        function: {
+          name: 'zebra_tool',
+          description: 'A tool that runs zebra queries.\n\nExamples:\n```js\nzebra();\n```',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Search query' }
+            },
+            required: ['query']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'alpha_tool',
+          description: 'An alpha inspection utility.\n\nUsage: alpha()',
+          parameters: {
+            type: 'object',
+            properties: {
+              target: { type: 'string', description: 'Target identifier' }
+            },
+            required: ['target']
+          }
+        }
+      },
+      // Redundant duplicate tool to test deduplication
+      {
+        type: 'function',
+        function: {
+          name: 'zebra_tool',
+          description: 'Duplicate zebra tool registration',
+          parameters: { type: 'object', properties: {} }
+        }
+      }
+    ];
+
+    const chatPayloadWithTools = {
+      model: 'deepseek-v4.1-flash',
+      tools: mockTools,
+      messages: [
+        { role: 'user', content: 'Execute tool search' }
+      ]
+    };
+
+    const compactedChat137 = contextCompactor.compactChatPayload(chatPayloadWithTools, {
+      enabled: true,
+      alignToolsSchema: true,
+      slimToolsSchema: true
+    });
+
+    assert.strictEqual(compactedChat137.tools.length, 2, 'Duplicate tools must be deduplicated by name');
+    assert.strictEqual(compactedChat137.tools[0].function.name, 'alpha_tool', 'Tools must be sorted alphabetically');
+    assert.strictEqual(compactedChat137.tools[1].function.name, 'zebra_tool', 'Tools must be sorted alphabetically');
+
+    stats137 = contextCompactor.getCompressionStats();
+    assert.ok(stats137.modules.schema.savedChars > 0, `Schema savedChars must be > 0 (was ${stats137.modules.schema.savedChars})`);
+    assert.ok(stats137.modules.schema.savedTokens > 0, `Schema savedTokens must be > 0 (was ${stats137.modules.schema.savedTokens})`);
+    assert.ok(stats137.modules.schema.alignedRounds >= 1, 'Schema alignedRounds must be >= 1');
+    assert.ok(stats137.modules.schema.alignedToolsCount >= 3, 'Schema alignedToolsCount must be >= 3');
+    assert.ok(stats137.modules.schema.percentage > 0, `Schema percentage must be > 0% (was ${stats137.modules.schema.percentage}%)`);
+    console.log(`✓ Schema CacheAligner metrics verified (Schema: ~${stats137.modules.schema.savedTokens} Tokens, ${stats137.modules.schema.percentage}%, ${stats137.modules.schema.alignedRounds} rounds aligned)`);
+
+    // 3. Test Headroom SmartCrusher & Raw Lockfile (Card 2 Attribution)
+    const rawLockfileSample = JSON.stringify({
+      name: 'test-app',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      requires: true,
+      packages: Object.fromEntries(
+        Array.from({ length: 40 }, (_, i) => [`node_modules/pkg-${i}`, { version: `1.${i}.0`, integrity: `sha512-${i}` }])
+      )
+    }, null, 2);
+
+    const toolPayloadWithHeadroom = {
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'user', content: 'Read package-lock.json' },
+        { role: 'tool', content: rawLockfileSample },
+        { role: 'tool', content: raw60Str }
+      ]
+    };
+
+    const compactedHeadroom137 = contextCompactor.compactChatPayload(toolPayloadWithHeadroom, {
+      enabled: true,
+      foldLockfiles: true,
+      foldStructuredData: true,
+      maxStructuredItems: 50
+    });
+
+    assert.ok(compactedHeadroom137.messages[1].content.includes('[Lockfile folded: package-lock.json') || compactedHeadroom137.messages[1].content.includes('_headroom_lockfile_folded'), 'Raw package-lock.json must be folded');
+    assert.ok(compactedHeadroom137.messages[2].content.includes('_headroom_smart_crusher'), '60 items JSON array must be folded by SmartCrusher');
+
+    stats137 = contextCompactor.getCompressionStats();
+    assert.ok(stats137.modules.headroom.savedChars > 0, `Headroom savedChars must be > 0 (was ${stats137.modules.headroom.savedChars})`);
+    assert.ok(stats137.modules.headroom.savedTokens > 0, `Headroom savedTokens must be > 0 (was ${stats137.modules.headroom.savedTokens})`);
+    assert.ok(stats137.modules.headroom.percentage > 0, `Headroom percentage must be > 0% (was ${stats137.modules.headroom.percentage}%)`);
+    console.log(`✓ Headroom SmartCrusher & Lockfile metrics verified (Headroom: ~${stats137.modules.headroom.savedTokens} Tokens, ${stats137.modules.headroom.percentage}%)`);
+
+    // 4. Test Anthropic and Responses payload parity for Headroom & Schema
+    const anthropicPayload137 = {
+      model: 'claude-3-7-sonnet',
+      tools: mockTools,
+      messages: [
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: raw60Str }] }
+      ]
+    };
+    const compactedAnth137 = contextCompactor.compactAnthropicPayload(anthropicPayload137, { enabled: true });
+    assert.strictEqual(compactedAnth137.tools.length, 2, 'Anthropic tools must be deduplicated');
+    assert.ok(compactedAnth137.messages[0].content[0].content.includes('_headroom_smart_crusher'), 'Anthropic tool_result must be folded by SmartCrusher');
+
+    const responsesPayload137 = {
+      model: 'codex-pro',
+      tools: mockTools,
+      input: [
+        { type: 'function_call_output', call_id: 'call_1', output: raw60Str }
+      ]
+    };
+    const compactedResp137 = contextCompactor.compactResponsesPayload(responsesPayload137, { enabled: true });
+    assert.strictEqual(compactedResp137.tools.length, 2, 'Responses tools must be deduplicated');
+    assert.ok(compactedResp137.input[0].output.includes('_headroom_smart_crusher'), 'Responses output must be folded by SmartCrusher');
+
+    // 5. Send actual HTTP requests through Router endpoint to trigger router process compaction
+    await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+
+    // 5a. HTTP request with Tools schema (triggers Schema in router process)
+    const httpToolsRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        tools: mockTools,
+        messages: [{ role: 'user', content: 'HTTP search tools test' }]
+      })
+    });
+    assert.strictEqual(httpToolsRes.statusCode, 200, 'HTTP Chat completions with tools must return 200');
+
+    // 5b. HTTP request with tool output (triggers Headroom in router process)
+    const httpHeadroomRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [
+          { role: 'user', content: 'Fetch lockfile and items' },
+          { role: 'tool', content: rawLockfileSample },
+          { role: 'tool', content: raw60Str }
+        ]
+      })
+    });
+    assert.strictEqual(httpHeadroomRes.statusCode, 200, 'HTTP Chat completions with tool output must return 200');
+
+    // 5c. Test Web UI Stats API & Metrics Distribution
+    const statsApiRes = await request('/balancer/api/compression/stats', { method: 'GET' });
+    assert.strictEqual(statsApiRes.statusCode, 200);
+    const parsedApiStats = JSON.parse(statsApiRes.body);
+    assert.ok(parsedApiStats.success, 'Stats API must return success');
+    assert.ok(parsedApiStats.stats.modules.headroom.savedTokens > 0, `Headroom savedTokens must be visible in API (was ${parsedApiStats.stats.modules.headroom.savedTokens})`);
+    assert.ok(parsedApiStats.stats.modules.schema.savedTokens > 0, `Schema savedTokens must be visible in API (was ${parsedApiStats.stats.modules.schema.savedTokens})`);
+    assert.ok(parsedApiStats.stats.totalSavedChars >= (parsedApiStats.stats.modules.headroom.savedChars + parsedApiStats.stats.modules.schema.savedChars), 'Total saved chars must be sum of modules');
+
+    // 6. Test Web UI Dashboard HTML renders active elements for Card 2 & Card 3
+    const uiRes137 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes137.statusCode, 200);
+    assert.ok(uiRes137.body.includes('id="module-card-headroom"'), 'UI must render module-card-headroom');
+    assert.ok(uiRes137.body.includes('id="module-card-schema"'), 'UI must render module-card-schema');
+    assert.ok(uiRes137.body.includes('id="contrib-text-headroom"'), 'UI must render contrib-text-headroom');
+    assert.ok(uiRes137.body.includes('id="contrib-text-schema"'), 'UI must render contrib-text-schema');
+    assert.ok(uiRes137.body.includes('id="progress-fill-headroom"'), 'UI must render progress-fill-headroom');
+    assert.ok(uiRes137.body.includes('id="progress-fill-schema"'), 'UI must render progress-fill-schema');
+
+    console.log('✓ Full End-to-End Headroom & Schema metrics attribution and Web UI integration verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 136 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 137 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

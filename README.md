@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.2.2-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.2.3-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-136%2F136%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-137%2F137%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -96,10 +96,10 @@ OpenCode Go Router 是专为开发者与团队量身打造的 **OpenCode 全栈�
     - 吸收借鉴 Headroom、llmtrim、RTK 与 MCP-Compressor 的工程精髓，纯 Node.js 18+ 原生零外部依赖实现；
     - **终端与日志去噪**：ANSI 颜色转义与控制符剥离 (`stripAnsi`)，`\r` 覆盖式终端进度条去噪 (`cleanProgressBars`)；
     - **DevOps 运维日志折叠**：Docker 镜像拉取层状态去噪折叠 (`cleanDockerOutput`)，Terraform 资源状态刷新去噪折叠 (`cleanTerraformOutput`)；
-    - **锁定文件安全折叠**：巨型 Lockfile（package-lock、yarn、cargo、bun、uv 等）Diff 安全折叠 (`foldLockfiles`)，探测到 `<<<<<<<` 冲突或 `/dev/null` 时精准豁免与安全命名，100% 保护代码解决能力；
-    - **Headroom 结构化超长 JSON 数组折叠引擎 (SmartCrusher / foldStructuredData)**：针对超长同构 JSON 列表（如 >30 项的文件树、日志、实体列表等），智能保留前 5 项与后 3 项，中间注入结构体摘要对象提取样本字段（sampleFields），折叠字符直接计入 Headroom 节省统计（告别日常 0% 痛点）；遇 Git 冲突标记或异常堆栈时 100% 绝对放弃折叠，确保防降智红线；
+    - **锁定文件安全折叠**：巨型 Lockfile（package-lock、yarn、cargo、bun、uv、go.sum 等）Diff 安全折叠与原始锁文件（raw lockfiles）智能折叠 (`foldLockfiles`)，探测到 `<<<<<<<` 冲突或 `/dev/null` 时精准豁免与安全命名，100% 保护代码解决能力；
+    - **Headroom 结构化超长同构对象与数组折叠引擎 (SmartCrusher / foldStructuredData)**：针对超长同构 JSON 列表（如 >50 项的文件树、日志、实体列表等）及超大对象进行智能采样与折叠，中间注入结构体摘要对象提取样本字段（sampleFields），折叠字符与 Token 直接计入 Card 2 Headroom 节省统计；遇 Git 冲突标记或异常堆栈时 100% 绝对放弃折叠，确保防降智红线；
     - **正向匹配测试项折叠**：安全反转设计 (`foldTestPasses`)，原生支持 Jest/Vitest/Mocha、TAP、Pytest、Cargo、Go test、GoogleTest（`[ OK ]`）、Python unittest、CTest，支持配置自定义正则；遇失败、错误堆栈全量原样留存；
-    - **Prompt Cache 对齐、KV Cache 锁定与超大 Schema 深度瘦身**：Web 控制中心清晰呈现 `🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)` 与门限引导；工具 Schema 字典序排序对齐 (`alignToolsSchema`) 锁定上游 KV Cache 前缀，超大 Schema 深度递归裁剪示例代码 (`slimToolsSchema`)，会话缓存区字节固化 (`sessionCompressionMemo`)；
+    - **Prompt Cache 对齐、KV Cache 锁定与超大 Schema 深度瘦身 (Card 3 CacheAligner)**：Web 控制中心清晰呈现 `🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)` 与锁定轮次指示（`X 轮锁定`）；工具 Schema 字典序排序对齐与重复工具去重 (`alignToolsSchema`) 锁定上游 KV Cache 前缀，超大 Schema 深度递归裁剪示例代码 (`slimToolsSchema`)，会话缓存区字节固化 (`sessionCompressionMemo`)；
     - **流式套接字异常加固与安全沙盒**：全面加固 clientRes 错误监听，防止客户端提前挂断引发未捕获套接字异常；内置 Pluggable Pipeline 接口（`registerTransformer`, `runPipeline`），支持第三方自定义转换器插拔，全管道 100% 安全沙盒包裹，异常静默旁路绝不阻断正常业务。
 
 ---
@@ -280,7 +280,18 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.2.2 (当前最新版：Web UI 体验升级、KV Cache 锁原理说明、SmartCrusher 超长同构 JSON 采样折叠与全链路测试)
+### 🚀 v3.2.3 (当前最新版：Card 2 Headroom 原始锁文件安全折叠与结构化对象采样、Card 3 CacheAligner 工具去重排序与 KV Cache 锁定贡献度精准归因、全套 137 项全绿测试)
+- **Card 2 Headroom 代码与结构化折叠引擎指标激活 (`context-compactor.js` & `server.js`)**：
+  - **原始锁文件安全折叠**：除原先 git diff 模式外，新增对工具读取的原始 Lockfile（`package-lock.json`、`yarn.lock`、`pnpm-lock.yaml`、`cargo.lock`、`go.sum`）深度安全折叠，严格豁免 Git 冲突标记；
+  - **结构化超大对象折叠支持**：`foldStructuredData` 扩展至 >50 个顶层键的大型字典对象采样折叠，彻底解决日常查看巨型 JSON/配置显示 0% · ~0 Tokens 痛点；
+  - **多协议全链路归因**：OpenAI ChatCompletions、Anthropic Messages 与 OpenAI Codex Responses 三大协议工具输出深度解析与 Headroom 归因对齐；
+- **Card 3 CacheAligner & mcp-compressor 工具定义优化指标激活 (`context-compactor.js` & `server.js`)**：
+  - **工具排序与去重即时归因**：重构 `compactToolsList`，消除原先在排序对齐后才计算字符长度导致贡献被丢弃的缺陷；自动去重同名工具并统计规整字符；
+  - **KV Cache 前缀锁定轮次看板**：记录并持久化 `alignedRounds` 与 `alignedToolsCount`，当工具对齐生效时 Web UI 动态呈现 `(X 轮锁定)` 与 100% 绿色激活进度条；
+  - **独立模块节省汇总保护**：`computeDerivedStats` 与 `recordModuleOnlySavings` 强化，防止模块级独立优化在整体 diffSavedChars 为 0 时被遮蔽；
+- **全套 137 项自动化集成测试 100% 绿灯全通**。
+
+### 🚀 v3.2.2 (Web UI 体验升级、KV Cache 锁原理说明、SmartCrusher 超长同构 JSON 采样折叠与全链路测试)
 - **Web 控制台状态与原理说明升级 (Card 3 & Card 2)**：
   - **KV Cache 锁原理看板**：在 Card 3 增设专属指标提示 `🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)` 与通俗原理解释（说明字典序对齐虽不减字数，但通过固化前缀字节流使上游 100% 命中 Prompt Cache，输入费用直降 80%~90%，首字响应延迟降低 50%+）；
   - **瘦身门限明晰引导**：标注 `💡 瘦身门限当前为 15,000 字符（仅挂载大型/多 MCP 服务时触发）`，让开发者一目了然；
