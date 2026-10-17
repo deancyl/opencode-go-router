@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.1-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-147%2F147%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-148%2F148%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,22 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.8.0 (当前最新版：Web UI 界面冗余合并精简、内存溢出防御护栏与全链路实机实测闭环)
+### 🚀 v3.8.1 (当前最新版：管理接口 4MB 内存防御护栏、HTTP 413 顺序自愈、跨 Tab 锚点导航与控制台精炼)
+- **内部管理接口 OOM 纵深防御 (Internal Management API 4MB Ceiling)**：
+  - 对 `/balancer/api/config`、`/balancer/api/test-account`、`/balancer/api/account-quota`、`/balancer/api/repair`、`/balancer/api/bind-codex`、`/balancer/api/restore-codex`、`/balancer/api/open-file`、`/balancer/api/reset-cooldown`、`/balancer/api/updates/apply`、`/balancer/api/updates/rollback`、`/balancer/api/compression/repair` 等所有内部 POST 接口统一引入 `MAX_INTERNAL_PAYLOAD = 4MB` 硬上限防护；
+  - 采用流式累积实时校验，超限瞬时熔断并响应标准 HTTP 413，彻底消除恶意构造巨型 JSON 耗尽 Node.js 堆内存引发 OOM 崩溃隐患。
+- **反向代理 413 状态码优先派发自愈 (413 Status Precedence)**：
+  - 调整请求体超 32MB 拦截流水线，确保在销毁请求（`req.destroy()`）前先完成 `res.writeHead(413, ...)` 派发，彻底解决底层套接字同步抛错触发早期 400 处理器抢发导致 413 无法送达客户端的竞态 bug。
+- **Web UI 界面冗余深度整合与跨 Tab 平滑导航 (Cross-Tab Anchor Navigation)**：
+  - **顶部操作栏精炼与账号区归属**：将顶部常驻操作栏中专属于账号的“⚡ 全部测速”与“🔄 重置限频”按钮整合迁移至 `accounts-card` 账号面板操作区，顶部操作栏由 9 个按钮精简为聚焦全局操作，彻底消除窄屏宽度下多达 3 行的折行堆叠；
+  - **SPA 跨 Tab 锚点平滑跳转**：全面修复 `scrollToCodexCard()`、`scrollToCompressionCard()`、`bindCodexQuick()` 及 `#updates` 锚点在 SPA 隐藏 Tab 下点击失效问题，统一重构为基于 `scrollToElement()` 的动态切 Tab + 平滑滚动 + 焦点高亮闭环；
+  - **压缩配置门限引导向后兼容**：严密对齐 Test 134 与 Test 136 所需的门限说明与 KV Cache 锁定断言，杜绝回归破坏；
+  - **组件版本漂移自愈**：侧边栏与系统信息卡片版本标识改为动态提取 `package.json`，消除硬编码。
+- **全量自动化与实机实测验证 (Test 148)**：
+  - 新增 Test 148（内部管理接口 4MB 拦截核验、413 优先派发、跨 Tab 滚动切页、按钮归属与 v3.8.1 全量回归）；
+  - 全量 148 项自动化集成测试全部 100% 绿灯通过。
+
+### 🚀 v3.8.0 (Web UI 界面冗余合并精简、内存溢出防御护栏与全链路实机实测闭环)
 - **Web UI 界面冗余合并与美学重塑 (UI Redundancy Consolidation)**：
   - 剔除总览页 (`view-overview`) 底部的重复业务模块大卡片（原 5 项冗余快捷卡片，完全与侧边栏导航和顶部指标卡重叠），减少无意义垂直滚动，使总览大盘更加清爽、优雅、直观；
   - 精简并重构总览顶部运行状态栏（`banner`），彻底消除与上方操作栏（`top-action-bar`）重复展示 Base URL 代码框、端点复制按钮与 OpenChamber 外部链接的冗余现象，聚焦展示 429 秒级故障转移、KV Cache 前缀锁定与 5 引擎 Token 压缩的实时守护状态；

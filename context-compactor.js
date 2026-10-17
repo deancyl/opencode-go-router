@@ -2001,7 +2001,7 @@ function looksLikeJsonStructure(candidate, openChar) {
   return true;
 }
 
-function foldStructuredData(text, options = {}) {
+function foldStructuredData(text, options = {}, context = {}) {
   if (typeof text !== 'string' || text.length < 200) return text;
   if (options.foldStructuredData === false) return text;
 
@@ -2188,16 +2188,20 @@ function foldStructuredData(text, options = {}) {
     // ONLY applies to plaintext / terminal / script outputs, NEVER to valid JSON structures (which follow Case 1/2/3)
     const isJsonDoc = (trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'));
     if (!isJsonDoc) {
-      const maxOutputLimit = Number(options.maxOutputChars) || 2000;
-      if (text.length > maxOutputLimit && !text.includes('[Headroom SmartCrusher:') && !text.includes('智能网关自愈：已自动折叠')) {
-        const isDiff = text.includes('diff --git') || text.includes('@@ -');
-        const shouldProtectDiff = options.protectSourceDiffs !== false && isDiff;
-        if (!shouldProtectDiff) {
-          const head = text.slice(0, 600);
-          const tail = text.slice(-600);
-          const omitted = text.length - 1200;
-          if (omitted > 300) {
-            return `${head}\n\n[Headroom SmartCrusher: 折叠了 ${omitted} 字符超长工具输出（首尾关键内容已完整保留）]\n\n${tail}`;
+      const allowLongOutputFold = (options.foldLongOutput !== false && options.foldLongText !== false) &&
+        (Boolean(context && context.isPipeline) || options.fromPipeline === true || options.foldLongOutput === true);
+      if (allowLongOutputFold) {
+        const maxOutputLimit = Number(options.maxOutputChars) || 2000;
+        if (text.length > maxOutputLimit && !text.includes('[Headroom SmartCrusher:') && !text.includes('智能网关自愈：已自动折叠')) {
+          const isDiff = text.includes('diff --git') || text.includes('@@ -');
+          const shouldProtectDiff = options.protectSourceDiffs !== false && isDiff;
+          if (!shouldProtectDiff) {
+            const head = text.slice(0, 600);
+            const tail = text.slice(-600);
+            const omitted = text.length - 1200;
+            if (omitted > 300) {
+              return `${head}\n\n[Headroom SmartCrusher: 折叠了 ${omitted} 字符超长工具输出（首尾关键内容已完整保留）]\n\n${tail}`;
+            }
           }
         }
       }
@@ -2592,7 +2596,7 @@ registerTransformer('cleanDockerOutput', (text) => cleanDockerOutput(text), { pr
 registerTransformer('cleanKubectlOutput', (text) => cleanKubectlOutput(text), { priority: 35, enabledByDefault: true });
 registerTransformer('cleanTerraformOutput', (text) => cleanTerraformOutput(text), { priority: 40, enabledByDefault: true });
 registerTransformer('foldLockfiles', (text, opts) => foldLockfiles(text, opts), { priority: 50, enabledByDefault: true });
-registerTransformer('foldStructuredData', (text, opts) => foldStructuredData(text, opts), { priority: 52, enabledByDefault: true });
+registerTransformer('foldStructuredData', (text, opts, ctx) => foldStructuredData(text, opts, ctx), { priority: 52, enabledByDefault: true });
 registerTransformer('foldTestPasses', (text, opts) => foldTestPasses(text, opts), { priority: 60, enabledByDefault: true });
 
 /**
@@ -3084,7 +3088,7 @@ function compactText(text, options = {}, sessionId = null) {
     }
 
     const moduleDeltas = {};
-    let result = runPipeline(text, opts, { sessionId, moduleDeltas });
+    let result = runPipeline(text, opts, { sessionId, moduleDeltas, isPipeline: true });
 
     // Protocol & Connection Safety Shield:
     // If the input text had non-whitespace content, but compression reduced it to pure whitespace or empty,

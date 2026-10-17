@@ -354,6 +354,12 @@ function recordCooldown(accountId, cooldownMs, reason) {
 // Connectivity Tester
 function testAccountConnection(upstream, apiKey) {
   return new Promise((resolve) => {
+    let settled = false;
+    const safeResolve = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
     const startTime = Date.now();
     try {
       let endpoint = upstream.replace(/\/+$/, '');
@@ -379,26 +385,26 @@ function testAccountConnection(upstream, apiKey) {
         res.on('end', () => {
           const latencyMs = Date.now() - startTime;
           if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve({ success: true, statusCode: res.statusCode, latencyMs, message: `连接成功 (延迟 ${latencyMs}ms)` });
+            safeResolve({ success: true, statusCode: res.statusCode, latencyMs, message: `连接成功 (延迟 ${latencyMs}ms)` });
           } else if (res.statusCode === 401 || res.statusCode === 403) {
-            resolve({ success: false, statusCode: res.statusCode, latencyMs, message: `认证失败: 密钥无效或未授权 (HTTP ${res.statusCode})` });
+            safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: `认证失败: 密钥无效或未授权 (HTTP ${res.statusCode})` });
           } else if (res.statusCode === 429) {
-            resolve({ success: false, statusCode: res.statusCode, latencyMs, message: `账号限频中 (HTTP 429 Too Many Requests)` });
+            safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: `账号限频中 (HTTP 429 Too Many Requests)` });
           } else {
-            resolve({ success: false, statusCode: res.statusCode, latencyMs, message: `上游返回异常 (HTTP ${res.statusCode})` });
+            safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: `上游返回异常 (HTTP ${res.statusCode})` });
           }
         });
       });
       req.on('error', (err) => {
-        resolve({ success: false, statusCode: 0, latencyMs: Date.now() - startTime, message: `网络连接异常: ${err.message}` });
+        safeResolve({ success: false, statusCode: 0, latencyMs: Date.now() - startTime, message: `网络连接异常: ${err.message}` });
       });
       req.on('timeout', () => {
-        req.destroy();
-        resolve({ success: false, statusCode: 0, latencyMs: 6000, message: '上游连接超时 (6秒)' });
+        try { req.destroy(); } catch (_) {}
+        safeResolve({ success: false, statusCode: 0, latencyMs: 6000, message: '上游连接超时 (6秒)' });
       });
       req.end();
     } catch (err) {
-      resolve({ success: false, statusCode: 0, latencyMs: 0, message: `端点地址解析失败: ${err.message}` });
+      safeResolve({ success: false, statusCode: 0, latencyMs: 0, message: `端点地址解析失败: ${err.message}` });
     }
   });
 }
@@ -3830,6 +3836,11 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
+  let pkgVersion = '3.8.1';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    if (pkg.version) pkgVersion = pkg.version;
+  } catch (_) {}
   const compCfg = config.compression || contextCompactor.DEFAULT_COMPRESSION_CONFIG;
   const mCfg = compCfg.modules || {};
   let psPlatform = { isWindows: process.platform === 'win32', isLinux: process.platform === 'linux' };
@@ -4879,7 +4890,7 @@ function renderDashboardHtml(config) {
       </div>
 
       <div class="sidebar-version-badge">
-        <span class="badge badge-healthy" style="font-size:0.7rem; padding:2px 6px;">v3.5.0 Pro</span>
+        <span class="badge badge-healthy" style="font-size:0.7rem; padding:2px 6px;">v${pkgVersion} Pro</span>
         <span style="display:flex; align-items:center; gap:4px; color:var(--muted); font-size:0.7rem;">
           <span class="status-indicator"></span> 运行中
         </span>
@@ -4948,9 +4959,7 @@ function renderDashboardHtml(config) {
           <div class="top-bar-right header-actions">
             <button id="btn-save-config" class="btn btn-primary btn-sm" onclick="saveConfig()" title="立即将当前账号与系统修改写入磁盘保存">💾 保存配置</button>
             <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
-            <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()" title="测试所有订阅账号的连通性与响应速度">⚡ 全部测速</button>
             <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas(false, true)" title="从官方实时穿透刷新 5小时/周/月限额">📊 刷新配额</button>
-            <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()" title="解除因 429 限频进入冷却的账号">🔄 重置限频</button>
             <button class="btn btn-secondary btn-sm" onclick="checkUpdates()" title="在线检测生态各组件最新版本与兼容性状态">📦 检查更新</button>
             <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')" title="全面扫描系统运行环境与后台死锁状态">🩺 一键体检</button>
             <button class="btn btn-secondary btn-sm" onclick="bindCodexQuick()" title="一键将本地网关锁定为 OpenAI Codex 默认配置">🤖 接入 Codex</button>
@@ -5713,6 +5722,8 @@ function renderDashboardHtml(config) {
           <span id="accounts-status-badge" class="badge badge-healthy">🟢 账号池可用</span>
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="testAllAccounts()" title="测试所有订阅账号的连通性与响应速度">⚡ 全部测速</button>
+          <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()" title="解除因 429 限频进入冷却的账号">🔄 重置限频</button>
           <div class="quota-ctrl-bar">
             <span>⏱️ 配额自动刷新:</span>
             <select id="quota-refresh-interval" class="form-control" style="width:auto; padding:2px 8px; font-size:0.75rem; height:26px; background:#0f172a; border-color:#334155;" onchange="changeQuotaRefreshInterval(this.value)">
@@ -5858,7 +5869,7 @@ function renderDashboardHtml(config) {
             <div class="section-title">
               <div class="section-title-left">
                 <span>ℹ️ 关于 OpenCode Go 智能高可用网关</span>
-                <span class="badge badge-healthy">v3.5.0 Pro</span>
+                <span class="badge badge-healthy">v${pkgVersion} Pro (SPA Architecture v3.5.0 Pro Baseline)</span>
               </div>
             </div>
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; font-size:0.85rem;">
@@ -7757,11 +7768,8 @@ function renderDashboardHtml(config) {
     }
 
     function scrollToCodexCard() {
-      const card = document.getElementById('codex-card');
-      if (card) {
-        card.scrollIntoView({ behavior: 'smooth' });
-        runCodexDoctorCheck();
-      }
+      scrollToElement('codex-card');
+      setTimeout(() => { runCodexDoctorCheck(); }, 60);
     }
 
     function scrollToCompressionCard() {
@@ -7773,10 +7781,8 @@ function renderDashboardHtml(config) {
         if (toggle) toggle.innerText = '▼ 收起';
         try { localStorage.setItem('collapse_compression-collapse-body', 'open'); } catch (_) {}
       }
-      if (card) {
-        card.scrollIntoView({ behavior: 'smooth' });
-        runCompressionDoctorCheck(false);
-      }
+      scrollToElement('compression-card');
+      setTimeout(() => { runCompressionDoctorCheck(false); }, 60);
     }
 
     async function launchOpenChamber() {
@@ -8549,8 +8555,7 @@ function renderDashboardHtml(config) {
 
     async function bindCodexQuick() {
       await bindCodex();
-      const card = document.getElementById('codex-card');
-      if (card) card.scrollIntoView({ behavior: 'smooth' });
+      scrollToElement('codex-card');
     }
 
     async function restartCodexClient() {
@@ -8813,13 +8818,45 @@ function renderDashboardHtml(config) {
     if (window.location.hash === '#updates') {
       setTimeout(function() {
         checkUpdates();
-        const card = document.getElementById('updates-card');
-        if (card) card.scrollIntoView({ behavior: 'smooth' });
+        scrollToElement('updates-card');
       }, 300);
     }
   </script>
 </body>
 </html>`;
+}
+
+const MAX_INTERNAL_PAYLOAD = 4 * 1024 * 1024; // 4MB safety ceiling for internal management APIs to prevent OOM
+
+function readInternalBody(req, res, maxBytes = MAX_INTERNAL_PAYLOAD) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let totalBytes = 0;
+    let rejected = false;
+
+    req.on('data', (chunk) => {
+      if (rejected) return;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        rejected = true;
+        if (!res.headersSent) {
+          try {
+            res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ success: false, error: 'Payload Too Large: 管理接口请求体超过 4MB 上限', type: 'payload_too_large' }));
+          } catch (_) {}
+        }
+        try { req.destroy(); } catch (_) {}
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      if (rejected) return;
+      resolve(Buffer.concat(chunks));
+    });
+  });
 }
 
 // HTTP Server
@@ -8922,11 +8959,10 @@ const server = http.createServer((req, res) => {
   }
 
   if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const payload = JSON.parse(buf.toString('utf8'));
         const inputPwd = (payload.password || '').trim();
         const inputToken = (payload.token || '').trim();
         const expectedPwd = (config.uiPassword || '').trim();
@@ -8983,11 +9019,10 @@ const server = http.createServer((req, res) => {
 
   // Save config API (from UI)
   if (reqUrl.pathname === '/balancer/api/config' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const payload = JSON.parse(buf.toString('utf8'));
         if (!Array.isArray(payload.accounts) || payload.accounts.length === 0) {
           throw new Error('至少需要保留一个账号配置');
         }
@@ -9204,13 +9239,12 @@ const server = http.createServer((req, res) => {
 
   // Compression Repair API
   if (reqUrl.pathname === '/balancer/api/compression/repair' && req.method === 'POST') {
-    const chunks = [];
-    req.on('data', chunk => { chunks.push(chunk); });
-    req.on('end', async () => {
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf) return;
       try {
         let postData = {};
-        if (chunks.length > 0) {
-          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+        if (buf.length > 0) {
+          const rawBody = buf.toString('utf8').trim();
           if (rawBody) {
             try { postData = JSON.parse(rawBody); } catch (_) {}
           }
@@ -9245,11 +9279,10 @@ const server = http.createServer((req, res) => {
 
   // Test account connectivity API
   if (reqUrl.pathname === '/balancer/api/test-account' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', async () => {
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf) return;
       try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const payload = JSON.parse(buf.toString('utf8'));
         const targetUpstream = (payload.upstream || config.upstream).trim();
         const apiKey = (payload.apiKey || '').trim();
 
@@ -9272,11 +9305,10 @@ const server = http.createServer((req, res) => {
 
   // Account Quota & Usage API
   if (reqUrl.pathname === '/balancer/api/account-quota' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', async () => {
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf) return;
       try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const payload = JSON.parse(buf.toString('utf8'));
         const targetUpstream = (payload.upstream || config.upstream).trim();
         let apiKey = (payload.apiKey || '').trim();
         const targetAccountId = payload.accountId || payload.account_id || payload.id;
@@ -9337,13 +9369,12 @@ const server = http.createServer((req, res) => {
 
   // Bind Codex CLI API
   if (reqUrl.pathname === '/balancer/api/bind-codex' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
         let payload = {};
-        if (body.length > 0) {
-          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        if (buf.length > 0) {
+          try { payload = JSON.parse(buf.toString('utf8')); } catch (e) {}
         }
         const defaultModel = payload.defaultModel || 'deepseek-v4.1-flash';
         const reasoningEffort = payload.reasoningEffort || 'high';
@@ -9371,13 +9402,12 @@ const server = http.createServer((req, res) => {
 
   // Restore Codex Configuration API
   if (reqUrl.pathname === '/balancer/api/restore-codex' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
         let payload = {};
-        if (body.length > 0) {
-          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        if (buf.length > 0) {
+          try { payload = JSON.parse(buf.toString('utf8')); } catch (e) {}
         }
         const result = codexAdapter.restoreCodexConfig(payload.codexDir);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -9488,11 +9518,10 @@ $ghost
 
   // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS) - Hardened Sandbox
   if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const payload = JSON.parse(buf.toString('utf8'));
         let filePath = (payload.path || '').trim();
         if (!filePath) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -9591,14 +9620,13 @@ $ghost
 
   // Reset Cooldown API
   if (reqUrl.pathname === '/balancer/api/reset-cooldown' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
         let accountId = null;
-        if (body.length > 0) {
+        if (buf.length > 0) {
           try {
-            const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+            const payload = JSON.parse(buf.toString('utf8'));
             accountId = payload.id;
           } catch (e) {}
         }
@@ -9642,13 +9670,12 @@ $ghost
 
   // Repair API
   if (reqUrl.pathname === '/balancer/api/repair' && req.method === 'POST') {
-    const chunks = [];
-    req.on('data', chunk => { chunks.push(chunk); });
-    req.on('end', async () => {
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf) return;
       try {
         let postData = {};
-        if (chunks.length > 0) {
-          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+        if (buf.length > 0) {
+          const rawBody = buf.toString('utf8').trim();
           if (rawBody) {
             try { postData = JSON.parse(rawBody); } catch (_) {}
           }
@@ -9747,13 +9774,12 @@ $ghost
 
   // Updates Apply API
   if (reqUrl.pathname === '/balancer/api/updates/apply' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       const updater = require('./updater');
       let payload = {};
-      if (body.length > 0) {
-        try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+      if (buf.length > 0) {
+        try { payload = JSON.parse(buf.toString('utf8')); } catch (e) {}
       }
       payload.routerPort = payload.routerPort || config.port;
       updater.applyUpdates(payload.components || null, payload).then((results) => {
@@ -9771,14 +9797,13 @@ $ghost
 
   // Updates Rollback API
   if (reqUrl.pathname === '/balancer/api/updates/rollback' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
         const updater = require('./updater');
         let payload = {};
-        if (body.length > 0) {
-          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        if (buf.length > 0) {
+          try { payload = JSON.parse(buf.toString('utf8')); } catch (e) {}
         }
         const results = updater.rollbackSnapshot(payload.snapshotId || null, payload);
         loadConfig();
@@ -9846,13 +9871,13 @@ $ghost
   req.on('data', chunk => {
     totalReqBytes += chunk.length;
     if (totalReqBytes > MAX_REQ_BYTES) {
-      req.destroy(new Error('Payload Too Large: request body exceeded 32MB ceiling'));
       if (!res.headersSent) {
         try {
           res.writeHead(413, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'Payload Too Large: request body exceeded 32MB ceiling', type: 'payload_too_large' } }));
         } catch (_) {}
       }
+      try { req.destroy(); } catch (_) {}
       return;
     }
     chunks.push(chunk);

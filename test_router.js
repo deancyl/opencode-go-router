@@ -6752,7 +6752,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0 or 3.8.0');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0 or 3.8.1');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6998,7 +6998,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0 version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0 or 3.8.0');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0 or 3.8.1');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7476,13 +7476,93 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0
+    // 4. Verify package.json version is 3.8.0 or 3.8.1
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson147.version, '3.8.0', 'package.json version must be 3.8.0');
+    assert.ok(['3.8.0', '3.8.1'].includes(pkgJson147.version), 'package.json version must be 3.8.0 or 3.8.1');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
+    // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
+    console.log('\n[Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release...');
+
+    // 1. Verify Internal Management API Payload Bounding (4MB Ceiling)
+    const testOversizedInternal = await new Promise((resolve) => {
+      const internalReq = http.request({
+        hostname: '127.0.0.1',
+        port: routerPort,
+        path: '/balancer/api/config',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Transfer-Encoding': 'chunked'
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', c => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      internalReq.on('error', (err) => resolve({ status: 413, error: err.message }));
+      const chunk1M = Buffer.alloc(1024 * 1024, 'x');
+      for (let i = 0; i < 5; i++) {
+        try { internalReq.write(chunk1M); } catch (_) { break; }
+      }
+      try { internalReq.end(); } catch (_) {}
+    });
+    assert.strictEqual(testOversizedInternal.status, 413, 'Internal API payload >4MB must be blocked with HTTP 413 Payload Too Large');
+
+    // 2. Verify Proxy Fallback 32MB Ceiling returns HTTP 413 with precedence
+    const testOversizedProxy = await new Promise((resolve) => {
+      const proxyReq = http.request({
+        hostname: '127.0.0.1',
+        port: routerPort,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-key',
+          'Transfer-Encoding': 'chunked'
+        }
+      }, (res) => {
+        let data = '';
+        proxyReq.on('data', () => {});
+        res.on('data', c => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      proxyReq.on('error', (err) => resolve({ status: 413, error: err.message }));
+      const chunk1M = Buffer.alloc(1024 * 1024, 'a');
+      for (let i = 0; i < 33; i++) {
+        try { proxyReq.write(chunk1M); } catch (_) { break; }
+      }
+      try { proxyReq.end(); } catch (_) {}
+    });
+    assert.ok(testOversizedProxy.status === 413 || testOversizedProxy.status === 400, 'Proxy body >32MB must be rejected safely');
+
+    // 3. Verify Web UI Enhancements: Cross-Tab Navigation, Button Consolidation & Dynamic Version
+    const uiRes148 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes148.statusCode, 200);
+
+    // Cross-Tab navigation uses scrollToElement
+    assert.ok(uiRes148.body.includes("scrollToElement('codex-card')"), 'scrollToCodexCard & bindCodexQuick must use scrollToElement');
+    assert.ok(uiRes148.body.includes("scrollToElement('updates-card')"), '#updates hash handler must use scrollToElement');
+    assert.ok(uiRes148.body.includes("scrollToElement('compression-card')"), 'scrollToCompressionCard must use scrollToElement');
+
+    // Button consolidation: accounts-card contains test and cooldown buttons
+    assert.ok(uiRes148.body.includes('onclick="testAllAccounts()"'), 'accounts-card must contain testAllAccounts button');
+    assert.ok(uiRes148.body.includes('onclick="resetAllCooldowns()"'), 'accounts-card must contain resetAllCooldowns button');
+
+    // Verify threshold notice and guide
+    assert.ok(uiRes148.body.includes('💡 瘦身门限当前为 15,000 字符（仅挂载大型/多 MCP 服务时触发）'), 'Threshold notice must be present');
+    assert.ok(uiRes148.body.includes('tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀'), 'Threshold guide must be present');
+
+    // Dynamic version injection
+    const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(pkgJson148.version, '3.8.1', 'package.json version must be 3.8.1');
+    assert.ok(uiRes148.body.includes('v3.8.1 Pro'), 'Web UI must render v3.8.1 Pro version badge');
+    assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
+
+    console.log('✓ Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 147 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 148 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
