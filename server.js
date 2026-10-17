@@ -5460,7 +5460,7 @@ function renderDashboardHtml(config) {
               <div class="comp-module-header-right">
                 <span class="badge ${(mCfg.headroom && mCfg.headroom.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-headroom">${(mCfg.headroom && mCfg.headroom.enabled === false) ? '已停用/旁路' : '运行中'}</span>
                 <div class="comp-module-contrib">
-                  <span class="contrib-text" id="contrib-text-headroom">贡献度: 0% · 0 Tokens</span>
+                  <span class="contrib-text" id="contrib-text-headroom">贡献度: 0% · ~0 Tokens</span>
                   <div class="comp-progress-bar">
                     <div class="comp-progress-fill" id="progress-fill-headroom" style="width: 0%;"></div>
                   </div>

@@ -6117,12 +6117,29 @@ $ProgressPreference = 'SilentlyContinue'
       model: 'codex-pro',
       tools: mockTools,
       input: [
-        { type: 'function_call_output', call_id: 'call_1', output: raw60Str }
+        { type: 'function_call_output', call_id: 'call_1', output: raw60Str },
+        { role: 'tool', content: '\u001b[32mhello role tool\u001b[0m' }
       ]
     };
     const compactedResp137 = contextCompactor.compactResponsesPayload(responsesPayload137, { enabled: true });
     assert.strictEqual(compactedResp137.tools.length, 2, 'Responses tools must be deduplicated');
     assert.ok(compactedResp137.input[0].output.includes('_headroom_smart_crusher'), 'Responses output must be folded by SmartCrusher');
+    assert.strictEqual(compactedResp137.input[1].content, 'hello role tool', 'Responses role: tool content must be denoised');
+    assert.strictEqual(compactedResp137.input[1].output, undefined, 'Responses role: tool must not have phantom output injected');
+
+    // 4b. Verify direct structured array folding in Chat and Anthropic payloads
+    const directArray60 = Array.from({ length: 60 }, (_, i) => ({ id: i, val: `item_${i}` }));
+    const chatArrayComp = contextCompactor.compactChatPayload({
+      messages: [{ role: 'tool', content: directArray60 }]
+    }, { enabled: true });
+    assert.ok(Array.isArray(chatArrayComp.messages[0].content), 'Chat direct array must remain array');
+    assert.strictEqual(chatArrayComp.messages[0].content.length, 9, 'Chat direct array of 60 items must be folded to 9 items');
+
+    const anthArrayComp = contextCompactor.compactAnthropicPayload({
+      messages: [{ role: 'user', content: [{ type: 'tool_result', content: directArray60 }] }]
+    }, { enabled: true });
+    assert.ok(Array.isArray(anthArrayComp.messages[0].content[0].content), 'Anthropic direct array must remain array');
+    assert.strictEqual(anthArrayComp.messages[0].content[0].content.length, 9, 'Anthropic direct array of 60 items must be folded to 9 items');
 
     // 5. Send actual HTTP requests through Router endpoint to trigger router process compaction
     await request('/balancer/api/compression/stats/reset', { method: 'POST' });
@@ -6161,7 +6178,13 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(parsedApiStats.success, 'Stats API must return success');
     assert.ok(parsedApiStats.stats.modules.headroom.savedTokens > 0, `Headroom savedTokens must be visible in API (was ${parsedApiStats.stats.modules.headroom.savedTokens})`);
     assert.ok(parsedApiStats.stats.modules.schema.savedTokens > 0, `Schema savedTokens must be visible in API (was ${parsedApiStats.stats.modules.schema.savedTokens})`);
-    assert.ok(parsedApiStats.stats.totalSavedChars >= (parsedApiStats.stats.modules.headroom.savedChars + parsedApiStats.stats.modules.schema.savedChars), 'Total saved chars must be sum of modules');
+    assert.strictEqual(
+      parsedApiStats.stats.totalSavedChars,
+      parsedApiStats.stats.modules.headroom.savedChars + parsedApiStats.stats.modules.schema.savedChars,
+      'Total saved chars must strictly equal sum of module saved chars without double counting'
+    );
+    const totalPercentage = parsedApiStats.stats.modules.headroom.percentage + parsedApiStats.stats.modules.schema.percentage;
+    assert.ok(Math.round(totalPercentage) >= 99 && Math.round(totalPercentage) <= 101, `Module percentages must sum to 100% (was ${totalPercentage}%)`);
 
     // 6. Test Web UI Dashboard HTML renders active elements for Card 2 & Card 3
     const uiRes137 = await request('/balancer/ui', { method: 'GET' });

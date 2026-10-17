@@ -445,6 +445,7 @@ function recordModuleOnlySavings(moduleName, deltaChars) {
   if (deltaChars <= 0) return;
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += deltaChars;
+    compressionStats.totalOriginalChars += deltaChars;
     compressionStats.updatedAt = new Date().toISOString();
     computeDerivedStats(compressionStats);
     persistStatsThrottled();
@@ -1375,7 +1376,12 @@ function runPipeline(text, options = {}, context = {}) {
       if (typeof transformed === 'string') {
         if (transformed.length < beforeLen) {
           const mod = (name === 'foldLockfiles' || name === 'foldStructuredData') ? 'headroom' : 'rtk';
-          recordModuleOnlySavings(mod, beforeLen - transformed.length);
+          const savedChars = beforeLen - transformed.length;
+          if (context && context.moduleDeltas) {
+            context.moduleDeltas[mod] = (context.moduleDeltas[mod] || 0) + savedChars;
+          } else {
+            recordSavings(mod, savedChars, beforeLen);
+          }
         }
         current = transformed;
       }
@@ -1779,7 +1785,8 @@ function compactText(text, options = {}, sessionId = null) {
       }
     }
 
-    let result = runPipeline(text, opts, { sessionId });
+    const moduleDeltas = {};
+    let result = runPipeline(text, opts, { sessionId, moduleDeltas });
 
     // Protocol & Connection Safety Shield:
     // If the input text had non-whitespace content, but compression reduced it to pure whitespace or empty,
@@ -1793,8 +1800,31 @@ function compactText(text, options = {}, sessionId = null) {
       setMemo(sessionId, cacheKey, result);
     }
 
-    if (text.length > result.length) {
-      recordOverallSavings(text.length, result.length);
+    const totalSaved = text.length - result.length;
+    if (totalSaved > 0) {
+      const origLen = text.length;
+      const compLen = result.length;
+      compressionStats.totalOriginalChars += origLen;
+      compressionStats.totalCompressedChars += compLen;
+
+      let rtkDelta = moduleDeltas.rtk || 0;
+      let headroomDelta = moduleDeltas.headroom || 0;
+      const pipelineSum = rtkDelta + headroomDelta;
+
+      if (pipelineSum === 0) {
+        rtkDelta = totalSaved;
+      } else if (pipelineSum !== totalSaved) {
+        // Proportionally distribute delta to preserve exact equality
+        rtkDelta = Math.round((rtkDelta / pipelineSum) * totalSaved);
+        headroomDelta = totalSaved - rtkDelta;
+      }
+
+      if (rtkDelta > 0) compressionStats.modules.rtk.savedChars += rtkDelta;
+      if (headroomDelta > 0) compressionStats.modules.headroom.savedChars += headroomDelta;
+
+      compressionStats.updatedAt = new Date().toISOString();
+      computeDerivedStats(compressionStats);
+      persistStatsThrottled();
     }
 
     return result;
@@ -1833,13 +1863,29 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
       result.messages = result.messages.map(msg => {
         if (!msg) return msg;
         if (msg.role === 'tool' || msg.role === 'function') {
-          if (msg.content === null || msg.content === undefined) {
-            return { ...msg, content: '[Empty output]' };
-          } else if (typeof msg.content === 'string') {
-            const compacted = compactText(msg.content, opts, sessionId);
-            return { ...msg, content: ensureSafeNonEmptyString(compacted) };
-          } else if (Array.isArray(msg.content)) {
-            let cleaned = msg.content
+          const hasContent = msg.content !== undefined;
+          const hasOutput = msg.output !== undefined;
+          const targetField = hasContent ? 'content' : (hasOutput ? 'output' : 'content');
+          const val = msg[targetField];
+
+          if (val === null || val === undefined) {
+            return { ...msg, [targetField]: '[Empty output]' };
+          } else if (typeof val === 'string') {
+            const compacted = compactText(val, opts, sessionId);
+            return { ...msg, [targetField]: ensureSafeNonEmptyString(compacted) };
+          } else if (Array.isArray(val)) {
+            let targetArray = val;
+            if (opts.foldStructuredData && targetArray.length > (opts.maxStructuredItems || 50)) {
+              try {
+                const rawArrStr = JSON.stringify(targetArray);
+                const foldedStr = foldStructuredData(rawArrStr, opts);
+                if (foldedStr.length < rawArrStr.length) {
+                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length);
+                  targetArray = JSON.parse(foldedStr);
+                }
+              } catch (_) {}
+            }
+            let cleaned = targetArray
               .filter(part => part !== null && part !== undefined)
               .map(part => {
                 if (typeof part === 'string') {
@@ -1862,17 +1908,17 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
                 return { type: 'text', text: '[Empty output]' };
               });
             if (cleaned.length === 0) {
-              return { ...msg, content: '[Empty output]' };
+              return { ...msg, [targetField]: '[Empty output]' };
             }
-            return { ...msg, content: cleaned };
-          } else if (typeof msg.content === 'object' && msg.content !== null) {
+            return { ...msg, [targetField]: cleaned };
+          } else if (typeof val === 'object' && val !== null) {
             try {
-              const raw = JSON.stringify(msg.content);
+              const raw = JSON.stringify(val);
               const compacted = compactText(raw, opts, sessionId);
               try {
-                return { ...msg, content: JSON.parse(compacted) };
+                return { ...msg, [targetField]: JSON.parse(compacted) };
               } catch (_) {
-                return { ...msg, content: ensureSafeNonEmptyString(compacted) };
+                return { ...msg, [targetField]: ensureSafeNonEmptyString(compacted) };
               }
             } catch (_) {
               return msg;
@@ -1915,18 +1961,38 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
     if (Array.isArray(result.messages)) {
       result.messages = result.messages.map(msg => {
         if (!msg) return msg;
-        if (msg.role === 'user' && Array.isArray(msg.content)) {
+        if (msg.role === 'tool' && typeof msg.content === 'string') {
+          const compacted = compactText(msg.content, opts, sessionId);
+          return { ...msg, content: ensureSafeNonEmptyString(compacted) };
+        }
+        if ((msg.role === 'user' || msg.role === 'tool') && Array.isArray(msg.content)) {
           return {
             ...msg,
             content: msg.content.map(block => {
-              if (block && block.type === 'tool_result') {
-                if (block.content === null || block.content === undefined) {
-                  return { ...block, content: '[Empty output]' };
-                } else if (typeof block.content === 'string') {
-                  const compacted = compactText(block.content, opts, sessionId);
-                  return { ...block, content: ensureSafeNonEmptyString(compacted) };
-                } else if (Array.isArray(block.content)) {
-                  let cleaned = block.content
+              if (block && (block.type === 'tool_result' || msg.role === 'tool')) {
+                const hasContent = block.content !== undefined;
+                const hasOutput = block.output !== undefined;
+                const targetField = hasContent ? 'content' : (hasOutput ? 'output' : 'content');
+                const val = block[targetField];
+
+                if (val === null || val === undefined) {
+                  return { ...block, [targetField]: '[Empty output]' };
+                } else if (typeof val === 'string') {
+                  const compacted = compactText(val, opts, sessionId);
+                  return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
+                } else if (Array.isArray(val)) {
+                  let targetArray = val;
+                  if (opts.foldStructuredData && targetArray.length > (opts.maxStructuredItems || 50)) {
+                    try {
+                      const rawArrStr = JSON.stringify(targetArray);
+                      const foldedStr = foldStructuredData(rawArrStr, opts);
+                      if (foldedStr.length < rawArrStr.length) {
+                        recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length);
+                        targetArray = JSON.parse(foldedStr);
+                      }
+                    } catch (_) {}
+                  }
+                  let cleaned = targetArray
                     .filter(part => part !== null && part !== undefined)
                     .map(part => {
                       if (typeof part === 'string') {
@@ -1951,15 +2017,15 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                   if (cleaned.length === 0) {
                     cleaned = [{ type: 'text', text: '[Empty output]' }];
                   }
-                  return { ...block, content: cleaned };
-                } else if (typeof block.content === 'object' && block.content !== null) {
+                  return { ...block, [targetField]: cleaned };
+                } else if (typeof val === 'object' && val !== null) {
                   try {
-                    const raw = JSON.stringify(block.content);
+                    const raw = JSON.stringify(val);
                     const compacted = compactText(raw, opts, sessionId);
                     try {
-                      return { ...block, content: JSON.parse(compacted) };
+                      return { ...block, [targetField]: JSON.parse(compacted) };
                     } catch (_) {
-                      return { ...block, content: ensureSafeNonEmptyString(compacted) };
+                      return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
                     }
                   } catch (_) {
                     return block;
@@ -2006,26 +2072,36 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
     if (Array.isArray(result.input)) {
       result.input = result.input.map(item => {
         if (!item) return item;
+        const hasOutput = item.output !== undefined;
+        const hasContent = item.content !== undefined;
         const isToolOutput = item.type === 'function_call_output' ||
           item.type === 'custom_tool_call_output' ||
           item.type === 'tool_search_output' ||
           (item.type && typeof item.type === 'string' && item.type.endsWith('_output')) ||
-          (item.call_id && item.output !== undefined) ||
-          item.role === 'tool';
+          (item.call_id && hasOutput) ||
+          item.role === 'tool' ||
+          item.role === 'function';
 
         if (isToolOutput) {
-          if (item.output === null || item.output === undefined) {
-            return { ...item, output: '[Empty output]' };
-          } else if (typeof item.output === 'string') {
-            const comp = compactText(item.output, opts, sessionId);
-            return { ...item, output: ensureSafeNonEmptyString(comp) };
-          } else if (Array.isArray(item.output)) {
+          const targetField = hasOutput ? 'output' : (hasContent ? 'content' : 'output');
+          const val = item[targetField];
+
+          if (val === null || val === undefined) {
+            return { ...item, [targetField]: '[Empty output]' };
+          } else if (typeof val === 'string') {
+            const comp = compactText(val, opts, sessionId);
+            return { ...item, [targetField]: ensureSafeNonEmptyString(comp) };
+          } else if (Array.isArray(val)) {
             // If it's a giant array (> maxStructuredItems), fold with SmartCrusher first
-            let targetArray = item.output;
+            let targetArray = val;
             if (opts.foldStructuredData && targetArray.length > (opts.maxStructuredItems || 50)) {
               try {
-                const foldedStr = foldStructuredData(JSON.stringify(targetArray), opts);
-                targetArray = JSON.parse(foldedStr);
+                const rawArrStr = JSON.stringify(targetArray);
+                const foldedStr = foldStructuredData(rawArrStr, opts);
+                if (foldedStr.length < rawArrStr.length) {
+                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length);
+                  targetArray = JSON.parse(foldedStr);
+                }
               } catch (_) {}
             }
             // Strictly preserve array structure for multimodal/block outputs or strings
@@ -2050,13 +2126,13 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
                 return part;
               });
             if (compactedParts.length === 0) {
-              return { ...item, output: '[Empty output]' };
+              return { ...item, [targetField]: '[Empty output]' };
             }
-            return { ...item, output: compactedParts };
-          } else if (item.output && typeof item.output === 'object') {
-            const hasCommonKeys = ['stdout', 'stderr', 'output', 'text', 'content'].some(k => k in item.output);
+            return { ...item, [targetField]: compactedParts };
+          } else if (val && typeof val === 'object') {
+            const hasCommonKeys = ['stdout', 'stderr', 'output', 'text', 'content'].some(k => k in val);
             if (hasCommonKeys) {
-              const clonedOutput = { ...item.output };
+              const clonedOutput = { ...val };
               if (typeof clonedOutput.stdout === 'string') {
                 clonedOutput.stdout = ensureSafeNonEmptyString(compactText(clonedOutput.stdout, opts, sessionId));
               }
@@ -2086,16 +2162,16 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
                 }
                 clonedOutput.content = cleanedContent;
               }
-              return { ...item, output: clonedOutput };
+              return { ...item, [targetField]: clonedOutput };
             } else {
               // General structured object (e.g. { records: [ ... 60 items ... ] })
               try {
-                const rawObj = JSON.stringify(item.output);
+                const rawObj = JSON.stringify(val);
                 const comp = compactText(rawObj, opts, sessionId);
                 try {
-                  return { ...item, output: JSON.parse(comp) };
+                  return { ...item, [targetField]: JSON.parse(comp) };
                 } catch (_) {
-                  return { ...item, output: ensureSafeNonEmptyString(comp) };
+                  return { ...item, [targetField]: ensureSafeNonEmptyString(comp) };
                 }
               } catch (_) {
                 return item;
