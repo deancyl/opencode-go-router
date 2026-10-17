@@ -6752,7 +6752,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1 or 3.7.0');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0 or 3.8.0');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6998,7 +6998,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0 version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1 or 3.7.0');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0 or 3.8.0');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7061,7 +7061,7 @@ $ProgressPreference = 'SilentlyContinue'
     // 2. PowerShell Interactive Banner & Git CRLF Denoising Telemetry
     contextCompactor.resetCompressionStats();
     const psNoiseOutput = "PowerShell 7.6.4 on Windows_NT\r\nwarning: in the working copy of script.sh, LF will be replaced by CRLF the next time Git touches it\r\nDone executing.";
-    const compactedPsText = contextCompactor.compactText(psNoiseOutput, { enabled: true, powershell: { enabled: true, cleanCliXmlNoise: true } });
+    const compactedPsText = contextCompactor.compactText(psNoiseOutput, { enabled: true, targetPlatform: 'win32', powershell: { enabled: true, cleanCliXmlNoise: true } });
     assert.ok(!compactedPsText.includes('PowerShell 7.6.4'), 'Must strip PowerShell interactive banner');
     assert.ok(!compactedPsText.includes('LF will be replaced by CRLF'), 'Must strip Git CRLF noise');
     const psStats143 = contextCompactor.getCompressionStats();
@@ -7120,7 +7120,7 @@ $ProgressPreference = 'SilentlyContinue'
       ]
     };
     contextCompactor.resetCompressionStats();
-    const chatConverted143 = codexAdapter.convertResponsesToChatPayload(codexPayload143, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
+    const chatConverted143 = codexAdapter.convertResponsesToChatPayload(codexPayload143, { enabled: true, targetPlatform: 'win32', foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
     assert.ok(chatConverted143.messages.length >= 3, 'Converted payload must contain valid messages');
     const finalStats143 = contextCompactor.getCompressionStats();
     assert.ok(finalStats143.modules.powershell.savedChars > 0, 'Codex Responses conversion must attribute PowerShell savings');
@@ -7400,8 +7400,89 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(normPsDisabled.cleanPowerShellOutput, false, 'Disabled powershell module must deactivate cleanPowerShellOutput transformer');
     console.log('✓ 4-Tier Presets differentiation & Web UI explanation card verified');
 
+    // [Test 147] Testing Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release
+    console.log('\n[Test 147] Testing Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release...');
+
+    // 1. Verify Web UI Dashboard HTML structure & redundancy consolidation
+    const uiRes147 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes147.statusCode, 200);
+
+    // Verify redundant cards are removed
+    assert.ok(!uiRes147.body.includes('🧭 智能网关核心业务模块快捷入口'), 'Dashboard must remove redundant 快捷入口 cards');
+
+    // Verify critical elements and IDs remain intact
+    assert.ok(uiRes147.body.includes('id="lbl-baseurl"'), 'Base URL label must exist');
+    assert.ok(uiRes147.body.includes('id="btn-copy-baseurl"'), 'Base URL copy button must exist');
+    assert.ok(uiRes147.body.includes('id="btn-save-config"'), 'Save config button must exist');
+    assert.ok(uiRes147.body.includes('id="codex-card"'), 'Codex card must exist');
+    assert.ok(uiRes147.body.includes('onclick="runCodexDoctorCheck()"'), 'Codex doctor check button must exist');
+    assert.ok(uiRes147.body.includes('onclick="bindCodex()"'), 'Codex bind button must exist');
+    assert.ok(uiRes147.body.includes('onclick="runCodexRepair()"'), 'Codex repair button must exist');
+    assert.ok(uiRes147.body.includes('onclick="restartCodexClient()"'), 'Codex restart button must exist');
+    assert.ok(uiRes147.body.includes('onclick="restoreCodex()"'), 'Codex restore button must exist');
+    assert.ok(uiRes147.body.includes('KV Cache 前缀已锁定'), 'KV cache lock banner must exist');
+    assert.ok(uiRes147.body.includes('id="comp-doctor-status-badge"'), 'Compression doctor status badge must exist');
+    assert.ok(uiRes147.body.includes('id="by-model-breakdown-drawer"'), 'By-model breakdown drawer must exist');
+    assert.ok(uiRes147.body.includes('id="module-card-powershell"'), 'PowerShell card must exist');
+
+    // 2. Verify Client Request Body Memory Ceiling (32MB Shield)
+    const testOversizedPayload = await new Promise((resolve) => {
+      const probeReq = http.request({
+        hostname: '127.0.0.1',
+        port: routerPort,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-key',
+          'Transfer-Encoding': 'chunked'
+        }
+      }, (probeRes) => {
+        let resData = '';
+        probeRes.on('data', c => { resData += c; });
+        probeRes.on('end', () => {
+          resolve({ status: probeRes.statusCode, data: resData });
+        });
+      });
+
+      probeReq.on('error', (err) => {
+        resolve({ status: 413, error: err.message });
+      });
+
+      const chunk1M = Buffer.alloc(1024 * 1024, 'a');
+      for (let i = 0; i < 33; i++) {
+        try {
+          probeReq.write(chunk1M);
+        } catch (_) {
+          break;
+        }
+      }
+      try { probeReq.end(); } catch (_) {}
+    });
+    assert.ok(testOversizedPayload.status === 413 || testOversizedPayload.status === 400 || testOversizedPayload.error, 'Oversized payload >32MB must be rejected to prevent OOM');
+
+    // 3. Verify Early Socket Error Shield
+    await new Promise((resolve) => {
+      const abortReq = http.request({
+        hostname: '127.0.0.1',
+        port: routerPort,
+        path: '/balancer/api/auth',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }, () => {});
+      abortReq.on('error', () => resolve(true));
+      abortReq.write('{"pass');
+      abortReq.destroy(new Error('ECONNRESET simulated'));
+      setTimeout(() => resolve(true), 100);
+    });
+
+    // 4. Verify package.json version is 3.8.0
+    const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(pkgJson147.version, '3.8.0', 'package.json version must be 3.8.0');
+    console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 146 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 147 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

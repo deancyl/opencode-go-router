@@ -184,6 +184,9 @@ async function runLiveVerification() {
 
   const t1Elapsed = Date.now() - t1Start;
   console.log(`   ✔ Codex Responses 响应状态: HTTP ${codexRes.statusCode} (${t1Elapsed}ms)`);
+  if (codexRes.statusCode !== 200) {
+    console.error('   ❌ Codex Responses 错误详情:\n', codexRes.body);
+  }
   assert.strictEqual(codexRes.statusCode, 200, 'Codex Responses 必须返回 HTTP 200');
 
   // 验证 SSE 流式块

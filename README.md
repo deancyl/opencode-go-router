@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.7.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-146%2F146%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-147%2F147%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,22 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.7.0 (当前最新版：PowerShell 转义与脚本注入防护、动态双语 Token 模型、4 档预设重塑与数据自愈保全)
+### 🚀 v3.8.0 (当前最新版：Web UI 界面冗余合并精简、内存溢出防御护栏与全链路实机实测闭环)
+- **Web UI 界面冗余合并与美学重塑 (UI Redundancy Consolidation)**：
+  - 剔除总览页 (`view-overview`) 底部的重复业务模块大卡片（原 5 项冗余快捷卡片，完全与侧边栏导航和顶部指标卡重叠），减少无意义垂直滚动，使总览大盘更加清爽、优雅、直观；
+  - 精简并重构总览顶部运行状态栏（`banner`），彻底消除与上方操作栏（`top-action-bar`）重复展示 Base URL 代码框、端点复制按钮与 OpenChamber 外部链接的冗余现象，聚焦展示 429 秒级故障转移、KV Cache 前缀锁定与 5 引擎 Token 压缩的实时守护状态；
+  - 优化 OpenAI Codex 客户端管理卡片操作按钮组，去除功能重复的刷新按钮，整合体检、自愈、一键接入、平滑重启与配置还原的高效操作矩阵；
+  - 全面保全所有既有 DOM ID、API 调用路由与事件交互，100% 确保向后兼容。
+- **Node.js 运行时内存溢出与资源泄露纵深防御 (Memory Leak & OOM Shield)**：
+  - **配额缓存池容量与过期自动修剪 (`pruneQuotaCacheIfNeeded`)**：为 `quotaCache` 注入双倍 TTL 过期清理与 100 槽位上限 LRU 驱逐机制，杜绝多账号长时间运行下的 Map 无界内存增长；
+  - **客户端输入载荷上限硬约束 (32MB Safety Ceiling)**：在反向代理请求体读取流水线中注入 32MB 流式字节累积拦截器，对异常超大请求瞬时切断并响应标准 HTTP 413，阻断堆内存耗尽 (OOM) 崩溃风险；
+  - **全局早期套接字异常防护**：在 `http.createServer` 入口处全局挂载早期 `req.on('error')` 监听器，杜绝客户端半途重置套接字 (ECONNRESET) 引发未捕获异常；
+  - **网络探针与版本检测单次执行屏障**：在 `updater.js` 的 `fetchNpmLatestVersion` 及 `probeHttp` 中装配 `finished` / `settled` 防护屏障，根除超时与套接字销毁竞态引发的重复并发请求。
+- **全量自动化与实机实测验证 (Test 147)**：
+  - 新增 Test 147（UI 冗余精简核验、32MB 内存防护硬约束、早期套接字重置防护与 v3.8.0 全量回归）；
+  - 全量 147 项自动化集成测试全部 100% 绿灯通过；并通过 `sync_nas.py` 成功同步部署至 Linux NAS（192.168.1.50:8822）热重载常驻运行。
+
+### 🚀 v3.7.0 (PowerShell 转义与脚本注入防护、动态双语 Token 模型、4 档预设重塑与数据自愈保全)
 - **Windows PowerShell 引号转义与脚本文件注入引擎 (第 5 大引擎模块升级)**：
   - 彻底攻克 Windows PowerShell 双引号内 `$()` 与 `${}` 被本机提前求值的陷阱（来自真实用例 `01a1422d-b84c-7920-8b16-ace7091dee2e`），自动反引号转义为 `` `$(` `` 与 `` `${` ``；单引号与已转义字符严格免触碰；
   - 智能脚本文件注入助手（`wrapInScriptFileExecution`）：复杂多行命令、循环与内层引用自动包装为临时 `.ps1` 脚本通过 `@' ... '@` 原字面量无损执行并 `finally` 安全回收；

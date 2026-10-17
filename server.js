@@ -407,6 +407,22 @@ function testAccountConnection(upstream, apiKey) {
 const quotaCache = new Map();
 const QUOTA_CACHE_TTL_MS = 8000; // 8 seconds memory cache to prevent upstream rate-limiting
 
+function pruneQuotaCacheIfNeeded() {
+  const now = Date.now();
+  for (const [k, v] of quotaCache.entries()) {
+    if (now - v.timestamp >= QUOTA_CACHE_TTL_MS * 2) {
+      quotaCache.delete(k);
+    }
+  }
+  if (quotaCache.size > 100) {
+    let toRemove = Math.floor(quotaCache.size * 0.2) || 1;
+    for (const k of quotaCache.keys()) {
+      quotaCache.delete(k);
+      if (--toRemove <= 0) break;
+    }
+  }
+}
+
 function fetchAccountUsage(upstream, apiKey, force = false) {
   const cacheKey = `${(upstream || '').trim()}#${(apiKey || '').trim()}`;
   const now = Date.now();
@@ -418,6 +434,13 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
   }
 
   return new Promise((resolve) => {
+    let settled = false;
+    const safeResolve = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+
     try {
       let endpoint = upstream.replace(/\/+$/, '');
       if (endpoint.endsWith('/models')) {
@@ -446,26 +469,27 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
             try {
               const data = JSON.parse(body);
               const result = { success: true, statusCode: 200, usage: data.usage || null, fromCache: false, cachedAt: Date.now() };
+              pruneQuotaCacheIfNeeded();
               quotaCache.set(cacheKey, { timestamp: Date.now(), result });
-              resolve(result);
+              safeResolve(result);
             } catch (e) {
-              resolve({ success: false, statusCode: 200, error: '解析配额数据失败: ' + e.message, fromCache: false });
+              safeResolve({ success: false, statusCode: 200, error: '解析配额数据失败: ' + e.message, fromCache: false });
             }
           } else {
-            resolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}`, fromCache: false });
+            safeResolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}`, fromCache: false });
           }
         });
       });
       req.on('error', (err) => {
-        resolve({ success: false, statusCode: 0, error: `网络异常: ${err.message}`, fromCache: false });
+        safeResolve({ success: false, statusCode: 0, error: `网络异常: ${err.message}`, fromCache: false });
       });
       req.on('timeout', () => {
-        req.destroy();
-        resolve({ success: false, statusCode: 0, error: '请求配额超时 (8秒)', fromCache: false });
+        try { req.destroy(); } catch (_) {}
+        safeResolve({ success: false, statusCode: 0, error: '请求配额超时 (8秒)', fromCache: false });
       });
       req.end();
     } catch (err) {
-      resolve({ success: false, statusCode: 0, error: `端点解析失败: ${err.message}`, fromCache: false });
+      safeResolve({ success: false, statusCode: 0, error: `端点解析失败: ${err.message}`, fromCache: false });
     }
   });
 }
@@ -2730,6 +2754,12 @@ async function runSystemDoctor(scope = 'all', options = {}) {
     report.openchamber.port = activePort;
 
     const probeHttp = await new Promise((resolve) => {
+      let settled = false;
+      const safeResolve = (val) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
       const probeReq = http.request({
         hostname: '127.0.0.1',
         port: activePort,
@@ -2738,10 +2768,13 @@ async function runSystemDoctor(scope = 'all', options = {}) {
         timeout: 1200
       }, (probeRes) => {
         probeRes.resume();
-        resolve({ ok: true, status: probeRes.statusCode });
+        safeResolve({ ok: true, status: probeRes.statusCode });
       });
-      probeReq.on('error', (err) => resolve({ ok: false, error: err.message }));
-      probeReq.on('timeout', () => { probeReq.destroy(); resolve({ ok: false, error: 'timeout' }); });
+      probeReq.on('error', (err) => safeResolve({ ok: false, error: err.message }));
+      probeReq.on('timeout', () => {
+        try { probeReq.destroy(); } catch (_) {}
+        safeResolve({ ok: false, error: 'timeout' });
+      });
       probeReq.end();
     });
 
@@ -4928,18 +4961,16 @@ function renderDashboardHtml(config) {
         <!-- View Section 1: Overview (#/overview) -->
         <section class="view-section active" id="view-overview">
           <div class="banner">
-            <div style="display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; width:100%;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <span class="pulse-dot" style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#34d399; box-shadow: 0 0 8px #34d399;"></span>
-                <strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。
+                <span style="font-size:0.9rem;"><strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。</span>
               </div>
-              <div style="font-size:0.83rem; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <span>🌐 智能网关端点 (Base URL): <code style="color:var(--primary); font-family:monospace; background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;">http://127.0.0.1:${config.port}</code></span>
-                <span class="badge badge-healthy" style="font-size:0.7rem;">本地监听 (127.0.0.1)</span>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span class="badge badge-healthy" style="font-size:0.72rem;">🟢 429 秒级故障转移</span>
+                <span class="badge badge-healthy" style="font-size:0.72rem;">🔒 会话亲和性 (KV Cache)</span>
+                <span class="badge badge-healthy" style="font-size:0.72rem;">⚡ 5 大 Token 优化引擎</span>
               </div>
-            </div>
-            <div>
-              <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" style="color: var(--primary); text-decoration: none; font-size: 0.85rem; font-weight: 600;">💻 打开 OpenChamber 工作台 (3000) ↗</a>
             </div>
           </div>
 
@@ -5090,66 +5121,6 @@ function renderDashboardHtml(config) {
 
       <div id="wizard-progress-box" class="doctor-box" style="display:none; margin-top:12px; font-size:0.85rem; border-color:rgba(56, 189, 248, 0.4);"></div>
     </div>
-          <!-- 快捷模块导航卡片 -->
-          <div class="card" style="margin-top:1.5rem;">
-            <div class="section-title">
-              <div class="section-title-left">
-                <span>🧭 智能网关核心业务模块快捷入口</span>
-              </div>
-            </div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; margin-top:8px;">
-              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('compression')">
-                <div class="wizard-step-header">
-                  <span>⚡ Token 压缩中枢</span>
-                  <span class="badge badge-healthy">5 引擎</span>
-                </div>
-                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">RTK 修剪、Headroom 折叠、Schema 规范化、CacheZone 屏障与 PowerShell 去噪</div>
-                <div style="margin-top:auto; padding-top:6px;">
-                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">调配压缩 ➔</button>
-                </div>
-              </div>
-              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('clients')">
-                <div class="wizard-step-header">
-                  <span>🤖 客户端接入中心</span>
-                  <span class="badge badge-healthy">38 款模型</span>
-                </div>
-                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">OpenAI Codex CLI、OpenCode 终端、OpenChamber 工作台与 OMO 插件无感接驳</div>
-                <div style="margin-top:auto; padding-top:6px;">
-                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">配置接入 ➔</button>
-                </div>
-              </div>
-              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('accounts')">
-                <div class="wizard-step-header">
-                  <span>📋 订阅账号与配额</span>
-                  <span class="badge badge-healthy">多账号池</span>
-                </div>
-                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">多账号故障秒级漂移、429 冷却自愈、官方 5h/周/月限额实时穿透监测与防抖刷新</div>
-                <div style="margin-top:auto; padding-top:6px;">
-                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">管理账号 ➔</button>
-                </div>
-              </div>
-              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('doctor')">
-                <div class="wizard-step-header">
-                  <span>🩺 系统体检与自愈</span>
-                  <span class="badge badge-healthy">离线沙箱</span>
-                </div>
-                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">CLI 就绪探测、端口冲突自愈、纯本地离线文档预览沙箱加固与后台僵死锁清理</div>
-                <div style="margin-top:auto; padding-top:6px;">
-                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">前往体检 ➔</button>
-                </div>
-              </div>
-              <div class="wizard-step" style="cursor:pointer;" onclick="switchTab('settings')">
-                <div class="wizard-step-header">
-                  <span>⚙️ 网络设置与更新</span>
-                  <span class="badge badge-healthy">网络 & 更新</span>
-                </div>
-                <div style="font-size:0.78rem; color:var(--muted); line-height:1.4;">上游端点、局域网绑定、UI 访问密码、429 冷却时长、会话亲和性与生态组件版本更新</div>
-                <div style="margin-top:auto; padding-top:6px;">
-                  <button class="btn btn-secondary btn-sm" style="font-size:0.75rem; padding:2px 8px; width:100%; justify-content:center;">前往设置 ➔</button>
-                </div>
-              </div>
-            </div>
-          </div>
         </section>
 
         <!-- View Section 2: Token Compression (#/compression) -->
@@ -5645,12 +5616,11 @@ function renderDashboardHtml(config) {
           <span id="codex-status-badge" class="badge badge-healthy">🟢 网关接入就绪</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()">🔍 Codex 专项体检</button>
-          <button class="btn btn-success btn-sm" onclick="runCodexRepair()">🛠️ Codex 专项自愈与加固</button>
-          <button class="btn btn-secondary btn-sm" onclick="loadCodexStatus()">🔄 刷新</button>
-          <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindCodex()">⚡ 一键接入</button>
-          <button class="btn btn-secondary btn-sm" style="background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()">🔄 重启客户端</button>
-          <button class="btn btn-danger btn-sm" onclick="restoreCodex()">⏪ 还原配置</button>
+          <button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()" title="全面诊断 OpenAI Codex 配置、语言与进程状态">🔍 Codex 体检</button>
+          <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindCodex()" title="一键备份并锁定 38 款模型目录与网关">⚡ 一键接入</button>
+          <button class="btn btn-success btn-sm" onclick="runCodexRepair()" title="一键自愈超时配置并注入防断流屏障">🛠️ 专项自愈加固</button>
+          <button class="btn btn-secondary btn-sm" style="background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()" title="平滑重启 Codex 客户端加载最新配置">🔄 重启客户端</button>
+          <button class="btn btn-danger btn-sm" onclick="restoreCodex()" title="从灾备快照还原原始配置">⏪ 还原配置</button>
           <span class="collapse-toggle" onclick="toggleCardCollapse('codex-collapse-body', this)">▼ 收起</span>
         </div>
       </div>
@@ -8854,6 +8824,15 @@ function renderDashboardHtml(config) {
 
 // HTTP Server
 const server = http.createServer((req, res) => {
+  req.on('error', (err) => {
+    if (!res.headersSent) {
+      try {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Client request stream error: ' + err.message, type: 'client_error' } }));
+      } catch (_) {}
+    }
+  });
+
   const reqUrl = url.parse(req.url, true);
 
   // Global CORS preflight (OPTIONS)
@@ -9854,6 +9833,8 @@ $ghost
 
   // All other API calls: Proxy to OpenCode Go upstream
   const chunks = [];
+  let totalReqBytes = 0;
+  const MAX_REQ_BYTES = 32 * 1024 * 1024; // 32MB safety ceiling to prevent heap allocation exhaustion
   req.on('error', err => {
     if (!res.headersSent) {
       try {
@@ -9862,7 +9843,20 @@ $ghost
       } catch (_) {}
     }
   });
-  req.on('data', chunk => chunks.push(chunk));
+  req.on('data', chunk => {
+    totalReqBytes += chunk.length;
+    if (totalReqBytes > MAX_REQ_BYTES) {
+      req.destroy(new Error('Payload Too Large: request body exceeded 32MB ceiling'));
+      if (!res.headersSent) {
+        try {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Payload Too Large: request body exceeded 32MB ceiling', type: 'payload_too_large' } }));
+        } catch (_) {}
+      }
+      return;
+    }
+    chunks.push(chunk);
+  });
   req.on('end', () => {
     const reqBody = Buffer.concat(chunks);
     const sessionId = codexAdapter.extractOrDeriveSessionId(req, reqBody);

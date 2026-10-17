@@ -793,39 +793,54 @@ function fetchNpmLatestVersion(pkgName, timeoutMs = 4500) {
     const mirrorUrl = `https://registry.npmmirror.com/${encodedName}/latest`;
 
     function doFetch(targetUrl, isFallback = false) {
+      let finished = false;
+      const markDone = (cb) => {
+        if (finished) return;
+        finished = true;
+        cb();
+      };
+
       try {
         const u = new URL(targetUrl);
         const req = https.get(u, { headers: { 'User-Agent': 'opencode-go-router-updater' } }, (res) => {
           let data = '';
           res.on('data', (chunk) => { data += chunk; });
           res.on('end', () => {
-            try {
-              if (res.statusCode >= 200 && res.statusCode < 300) {
-                const parsed = JSON.parse(data);
-                return resolve({ version: parsed.version || null, error: null });
-              } else {
+            markDone(() => {
+              try {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                  const parsed = JSON.parse(data);
+                  return resolve({ version: parsed.version || null, error: null });
+                } else {
+                  if (!isFallback) return doFetch(mirrorUrl, true);
+                  resolve({ version: null, error: `HTTP ${res.statusCode}` });
+                }
+              } catch (e) {
                 if (!isFallback) return doFetch(mirrorUrl, true);
-                resolve({ version: null, error: `HTTP ${res.statusCode}` });
+                resolve({ version: null, error: e.message });
               }
-            } catch (e) {
-              if (!isFallback) return doFetch(mirrorUrl, true);
-              resolve({ version: null, error: e.message });
-            }
+            });
           });
         });
         req.on('error', (e) => {
-          if (!isFallback) return doFetch(mirrorUrl, true);
-          resolve({ version: null, error: e.message });
+          markDone(() => {
+            if (!isFallback) return doFetch(mirrorUrl, true);
+            resolve({ version: null, error: e.message });
+          });
         });
         const timerLimit = isFallback ? 2500 : 2000;
         req.setTimeout(timerLimit, () => {
-          req.destroy();
-          if (!isFallback) return doFetch(mirrorUrl, true);
-          resolve({ version: null, error: '请求超时 (可能处于离线或受限网络环境)' });
+          markDone(() => {
+            try { req.destroy(); } catch (_) {}
+            if (!isFallback) return doFetch(mirrorUrl, true);
+            resolve({ version: null, error: '请求超时 (可能处于离线或受限网络环境)' });
+          });
         });
       } catch (err) {
-        if (!isFallback) return doFetch(mirrorUrl, true);
-        resolve({ version: null, error: err.message });
+        markDone(() => {
+          if (!isFallback) return doFetch(mirrorUrl, true);
+          resolve({ version: null, error: err.message });
+        });
       }
     }
 
