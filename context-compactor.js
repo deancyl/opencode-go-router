@@ -857,6 +857,37 @@ function foldLockfiles(text, options = {}) {
  * @param {object} options
  * @returns {string}
  */
+/**
+ * Fast O(1) character pre-validation to check if string can possibly be valid JSON.
+ * Filters out plaintext, markdown links, code blocks, etc. before invoking JSON.parse.
+ */
+function looksLikeJsonStructure(candidate, openChar) {
+  if (typeof candidate !== 'string' || candidate.length < 2) return false;
+  const closeChar = openChar === '[' ? ']' : '}';
+  if (candidate[0] !== openChar || candidate[candidate.length - 1] !== closeChar) return false;
+
+  // Scan first non-whitespace character after openChar
+  let firstChar = '';
+  for (let i = 1; i < candidate.length - 1; i++) {
+    const c = candidate[i];
+    if (c !== ' ' && c !== '\t' && c !== '\n' && c !== '\r') {
+      firstChar = c;
+      break;
+    }
+  }
+  if (!firstChar) return true; // e.g. "[]" or "{}"
+
+  if (openChar === '{') {
+    // Valid JSON object keys must start with '"'
+    if (firstChar !== '"') return false;
+    if (!candidate.includes(':')) return false;
+  } else {
+    // Valid JSON array elements start with '"', '{', '[', digits, '-', 't', 'f', 'n'
+    if (!'"{[-0123456789tfn'.includes(firstChar)) return false;
+  }
+  return true;
+}
+
 function foldStructuredData(text, options = {}) {
   if (typeof text !== 'string' || text.length < 200) return text;
   if (options.foldStructuredData === false) return text;
@@ -1011,11 +1042,18 @@ function foldStructuredData(text, options = {}) {
         candidateStarts.push({ char: text[i], idx: i });
       }
     }
+    let parseAttempts = 0;
+    const MAX_PARSE_ATTEMPTS = 3;
     for (const { char, idx } of candidateStarts) {
+      if (parseAttempts >= MAX_PARSE_ATTEMPTS) break;
       const closeChar = char === '[' ? ']' : '}';
       const endIdx = text.lastIndexOf(closeChar);
       if (endIdx > idx + 100) {
         const candidate = text.substring(idx, endIdx + 1);
+        if (!looksLikeJsonStructure(candidate, char)) {
+          continue;
+        }
+        parseAttempts++;
         try {
           wasFolded = false;
           const parsed = JSON.parse(candidate);
@@ -1039,6 +1077,9 @@ function foldStructuredData(text, options = {}) {
 // Cache compiled dynamic regex patterns to eliminate repeated compilation overhead
 const dynamicRegexCache = new Map();
 function getCachedRegex(pattern, flags = 'i') {
+  if (flags.includes('g') || flags.includes('y')) {
+    return new RegExp(pattern, flags);
+  }
   const key = `${pattern}__${flags}`;
   let reg = dynamicRegexCache.get(key);
   if (!reg) {
@@ -1636,17 +1677,19 @@ function slimToolItem(tool) {
  * @param {number} threshold
  * @returns {Array}
  */
-function slimToolsSchema(tools, threshold = 15000) {
+function slimToolsSchema(tools, threshold = 15000, knownLength = -1) {
   if (!Array.isArray(tools) || tools.length === 0) return tools;
   try {
     const limit = (typeof threshold === 'number' && !isNaN(threshold) && threshold >= 0) ? threshold : 15000;
-    let rawJson = '';
-    try {
-      rawJson = JSON.stringify(tools);
-    } catch (e) {
-      return tools;
+    let rawLen = knownLength;
+    if (typeof rawLen !== 'number' || rawLen < 0) {
+      try {
+        rawLen = JSON.stringify(tools).length;
+      } catch (e) {
+        return tools;
+      }
     }
-    if (rawJson.length <= limit) {
+    if (rawLen <= limit) {
       return tools;
     }
     return tools.map(t => slimToolItem(t));
@@ -1671,6 +1714,10 @@ function compactToolsList(tools, opts = {}) {
   }
 
   try {
+    if (!opts.alignToolsSchema && !opts.slimToolsSchema) {
+      return { tools, savedChars: 0, initialLen: 0 };
+    }
+
     let rawStr = '';
     try { rawStr = JSON.stringify(tools); } catch (e) {}
     const initialLen = rawStr.length;
@@ -1680,7 +1727,8 @@ function compactToolsList(tools, opts = {}) {
       current = alignToolsSchema(current);
     }
     if (opts.slimToolsSchema) {
-      current = slimToolsSchema(current, opts.schemaCharThreshold);
+      // Pass initialLen to slimToolsSchema to prevent duplicate JSON.stringify
+      current = slimToolsSchema(current, opts.schemaCharThreshold, initialLen);
     }
 
     let finalStr = '';
@@ -2304,7 +2352,7 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
   for (const pat of rawPatterns) {
     if (typeof pat === 'string' && pat.trim()) {
       try {
-        new RegExp(pat.trim(), 'i');
+        getCachedRegex(pat.trim(), 'i');
       } catch (err) {
         issues.push({
           id: 'comp_invalid_test_pattern',
@@ -2518,7 +2566,7 @@ function repairCompressionConfig(rawConfig = {}, options = {}) {
     for (const pat of norm.customTestPassPatterns) {
       if (typeof pat === 'string' && pat.trim()) {
         try {
-          new RegExp(pat.trim(), 'i');
+          getCachedRegex(pat.trim(), 'i');
           validPatterns.push(pat);
         } catch (_) {
           cleanedCount++;
@@ -2580,6 +2628,8 @@ module.exports = {
   foldLockfiles,
   foldStructuredData,
   foldTestPasses,
+  getCachedRegex,
+  dynamicRegexCache,
   alignToolsSchema,
   slimToolsSchema,
   compactToolsList,

@@ -1093,11 +1093,19 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
  * the model's context window (e.g. 1M or 2M tokens).
  */
 function pruneResponsesPayload(body) {
-  if (!body) return body;
-  const cloned = JSON.parse(JSON.stringify(body));
+  if (!body || typeof body !== 'object') {
+    const res = body || {};
+    res.modified = false;
+    res.pruned = res;
+    return res;
+  }
 
-  if (Array.isArray(cloned.input)) {
-    const input = cloned.input;
+  let modified = false;
+  // Shallow copy top-level payload object without full JSON deep copy
+  const cloned = { ...body };
+
+  if (Array.isArray(body.input)) {
+    let input = body.input.slice();
     const totalItems = input.length;
 
     // 1. Compress giant tool outputs (> 2000 chars) and giant message content (> 6000 chars)
@@ -1117,17 +1125,23 @@ function pruneResponsesPayload(body) {
           const head = outStr.slice(0, 600);
           const tail = outStr.slice(-600);
           const folded = outStr.length - 1200;
-          item.output = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
-        } else {
-          item.output = outStr;
+          const newOutput = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
+          input[i] = { ...item, output: newOutput };
+          modified = true;
+        } else if (outStr !== item.output) {
+          input[i] = { ...item, output: outStr };
+          modified = true;
         }
       }
 
-      if (typeof item.content === 'string' && item.content.length > 6000 && i < totalItems - 2) {
-        const head = item.content.slice(0, 1500);
-        const tail = item.content.slice(-1500);
-        const folded = item.content.length - 3000;
-        item.content = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
+      const curItem = input[i];
+      if (curItem && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
+        const head = curItem.content.slice(0, 1500);
+        const tail = curItem.content.slice(-1500);
+        const folded = curItem.content.length - 3000;
+        const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
+        input[i] = { ...curItem, content: newContent };
+        modified = true;
       }
     }
 
@@ -1160,37 +1174,53 @@ function pruneResponsesPayload(body) {
           role: 'system',
           content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
-        cloned.input = [...headItems, notice, ...tailItems];
+        input = [...headItems, notice, ...tailItems];
+        modified = true;
       }
     }
+
+    cloned.input = input;
   }
 
+  cloned.modified = modified;
+  cloned.pruned = cloned;
   return cloned;
 }
 
 /**
  * Prunes and compresses an oversized standard ChatCompletions messages array.
  */
-function pruneChatMessages(messages) {
-  if (!Array.isArray(messages) || messages.length === 0) return messages;
-  const cloned = JSON.parse(JSON.stringify(messages));
+function pruneChatMessages(messages, maxTokens) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    if (Array.isArray(messages)) {
+      messages.modified = false;
+      messages.pruned = messages;
+    }
+    return messages;
+  }
 
-  for (let i = 0; i < cloned.length; i++) {
-    const msg = cloned[i];
+  let modified = false;
+  // Shallow copy messages array without full JSON deep copy
+  let result = messages.slice();
+
+  for (let i = 0; i < result.length; i++) {
+    const msg = result[i];
     if (!msg) continue;
     const isTool = msg.role === 'tool';
     const isOversized = typeof msg.content === 'string' && msg.content.length > 2500;
-    if (isOversized && (isTool || i < cloned.length - 1)) {
+    if (isOversized && (isTool || i < result.length - 1)) {
       const head = msg.content.slice(0, 800);
       const tail = msg.content.slice(-800);
       const folded = msg.content.length - 1600;
-      msg.content = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
+      const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
+      result[i] = { ...msg, content: newContent };
+      modified = true;
     }
   }
 
-  if (cloned.length > 18) {
-    const sysMsgs = cloned.filter((m, idx) => idx === 0 || m.role === 'system');
-    const nonSys = cloned.filter((m, idx) => idx !== 0 && m.role !== 'system');
+  if (result.length > 18) {
+    const sysMsgs = result.filter((m, idx) => idx === 0 || m.role === 'system');
+    const nonSys = result.filter((m, idx) => idx !== 0 && m.role !== 'system');
     const firstUser = nonSys[0];
     const recentMsgs = nonSys.slice(-12);
     const middleDropped = nonSys.length - 1 - recentMsgs.length;
@@ -1199,11 +1229,14 @@ function pruneChatMessages(messages) {
         role: 'system',
         content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
       };
-      return [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...recentMsgs];
+      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...recentMsgs];
+      modified = true;
     }
   }
 
-  return cloned;
+  result.modified = modified;
+  result.pruned = result;
+  return result;
 }
 
 function getCodexConfigDir() {
@@ -1933,7 +1966,19 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clientRes.write(': keep-alive\n\n');
   }, 10000);
 
-  const isXHighReasoning = reqModel && (reqModel.includes('xhigh') || reqModel.includes('opus') || reqModel.includes('thinking') || reqModel.includes('reasoning'));
+  const isXHighReasoning = Boolean(reqModel && (
+    reqModel.includes('xhigh') ||
+    reqModel.includes('high') ||
+    reqModel.includes('opus') ||
+    reqModel.includes('thinking') ||
+    reqModel.includes('reasoning') ||
+    reqModel.includes('reasoner') ||
+    reqModel.includes('3-7') ||
+    reqModel.includes('3.7') ||
+    reqModel.includes('r1') ||
+    reqModel.includes('o1') ||
+    reqModel.includes('o3')
+  ));
   const maxStallMs = isXHighReasoning ? 600000 : 300000;
 
   const stallWatchdog = setInterval(() => {
@@ -1942,7 +1987,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    const currentMaxStall = (reasoningStarted && !reasoningCompleted) ? 600000 : maxStallMs;
+    const currentMaxStall = (reasoningStarted || reasoningCompleted || isXHighReasoning) ? 600000 : maxStallMs;
     if (Date.now() - lastDataTime > currentMaxStall) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
@@ -2861,7 +2906,19 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clientRes.write(': keep-alive\n\n');
   }, 10000);
 
-  const isXHighReasoning = reqModel && (reqModel.includes('xhigh') || reqModel.includes('opus') || reqModel.includes('thinking') || reqModel.includes('reasoning'));
+  const isXHighReasoning = Boolean(reqModel && (
+    reqModel.includes('xhigh') ||
+    reqModel.includes('high') ||
+    reqModel.includes('opus') ||
+    reqModel.includes('thinking') ||
+    reqModel.includes('reasoning') ||
+    reqModel.includes('reasoner') ||
+    reqModel.includes('3-7') ||
+    reqModel.includes('3.7') ||
+    reqModel.includes('r1') ||
+    reqModel.includes('o1') ||
+    reqModel.includes('o3')
+  ));
   const maxStallMs = isXHighReasoning ? 600000 : 300000;
 
   const stallWatchdog = setInterval(() => {
@@ -2870,7 +2927,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    const currentMaxStall = (reasoningStarted && !reasoningCompleted) ? 600000 : maxStallMs;
+    const currentMaxStall = (reasoningStarted || reasoningCompleted || isXHighReasoning) ? 600000 : maxStallMs;
     if (Date.now() - lastDataTime > currentMaxStall) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
@@ -3230,12 +3287,13 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
 
   function setTopLevelKey(key, value) {
     let found = false;
+    const keyRegex = new RegExp(`^\\s*${key}\\s*=`);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (line.startsWith('[') && line.endsWith(']')) {
         break;
       }
-      if (new RegExp(`^\\s*${key}\\s*=`).test(line)) {
+      if (keyRegex.test(line)) {
         lines[i] = `${key} = ${JSON.stringify(value)}`;
         found = true;
         break;

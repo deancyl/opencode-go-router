@@ -180,11 +180,21 @@ const sessionLastSeen = new Map();
 const sessionModelFallbackCache = new Map();
 // Secondary reverse index: sessionId -> Set of `${sessionId}:${model}` cacheKeys (O(1) session invalidation)
 const sessionFallbackKeyMap = new Map();
+const sessionToFallbackKeys = sessionFallbackKeyMap;
+// CacheKey to SessionId reverse mapping for delimiter-safe O(1) invalidation
+const cacheKeyToSessionMap = new Map();
 
 function touchSession(sessionId, now = Date.now()) {
   if (!sessionId) return;
   sessionLastSeen.delete(sessionId);
   sessionLastSeen.set(sessionId, now);
+}
+
+function getSessionModelFallback(sessionId, model) {
+  if (!sessionId || !model) return null;
+  const cleanReq = model.replace(/^opencode-go\//, '');
+  const cacheKey = `${sessionId}:${cleanReq}`;
+  return sessionModelFallbackCache.get(cacheKey) || null;
 }
 
 function deleteSessionRecord(sess) {
@@ -195,6 +205,7 @@ function deleteSessionRecord(sess) {
   if (fbSet) {
     for (const k of fbSet) {
       sessionModelFallbackCache.delete(k);
+      cacheKeyToSessionMap.delete(k);
     }
     sessionFallbackKeyMap.delete(sess);
   }
@@ -204,13 +215,13 @@ function setSessionModelFallback(sessionId, model, fallbackModel) {
   if (!sessionId || !model || !fallbackModel) return;
   const cleanReq = model.replace(/^opencode-go\//, '');
   const cacheKey = `${sessionId}:${cleanReq}`;
-  if (sessionModelFallbackCache.size >= 5000) {
+  if (!sessionModelFallbackCache.has(cacheKey) && sessionModelFallbackCache.size >= 5000) {
     let pruneCount = Math.floor(sessionModelFallbackCache.size * 0.2) || 1;
     for (const key of sessionModelFallbackCache.keys()) {
       sessionModelFallbackCache.delete(key);
-      const colonIdx = key.indexOf(':');
-      if (colonIdx > 0) {
-        const sId = key.slice(0, colonIdx);
+      const sId = cacheKeyToSessionMap.get(key);
+      cacheKeyToSessionMap.delete(key);
+      if (sId) {
         const fbSet = sessionFallbackKeyMap.get(sId);
         if (fbSet) {
           fbSet.delete(key);
@@ -220,7 +231,10 @@ function setSessionModelFallback(sessionId, model, fallbackModel) {
       if (--pruneCount <= 0) break;
     }
   }
+  // Refresh insertion order if key already exists
+  sessionModelFallbackCache.delete(cacheKey);
   sessionModelFallbackCache.set(cacheKey, fallbackModel);
+  cacheKeyToSessionMap.set(cacheKey, sessionId);
   let fbSet = sessionFallbackKeyMap.get(sessionId);
   if (!fbSet) {
     fbSet = new Set();
@@ -238,6 +252,15 @@ setInterval(() => {
     } else {
       // Insertion-order LRU property: all subsequent entries are even newer
       break;
+    }
+  }
+  // Defensive alignment: clean any stray orphaned sessions in sessionMap
+  if (sessionMap.size > sessionLastSeen.size) {
+    for (const sess of sessionMap.keys()) {
+      if (!sessionLastSeen.has(sess)) {
+        sessionMap.delete(sess);
+        contextCompactor.clearSessionMemo(sess);
+      }
     }
   }
 }, 600000).unref();
@@ -280,6 +303,13 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
       for (const sess of sessionLastSeen.keys()) {
         deleteSessionRecord(sess);
         if (--pruneCount <= 0) break;
+      }
+      if (sessionMap.size > 5000) {
+        let remaining = Math.floor(sessionMap.size * 0.2) || 1;
+        for (const sess of sessionMap.keys()) {
+          deleteSessionRecord(sess);
+          if (--remaining <= 0) break;
+        }
       }
     }
     sessionMap.set(sessionId, chosen.id);
@@ -932,13 +962,14 @@ function handleUpstreamGlitchAndFailover({
         clearTimeout(jitterTimer);
         jitterTimer = null;
       }
+      clientRes.removeListener('close', cancelJitter);
+      clientRes.removeListener('error', cancelJitter);
     };
     clientRes.once('close', cancelJitter);
     clientRes.once('error', cancelJitter);
 
     jitterTimer = setTimeout(() => {
-      clientRes.removeListener('close', cancelJitter);
-      clientRes.removeListener('error', cancelJitter);
+      cancelJitter();
       if (clientRes.destroyed || clientRes.writableEnded) return;
       const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
       retryCurrentAccount(retrySessionId);
@@ -1026,13 +1057,14 @@ function handleNetworkErrorFailover({
         clearTimeout(jitterTimer);
         jitterTimer = null;
       }
+      clientRes.removeListener('close', cancelJitter);
+      clientRes.removeListener('error', cancelJitter);
     };
     clientRes.once('close', cancelJitter);
     clientRes.once('error', cancelJitter);
 
     jitterTimer = setTimeout(() => {
-      clientRes.removeListener('close', cancelJitter);
-      clientRes.removeListener('error', cancelJitter);
+      cancelJitter();
       if (clientRes.destroyed || clientRes.writableEnded) return;
       const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
       retryCurrentAccount(retrySessionId);
@@ -1114,14 +1146,17 @@ function handleModelAndContextFallback({
     }
 
     let pruned = payload;
-    const beforePrune = JSON.stringify(payload);
+    let wasPruned = false;
     if (Array.isArray(payload.messages)) {
-      pruned = { ...payload, messages: codexAdapter.pruneChatMessages(payload.messages) };
+      const pruneRes = codexAdapter.pruneChatMessages(payload.messages);
+      const prunedMsgs = pruneRes.pruned || pruneRes;
+      wasPruned = Boolean(pruneRes.modified);
+      pruned = { ...payload, messages: prunedMsgs };
     } else if (Array.isArray(payload.input)) {
-      pruned = codexAdapter.pruneResponsesPayload(payload);
+      const pruneRes = codexAdapter.pruneResponsesPayload(payload);
+      pruned = pruneRes.pruned || pruneRes;
+      wasPruned = Boolean(pruneRes.modified);
     }
-    const afterPrune = JSON.stringify(pruned);
-    const wasPruned = beforePrune !== afterPrune;
 
     if ((attemptNumber > 1 || !wasPruned) && model !== 'kimi-k2.7-code') {
       console.warn(`[Auto Self-Healing] 自动跃迁至 2M 超长上下文旗舰模型 "kimi-k2.7-code" 兜底执行...`);
@@ -1613,6 +1648,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
     upstreamRes.on('error', (err) => {
       console.error('[Upstream Stream Error]', err.message);
+      clientRes.removeListener('error', onClientPipeError);
+      clientRes.removeListener('close', onClientPipeError);
       try {
         upstreamRes.unpipe(clientRes);
       } catch (_) {}
@@ -1626,6 +1663,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     });
 
     upstreamRes.on('end', () => {
+      clientRes.removeListener('error', onClientPipeError);
+      clientRes.removeListener('close', onClientPipeError);
       finishRequest();
     });
   });
@@ -2071,14 +2110,6 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 }
 
 function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
-  triedAccountIds.add(account.id);
-  const stat = accountStats.get(account.id);
-  if (stat) {
-    stat.activeRequests += 1;
-    stat.totalRequests += 1;
-    stat.lastUsedAt = Date.now();
-  }
-
   const upstreamUrl = new URL(config.upstream);
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
@@ -2100,6 +2131,14 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         }
       }
     }
+  }
+
+  triedAccountIds.add(account.id);
+  const stat = accountStats.get(account.id);
+  if (stat) {
+    stat.activeRequests += 1;
+    stat.totalRequests += 1;
+    stat.lastUsedAt = Date.now();
   }
 
   const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody, config.compression, sessionId);
@@ -2671,6 +2710,7 @@ async function runSystemDoctor(scope = 'all', options = {}) {
         method: 'GET',
         timeout: 1200
       }, (probeRes) => {
+        probeRes.resume();
         resolve({ ok: true, status: probeRes.statusCode });
       });
       probeReq.on('error', (err) => resolve({ ok: false, error: err.message }));
@@ -8048,7 +8088,12 @@ module.exports = {
   handleModelAndContextFallback,
   dispatchResponsesRequest,
   sessionModelFallbackCache,
+  sessionFallbackKeyMap,
+  sessionToFallbackKeys,
+  cacheKeyToSessionMap,
+  getSessionModelFallback,
   setSessionModelFallback,
+  deleteSessionRecord,
   runSystemDoctor,
   executeSystemRepair
 };

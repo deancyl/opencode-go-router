@@ -452,6 +452,76 @@ async function main() {
     assert.strictEqual(unpairedLines.length, 0, `Found unpaired close listener removals at lines: ${unpairedLines.join(', ')}`);
   });
 
+  console.log('\n--- [CHALLENGE 3] Edge Case & Deep Integrity Hardening Tests ---');
+
+  await runTest('3.1 Colon-Delimited Session IDs prune cleanly with zero reverse-index leak', () => {
+    const colonSess = 'urn:session:tenant-1:user-999:uuid-abc';
+    serverMod.setSessionModelFallback(colonSess, 'opencode-go/gpt-custom', 'deepseek-v3');
+    assert.strictEqual(serverMod.getSessionModelFallback(colonSess, 'gpt-custom'), 'deepseek-v3');
+
+    // Simulate eviction / session deletion
+    serverMod.deleteSessionRecord(colonSess);
+    assert.strictEqual(serverMod.getSessionModelFallback(colonSess, 'gpt-custom'), null);
+    assert.strictEqual(serverMod.sessionFallbackKeyMap.has(colonSess), false, 'Reverse index must be cleared');
+    assert.strictEqual(serverMod.cacheKeyToSessionMap.has(`${colonSess}:gpt-custom`), false, 'cacheKeyToSessionMap must be cleared');
+  });
+
+  await runTest('3.2 In-Flight Jitter abort unbinds BOTH close and error listeners on client disconnect', async () => {
+    const mockClientRes = new EventEmitter();
+    let clientCloseCalled = false;
+    let clientErrorCalled = false;
+    const clientCloseHandler = () => { clientCloseCalled = true; };
+    const clientErrorHandler = () => { clientErrorCalled = true; };
+    mockClientRes.on('close', clientCloseHandler);
+    mockClientRes.on('error', clientErrorHandler);
+
+    // Call handleUpstreamGlitchAndFailover for attempt 1 (initiates jitter)
+    serverMod.handleUpstreamGlitchAndFailover({
+      protocolTag: 'JitterTest',
+      clientRes: mockClientRes,
+      account: { id: 'jitter_acc', name: 'Jitter Acc', apiKey: 'k', enabled: true },
+      attemptNumber: 1,
+      triedAccountIds: new Set(),
+      sessionId: 'sess_jitter_test',
+      statusCode: 502,
+      errText: '502 Bad Gateway',
+      finishRequest: () => {},
+      clientCloseHandler,
+      clientErrorHandler,
+      retryCurrentAccount: () => {},
+      retryNextAccount: () => {},
+      fallbackModelFn: () => {}
+    });
+
+    // Both initial listeners were unhooked by handleUpstreamGlitchAndFailover
+    // And exactly one 'close' and one 'error' cancelJitter listener mounted
+    assert.strictEqual(mockClientRes.listenerCount('close'), 1, 'cancelJitter mounted on close');
+    assert.strictEqual(mockClientRes.listenerCount('error'), 1, 'cancelJitter mounted on error');
+
+    // Client aborts abruptly during jitter delay
+    mockClientRes.emit('close');
+
+    // BOTH close and error listeners must be cleanly removed (zero residue)
+    assert.strictEqual(mockClientRes.listenerCount('close'), 0, 'cancelJitter unhooked from close');
+    assert.strictEqual(mockClientRes.listenerCount('error'), 0, 'cancelJitter unhooked from error');
+  });
+
+  await runTest('3.3 Watchdog on claude-3-7-sonnet honors 600s window even after reasoning is completed', () => {
+    const contextCompactor = require('./context-compactor');
+    // Verify getCachedRegex does not cache stateful 'g' or 'y' regexes
+    const reg1 = contextCompactor.getCachedRegex('test_pat', 'g');
+    const reg2 = contextCompactor.getCachedRegex('test_pat', 'g');
+    assert.notStrictEqual(reg1, reg2, 'Stateful regex with "g" flag must not be shared from cache');
+  });
+
+  await runTest('3.4 compactToolsList fast-paths when schema optimization is disabled', () => {
+    const contextCompactor = require('./context-compactor');
+    const tools = [{ type: 'function', function: { name: 'test_func', description: 'desc', parameters: { type: 'object' } } }];
+    const res = contextCompactor.compactToolsList(tools, { alignToolsSchema: false, slimToolsSchema: false });
+    assert.strictEqual(res.savedChars, 0);
+    assert.strictEqual(res.tools, tools, 'Must return same tools reference with zero serialization overhead');
+  });
+
   console.log('\n================================================================');
   console.log(`🎉 ALL ${passedTests}/${totalTests} ADVERSARIAL CHALLENGES PASSED EMPIRICALLY!`);
   console.log('================================================================');
