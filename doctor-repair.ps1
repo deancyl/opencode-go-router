@@ -439,6 +439,21 @@ if ($chamberProcs) {
     }
 }
 
+# 检查测试或外壳唤起遗留的孤立 Notepad 与 explorer -Embedding 僵死进程
+$orphanNotepads = @(Get-CimInstance Win32_Process -Filter "Name = 'Notepad.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*README.md*" })
+$orphanExplorers = @(Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*-Embedding*" })
+if ($orphanNotepads.Count -gt 0 -or $orphanExplorers.Count -gt 0) {
+    Write-Host "  ⚠ 发现孤立测试外壳/记事本僵死进程 (Notepad: $($orphanNotepads.Count), explorer: $($orphanExplorers.Count))" -ForegroundColor Yellow
+    $issuesFound.Add([PSCustomObject]@{
+        Id = "orphan_shell_processes"
+        Title = "孤立测试外壳与记事本后台僵死进程占用系统内存"
+        Severity = "Medium"
+        FixDesc = "安全清理孤立测试记事本与 -Embedding 外壳宿主（保护桌面主 Explorer）"
+    })
+} else {
+    Write-Host "  ✔ 无孤立测试外壳或记事本僵死进程残留" -ForegroundColor Green
+}
+
 # 检查 OpenChamber Office 全格式离线预览引擎挂载状态
 $patchScript = Join-Path $PSScriptRoot "patch-openchamber-office.ps1"
 $chamberDistCandidates = @(
@@ -936,6 +951,24 @@ foreach ($iss in $issuesFound) {
                 }
             } catch {
                 Write-Host "    ⚠ 清理失败: $_" -ForegroundColor Red
+            }
+        }
+        "orphan_shell_processes" {
+            Write-Host " -> 正在安全清理孤立的测试记事本与 -Embedding 外壳僵死进程..." -ForegroundColor Yellow
+            try {
+                $nk = 0
+                $ek = 0
+                Get-CimInstance Win32_Process -Filter "Name = 'Notepad.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*README.md*" } | ForEach-Object {
+                    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                    $nk++
+                }
+                Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*-Embedding*" } | ForEach-Object {
+                    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                    $ek++
+                }
+                Write-Host "    ✔ 已清理 $nk 个测试记事本与 $ek 个孤立外壳宿主，成功释放物理内存" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 清理孤立进程时发生警告: $_" -ForegroundColor Yellow
             }
         }
         "stale_opencode_process" {

@@ -71,19 +71,42 @@ namespace OpenCodeRouter
                     createdNew = true;
                 }
 
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 2: createdNew=" + createdNew + "\r\n");
+                bool isSilent = false;
+                if (args != null && args.Length > 0)
+                {
+                    foreach (string a in args)
+                    {
+                        if (a != null && a.IndexOf("silent", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            isSilent = true;
+                            break;
+                        }
+                    }
+                }
+
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent + "\r\n");
                 if (!createdNew)
                 {
                     File.AppendAllText(logPath, "[" + DateTime.Now + "] Another instance is running, activating dashboard and exiting.\r\n");
                     EnsureRouterRunning();
-                    OpenDashboard();
+                    if (!isSilent)
+                    {
+                        OpenDashboard();
+                    }
                     return;
                 }
 
                 File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 3: EnsureRouterRunning\r\n");
                 EnsureRouterRunning();
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 4: OpenDashboard\r\n");
-                OpenDashboard();
+                if (!isSilent)
+                {
+                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 4: OpenDashboard\r\n");
+                    OpenDashboard();
+                }
+                else
+                {
+                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 4: Silent mode, skipping OpenDashboard\r\n");
+                }
                 File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 5: Setting up NotifyIcon\r\n");
 
             // Setup NotifyIcon

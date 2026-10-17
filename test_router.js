@@ -850,13 +850,13 @@ async function runTests() {
       headers: { 'Cookie': `router_auth=${encodeURIComponent(loginJson.token)}` }
     });
     assert.strictEqual(authUiCookieRes.statusCode, 200);
-    assert(authUiCookieRes.body.includes('OpenCode 订阅管理中心'), 'Auth UI with cookie must render dashboard');
+    assert(authUiCookieRes.body.includes('OpenCode 智能高可用网关') || authUiCookieRes.body.includes('OpenCode 订阅管理中心'), 'Auth UI with cookie must render dashboard');
     console.log('✓ Authenticated request with Cookie successfully loaded Dashboard');
 
     // Authenticated request to /balancer/ui with query param ?auth= MUST render dashboard
     const authUiQueryRes = await request('/balancer/ui?auth=SecretTestPassword123!', { method: 'GET' });
     assert.strictEqual(authUiQueryRes.statusCode, 200);
-    assert(authUiQueryRes.body.includes('OpenCode 订阅管理中心'), 'Auth UI with query param must render dashboard');
+    assert(authUiQueryRes.body.includes('OpenCode 智能高可用网关') || authUiQueryRes.body.includes('OpenCode 订阅管理中心'), 'Auth UI with query param must render dashboard');
     console.log('✓ Authenticated request with ?auth= query param successfully loaded Dashboard');
 
     // Restore uiPassword to empty
@@ -886,11 +886,12 @@ async function runTests() {
     const resGoodFile = await request('/balancer/api/open-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: existingFile })
+      body: JSON.stringify({ path: existingFile, dryRun: true })
     });
     assert.strictEqual(resGoodFile.statusCode, 200);
     const goodJson = JSON.parse(resGoodFile.body);
     assert.strictEqual(goodJson.success, true);
+    assert.strictEqual(goodJson.dryRun, true);
     console.log('✓ Open Local File API verified: 400/404/200 checks all passed');
 
     // [Test 16] Testing Component Updates Check API
@@ -1129,11 +1130,12 @@ async function runTests() {
     const resFileUrl = await request('/balancer/api/open-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: fileUrlString })
+      body: JSON.stringify({ path: fileUrlString, dryRun: true })
     });
     assert.strictEqual(resFileUrl.statusCode, 200, 'file:/// URL with fragment must be decoded and opened successfully');
     const fileUrlJson = JSON.parse(resFileUrl.body);
     assert.strictEqual(fileUrlJson.success, true);
+    assert.strictEqual(fileUrlJson.dryRun, true);
     console.log('✓ file:/// URL decoding, percent-unescaping & fragment stripping verified');
 
     // [Test 30] Testing Safe Native App Open UNC Network Path Defense (NTLM Leak Prevention)

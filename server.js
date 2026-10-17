@@ -3809,7 +3809,11 @@ function renderDashboardHtml(config) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenCode 订阅管理中心 | 原生高可用路由</title>
+  <meta name="theme-color" content="#0f172a">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>OpenCode 智能高可用网关 | 订阅管理中心</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
   <style>
@@ -3828,11 +3832,11 @@ function renderDashboardHtml(config) {
       --muted: #94a3b8;
     }
     * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: var(--bg);
-      color: var(--text);
+    html, body {
       margin: 0;
+      padding: 0;
+      background-color: #0b1120 !important;
+      color: var(--text);
       padding: 0;
       line-height: 1.5;
       overflow-x: hidden;
@@ -8811,6 +8815,13 @@ $ghost
         if (!fs.existsSync(filePath)) {
           res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
           res.end(JSON.stringify({ success: false, error: 'File not found on local filesystem' }));
+          return;
+        }
+
+        // Support dryRun mode (for automated tests and validation without leaking GUI processes)
+        if (payload.dryRun === true) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: true, dryRun: true, message: '安全沙箱与文件存在性校验通过 (dryRun 模式已跳过桌面应用启动)' }));
           return;
         }
 
