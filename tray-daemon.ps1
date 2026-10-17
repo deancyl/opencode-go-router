@@ -85,18 +85,34 @@ function Open-Dashboard([string]$hash = "") {
     }
     $url = "http://127.0.0.1:$port/balancer/ui$hash"
     try {
-        $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
-        $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-        if (-not (Test-Path $edge)) {
-            $edge = "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
-        }
-        if (Test-Path $chrome) {
-            Start-Process -FilePath $chrome -ArgumentList "--app=$url"
+        $localChromium = Join-Path $rootDir "bin\chromium\chrome.exe"
+        if (Test-Path $localChromium) {
+            Start-Process -FilePath $localChromium -ArgumentList "--app=$url"
             return
         }
-        if (Test-Path $edge) {
-            Start-Process -FilePath $edge -ArgumentList "--app=$url"
-            return
+
+        $chromeCandidates = @(
+            "C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+        )
+        foreach ($c in $chromeCandidates) {
+            if (Test-Path $c) {
+                Start-Process -FilePath $c -ArgumentList "--app=$url"
+                return
+            }
+        }
+
+        $edgeCandidates = @(
+            "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            "C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe"
+        )
+        foreach ($e in $edgeCandidates) {
+            if (Test-Path $e) {
+                Start-Process -FilePath $e -ArgumentList "--app=$url"
+                return
+            }
         }
     } catch { }
     Start-Process "explorer.exe" -ArgumentList "`"$url`""
