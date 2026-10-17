@@ -83,20 +83,13 @@ async function runLiveVerification() {
   console.log('================================================================================\n');
 
   // ---------------------------------------------------------------------------
-  // Stage 0: 前置统计清零与基线重置
+  // Stage 0: 采集前置统计基线 (保护生产历史累积数据不被清零)
   // ---------------------------------------------------------------------------
-  console.log('📋 [Stage 0] 前置基线重置与清零校验...');
-  const resetRes = await httpRequest({
-    path: '/balancer/api/compression/stats/reset',
-    method: 'POST'
-  }, {});
-  assert.strictEqual(resetRes.statusCode, 200, '清零接口必须返回 200');
+  console.log('📋 [Stage 0] 采集前置统计基线 (保护生产历史累积数据)...');
   const initialStatsRes = await httpRequest({ path: '/balancer/api/compression/stats', method: 'GET' });
   const initialJson = JSON.parse(initialStatsRes.body);
   const initialStats = initialJson.stats || initialJson;
-  console.log(`   ✔ 历史统计已成功清零: savedChars=${initialStats.totalSavedChars}, savedTokens=${initialStats.savedTokens}`);
-  assert.strictEqual(initialStats.totalSavedChars, 0, '初始节约字符必须为 0');
-  assert.strictEqual(initialStats.savedTokens, 0, '初始节约 Token 必须为 0');
+  console.log(`   ✔ 当前大盘统计基线: totalOriginal=${initialStats.totalOriginalChars}, savedChars=${initialStats.totalSavedChars}, savedTokens=${initialStats.savedTokens}`);
 
   // ---------------------------------------------------------------------------
   // Stage 1: OpenAI Codex 真实流量实测 (Responses API /v1/responses)
@@ -450,7 +443,7 @@ async function runLiveVerification() {
   }
   console.log('================================================================================\n');
 
-  // 严密断言全部 5 大模块均有有效统计
+  // 严密断言全部 5 大模块均有有效统计且生产大盘历史数据只增不减
   assert.ok(finalStats.modules.rtk.savedChars > 0, 'Card 1 RTK 模块节省量必须大于 0');
   assert.ok(finalStats.modules.headroom.savedChars > 0, 'Card 2 Headroom 模块节省量必须大于 0');
   assert.ok(finalStats.modules.schema.savedChars > 0 || finalStats.modules.schema.alignedRounds > 0, 'Card 3 Schema 模块节省量或锁定轮次必须有效');
@@ -458,6 +451,8 @@ async function runLiveVerification() {
   assert.ok(finalStats.modules.powershell.savedChars > 0, 'Card 5 PowerShell 模块节省量必须大于 0');
   assert.ok((finalStats.savedCostUSD || 0) > 0, '累计节约费用预估必须大于 0');
   assert.ok(finalStats.byModel['deepseek-v4.1-flash'], '必须包含 deepseek-v4.1-flash 模型的精细统计');
+  assert.ok(finalStats.totalOriginalChars >= (initialStats.totalOriginalChars || 0), '生产累计原文字符绝对保全且只增不减');
+  assert.ok(finalStats.totalSavedChars >= (initialStats.totalSavedChars || 0), '生产累计节约字符绝对保全且只增不减');
 
   // 2. 核验 Web UI 前端 HTML 渲染 (/balancer/ui)
   const uiRes = await httpRequest({ path: '/balancer/ui', method: 'GET' });
