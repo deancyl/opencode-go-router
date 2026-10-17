@@ -41,6 +41,13 @@ namespace OpenCodeRouter
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ChangeWindowMessageFilter(uint message, uint dwFlag);
+        public const uint MSGFLT_ADD = 1;
+
         [DllImport("user32.dll")]
         public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
@@ -81,15 +88,20 @@ namespace OpenCodeRouter
         private string rootDir;
         private string icoPath;
         private int port = 4010;
+        private string uiPassword = "";
         private string targetUrl;
 
         public MainForm(string rootDirectory, string iconPath, string initialHash)
         {
             this.rootDir = rootDirectory;
             this.icoPath = iconPath;
-            this.targetUrl = "http://127.0.0.1:" + port + "/balancer/ui" + (string.IsNullOrEmpty(initialHash) ? "" : initialHash);
+
+            LoadConfig(rootDir);
+            string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
+            this.targetUrl = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + (string.IsNullOrEmpty(initialHash) ? "" : initialHash);
 
             WM_SHOW_OPENCODE_ROUTER = RegisterWindowMessage("WM_SHOW_OPENCODE_ROUTER_V35");
+            try { ChangeWindowMessageFilter(WM_SHOW_OPENCODE_ROUTER, MSGFLT_ADD); } catch { }
 
             InitializeComponent();
             ApplyDarkMode();
@@ -100,6 +112,33 @@ namespace OpenCodeRouter
                 EnsureRouterRunning();
                 LaunchAndEmbedBrowser();
             };
+        }
+
+        private void LoadConfig(string dir)
+        {
+            try
+            {
+                string cfgPath = Path.Combine(dir, "config.json");
+                if (File.Exists(cfgPath))
+                {
+                    string content = File.ReadAllText(cfgPath);
+                    System.Text.RegularExpressions.Match mPort = System.Text.RegularExpressions.Regex.Match(content, @"""port""\s*:\s*(\d+)");
+                    if (mPort.Success)
+                    {
+                        int p;
+                        if (int.TryParse(mPort.Groups[1].Value, out p) && p > 0 && p < 65536)
+                        {
+                            this.port = p;
+                        }
+                    }
+                    System.Text.RegularExpressions.Match mPw = System.Text.RegularExpressions.Regex.Match(content, @"""uiPassword""\s*:\s*""([^""]*)""");
+                    if (mPw.Success)
+                    {
+                        this.uiPassword = mPw.Groups[1].Value;
+                    }
+                }
+            }
+            catch { }
         }
 
         private void InitializeComponent()
@@ -161,13 +200,39 @@ namespace OpenCodeRouter
                         int h = Convert.ToInt32(key.GetValue("Height", this.Size.Height));
                         int max = Convert.ToInt32(key.GetValue("Maximized", 0));
 
-                        Screen screen = Screen.FromPoint(new Point(x, y));
-                        if (screen != null && screen.WorkingArea.Contains(new Point(x, y)))
+                        w = Math.Max(w, 800);
+                        h = Math.Max(h, 600);
+                        Rectangle targetRect = new Rectangle(x, y, w, h);
+
+                        Screen targetScreen = null;
+                        foreach (Screen scr in Screen.AllScreens)
                         {
-                            this.StartPosition = FormStartPosition.Manual;
-                            this.Location = new Point(x, y);
-                            this.Size = new Size(Math.Max(w, 800), Math.Max(h, 600));
+                            if (scr.WorkingArea.IntersectsWith(targetRect))
+                            {
+                                targetScreen = scr;
+                                break;
+                            }
                         }
+
+                        if (targetScreen == null)
+                        {
+                            targetScreen = Screen.PrimaryScreen;
+                            x = targetScreen.WorkingArea.Left + (targetScreen.WorkingArea.Width - w) / 2;
+                            y = targetScreen.WorkingArea.Top + (targetScreen.WorkingArea.Height - h) / 2;
+                        }
+                        else
+                        {
+                            // Ensure titlebar is visible and draggable on multi-monitor setups
+                            if (y < targetScreen.WorkingArea.Top) y = targetScreen.WorkingArea.Top;
+                            if (y > targetScreen.WorkingArea.Bottom - 60) y = targetScreen.WorkingArea.Bottom - 60;
+                            if (x < targetScreen.WorkingArea.Left - w + 100) x = targetScreen.WorkingArea.Left;
+                            if (x > targetScreen.WorkingArea.Right - 100) x = targetScreen.WorkingArea.Right - w;
+                        }
+
+                        this.StartPosition = FormStartPosition.Manual;
+                        this.Location = new Point(x, y);
+                        this.Size = new Size(w, h);
+
                         if (max == 1)
                         {
                             this.WindowState = FormWindowState.Maximized;
@@ -186,18 +251,12 @@ namespace OpenCodeRouter
                 {
                     if (key != null)
                     {
-                        if (this.WindowState == FormWindowState.Normal)
-                        {
-                            key.SetValue("X", this.Location.X);
-                            key.SetValue("Y", this.Location.Y);
-                            key.SetValue("Width", this.Size.Width);
-                            key.SetValue("Height", this.Size.Height);
-                            key.SetValue("Maximized", 0);
-                        }
-                        else if (this.WindowState == FormWindowState.Maximized)
-                        {
-                            key.SetValue("Maximized", 1);
-                        }
+                        Rectangle boundsToSave = (this.WindowState == FormWindowState.Normal) ? this.Bounds : this.RestoreBounds;
+                        key.SetValue("X", boundsToSave.X);
+                        key.SetValue("Y", boundsToSave.Y);
+                        key.SetValue("Width", boundsToSave.Width);
+                        key.SetValue("Height", boundsToSave.Height);
+                        key.SetValue("Maximized", (this.WindowState == FormWindowState.Maximized) ? 1 : 0);
                     }
                 }
             }
@@ -257,7 +316,7 @@ namespace OpenCodeRouter
             notifyIcon.ContextMenuStrip = menu;
         }
 
-        public void ShowAndActivate()
+        public void ShowAndActivate(int tabCode = 0)
         {
             if (!this.Visible) this.Show();
             if (this.WindowState == FormWindowState.Minimized)
@@ -271,6 +330,45 @@ namespace OpenCodeRouter
                 SetFocus(browserHwnd);
                 MoveWindow(browserHwnd, 0, 0, container.Width, container.Height, true);
             }
+
+            if (tabCode > 0)
+            {
+                string hash = "";
+                switch (tabCode)
+                {
+                    case 1: hash = "#/overview"; break;
+                    case 2: hash = "#/compression"; break;
+                    case 3: hash = "#/clients"; break;
+                    case 4: hash = "#/accounts"; break;
+                    case 5: hash = "#/doctor"; break;
+                    case 6: hash = "#/settings"; break;
+                }
+                if (!string.IsNullOrEmpty(hash))
+                {
+                    NavigateToTab(hash);
+                }
+            }
+        }
+
+        private void NavigateToTab(string hash)
+        {
+            try
+            {
+                string browserExe = FindBrowserExe();
+                if (!string.IsNullOrEmpty(browserExe))
+                {
+                    string appProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenCodeRouter", "NativeProfile");
+                    string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
+                    string navUrl = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + hash;
+                    ProcessStartInfo psi = new ProcessStartInfo();
+                    psi.FileName = browserExe;
+                    psi.Arguments = "--app=\"" + navUrl + "\" --user-data-dir=\"" + appProfile + "\"";
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    Process.Start(psi);
+                }
+            }
+            catch { }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -299,19 +397,41 @@ namespace OpenCodeRouter
                 notifyIcon.Dispose();
             }
 
-            if (browserProcess != null && !browserProcess.HasExited)
-            {
-                try { browserProcess.Kill(); } catch { }
-            }
+            TerminateBrowserProcess();
 
             base.OnFormClosing(e);
+        }
+
+        private void TerminateBrowserProcess()
+        {
+            if (browserProcess != null)
+            {
+                try
+                {
+                    if (!browserProcess.HasExited)
+                    {
+                        browserProcess.CloseMainWindow();
+                        if (!browserProcess.WaitForExit(350))
+                        {
+                            // Eradicate entire process tree to prevent orphaned GPU / renderer zombie processes
+                            ProcessStartInfo killPsi = new ProcessStartInfo("taskkill.exe", "/pid " + browserProcess.Id + " /T /F");
+                            killPsi.CreateNoWindow = true;
+                            killPsi.UseShellExecute = false;
+                            Process.Start(killPsi);
+                        }
+                    }
+                }
+                catch { }
+                browserProcess = null;
+            }
         }
 
         protected override void WndProc(ref Message m)
         {
             if (WM_SHOW_OPENCODE_ROUTER != 0 && m.Msg == WM_SHOW_OPENCODE_ROUTER)
             {
-                ShowAndActivate();
+                int tabCode = m.WParam.ToInt32();
+                ShowAndActivate(tabCode);
                 return;
             }
             base.WndProc(ref m);
@@ -332,7 +452,7 @@ namespace OpenCodeRouter
 
             ProcessStartInfo psi = new ProcessStartInfo();
             psi.FileName = browserExe;
-            psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --no-first-run --no-default-browser-check --disable-background-networking";
+            psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --no-first-run --no-default-browser-check --disable-background-networking --disable-background-mode --disable-features=msEdgeStartupBoost --window-size=1240,840";
             psi.UseShellExecute = false;
 
             try
@@ -343,9 +463,9 @@ namespace OpenCodeRouter
                 // Asynchronously wait for browser HWND and reparent
                 Thread reparentThread = new Thread(() => {
                     IntPtr foundHwnd = IntPtr.Zero;
-                    for (int i = 0; i < 35; i++)
+                    for (int i = 0; i < 40; i++)
                     {
-                        Thread.Sleep(150);
+                        Thread.Sleep(120);
                         if (browserProcess.HasExited) break;
 
                         // Try finding Chrome_WidgetWin_1 window for process tree
@@ -391,7 +511,7 @@ namespace OpenCodeRouter
                     StringBuilder sb = new StringBuilder(256);
                     GetClassName(hWnd, sb, 256);
                     string className = sb.ToString();
-                    if (className.Contains("Chrome_WidgetWin_1") || className.Contains("Intermediate D3D Window"))
+                    if (className.Contains("Chrome_WidgetWin_1"))
                     {
                         result = hWnd;
                         return false;
@@ -428,7 +548,7 @@ namespace OpenCodeRouter
         {
             try
             {
-                if (IsPortListening(port)) return;
+                if (IsServerReady(port)) return;
 
                 string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
                 string serverJs = Path.Combine(rootDir, "server.js");
@@ -452,13 +572,34 @@ namespace OpenCodeRouter
                     Process.Start(psi);
                 }
 
-                for (int i = 0; i < 20; i++)
+                for (int i = 0; i < 25; i++)
                 {
-                    Thread.Sleep(150);
-                    if (IsPortListening(port)) break;
+                    Thread.Sleep(120);
+                    if (IsServerReady(port)) break;
                 }
             }
             catch { }
+        }
+
+        private bool IsServerReady(int targetPort)
+        {
+            if (!IsPortListening(targetPort)) return false;
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + targetPort + "/balancer/ui");
+                req.Method = "HEAD";
+                req.Timeout = 250;
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                {
+                    return true;
+                }
+            }
+            catch (WebException wex)
+            {
+                if (wex.Response != null) return true;
+            }
+            catch { }
+            return true;
         }
 
         private bool IsPortListening(int targetPort)
@@ -502,6 +643,11 @@ namespace OpenCodeRouter
                 req.Method = "POST";
                 req.ContentLength = 0;
                 req.Timeout = 3000;
+                if (!string.IsNullOrEmpty(uiPassword))
+                {
+                    string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(uiPassword.Trim()));
+                    req.Headers["Authorization"] = "Bearer " + b64;
+                }
                 using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                 {
                     if (resp.StatusCode == HttpStatusCode.OK)
@@ -543,6 +689,10 @@ namespace OpenCodeRouter
     static class Program
     {
         private static Mutex mutex = null;
+        public const int ASFW_ANY = -1;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool AllowSetForegroundWindow(int dwProcessId);
 
         [STAThread]
         static void Main(string[] args)
@@ -563,6 +713,21 @@ namespace OpenCodeRouter
 
             string icoPath = Path.Combine(rootDir, "assets", "router.ico");
 
+            int tabCode = 0;
+            string initialHash = "";
+            if (args != null && args.Length > 0 && !string.IsNullOrEmpty(args[0]))
+            {
+                string arg = args[0].ToLowerInvariant();
+                if (arg.Contains("overview")) tabCode = 1;
+                else if (arg.Contains("compress") || arg.Contains("comp")) tabCode = 2;
+                else if (arg.Contains("client") || arg.Contains("codex")) tabCode = 3;
+                else if (arg.Contains("account")) tabCode = 4;
+                else if (arg.Contains("doctor") || arg.Contains("heal") || arg.Contains("repair")) tabCode = 5;
+                else if (arg.Contains("setting") || arg.Contains("update") || arg.Contains("config")) tabCode = 6;
+
+                if (args[0].StartsWith("#")) initialHash = args[0];
+            }
+
             bool createdNew = false;
             try
             {
@@ -575,19 +740,14 @@ namespace OpenCodeRouter
 
             if (!createdNew)
             {
-                // Another instance is already running -> activate it
+                // Another instance is already running -> grant foreground lock and activate it
+                try { AllowSetForegroundWindow(ASFW_ANY); } catch { }
                 uint wmShow = MainForm.RegisterWindowMessage("WM_SHOW_OPENCODE_ROUTER_V35");
                 if (wmShow != 0)
                 {
-                    MainForm.PostMessage(MainForm.HWND_BROADCAST, wmShow, IntPtr.Zero, IntPtr.Zero);
+                    MainForm.PostMessage(MainForm.HWND_BROADCAST, wmShow, new IntPtr(tabCode), IntPtr.Zero);
                 }
                 return;
-            }
-
-            string initialHash = "";
-            if (args.Length > 0 && args[0].StartsWith("#"))
-            {
-                initialHash = args[0];
             }
 
             MainForm form = new MainForm(rootDir, icoPath, initialHash);

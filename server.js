@@ -6425,6 +6425,11 @@ function renderDashboardHtml(config) {
         'accounts-container': 'accounts',
         'compression-card': 'compression',
         'comp-metrics-dashboard': 'compression',
+        'module-card-rtk': 'compression',
+        'module-card-headroom': 'compression',
+        'module-card-schema': 'compression',
+        'module-card-cacheZone': 'compression',
+        'module-card-powershell': 'compression',
         'codex-card': 'clients',
         'clients-guide-card': 'clients',
         'doctor-card': 'doctor',
@@ -6433,21 +6438,32 @@ function renderDashboardHtml(config) {
         'system-info-card': 'settings',
         'wizard-card': 'overview'
       };
-      const targetTab = elementToTabMap[id];
+      let targetTab = elementToTabMap[id];
+      if (!targetTab) {
+        const el = document.getElementById(id);
+        if (el && typeof el.closest === 'function') {
+          const parentSec = el.closest('.view-section');
+          if (parentSec && parentSec.id && parentSec.id.indexOf('view-') === 0) {
+            targetTab = parentSec.id.slice(5);
+          }
+        }
+      }
       if (targetTab && typeof switchTab === 'function') {
         switchTab(targetTab);
       }
-      const el = document.getElementById(id);
-      if (el) {
-        if (typeof el.scrollIntoView === 'function') {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(() => {
+        const el = document.getElementById(id);
+        if (el) {
+          if (typeof el.scrollIntoView === 'function') {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+          el.style.transition = 'box-shadow 0.3s ease';
+          el.style.boxShadow = '0 0 20px rgba(56, 189, 248, 0.6)';
+          setTimeout(() => {
+            if (el && el.style) el.style.boxShadow = '';
+          }, 1500);
         }
-        el.style.transition = 'box-shadow 0.3s ease';
-        el.style.boxShadow = '0 0 20px rgba(56, 189, 248, 0.6)';
-        setTimeout(() => {
-          if (el && el.style) el.style.boxShadow = '';
-        }, 1500);
-      }
+      }, 40);
     }
 
     function updateWizardStatusBadges() {

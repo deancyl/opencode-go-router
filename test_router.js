@@ -6673,9 +6673,32 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(mockElements140['nav-item-compression'].classList.contains('active'), false, 'nav-item-compression must become inactive');
     assert.strictEqual(mockStorage140['opencode_router_last_tab'], 'doctor', 'Doctor tab must be saved to localStorage');
 
-    // Test scrollToElement tab resolution
+    // Switch to remaining tabs: clients, settings, overview
+    ctx140.switchTab('clients');
+    assert.strictEqual(mockElements140['nav-item-clients'].classList.contains('active'), true, 'clients tab must be active');
+    assert.strictEqual(mockElements140['view-clients'].classList.contains('active'), true, 'clients view must be active');
+
+    ctx140.switchTab('settings');
+    assert.strictEqual(mockElements140['nav-item-settings'].classList.contains('active'), true, 'settings tab must be active');
+    assert.strictEqual(mockElements140['view-settings'].classList.contains('active'), true, 'settings view must be active');
+
+    // Test aliases: updates -> settings, codex -> clients, comp -> compression
+    ctx140.switchTab('updates');
+    assert.strictEqual(mockElements140['nav-item-settings'].classList.contains('active'), true, 'updates alias must switch to settings');
+    ctx140.switchTab('codex');
+    assert.strictEqual(mockElements140['nav-item-clients'].classList.contains('active'), true, 'codex alias must switch to clients');
+    ctx140.switchTab('comp');
+    assert.strictEqual(mockElements140['nav-item-compression'].classList.contains('active'), true, 'comp alias must switch to compression');
+
+    // Test scrollToElement tab resolution for accounts, compression child card, and settings
     ctx140.scrollToElement('accounts-card');
     assert.strictEqual(mockElements140['nav-item-accounts'].classList.contains('active'), true, 'scrollToElement(accounts-card) must switch to accounts tab');
+
+    ctx140.scrollToElement('module-card-powershell');
+    assert.strictEqual(mockElements140['nav-item-compression'].classList.contains('active'), true, 'scrollToElement(module-card-powershell) must switch to compression tab');
+
+    ctx140.scrollToElement('updates-card');
+    assert.strictEqual(mockElements140['nav-item-settings'].classList.contains('active'), true, 'scrollToElement(updates-card) must switch to settings tab');
 
     // Test sidebar collapse toggle
     ctx140.toggleSidebarCollapse();
@@ -6697,6 +6720,10 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(appCsContent.includes('WM_SHOW_OPENCODE_ROUTER_V35'), 'OpenCodeRouterApp.cs must declare single-instance broadcast message');
     assert.ok(appCsContent.includes('DWMWA_USE_IMMERSIVE_DARK_MODE'), 'OpenCodeRouterApp.cs must declare immersive dark mode window titlebar');
     assert.ok(appCsContent.includes('FormClosing'), 'OpenCodeRouterApp.cs must intercept close to minimize to tray');
+    assert.ok(appCsContent.includes('AllowSetForegroundWindow'), 'OpenCodeRouterApp.cs must declare AllowSetForegroundWindow to bring instance to front');
+    assert.ok(appCsContent.includes('ChangeWindowMessageFilter'), 'OpenCodeRouterApp.cs must declare ChangeWindowMessageFilter for UIPI compatibility');
+    assert.ok(appCsContent.includes('config.json'), 'OpenCodeRouterApp.cs must implement config.json auto-discovery');
+    assert.ok(appCsContent.includes('IntersectsWith'), 'OpenCodeRouterApp.cs must support multi-monitor bounds memory');
     console.log('✓ Native Windows Desktop Client (OpenCodeRouterApp.exe & OpenCodeRouterApp.cs) verified');
 
     // 4. Verify launch-gui.vbs, launcher.ps1, and tray script prioritization
