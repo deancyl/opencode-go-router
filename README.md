@@ -13,7 +13,7 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.2.3-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.3.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
   <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-137%2F137%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
@@ -280,7 +280,22 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.2.3 (当前最新版：Card 2 Headroom 原始锁文件安全折叠与结构化对象采样、Card 3 CacheAligner 工具去重排序与 KV Cache 锁定贡献度精准归因、全套 137 项全绿测试)
+### 🚀 v3.3.0 (当前最新版：高频会话 O(1) LRU 淘汰、Anthropic 深度推演看门狗防误杀、监听器防泄漏屏障、上下文计算开销优化与 4 层极限压测)
+- **高频会话 O(1) LRU 增量淘汰引擎 (`server.js`)**：
+  - 彻底重构当 `sessionMap.size > 5000` 时因全量遍历、多次数组拷贝与复杂排序导致的 Node.js 事件循环挂死与高延迟瓶颈（由 O(K×M) 降低为 O(1)）；
+  - 引入 Map 原生插入顺序 LRU 机制（`touchSession` 与 `deleteSessionRecord`）结合 `sessionFallbackKeyMap` 二级索引，实现会话瞬时常数级增量淘汰；
+- **Anthropic 协议深度推演看门狗与长思考防误杀 (`codex-adapter.js`)**：
+  - 全面接入 Anthropic `thinking`（深度推演/思考）协议块事件解析与分发（`response.reasoning_text.delta` 等）；
+  - 自适应长推演看门狗：对 `xhigh` / `opus` / `thinking` 模型或处于推演阶段的长流动态放宽门限至 600 秒（普通流 300 秒），并在收到数据分块时严格刷新活动时间戳，彻底杜绝长思考被看门狗误杀；
+- **客户端连接异常与多轮重试监听器防泄漏屏障 (`server.js` & `codex-adapter.js`)**：
+  - 在故障转移（429、401、502/503、Socket ECONNRESET）与动态协议网关中，全面打通并严格解绑 `clientRes` 的 `close` 与 `error` 监听器，彻底根除跨轮次重试引发的 `MaxListenersExceededWarning` 与内存挂死；
+  - 引入 `MAX_ERR_BYTES = 256 * 1024` 上游错误流上限截断，杜绝畸形巨幅错误 payload 撑爆堆内存；
+- **首包延迟 (TTFT) 与正则/序列化计算开销优化 (`context-compactor.js`)**：
+  - 缓存动态正则编译（`dynamicRegexCache` / `getCachedRegex`）并预编译提升 20+ 个核心判定静态正则表达式，大幅消除单行扫描中的重复编译开销；
+  - 在工具模式深拷贝与处理中采用 `structuredClone` 优先与引用不变性短路（避免无谓 `JSON.stringify` 运算），降低 CPU 占用并显著压减首包延迟；
+- **四层并发与故障自愈压测套件 (`test_stress_regression.js`) 与既有 137 项集成测试 100% 双百全绿通**。
+
+### 🚀 v3.2.3 (Card 2 Headroom 原始锁文件安全折叠与结构化对象采样、Card 3 CacheAligner 工具去重排序与 KV Cache 锁定贡献度精准归因、全套 137 项全绿测试)
 - **Card 2 Headroom 代码与结构化折叠引擎指标激活 (`context-compactor.js` & `server.js`)**：
   - **原始锁文件安全折叠**：除原先 git diff 模式外，新增对工具读取的原始 Lockfile（`package-lock.json`、`yarn.lock`、`pnpm-lock.yaml`、`cargo.lock`、`go.sum`）深度安全折叠，严格豁免 Git 冲突标记；
   - **结构化超大对象折叠支持**：`foldStructuredData` 扩展至 >50 个顶层键的大型字典对象采样折叠，彻底解决日常查看巨型 JSON/配置显示 0% · ~0 Tokens 痛点；

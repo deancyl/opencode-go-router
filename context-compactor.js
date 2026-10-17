@@ -1036,6 +1036,49 @@ function foldStructuredData(text, options = {}) {
   }
 }
 
+// Cache compiled dynamic regex patterns to eliminate repeated compilation overhead
+const dynamicRegexCache = new Map();
+function getCachedRegex(pattern, flags = 'i') {
+  const key = `${pattern}__${flags}`;
+  let reg = dynamicRegexCache.get(key);
+  if (!reg) {
+    if (dynamicRegexCache.size > 500) {
+      for (const k of dynamicRegexCache.keys()) {
+        dynamicRegexCache.delete(k);
+        if (dynamicRegexCache.size <= 400) break;
+      }
+    }
+    reg = new RegExp(pattern, flags);
+    dynamicRegexCache.set(key, reg);
+  }
+  return reg;
+}
+
+// Pre-compiled static regexes for test output line classification
+const RE_FAIL_ICONS = /[✕✗✖❌]/;
+const RE_NOT_OK = /^\s*(?:not ok\b|FAIL\b|FAILED\b|ERROR\b|ERR!|fatal(?:\s+error)?\b|panic\b)/i;
+const RE_ASSERTION = /\b(?:AssertionError|Assertion failed)\b/i;
+const RE_CHECK_START = /^[✓✔]/;
+const RE_RUNTIME_EXCEPTIONS = /\b(?:SyntaxError|TypeError|ReferenceError|RangeError|NullPointerException|Exception in thread)\b/i;
+const RE_TRACEBACK_START = /^\s*(?:Traceback\b|BUILD FAILED\b|panic:)/i;
+const RE_AT_STACK = /^\s*at\s+\S+/;
+const RE_PY_STACK = /^\s*File\s+".*",\s+line\s+\d+/i;
+const RE_C_ERROR = /:\d+:\d+:\s*(?:error|warning|fatal)/i;
+const RE_RUST_ERROR = /error\[E\d+\]/i;
+const RE_EXPECTED = /^\s*(?:expected|received)\b/i;
+const RE_CONFLICT_MARKERS = /<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|/;
+const RE_DIFF_HEADER = /^(?:diff --git|--- |\+\+\+|@@ )/;
+const RE_CHECKMARK_PASS = /^[✓✔]\s+.+/;
+const RE_TAP_PASS = /^ok\s+(?:\d+\b|-\s+|\S+\s+-)/;
+const RE_JEST_PASS = /^PASS\s+\S+/;
+const RE_PYTEST_PASS = /(?:::|\.py\b).+?\bPASSED\b/;
+const RE_TEST_PATH_PASS = /^(?:tests?[/\\].*?|.*?\btest\w*.*?|.*?\.(?:py|rs|go|js|ts|cpp|c|java))\s*.*?\bPASSED(?:\s*\[\s*\d+%\])?$/i;
+const RE_CARGO_PASS = /^test\w*\s*(?:\([^)]+\))?\s*\.\.\.\s*ok\b/i;
+const RE_GO_PASS = /^---\s*PASS:\s+\S+/;
+const RE_GENERIC_PASS = /^\[PASS\]\s+\S+/;
+const RE_GTEST_PASS = /^\[\s*OK\s*\]\s+\S+/;
+const RE_CMAKE_PASS = /^\s*\d+\/\d+\s+Test\s+#\d+:\s+\S+.*?\bPassed\b/i;
+
 /**
  * Positive match test passes folding.
  * Safe inversion architecture: ONLY recognizes explicit passing blocks (✓, ✔, PASS, ok, PASSED, [OK]).
@@ -1066,7 +1109,7 @@ function foldTestPasses(text, options = {}) {
         customRegexes.push(pat);
       } else if (typeof pat === 'string' && pat.trim()) {
         try {
-          customRegexes.push(new RegExp(pat.trim(), 'i'));
+          customRegexes.push(getCachedRegex(pat.trim(), 'i'));
         } catch (e) {
           console.warn('[ContextCompactor] Invalid customTestPassPattern ignored:', pat);
         }
@@ -1078,35 +1121,35 @@ function foldTestPasses(text, options = {}) {
       if (!trimmed) return false;
 
       // Safety barrier: Explicit failure indicators, compilation errors, assertion details, or stack traces must NEVER be folded
-      if (/[✕✗✖❌]/.test(line)) return false;
-      if (/^\s*(?:not ok\b|FAIL\b|FAILED\b|ERROR\b|ERR!|fatal(?:\s+error)?\b|panic\b)/i.test(trimmed)) return false;
-      if (/\b(?:AssertionError|Assertion failed)\b/i.test(line) && !/^[✓✔]/.test(trimmed)) return false;
-      if (/\b(?:SyntaxError|TypeError|ReferenceError|RangeError|NullPointerException|Exception in thread)\b/i.test(line)) return false;
-      if (/^\s*(?:Traceback\b|BUILD FAILED\b|panic:)/i.test(trimmed)) return false;
-      if (/^\s*at\s+\S+/.test(line) || /^\s*File\s+".*",\s+line\s+\d+/i.test(line) || /:\d+:\d+:\s*(?:error|warning|fatal)/i.test(line) || /error\[E\d+\]/i.test(line)) return false;
-      if (/^\s*(?:expected|received)\b/i.test(trimmed)) return false;
-      if (/<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|/.test(line)) return false;
-      if (/^(?:diff --git|--- |\+\+\+|@@ )/.test(trimmed)) return false;
+      if (RE_FAIL_ICONS.test(line)) return false;
+      if (RE_NOT_OK.test(trimmed)) return false;
+      if (RE_ASSERTION.test(line) && !RE_CHECK_START.test(trimmed)) return false;
+      if (RE_RUNTIME_EXCEPTIONS.test(line)) return false;
+      if (RE_TRACEBACK_START.test(trimmed)) return false;
+      if (RE_AT_STACK.test(line) || RE_PY_STACK.test(line) || RE_C_ERROR.test(line) || RE_RUST_ERROR.test(line)) return false;
+      if (RE_EXPECTED.test(trimmed)) return false;
+      if (RE_CONFLICT_MARKERS.test(line)) return false;
+      if (RE_DIFF_HEADER.test(trimmed)) return false;
 
       // Positive indicators for major testing frameworks:
       // 1. Jest / Vitest / Mocha: ✓ or ✔
-      if (/^[✓✔]\s+.+/.test(trimmed)) return true;
+      if (RE_CHECKMARK_PASS.test(trimmed)) return true;
       // 2. TAP / node:test: ok 1 - name
-      if (/^ok\s+(?:\d+\b|-\s+|\S+\s+-)/.test(trimmed)) return true;
+      if (RE_TAP_PASS.test(trimmed)) return true;
       // 3. Jest suite pass: PASS src/...
-      if (/^PASS\s+\S+/.test(trimmed)) return true;
+      if (RE_JEST_PASS.test(trimmed)) return true;
       // 4. Pytest: test.py::test_fn PASSED [ 10%]
-      if (/(?:::|\.py\b).+?\bPASSED\b/.test(trimmed) || /^(?:tests?[/\\].*?|.*?\btest\w*.*?|.*?\.(?:py|rs|go|js|ts|cpp|c|java))\s*.*?\bPASSED(?:\s*\[\s*\d+%\])?$/i.test(trimmed)) return true;
+      if (RE_PYTEST_PASS.test(trimmed) || RE_TEST_PATH_PASS.test(trimmed)) return true;
       // 5. Rust cargo test & Python unittest: test foo ... ok / test_foo (module.Test) ... ok
-      if (/^test\w*\s*(?:\([^)]+\))?\s*\.\.\.\s*ok\b/i.test(trimmed)) return true;
+      if (RE_CARGO_PASS.test(trimmed)) return true;
       // 6. Go test: --- PASS: TestFoo (0.00s)
-      if (/^---\s*PASS:\s+\S+/.test(trimmed)) return true;
+      if (RE_GO_PASS.test(trimmed)) return true;
       // 7. Generic [PASS]
-      if (/^\[PASS\]\s+\S+/.test(trimmed)) return true;
+      if (RE_GENERIC_PASS.test(trimmed)) return true;
       // 8. GoogleTest (C++ gtest): [       OK ] Fixture.Test (1 ms)
-      if (/^\[\s*OK\s*\]\s+\S+/.test(trimmed)) return true;
+      if (RE_GTEST_PASS.test(trimmed)) return true;
       // 9. CTest / CMake: 1/10 Test #1: TestName ... Passed
-      if (/^\s*\d+\/\d+\s+Test\s+#\d+:\s+\S+.*?\bPassed\b/i.test(trimmed)) return true;
+      if (RE_CMAKE_PASS.test(trimmed)) return true;
 
       // 10. User-supplied custom extensible patterns
       for (const rx of customRegexes) {
@@ -1547,9 +1590,13 @@ function slimToolItem(tool) {
   try {
     let cloned;
     try {
-      cloned = JSON.parse(JSON.stringify(tool));
+      cloned = typeof structuredClone === 'function' ? structuredClone(tool) : JSON.parse(JSON.stringify(tool));
     } catch (e) {
-      cloned = { ...tool };
+      try {
+        cloned = JSON.parse(JSON.stringify(tool));
+      } catch (err) {
+        cloned = { ...tool };
+      }
     }
 
     // 1. OpenAI function wrapper format
@@ -1637,7 +1684,11 @@ function compactToolsList(tools, opts = {}) {
     }
 
     let finalStr = '';
-    try { finalStr = JSON.stringify(current); } catch (e) {}
+    if (current === tools) {
+      finalStr = rawStr;
+    } else {
+      try { finalStr = JSON.stringify(current); } catch (e) {}
+    }
     const finalLen = finalStr.length;
 
     let deltaChars = Math.max(0, initialLen - finalLen);

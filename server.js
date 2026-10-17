@@ -178,18 +178,55 @@ const sessionMap = new Map();
 const sessionLastSeen = new Map();
 // Pre-emptive fallback cache: `${sessionId}:${model}` -> fallbackModel (for heterogeneous nodes)
 const sessionModelFallbackCache = new Map();
+// Secondary reverse index: sessionId -> Set of `${sessionId}:${model}` cacheKeys (O(1) session invalidation)
+const sessionFallbackKeyMap = new Map();
+
+function touchSession(sessionId, now = Date.now()) {
+  if (!sessionId) return;
+  sessionLastSeen.delete(sessionId);
+  sessionLastSeen.set(sessionId, now);
+}
+
+function deleteSessionRecord(sess) {
+  sessionMap.delete(sess);
+  sessionLastSeen.delete(sess);
+  contextCompactor.clearSessionMemo(sess);
+  const fbSet = sessionFallbackKeyMap.get(sess);
+  if (fbSet) {
+    for (const k of fbSet) {
+      sessionModelFallbackCache.delete(k);
+    }
+    sessionFallbackKeyMap.delete(sess);
+  }
+}
 
 function setSessionModelFallback(sessionId, model, fallbackModel) {
   if (!sessionId || !model || !fallbackModel) return;
   const cleanReq = model.replace(/^opencode-go\//, '');
+  const cacheKey = `${sessionId}:${cleanReq}`;
   if (sessionModelFallbackCache.size >= 5000) {
-    const keys = Array.from(sessionModelFallbackCache.keys());
-    const pruneCount = Math.floor(keys.length * 0.2) || 1;
-    for (let i = 0; i < pruneCount; i++) {
-      sessionModelFallbackCache.delete(keys[i]);
+    let pruneCount = Math.floor(sessionModelFallbackCache.size * 0.2) || 1;
+    for (const key of sessionModelFallbackCache.keys()) {
+      sessionModelFallbackCache.delete(key);
+      const colonIdx = key.indexOf(':');
+      if (colonIdx > 0) {
+        const sId = key.slice(0, colonIdx);
+        const fbSet = sessionFallbackKeyMap.get(sId);
+        if (fbSet) {
+          fbSet.delete(key);
+          if (fbSet.size === 0) sessionFallbackKeyMap.delete(sId);
+        }
+      }
+      if (--pruneCount <= 0) break;
     }
   }
-  sessionModelFallbackCache.set(`${sessionId}:${cleanReq}`, fallbackModel);
+  sessionModelFallbackCache.set(cacheKey, fallbackModel);
+  let fbSet = sessionFallbackKeyMap.get(sessionId);
+  if (!fbSet) {
+    fbSet = new Set();
+    sessionFallbackKeyMap.set(sessionId, fbSet);
+  }
+  fbSet.add(cacheKey);
 }
 
 // Clean up stale sessions periodically (every 10 minutes)
@@ -197,14 +234,10 @@ setInterval(() => {
   const now = Date.now();
   for (const [sess, time] of sessionLastSeen.entries()) {
     if (now - time > 3600000) { // 1 hour inactivity
-      sessionMap.delete(sess);
-      sessionLastSeen.delete(sess);
-      contextCompactor.clearSessionMemo(sess);
-      for (const key of Array.from(sessionModelFallbackCache.keys())) {
-        if (key.startsWith(`${sess}:`)) {
-          sessionModelFallbackCache.delete(key);
-        }
-      }
+      deleteSessionRecord(sess);
+    } else {
+      // Insertion-order LRU property: all subsequent entries are even newer
+      break;
     }
   }
 }, 600000).unref();
@@ -232,7 +265,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
     const pinnedId = sessionMap.get(sessionId);
     const candidate = available.find(a => a.id === pinnedId);
     if (candidate) {
-      sessionLastSeen.set(sessionId, now);
+      touchSession(sessionId, now);
       return candidate;
     }
   }
@@ -243,22 +276,14 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
 
   if (config.sessionAffinityEnabled && sessionId) {
     if (sessionMap.size > 5000) {
-      const entries = Array.from(sessionLastSeen.entries()).sort((a, b) => a[1] - b[1]);
-      const pruneCount = Math.floor(entries.length * 0.2) || 1;
-      for (let i = 0; i < pruneCount; i++) {
-        const sess = entries[i][0];
-        sessionMap.delete(sess);
-        sessionLastSeen.delete(sess);
-        contextCompactor.clearSessionMemo(sess);
-        for (const key of Array.from(sessionModelFallbackCache.keys())) {
-          if (key.startsWith(`${sess}:`)) {
-            sessionModelFallbackCache.delete(key);
-          }
-        }
+      let pruneCount = Math.floor(sessionMap.size * 0.2) || 1;
+      for (const sess of sessionLastSeen.keys()) {
+        deleteSessionRecord(sess);
+        if (--pruneCount <= 0) break;
       }
     }
     sessionMap.set(sessionId, chosen.id);
-    sessionLastSeen.set(sessionId, now);
+    touchSession(sessionId, now);
   }
 
   return chosen;
@@ -728,6 +753,8 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
   };
 }
 
+const MAX_ERR_BYTES = 256 * 1024; // 256KB buffer cap to prevent OOM DoS on abnormal upstream streams
+
 /**
  * Unified Invalid API Key Account Failover Handler
  */
@@ -742,6 +769,7 @@ function handleInvalidApiKeyFailover({
   errText,
   finishRequest,
   clientCloseHandler,
+  clientErrorHandler = clientCloseHandler?.errorHandler,
   retryFn
 }) {
   console.warn(`[Router Auth Alert] Account "${account.name}" returned invalid API key: ${errText.slice(0, 160)}`);
@@ -753,6 +781,9 @@ function handleInvalidApiKeyFailover({
     console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode} (Invalid API Key). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
     retryFn(nextAccount);
     return true;
   }
@@ -773,6 +804,7 @@ function handleRateLimitFailover({
   upstreamRes,
   finishRequest,
   clientCloseHandler,
+  clientErrorHandler = clientCloseHandler?.errorHandler,
   retryFn,
   errorFallbackFn
 }) {
@@ -793,10 +825,25 @@ function handleRateLimitFailover({
   recordCooldown(account.id, cooldownMs, `HTTP ${statusCode}`);
 
   const errorChunks = [];
-  upstreamRes.on('data', chunk => errorChunks.push(chunk));
+  let errorBytes = 0;
+  upstreamRes.on('data', chunk => {
+    if (errorBytes < MAX_ERR_BYTES) {
+      const remaining = MAX_ERR_BYTES - errorBytes;
+      if (chunk.length > remaining) {
+        errorChunks.push(chunk.slice(0, remaining));
+        errorBytes += remaining;
+      } else {
+        errorChunks.push(chunk);
+        errorBytes += chunk.length;
+      }
+    }
+  });
   upstreamRes.on('error', (err) => {
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
     if (typeof errorFallbackFn === 'function') {
       errorFallbackFn(err.message);
     }
@@ -806,6 +853,9 @@ function handleRateLimitFailover({
     if (clientRes.destroyed || clientRes.writableEnded) {
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
       return;
     }
 
@@ -817,10 +867,16 @@ function handleRateLimitFailover({
       console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
       retryFn(nextAccount);
     } else {
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
       const errText = Buffer.concat(errorChunks).toString('utf8');
       if (typeof errorFallbackFn === 'function') {
         errorFallbackFn(errText);
@@ -850,6 +906,7 @@ function handleUpstreamGlitchAndFailover({
   reasoningEffort,
   finishRequest,
   clientCloseHandler,
+  clientErrorHandler = clientCloseHandler?.errorHandler,
   retryCurrentAccount,
   retryNextAccount,
   fallbackModelFn
@@ -865,6 +922,9 @@ function handleUpstreamGlitchAndFailover({
     console.warn(`[Auto Self-Healing] ${protocolTag} 捕获上游异构推理节点瞬态异常 (${statusCode}): "${errText.slice(0, 120)}"，正在实施原位平滑重试...`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
 
     let jitterTimer = null;
     const cancelJitter = () => {
@@ -874,9 +934,11 @@ function handleUpstreamGlitchAndFailover({
       }
     };
     clientRes.once('close', cancelJitter);
+    clientRes.once('error', cancelJitter);
 
     jitterTimer = setTimeout(() => {
       clientRes.removeListener('close', cancelJitter);
+      clientRes.removeListener('error', cancelJitter);
       if (clientRes.destroyed || clientRes.writableEnded) return;
       const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
       retryCurrentAccount(retrySessionId);
@@ -892,6 +954,9 @@ function handleUpstreamGlitchAndFailover({
     console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode} (Upstream Cluster Node Failure). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
     retryNextAccount(nextAccount);
     return true;
   }
@@ -906,6 +971,9 @@ function handleUpstreamGlitchAndFailover({
       }
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
       fallbackModelFn(targetFallback);
       return true;
     }
@@ -932,6 +1000,7 @@ function handleNetworkErrorFailover({
   reasoningEffort,
   finishRequest,
   clientCloseHandler,
+  clientErrorHandler = clientCloseHandler?.errorHandler,
   retryCurrentAccount,
   retryNextAccount,
   fallbackModelFn
@@ -947,6 +1016,9 @@ function handleNetworkErrorFailover({
     console.warn(`[Auto Self-Healing] ${protocolTag} 捕获上游网络瞬态异常 (${err.message})，正在实施原位平滑重试...`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
 
     let jitterTimer = null;
     const cancelJitter = () => {
@@ -956,9 +1028,11 @@ function handleNetworkErrorFailover({
       }
     };
     clientRes.once('close', cancelJitter);
+    clientRes.once('error', cancelJitter);
 
     jitterTimer = setTimeout(() => {
       clientRes.removeListener('close', cancelJitter);
+      clientRes.removeListener('error', cancelJitter);
       if (clientRes.destroyed || clientRes.writableEnded) return;
       const retrySessionId = (sessionId || 'session-default') + '-r' + Date.now();
       retryCurrentAccount(retrySessionId);
@@ -974,6 +1048,9 @@ function handleNetworkErrorFailover({
     console.log(`[${protocolTag} Failover] Error with "${account.name}": ${err.message}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
     retryNextAccount(nextAccount);
     return true;
   }
@@ -988,6 +1065,9 @@ function handleNetworkErrorFailover({
       }
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
       fallbackModelFn(targetFallback);
       return true;
     }
@@ -1014,6 +1094,7 @@ function handleModelAndContextFallback({
   payload,
   finishRequest,
   clientCloseHandler,
+  clientErrorHandler = clientCloseHandler?.errorHandler,
   retryWithPayload
 }) {
   const accountCount = config.accounts && config.accounts.length ? config.accounts.length : 1;
@@ -1028,6 +1109,9 @@ function handleModelAndContextFallback({
     console.warn(`[Auto Self-Healing] ${protocolTag} 请求触发 ${warnReason}。网关正在执行智能滑动窗口裁剪与冗余折叠自愈...`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
 
     let pruned = payload;
     const beforePrune = JSON.stringify(payload);
@@ -1060,6 +1144,9 @@ function handleModelAndContextFallback({
       console.warn(`[Auto Self-Healing] 模型 "${model}" 触发 ${reason}。网关正在无缝自动挽救并切至 "${fallbackModel}"...`);
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
 
       let healedPayload = payload;
       if (payload && typeof payload === 'object') {
@@ -1075,6 +1162,9 @@ function handleModelAndContextFallback({
     console.warn(`[Auto Self-Healing] 上游抛出工具回调不匹配错误: ${errText.slice(0, 160)}。网关正在执行原子工具序列规范化与缺失回复自愈补齐...`);
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+    }
 
     let healedPayload = payload;
     if (Array.isArray(payload.messages)) {
@@ -1163,7 +1253,25 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         parsedBody.model = parsedBody.model.slice(12);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
       }
-    } catch (e) {}
+    } catch (e) {
+      const cType = (clientReq.headers['content-type'] || '').toLowerCase();
+      const isJsonEndpoint = targetPath.includes('/chat/completions') || targetPath.includes('/messages') || targetPath.includes('/responses');
+      if (cType.includes('application/json') || isJsonEndpoint) {
+        if (!clientRes.headersSent) {
+          clientRes.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        }
+        if (!clientRes.writableEnded) {
+          clientRes.end(JSON.stringify({
+            error: {
+              message: `Malformed JSON payload: ${e.message}`,
+              type: 'invalid_request_error',
+              code: 'malformed_json'
+            }
+          }));
+        }
+        return;
+      }
+    }
   }
 
   const sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, parsedBody || reqBody);
@@ -1278,6 +1386,9 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         proxyReq.destroy();
       }
       if (currentUpstreamRes && typeof currentUpstreamRes.destroy === 'function' && !currentUpstreamRes.destroyed) {
+        try {
+          currentUpstreamRes.unpipe(clientRes);
+        } catch (_) {}
         currentUpstreamRes.destroy();
       }
     }
@@ -1287,6 +1398,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   clientErrorHandler = (err) => {
     clientCloseHandler();
   };
+  clientCloseHandler.errorHandler = clientErrorHandler;
 
   clientRes.once('close', clientCloseHandler);
   clientRes.on('error', clientErrorHandler);
@@ -1314,6 +1426,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         upstreamRes,
         finishRequest,
         clientCloseHandler,
+        clientErrorHandler,
         retryFn: (nextAccount) => {
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         },
@@ -1327,10 +1440,23 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     // 2. Check if Responses protocol is unsupported on upstream for native models
     if (isResponsesReq && statusCode === 400 && parsedBody && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
-      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      let errBytes = 0;
+      upstreamRes.on('data', chunk => {
+        if (errBytes < MAX_ERR_BYTES) {
+          const remaining = MAX_ERR_BYTES - errBytes;
+          if (chunk.length > remaining) {
+            errChunks.push(chunk.slice(0, remaining));
+            errBytes += remaining;
+          } else {
+            errChunks.push(chunk);
+            errBytes += chunk.length;
+          }
+        }
+      });
       upstreamRes.on('error', (err) => {
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
       });
       upstreamRes.on('end', () => {
@@ -1340,10 +1466,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           console.log(`[Protocol Fallback] Model "${parsedBody.model}" triggered ModelProtocolUnsupported on /responses. Bridging...`);
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
+          if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
           dispatchResponsesRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
         } else {
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
+          if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -1353,10 +1481,23 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     // 3. Error status codes (400, 401, 403, 404, 422, 500, 502, 503, 504)
     if (statusCode !== 200 && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
-      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      let errBytes = 0;
+      upstreamRes.on('data', chunk => {
+        if (errBytes < MAX_ERR_BYTES) {
+          const remaining = MAX_ERR_BYTES - errBytes;
+          if (chunk.length > remaining) {
+            errChunks.push(chunk.slice(0, remaining));
+            errBytes += remaining;
+          } else {
+            errChunks.push(chunk);
+            errBytes += chunk.length;
+          }
+        }
+      });
       upstreamRes.on('error', (err) => {
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
       });
       upstreamRes.on('end', () => {
@@ -1376,6 +1517,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
             errText,
             finishRequest,
             clientCloseHandler,
+            clientErrorHandler,
             retryFn: (nextAccount) => {
               sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
             }
@@ -1399,6 +1541,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
             reasoningEffort: eff,
             finishRequest,
             clientCloseHandler,
+            clientErrorHandler,
             retryCurrentAccount: (retrySessionId) => {
               sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
             },
@@ -1431,6 +1574,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           payload: parsedBody,
           finishRequest,
           clientCloseHandler,
+          clientErrorHandler,
           retryWithPayload: (newPayload, isModelChanged) => {
             parsedBody = newPayload;
             const newReqBody = Buffer.from(JSON.stringify(newPayload), 'utf8');
@@ -1441,6 +1585,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
@@ -1455,8 +1600,25 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     clientRes.writeHead(statusCode, getCorsHeaders(upstreamRes.headers));
     upstreamRes.pipe(clientRes);
 
+    const onClientPipeError = () => {
+      try {
+        upstreamRes.unpipe(clientRes);
+      } catch (_) {}
+      if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
+        upstreamRes.destroy();
+      }
+    };
+    clientRes.once('error', onClientPipeError);
+    clientRes.once('close', onClientPipeError);
+
     upstreamRes.on('error', (err) => {
       console.error('[Upstream Stream Error]', err.message);
+      try {
+        upstreamRes.unpipe(clientRes);
+      } catch (_) {}
+      try {
+        upstreamRes.resume();
+      } catch (_) {}
       finishRequest();
       if (!clientRes.writableEnded) {
         clientRes.end();
@@ -1471,6 +1633,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   proxyReq.on('error', (err) => {
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
 
     // If client was already closed / aborted, do NOT trigger failover or log false alarm
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) {
@@ -1492,6 +1655,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         reasoningEffort: parsedBody?.reasoning_effort || parsedBody?.reasoning?.effort,
         finishRequest,
         clientCloseHandler,
+        clientErrorHandler,
         retryCurrentAccount: (retrySessionId) => {
           sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
         },
@@ -1623,6 +1787,9 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         proxyReq.destroy();
       }
       if (currentUpstreamRes && typeof currentUpstreamRes.destroy === 'function' && !currentUpstreamRes.destroyed) {
+        try {
+          currentUpstreamRes.unpipe(clientRes);
+        } catch (_) {}
         currentUpstreamRes.destroy();
       }
     }
@@ -1632,6 +1799,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   clientErrorHandler = (err) => {
     clientCloseHandler();
   };
+  clientCloseHandler.errorHandler = clientErrorHandler;
 
   clientRes.once('close', clientCloseHandler);
   clientRes.on('error', clientErrorHandler);
@@ -1659,6 +1827,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         upstreamRes,
         finishRequest,
         clientCloseHandler,
+        clientErrorHandler,
         retryFn: (nextAccount) => {
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         },
@@ -1671,12 +1840,25 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
     if (statusCode !== 200 && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
-      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      let errBytes = 0;
+      upstreamRes.on('data', chunk => {
+        if (errBytes < MAX_ERR_BYTES) {
+          const remaining = MAX_ERR_BYTES - errBytes;
+          if (chunk.length > remaining) {
+            errChunks.push(chunk.slice(0, remaining));
+            errBytes += remaining;
+          } else {
+            errChunks.push(chunk);
+            errBytes += chunk.length;
+          }
+        }
+      });
       upstreamRes.on('error', (err) => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         responded = true;
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
       });
       upstreamRes.on('end', () => {
@@ -1697,6 +1879,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             errText,
             finishRequest,
             clientCloseHandler,
+            clientErrorHandler,
             retryFn: (nextAccount) => {
               bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
             }
@@ -1719,6 +1902,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             reasoningEffort: eff,
             finishRequest,
             clientCloseHandler,
+            clientErrorHandler,
             retryCurrentAccount: (retrySessionId) => {
               bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
             },
@@ -1749,6 +1933,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           payload: responsesBody,
           finishRequest,
           clientCloseHandler,
+          clientErrorHandler,
           retryWithPayload: (newPayload, isModelChanged) => {
             dispatchResponsesRequest(clientReq, clientRes, newPayload, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId);
           }
@@ -1758,6 +1943,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         responded = true;
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
@@ -1806,6 +1992,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       });
       upstreamRes.on('error', (err) => {
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         if (!clientRes.writableEnded && !clientRes.destroyed) {
           const errPayload = JSON.stringify({
             error: {
@@ -1828,6 +2016,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   proxyReq.on('error', (err) => {
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
 
     if (!responded) {
@@ -1844,6 +2033,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         reasoningEffort: eff,
         finishRequest,
         clientCloseHandler,
+        clientErrorHandler,
         retryCurrentAccount: (retrySessionId) => {
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
         },
@@ -1965,6 +2155,9 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         proxyReq.destroy();
       }
       if (currentUpstreamRes && typeof currentUpstreamRes.destroy === 'function' && !currentUpstreamRes.destroyed) {
+        try {
+          currentUpstreamRes.unpipe(clientRes);
+        } catch (_) {}
         currentUpstreamRes.destroy();
       }
     }
@@ -1974,6 +2167,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   clientErrorHandler = (err) => {
     clientCloseHandler();
   };
+  clientCloseHandler.errorHandler = clientErrorHandler;
 
   clientRes.once('close', clientCloseHandler);
   clientRes.on('error', clientErrorHandler);
@@ -2001,6 +2195,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         upstreamRes,
         finishRequest,
         clientCloseHandler,
+        clientErrorHandler,
         retryFn: (nextAccount) => {
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
         },
@@ -2013,12 +2208,25 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
     if (statusCode !== 200 && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
-      upstreamRes.on('data', chunk => errChunks.push(chunk));
+      let errBytes = 0;
+      upstreamRes.on('data', chunk => {
+        if (errBytes < MAX_ERR_BYTES) {
+          const remaining = MAX_ERR_BYTES - errBytes;
+          if (chunk.length > remaining) {
+            errChunks.push(chunk.slice(0, remaining));
+            errBytes += remaining;
+          } else {
+            errChunks.push(chunk);
+            errBytes += chunk.length;
+          }
+        }
+      });
       upstreamRes.on('error', (err) => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         responded = true;
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
       });
       upstreamRes.on('end', () => {
@@ -2039,6 +2247,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             errText,
             finishRequest,
             clientCloseHandler,
+            clientErrorHandler,
             retryFn: (nextAccount) => {
               bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
             }
@@ -2061,6 +2270,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             reasoningEffort: eff,
             finishRequest,
             clientCloseHandler,
+            clientErrorHandler,
             retryCurrentAccount: (retrySessionId) => {
               bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
             },
@@ -2091,6 +2301,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           payload: responsesBody,
           finishRequest,
           clientCloseHandler,
+          clientErrorHandler,
           retryWithPayload: (newPayload, isModelChanged) => {
             dispatchResponsesRequest(clientReq, clientRes, newPayload, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId);
           }
@@ -2100,6 +2311,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         responded = true;
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
       });
       return;
@@ -2148,6 +2360,8 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       });
       upstreamRes.on('error', (err) => {
         finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         if (!clientRes.writableEnded && !clientRes.destroyed) {
           const errPayload = JSON.stringify({
             error: {
@@ -2170,6 +2384,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   proxyReq.on('error', (err) => {
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
+    if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
 
     if (!responded) {
@@ -2186,6 +2401,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         reasoningEffort: eff,
         finishRequest,
         clientCloseHandler,
+        clientErrorHandler,
         retryCurrentAccount: (retrySessionId) => {
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
         },
@@ -3512,939 +3728,6 @@ function renderLoginPage() {
 </body>
 </html>`;
 }
-
-// HTTP Server
-const server = http.createServer((req, res) => {
-  const reqUrl = url.parse(req.url, true);
-
-  // Global CORS preflight (OPTIONS)
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': '*',
-      'Access-Control-Max-Age': '86400'
-    });
-    res.end();
-    return;
-  }
-
-  // Health check endpoint
-  if (reqUrl.pathname === '/health' || reqUrl.pathname === '/balancer/health') {
-    const now = Date.now();
-    const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
-    const healthyAccounts = enabledAccounts.filter(a => {
-      const stat = accountStats.get(a.id);
-      return !stat || (stat.cooldownUntil || 0) <= now;
-    });
-    res.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.end(JSON.stringify({
-      status: 'ok',
-      port: config.port,
-      healthyAccounts: healthyAccounts.length,
-      totalAccounts: config.accounts.length
-    }));
-    return;
-  }
-
-  // Status endpoint (JSON)
-  if (reqUrl.pathname === '/status' || reqUrl.pathname === '/balancer/status') {
-    const now = Date.now();
-    const accountsData = config.accounts.map(acc => {
-      const stat = accountStats.get(acc.id) || {};
-      const isCooling = (stat.cooldownUntil || 0) > now;
-      const remainingCooldown = isCooling ? Math.ceil((stat.cooldownUntil - now) / 1000) : 0;
-      let status = 'healthy';
-      if (!acc.enabled || !acc.apiKey || !acc.apiKey.trim()) status = 'disabled';
-      else if (isCooling) status = 'cooling_down';
-
-      return {
-        id: acc.id,
-        name: acc.name,
-        enabled: acc.enabled,
-        hasKey: Boolean(acc.apiKey && acc.apiKey.trim()),
-        status,
-        remainingCooldownSec: remainingCooldown,
-        activeRequests: stat.activeRequests || 0,
-        totalRequests: stat.totalRequests || 0,
-        rateLimitCount: stat.rateLimitCount || 0,
-        failoverCount: stat.failoverCount || 0,
-        lastUsedAt: stat.lastUsedAt || null,
-        lastError: stat.lastError || null
-      };
-    });
-
-    res.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.end(JSON.stringify({
-      status: 'online',
-      port: config.port,
-      upstream: config.upstream,
-      sessionAffinityEnabled: config.sessionAffinityEnabled,
-      defaultCooldownMs: config.defaultCooldownMs,
-      maxFailoverRetries: config.maxFailoverRetries,
-      activeSessions: sessionMap.size,
-      accounts: accountsData
-    }, null, 2));
-    return;
-  }
-
-  // Auth API
-  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'GET') {
-    const hasPwd = Boolean(config.uiPassword && config.uiPassword.trim());
-    const authOk = isAuthorized(req);
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify({ success: true, hasUiPassword: hasPwd, authenticated: authOk }));
-    return;
-  }
-
-  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-        const inputPwd = (payload.password || '').trim();
-        const inputToken = (payload.token || '').trim();
-        const expectedPwd = (config.uiPassword || '').trim();
-        const expectedB64 = Buffer.from(expectedPwd).toString('base64');
-        const token = Buffer.from(expectedPwd).toString('base64');
-        if (!expectedPwd || inputPwd === expectedPwd || inputToken === expectedPwd || inputToken === expectedB64) {
-          res.writeHead(200, {
-            'Content-Type': 'application/json; charset=utf-8',
-            'Set-Cookie': `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`,
-            'Access-Control-Allow-Origin': '*'
-          });
-          res.end(JSON.stringify({ success: true, token, message: '验证通过' }));
-        } else {
-          res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: false, error: '管理员密码错误，请重新输入' }));
-        }
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Auth gatekeeper for all /balancer/api/* endpoints
-  if (reqUrl.pathname.startsWith('/balancer/api/')) {
-    if (config.uiPassword && !isAuthorized(req)) {
-      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
-      return;
-    }
-  }
-
-  // Get full config API (for UI)
-  if (reqUrl.pathname === '/balancer/api/config' && req.method === 'GET') {
-    res.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.end(JSON.stringify({
-      port: config.port,
-      host: config.host || '127.0.0.1',
-      upstream: config.upstream,
-      defaultCooldownMs: config.defaultCooldownMs,
-      maxFailoverRetries: config.maxFailoverRetries,
-      sessionAffinityEnabled: config.sessionAffinityEnabled,
-      hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
-      uiPassword: config.uiPassword || '',
-      accounts: config.accounts,
-      compression: config.compression || DEFAULT_CONFIG.compression
-    }));
-    return;
-  }
-
-  // Save config API (from UI)
-  if (reqUrl.pathname === '/balancer/api/config' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-        if (!Array.isArray(payload.accounts) || payload.accounts.length === 0) {
-          throw new Error('至少需要保留一个账号配置');
-        }
-
-        // Clean & validate accounts
-        const newAccounts = payload.accounts.map((acc, index) => ({
-          id: acc.id || `account-${Date.now()}-${index}`,
-          name: (acc.name || `账号 ${index + 1}`).trim(),
-          apiKey: (acc.apiKey || '').trim(),
-          enabled: Boolean(acc.enabled)
-        }));
-
-        const newConfig = {
-          ...config,
-          upstream: (payload.upstream || config.upstream).trim(),
-          defaultCooldownMs: Number(payload.defaultCooldownMs) || config.defaultCooldownMs,
-          maxFailoverRetries: Number(payload.maxFailoverRetries) || config.maxFailoverRetries,
-          sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
-          accounts: newAccounts
-        };
-        if (payload.host !== undefined && String(payload.host).trim()) {
-          newConfig.host = String(payload.host).trim();
-        }
-        if (payload.port !== undefined && Number(payload.port) > 0) {
-          newConfig.port = Number(payload.port);
-        }
-        if (payload.uiPassword !== undefined) {
-          newConfig.uiPassword = String(payload.uiPassword).trim();
-        }
-        if (payload.compression && typeof payload.compression === 'object') {
-          const prevComp = config.compression || DEFAULT_CONFIG.compression;
-          if (payload.compression.modules && typeof payload.compression.modules === 'object') {
-            // Modern hierarchical update: payload contains modules
-            const mergedModules = {
-              rtk: { ...(prevComp.modules?.rtk || {}), ...(payload.compression.modules.rtk || {}) },
-              headroom: { ...(prevComp.modules?.headroom || {}), ...(payload.compression.modules.headroom || {}) },
-              schema: { ...(prevComp.modules?.schema || {}), ...(payload.compression.modules.schema || {}) },
-              cacheZone: { ...(prevComp.modules?.cacheZone || {}), ...(payload.compression.modules.cacheZone || {}) }
-            };
-            const toNormalize = {
-              enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
-              preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
-              modules: mergedModules
-            };
-            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
-                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
-                            'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
-                            'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
-                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
-              if (payload.compression[k] !== undefined) {
-                toNormalize[k] = payload.compression[k];
-              }
-            }
-            newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
-          } else {
-            // Legacy flat update: payload contains flat keys without modules
-            const mergedModules = prevComp.modules ? JSON.parse(JSON.stringify(prevComp.modules)) : null;
-            if (mergedModules) {
-              if (payload.compression.stripAnsi !== undefined && mergedModules.rtk) {
-                mergedModules.rtk.stripAnsi = Boolean(payload.compression.stripAnsi);
-              }
-              if (payload.compression.cleanProgressBars !== undefined && mergedModules.rtk) {
-                mergedModules.rtk.cleanProgressBars = Boolean(payload.compression.cleanProgressBars);
-              }
-              if (payload.compression.foldTestPasses !== undefined && mergedModules.rtk) {
-                mergedModules.rtk.foldTestPasses = Boolean(payload.compression.foldTestPasses);
-              }
-              if (payload.compression.cleanDevOpsOutput !== undefined && mergedModules.rtk) {
-                mergedModules.rtk.cleanDevOpsOutput = Boolean(payload.compression.cleanDevOpsOutput);
-              }
-              if (payload.compression.foldLockfiles !== undefined && mergedModules.headroom) {
-                mergedModules.headroom.foldLockfiles = Boolean(payload.compression.foldLockfiles);
-              }
-              if (payload.compression.foldStructuredData !== undefined && mergedModules.headroom) {
-                mergedModules.headroom.foldStructuredData = Boolean(payload.compression.foldStructuredData);
-              }
-              if (payload.compression.maxStructuredItems !== undefined && mergedModules.headroom) {
-                const val = Number(payload.compression.maxStructuredItems);
-                mergedModules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 50;
-              }
-              if (payload.compression.exemptMergeConflicts !== undefined && mergedModules.headroom) {
-                mergedModules.headroom.exemptMergeConflicts = Boolean(payload.compression.exemptMergeConflicts);
-              }
-              if (payload.compression.protectSourceDiffs !== undefined && mergedModules.headroom) {
-                mergedModules.headroom.protectSourceDiffs = Boolean(payload.compression.protectSourceDiffs);
-              }
-              if (payload.compression.alignToolsSchema !== undefined && mergedModules.schema) {
-                mergedModules.schema.alignToolsSchema = Boolean(payload.compression.alignToolsSchema);
-              }
-              if (payload.compression.slimToolsSchema !== undefined && mergedModules.schema) {
-                mergedModules.schema.slimToolsSchema = Boolean(payload.compression.slimToolsSchema);
-              }
-              if (payload.compression.schemaCharThreshold !== undefined && mergedModules.schema) {
-                const val = Number(payload.compression.schemaCharThreshold);
-                mergedModules.schema.schemaCharThreshold = (!isNaN(val) && val >= 0) ? val : 15000;
-              }
-              if (payload.compression.cacheZoneFreeze !== undefined && mergedModules.cacheZone) {
-                mergedModules.cacheZone.cacheZoneFreeze = Boolean(payload.compression.cacheZoneFreeze);
-              }
-              if (payload.compression.trueLruRetention !== undefined && mergedModules.cacheZone) {
-                mergedModules.cacheZone.trueLruRetention = Boolean(payload.compression.trueLruRetention);
-              }
-            }
-            const toNormalize = {
-              enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
-              preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
-              modules: mergedModules || undefined
-            };
-            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
-                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
-                            'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
-                            'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
-                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
-              if (payload.compression[k] !== undefined) {
-                toNormalize[k] = payload.compression[k];
-              } else if (prevComp[k] !== undefined) {
-                toNormalize[k] = prevComp[k];
-              }
-            }
-            newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
-          }
-        }
-
-        // Create atomic backup of existing config.json
-        if (fs.existsSync(CONFIG_FILE)) {
-          fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak');
-        }
-
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
-        config = newConfig;
-        syncAccountStats();
-
-        console.log('[Config] Configuration successfully updated via Graphical UI!');
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, message: '配置已稳妥保存并实时生效！(若修改了端口或监听地址，将在服务重启后生效)' }));
-      } catch (err) {
-        console.error('[Config Error]', err.message);
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Get compression metrics stats API
-  if (reqUrl.pathname === '/balancer/api/compression/stats' && req.method === 'GET') {
-    res.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.end(JSON.stringify({
-      success: true,
-      stats: contextCompactor.getCompressionStats()
-    }));
-    return;
-  }
-
-  // Reset compression metrics stats API
-  if (reqUrl.pathname === '/balancer/api/compression/stats/reset' && req.method === 'POST') {
-    const stats = contextCompactor.resetCompressionStats();
-    res.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.end(JSON.stringify({
-      success: true,
-      message: '压缩与 Token 节省统计数据已清零',
-      stats
-    }));
-    return;
-  }
-
-  // Compression Doctor API
-  if (reqUrl.pathname === '/balancer/api/compression/doctor' && req.method === 'GET') {
-    try {
-      const stats = contextCompactor.getCompressionStats();
-      const report = contextCompactor.checkCompressionHealth(config.compression, stats);
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Access-Control-Allow-Origin': '*'
-      });
-      res.end(JSON.stringify(report, null, 2));
-    } catch (err) {
-      res.writeHead(500, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Access-Control-Allow-Origin': '*'
-      });
-      res.end(JSON.stringify({ error: err.message }, null, 2));
-    }
-    return;
-  }
-
-  // Compression Repair API
-  if (reqUrl.pathname === '/balancer/api/compression/repair' && req.method === 'POST') {
-    const chunks = [];
-    req.on('data', chunk => { chunks.push(chunk); });
-    req.on('end', async () => {
-      try {
-        let postData = {};
-        if (chunks.length > 0) {
-          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
-          if (rawBody) {
-            try { postData = JSON.parse(rawBody); } catch (_) {}
-          }
-        }
-        const repairResult = contextCompactor.repairCompressionConfig(config.compression, postData);
-        if (repairResult && repairResult.repairedConfig) {
-          config.compression = repairResult.repairedConfig;
-          if (fs.existsSync(CONFIG_FILE)) {
-            try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
-          }
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
-        }
-        res.writeHead(200, {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Access-Control-Allow-Origin': '*'
-        });
-        res.end(JSON.stringify({
-          success: true,
-          results: repairResult.results,
-          compression: config.compression
-        }, null, 2));
-      } catch (err) {
-        res.writeHead(500, {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Access-Control-Allow-Origin': '*'
-        });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Test account connectivity API
-  if (reqUrl.pathname === '/balancer/api/test-account' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-        const targetUpstream = (payload.upstream || config.upstream).trim();
-        const apiKey = (payload.apiKey || '').trim();
-
-        if (!apiKey) {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: false, message: 'API Key 为空，请输入后再测试' }));
-          return;
-        }
-
-        const result = await testAccountConnection(targetUpstream, apiKey);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(result));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, message: `测试异常: ${err.message}` }));
-      }
-    });
-    return;
-  }
-
-  // Account Quota & Usage API
-  if (reqUrl.pathname === '/balancer/api/account-quota' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-        const targetUpstream = (payload.upstream || config.upstream).trim();
-        let apiKey = (payload.apiKey || '').trim();
-        const targetAccountId = payload.accountId || payload.account_id || payload.id;
-        if (!apiKey && targetAccountId) {
-          const acc = config.accounts.find(a => a.id === targetAccountId);
-          if (acc) apiKey = acc.apiKey.trim();
-        }
-
-        if (!apiKey) {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: false, message: '未配置 API Key' }));
-          return;
-        }
-
-        const force = Boolean(payload.force);
-        const result = await fetchAccountUsage(targetUpstream, apiKey, force);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(result));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Bind to OpenCode & OpenChamber Desktop API
-  if (reqUrl.pathname === '/balancer/api/bind-desktop' && req.method === 'POST') {
-    (async () => {
-      try {
-        const result = await bindDesktopConfig();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({
-          success: result.opencode || result.openchamber,
-          result,
-          message: result.messages.join('；')
-        }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    })();
-    return;
-  }
-
-  // Codex CLI Status API
-  if (reqUrl.pathname === '/balancer/api/codex-status' && req.method === 'GET') {
-    try {
-      const status = codexAdapter.getCodexStatus(config.port);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: true, status }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    }
-    return;
-  }
-
-  // Bind Codex CLI API
-  if (reqUrl.pathname === '/balancer/api/bind-codex' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        let payload = {};
-        if (body.length > 0) {
-          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
-        }
-        const defaultModel = payload.defaultModel || 'deepseek-v4.1-flash';
-        const reasoningEffort = payload.reasoningEffort || 'high';
-        const result = codexAdapter.bindCodexConfig({
-          codexDir: payload.codexDir,
-          routerPort: config.port,
-          routerUrl: `http://127.0.0.1:${config.port}/v1`,
-          defaultModel,
-          reasoningEffort,
-          providerName: 'opencode-go'
-        });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({
-          success: result.success,
-          result,
-          message: result.messages ? result.messages.join('；') : (result.success ? 'Codex 接入成功' : result.error)
-        }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Restore Codex Configuration API
-  if (reqUrl.pathname === '/balancer/api/restore-codex' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        let payload = {};
-        if (body.length > 0) {
-          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
-        }
-        const result = codexAdapter.restoreCodexConfig(payload.codexDir);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({
-          success: result.success,
-          result,
-          message: result.messages && result.messages.length > 0 ? result.messages.join('；') : (result.message || 'Codex 配置已还原')
-        }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Restart Codex Desktop Application API
-  if (reqUrl.pathname === '/balancer/api/restart-codex' && (req.method === 'POST' || req.method === 'GET')) {
-    try {
-      const result = codexAdapter.restartCodex();
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({
-        success: result.success,
-        result,
-        message: result.messages && result.messages.length > 0 ? result.messages.join('；') : 'Codex 客户端已平滑重启并加载最新配置'
-      }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    }
-    return;
-  }
-
-  // Launch / Activate OpenChamber Desktop Application API
-  if (reqUrl.pathname === '/balancer/api/launch-chamber' && (req.method === 'POST' || req.method === 'GET')) {
-    try {
-      if (process.platform === 'win32') {
-        const localApp = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-        const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
-        const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-        const candidates = [
-          path.join(localApp, 'Programs', '@openchamberelectron', 'OpenChamber.exe'),
-          path.join(localApp, 'Programs', 'OpenChamber', 'OpenChamber.exe'),
-          path.join(progFiles, 'OpenChamber', 'OpenChamber.exe'),
-          path.join(progFilesX86, 'OpenChamber', 'OpenChamber.exe'),
-          path.join(os.homedir(), 'Desktop', 'OpenChamber.lnk'),
-          path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'OpenChamber.lnk')
-        ];
-        let foundExe = null;
-        for (const c of candidates) {
-          if (fs.existsSync(c)) { foundExe = c; break; }
-        }
-        if (foundExe) {
-          // Check for ghost processes first and clean them
-          try {
-            const psGhostCheck = `
-$procs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
-$ghost = $false
-if ($procs) {
-  $hasWin = $false
-  foreach ($p in $procs) { if ($p.MainWindowHandle -ne 0) { $hasWin = $true; break } }
-  if (-not $hasWin) { $procs | Stop-Process -Force; $ghost = $true }
-}
-$ghost
-`;
-            execSync(`powershell -NoProfile -NonInteractive -Command "${psGhostCheck.replace(/\\r?\\n/g, ' ')}"`, { timeout: 2000, stdio: 'ignore' });
-          } catch (e) {}
-
-          // Use explorer.exe to launch cleanly decoupled
-          exec(`explorer.exe "${foundExe}"`);
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: true, mode: 'desktop', path: foundExe, message: '已安全唤起 OpenChamber 原生桌面客户端' }));
-          return;
-        }
-      } else if (process.platform === 'linux') {
-        try {
-          execSync('systemctl --user start openchamber.service 2>/dev/null || true');
-        } catch (e) {}
-      }
-
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: true, mode: 'web', url: 'http://127.0.0.1:3000', message: '已就绪 Web 端工作台' }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    }
-    return;
-  }
-
-  // Static Assets (Favicon & High-Def Logo)
-  if (reqUrl.pathname === '/favicon.ico' || reqUrl.pathname === '/assets/router.ico') {
-    const icoPath = path.join(__dirname, 'assets', 'router.ico');
-    if (fs.existsSync(icoPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/x-icon', 'Cache-Control': 'public, max-age=86400' });
-      fs.createReadStream(icoPath).pipe(res);
-      return;
-    }
-  }
-
-  if (reqUrl.pathname === '/assets/logo.png') {
-    const pngPath = path.join(__dirname, 'assets', 'logo.png');
-    if (fs.existsSync(pngPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
-      fs.createReadStream(pngPath).pipe(res);
-      return;
-    }
-  }
-
-  // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS) - Hardened Sandbox
-  if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-        let filePath = (payload.path || '').trim();
-        if (!filePath) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: false, error: 'Path is required' }));
-          return;
-        }
-
-        // Support file:/// URIs and percent-encoded paths
-        if (filePath.startsWith('file://')) {
-          try {
-            const { fileURLToPath } = require('url');
-            filePath = fileURLToPath(filePath);
-          } catch (e) {
-            filePath = decodeURIComponent(filePath.replace(/^file:\/\/\/?/, process.platform === 'win32' ? '' : '/'));
-          }
-        } else if (/%[0-9A-Fa-f]{2}/.test(filePath)) {
-          try {
-            filePath = decodeURIComponent(filePath);
-          } catch (e) {}
-        }
-
-        // Strip URL fragment/query if present
-        filePath = filePath.replace(/[?#].*$/, '');
-        filePath = path.normalize(filePath);
-
-        // Security Check: Block remote UNC network paths on Windows to prevent NTLM credential theft
-        if (process.platform === 'win32') {
-          if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
-            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-            res.end(JSON.stringify({ success: false, error: '安全拦截：禁止通过网络 UNC 共享路径打开文件以防凭据泄露' }));
-            return;
-          }
-        }
-
-        // Security Sandbox Check: Block dangerous executable, script, and shortcut extensions
-        const sanitizedForExt = filePath.replace(/[.\s]+$/, '');
-        const ext = path.extname(sanitizedForExt).toLowerCase();
-        const DANGEROUS_EXTS = new Set([
-          '.exe', '.bat', '.cmd', '.com', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
-          '.msi', '.ps1', '.psm1', '.psd1', '.sh', '.bash', '.bin', '.pif', '.scr',
-          '.hta', '.cpl', '.jar', '.reg', '.dll', '.sys', '.lnk', '.url', '.appref-ms'
-        ]);
-        if (DANGEROUS_EXTS.has(ext)) {
-          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: false, error: '安全拦截：禁止通过 open-file API 启动可执行程序或脚本文件' }));
-          return;
-        }
-
-        if (!fs.existsSync(filePath)) {
-          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ success: false, error: 'File not found on local filesystem' }));
-          return;
-        }
-
-        if (process.platform === 'win32') {
-          const child = spawn('explorer.exe', [filePath], {
-            windowsHide: true,
-            detached: true,
-            stdio: 'ignore'
-          });
-          child.on('error', (err) => {
-            console.error('[Open File Win32 Error]', err.message);
-          });
-          child.unref();
-        } else if (process.platform === 'darwin') {
-          const child = spawn('open', [filePath], { detached: true, stdio: 'ignore' });
-          child.unref();
-        } else {
-          const isHeadless = !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
-          if (isHeadless) {
-            console.warn(`[Open File] Headless Linux/NAS environment: xdg-open invoked for ${filePath}`);
-          }
-          const child = spawn('xdg-open', [filePath], { detached: true, stdio: 'ignore' });
-          child.on('error', (err) => {
-            console.error('[Open File Error]', err.message);
-          });
-          child.unref();
-        }
-
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, message: '已调用系统默认应用打开该文档！' }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Reset Cooldown API
-  if (reqUrl.pathname === '/balancer/api/reset-cooldown' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        let accountId = null;
-        if (body.length > 0) {
-          try {
-            const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
-            accountId = payload.id;
-          } catch (e) {}
-        }
-        if (accountId) {
-          const stat = accountStats.get(accountId);
-          if (stat) {
-            stat.cooldownUntil = 0;
-            stat.lastError = null;
-          }
-        } else {
-          for (const stat of accountStats.values()) {
-            stat.cooldownUntil = 0;
-            stat.lastError = null;
-          }
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, message: '限频冷却已重置，账号已恢复健康！' }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Doctor API
-  if (reqUrl.pathname === '/balancer/api/doctor' && req.method === 'GET') {
-    (async () => {
-      try {
-        const scope = (reqUrl.query && reqUrl.query.scope) || (reqUrl.searchParams && reqUrl.searchParams.get('scope')) || 'all';
-        const report = await runSystemDoctor(scope);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(report, null, 2));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ error: err.message }, null, 2));
-      }
-    })();
-    return;
-  }
-
-  // Repair API
-  if (reqUrl.pathname === '/balancer/api/repair' && req.method === 'POST') {
-    const chunks = [];
-    req.on('data', chunk => { chunks.push(chunk); });
-    req.on('end', async () => {
-      try {
-        let postData = {};
-        if (chunks.length > 0) {
-          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
-          if (rawBody) {
-            try { postData = JSON.parse(rawBody); } catch (_) {}
-          }
-        }
-        const scope = (reqUrl.query && reqUrl.query.scope) || (reqUrl.searchParams && reqUrl.searchParams.get('scope')) || postData.scope || 'all';
-        const results = await executeSystemRepair({ ...postData, scope });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: true, results, scope }, null, 2));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Dynamic Official Models Sync API
-  if (reqUrl.pathname === '/balancer/api/models/sync') {
-    (async () => {
-      let apiKey = '';
-      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
-      if (validAccount) apiKey = validAccount.apiKey.trim();
-
-      try {
-        const updater = require('./updater');
-        const officialModels = await updater.fetchOfficialModels(apiKey, config.upstream, 5000);
-        if (officialModels && officialModels.length > 0) {
-          const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
-          const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
-          const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port, { officialModels });
-          
-          let codexSynced = false;
-          try {
-            const codex = require('./codex-adapter');
-            codex.syncDynamicModels(officialModels);
-            codexSynced = true;
-          } catch (_) {}
-
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({
-            success: true,
-            upstream: config.upstream,
-            officialCount: officialModels.length,
-            totalModelCount: harmRes.modelCount,
-            currentModel: harmRes.currentModel,
-            codexSynced,
-            models: officialModels,
-            message: `已成功从官方上游动态嗅探并同步 ${officialModels.length} 款模型，本地客户端配置已增量热更新！`
-          }, null, 2));
-        } else {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({
-            success: true,
-            upstream: config.upstream,
-            officialCount: 38,
-            totalModelCount: 38,
-            fallback: true,
-            models: updater.ALL_38_SLUGS,
-            message: '当前上游网络或密钥未就绪，已安全使用内置 38 款高保真基准模型字典兜底！'
-          }, null, 2));
-        }
-      } catch (syncErr) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: syncErr.message }));
-      }
-    })();
-    return;
-  }
-
-  // Updates Check API
-  if (reqUrl.pathname === '/balancer/api/updates/check' && req.method === 'GET') {
-    const updater = require('./updater');
-    updater.checkAllUpdates().then((report) => {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify(report, null, 2));
-    }).catch((err) => {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    });
-    return;
-  }
-
-  // Updates Apply API
-  if (reqUrl.pathname === '/balancer/api/updates/apply' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      const updater = require('./updater');
-      let payload = {};
-      if (body.length > 0) {
-        try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
-      }
-      payload.routerPort = payload.routerPort || config.port;
-      updater.applyUpdates(payload.components || null, payload).then((results) => {
-        loadConfig();
-        syncAccountStats();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(results, null, 2));
-      }).catch((err) => {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      });
-    });
-    return;
-  }
-
-  // Updates Rollback API
-  if (reqUrl.pathname === '/balancer/api/updates/rollback' && req.method === 'POST') {
-    let body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-      try {
-        const updater = require('./updater');
-        let payload = {};
-        if (body.length > 0) {
-          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
-        }
-        const results = updater.rollbackSnapshot(payload.snapshotId || null, payload);
-        loadConfig();
-        syncAccountStats();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(results, null, 2));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // Updates Snapshots List API
-  if (reqUrl.pathname === '/balancer/api/updates/snapshots' && req.method === 'GET') {
-    try {
-      const updater = require('./updater');
-      const list = updater.listSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: true, snapshots: list }, null, 2));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
-    }
-    return;
-  }
 
 function renderDashboardHtml(config) {
   const compCfg = config.compression || contextCompactor.DEFAULT_COMPRESSION_CONFIG;
@@ -7695,6 +6978,940 @@ function renderDashboardHtml(config) {
 </body>
 </html>`;
 }
+
+// HTTP Server
+const server = http.createServer((req, res) => {
+  const reqUrl = url.parse(req.url, true);
+
+  // Global CORS preflight (OPTIONS)
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400'
+    });
+    res.end();
+    return;
+  }
+
+  // Health check endpoint
+  if (reqUrl.pathname === '/health' || reqUrl.pathname === '/balancer/health') {
+    const now = Date.now();
+    const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
+    const healthyAccounts = enabledAccounts.filter(a => {
+      const stat = accountStats.get(a.id);
+      return !stat || (stat.cooldownUntil || 0) <= now;
+    });
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      status: 'ok',
+      port: config.port,
+      healthyAccounts: healthyAccounts.length,
+      totalAccounts: config.accounts.length
+    }));
+    return;
+  }
+
+  // Status endpoint (JSON)
+  if (reqUrl.pathname === '/status' || reqUrl.pathname === '/balancer/status') {
+    const now = Date.now();
+    const accountsData = config.accounts.map(acc => {
+      const stat = accountStats.get(acc.id) || {};
+      const isCooling = (stat.cooldownUntil || 0) > now;
+      const remainingCooldown = isCooling ? Math.ceil((stat.cooldownUntil - now) / 1000) : 0;
+      let status = 'healthy';
+      if (!acc.enabled || !acc.apiKey || !acc.apiKey.trim()) status = 'disabled';
+      else if (isCooling) status = 'cooling_down';
+
+      return {
+        id: acc.id,
+        name: acc.name,
+        enabled: acc.enabled,
+        hasKey: Boolean(acc.apiKey && acc.apiKey.trim()),
+        status,
+        remainingCooldownSec: remainingCooldown,
+        activeRequests: stat.activeRequests || 0,
+        totalRequests: stat.totalRequests || 0,
+        rateLimitCount: stat.rateLimitCount || 0,
+        failoverCount: stat.failoverCount || 0,
+        lastUsedAt: stat.lastUsedAt || null,
+        lastError: stat.lastError || null
+      };
+    });
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      status: 'online',
+      port: config.port,
+      upstream: config.upstream,
+      sessionAffinityEnabled: config.sessionAffinityEnabled,
+      defaultCooldownMs: config.defaultCooldownMs,
+      maxFailoverRetries: config.maxFailoverRetries,
+      activeSessions: sessionMap.size,
+      accounts: accountsData
+    }, null, 2));
+    return;
+  }
+
+  // Auth API
+  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'GET') {
+    const hasPwd = Boolean(config.uiPassword && config.uiPassword.trim());
+    const authOk = isAuthorized(req);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, hasUiPassword: hasPwd, authenticated: authOk }));
+    return;
+  }
+
+  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const inputPwd = (payload.password || '').trim();
+        const inputToken = (payload.token || '').trim();
+        const expectedPwd = (config.uiPassword || '').trim();
+        const expectedB64 = Buffer.from(expectedPwd).toString('base64');
+        const token = Buffer.from(expectedPwd).toString('base64');
+        if (!expectedPwd || inputPwd === expectedPwd || inputToken === expectedPwd || inputToken === expectedB64) {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Set-Cookie': `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`,
+            'Access-Control-Allow-Origin': '*'
+          });
+          res.end(JSON.stringify({ success: true, token, message: '验证通过' }));
+        } else {
+          res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: '管理员密码错误，请重新输入' }));
+        }
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Auth gatekeeper for all /balancer/api/* endpoints
+  if (reqUrl.pathname.startsWith('/balancer/api/')) {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
+      return;
+    }
+  }
+
+  // Get full config API (for UI)
+  if (reqUrl.pathname === '/balancer/api/config' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      port: config.port,
+      host: config.host || '127.0.0.1',
+      upstream: config.upstream,
+      defaultCooldownMs: config.defaultCooldownMs,
+      maxFailoverRetries: config.maxFailoverRetries,
+      sessionAffinityEnabled: config.sessionAffinityEnabled,
+      hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
+      uiPassword: config.uiPassword || '',
+      accounts: config.accounts,
+      compression: config.compression || DEFAULT_CONFIG.compression
+    }));
+    return;
+  }
+
+  // Save config API (from UI)
+  if (reqUrl.pathname === '/balancer/api/config' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        if (!Array.isArray(payload.accounts) || payload.accounts.length === 0) {
+          throw new Error('至少需要保留一个账号配置');
+        }
+
+        // Clean & validate accounts
+        const newAccounts = payload.accounts.map((acc, index) => ({
+          id: acc.id || `account-${Date.now()}-${index}`,
+          name: (acc.name || `账号 ${index + 1}`).trim(),
+          apiKey: (acc.apiKey || '').trim(),
+          enabled: Boolean(acc.enabled)
+        }));
+
+        const newConfig = {
+          ...config,
+          upstream: (payload.upstream || config.upstream).trim(),
+          defaultCooldownMs: Number(payload.defaultCooldownMs) || config.defaultCooldownMs,
+          maxFailoverRetries: Number(payload.maxFailoverRetries) || config.maxFailoverRetries,
+          sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
+          accounts: newAccounts
+        };
+        if (payload.host !== undefined && String(payload.host).trim()) {
+          newConfig.host = String(payload.host).trim();
+        }
+        if (payload.port !== undefined && Number(payload.port) > 0) {
+          newConfig.port = Number(payload.port);
+        }
+        if (payload.uiPassword !== undefined) {
+          newConfig.uiPassword = String(payload.uiPassword).trim();
+        }
+        if (payload.compression && typeof payload.compression === 'object') {
+          const prevComp = config.compression || DEFAULT_CONFIG.compression;
+          if (payload.compression.modules && typeof payload.compression.modules === 'object') {
+            // Modern hierarchical update: payload contains modules
+            const mergedModules = {
+              rtk: { ...(prevComp.modules?.rtk || {}), ...(payload.compression.modules.rtk || {}) },
+              headroom: { ...(prevComp.modules?.headroom || {}), ...(payload.compression.modules.headroom || {}) },
+              schema: { ...(prevComp.modules?.schema || {}), ...(payload.compression.modules.schema || {}) },
+              cacheZone: { ...(prevComp.modules?.cacheZone || {}), ...(payload.compression.modules.cacheZone || {}) }
+            };
+            const toNormalize = {
+              enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
+              preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
+              modules: mergedModules
+            };
+            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
+                            'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
+                            'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
+                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
+              if (payload.compression[k] !== undefined) {
+                toNormalize[k] = payload.compression[k];
+              }
+            }
+            newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
+          } else {
+            // Legacy flat update: payload contains flat keys without modules
+            const mergedModules = prevComp.modules ? JSON.parse(JSON.stringify(prevComp.modules)) : null;
+            if (mergedModules) {
+              if (payload.compression.stripAnsi !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.stripAnsi = Boolean(payload.compression.stripAnsi);
+              }
+              if (payload.compression.cleanProgressBars !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.cleanProgressBars = Boolean(payload.compression.cleanProgressBars);
+              }
+              if (payload.compression.foldTestPasses !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.foldTestPasses = Boolean(payload.compression.foldTestPasses);
+              }
+              if (payload.compression.cleanDevOpsOutput !== undefined && mergedModules.rtk) {
+                mergedModules.rtk.cleanDevOpsOutput = Boolean(payload.compression.cleanDevOpsOutput);
+              }
+              if (payload.compression.foldLockfiles !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.foldLockfiles = Boolean(payload.compression.foldLockfiles);
+              }
+              if (payload.compression.foldStructuredData !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.foldStructuredData = Boolean(payload.compression.foldStructuredData);
+              }
+              if (payload.compression.maxStructuredItems !== undefined && mergedModules.headroom) {
+                const val = Number(payload.compression.maxStructuredItems);
+                mergedModules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 50;
+              }
+              if (payload.compression.exemptMergeConflicts !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.exemptMergeConflicts = Boolean(payload.compression.exemptMergeConflicts);
+              }
+              if (payload.compression.protectSourceDiffs !== undefined && mergedModules.headroom) {
+                mergedModules.headroom.protectSourceDiffs = Boolean(payload.compression.protectSourceDiffs);
+              }
+              if (payload.compression.alignToolsSchema !== undefined && mergedModules.schema) {
+                mergedModules.schema.alignToolsSchema = Boolean(payload.compression.alignToolsSchema);
+              }
+              if (payload.compression.slimToolsSchema !== undefined && mergedModules.schema) {
+                mergedModules.schema.slimToolsSchema = Boolean(payload.compression.slimToolsSchema);
+              }
+              if (payload.compression.schemaCharThreshold !== undefined && mergedModules.schema) {
+                const val = Number(payload.compression.schemaCharThreshold);
+                mergedModules.schema.schemaCharThreshold = (!isNaN(val) && val >= 0) ? val : 15000;
+              }
+              if (payload.compression.cacheZoneFreeze !== undefined && mergedModules.cacheZone) {
+                mergedModules.cacheZone.cacheZoneFreeze = Boolean(payload.compression.cacheZoneFreeze);
+              }
+              if (payload.compression.trueLruRetention !== undefined && mergedModules.cacheZone) {
+                mergedModules.cacheZone.trueLruRetention = Boolean(payload.compression.trueLruRetention);
+              }
+            }
+            const toNormalize = {
+              enabled: payload.compression.enabled !== undefined ? payload.compression.enabled : prevComp.enabled,
+              preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
+              modules: mergedModules || undefined
+            };
+            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
+                            'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
+                            'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
+                            'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
+              if (payload.compression[k] !== undefined) {
+                toNormalize[k] = payload.compression[k];
+              } else if (prevComp[k] !== undefined) {
+                toNormalize[k] = prevComp[k];
+              }
+            }
+            newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
+          }
+        }
+
+        // Create atomic backup of existing config.json
+        if (fs.existsSync(CONFIG_FILE)) {
+          fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak');
+        }
+
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
+        config = newConfig;
+        syncAccountStats();
+
+        console.log('[Config] Configuration successfully updated via Graphical UI!');
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, message: '配置已稳妥保存并实时生效！(若修改了端口或监听地址，将在服务重启后生效)' }));
+      } catch (err) {
+        console.error('[Config Error]', err.message);
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Get compression metrics stats API
+  if (reqUrl.pathname === '/balancer/api/compression/stats' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      stats: contextCompactor.getCompressionStats()
+    }));
+    return;
+  }
+
+  // Reset compression metrics stats API
+  if (reqUrl.pathname === '/balancer/api/compression/stats/reset' && req.method === 'POST') {
+    const stats = contextCompactor.resetCompressionStats();
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      success: true,
+      message: '压缩与 Token 节省统计数据已清零',
+      stats
+    }));
+    return;
+  }
+
+  // Compression Doctor API
+  if (reqUrl.pathname === '/balancer/api/compression/doctor' && req.method === 'GET') {
+    try {
+      const stats = contextCompactor.getCompressionStats();
+      const report = contextCompactor.checkCompressionHealth(config.compression, stats);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify(report, null, 2));
+    } catch (err) {
+      res.writeHead(500, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({ error: err.message }, null, 2));
+    }
+    return;
+  }
+
+  // Compression Repair API
+  if (reqUrl.pathname === '/balancer/api/compression/repair' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => { chunks.push(chunk); });
+    req.on('end', async () => {
+      try {
+        let postData = {};
+        if (chunks.length > 0) {
+          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+          if (rawBody) {
+            try { postData = JSON.parse(rawBody); } catch (_) {}
+          }
+        }
+        const repairResult = contextCompactor.repairCompressionConfig(config.compression, postData);
+        if (repairResult && repairResult.repairedConfig) {
+          config.compression = repairResult.repairedConfig;
+          if (fs.existsSync(CONFIG_FILE)) {
+            try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
+          }
+          fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({
+          success: true,
+          results: repairResult.results,
+          compression: config.compression
+        }, null, 2));
+      } catch (err) {
+        res.writeHead(500, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Test account connectivity API
+  if (reqUrl.pathname === '/balancer/api/test-account' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const targetUpstream = (payload.upstream || config.upstream).trim();
+        const apiKey = (payload.apiKey || '').trim();
+
+        if (!apiKey) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, message: 'API Key 为空，请输入后再测试' }));
+          return;
+        }
+
+        const result = await testAccountConnection(targetUpstream, apiKey);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, message: `测试异常: ${err.message}` }));
+      }
+    });
+    return;
+  }
+
+  // Account Quota & Usage API
+  if (reqUrl.pathname === '/balancer/api/account-quota' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        const targetUpstream = (payload.upstream || config.upstream).trim();
+        let apiKey = (payload.apiKey || '').trim();
+        const targetAccountId = payload.accountId || payload.account_id || payload.id;
+        if (!apiKey && targetAccountId) {
+          const acc = config.accounts.find(a => a.id === targetAccountId);
+          if (acc) apiKey = acc.apiKey.trim();
+        }
+
+        if (!apiKey) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, message: '未配置 API Key' }));
+          return;
+        }
+
+        const force = Boolean(payload.force);
+        const result = await fetchAccountUsage(targetUpstream, apiKey, force);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Bind to OpenCode & OpenChamber Desktop API
+  if (reqUrl.pathname === '/balancer/api/bind-desktop' && req.method === 'POST') {
+    (async () => {
+      try {
+        const result = await bindDesktopConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: result.opencode || result.openchamber,
+          result,
+          message: result.messages.join('；')
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  // Codex CLI Status API
+  if (reqUrl.pathname === '/balancer/api/codex-status' && req.method === 'GET') {
+    try {
+      const status = codexAdapter.getCodexStatus(config.port);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, status }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
+  // Bind Codex CLI API
+  if (reqUrl.pathname === '/balancer/api/bind-codex' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        let payload = {};
+        if (body.length > 0) {
+          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        }
+        const defaultModel = payload.defaultModel || 'deepseek-v4.1-flash';
+        const reasoningEffort = payload.reasoningEffort || 'high';
+        const result = codexAdapter.bindCodexConfig({
+          codexDir: payload.codexDir,
+          routerPort: config.port,
+          routerUrl: `http://127.0.0.1:${config.port}/v1`,
+          defaultModel,
+          reasoningEffort,
+          providerName: 'opencode-go'
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: result.success,
+          result,
+          message: result.messages ? result.messages.join('；') : (result.success ? 'Codex 接入成功' : result.error)
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Restore Codex Configuration API
+  if (reqUrl.pathname === '/balancer/api/restore-codex' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        let payload = {};
+        if (body.length > 0) {
+          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        }
+        const result = codexAdapter.restoreCodexConfig(payload.codexDir);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: result.success,
+          result,
+          message: result.messages && result.messages.length > 0 ? result.messages.join('；') : (result.message || 'Codex 配置已还原')
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Restart Codex Desktop Application API
+  if (reqUrl.pathname === '/balancer/api/restart-codex' && (req.method === 'POST' || req.method === 'GET')) {
+    try {
+      const result = codexAdapter.restartCodex();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({
+        success: result.success,
+        result,
+        message: result.messages && result.messages.length > 0 ? result.messages.join('；') : 'Codex 客户端已平滑重启并加载最新配置'
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
+  // Launch / Activate OpenChamber Desktop Application API
+  if (reqUrl.pathname === '/balancer/api/launch-chamber' && (req.method === 'POST' || req.method === 'GET')) {
+    try {
+      if (process.platform === 'win32') {
+        const localApp = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+        const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+        const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+        const candidates = [
+          path.join(localApp, 'Programs', '@openchamberelectron', 'OpenChamber.exe'),
+          path.join(localApp, 'Programs', 'OpenChamber', 'OpenChamber.exe'),
+          path.join(progFiles, 'OpenChamber', 'OpenChamber.exe'),
+          path.join(progFilesX86, 'OpenChamber', 'OpenChamber.exe'),
+          path.join(os.homedir(), 'Desktop', 'OpenChamber.lnk'),
+          path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'OpenChamber.lnk')
+        ];
+        let foundExe = null;
+        for (const c of candidates) {
+          if (fs.existsSync(c)) { foundExe = c; break; }
+        }
+        if (foundExe) {
+          // Check for ghost processes first and clean them
+          try {
+            const psGhostCheck = `
+$procs = Get-Process -Name "OpenChamber" -ErrorAction SilentlyContinue
+$ghost = $false
+if ($procs) {
+  $hasWin = $false
+  foreach ($p in $procs) { if ($p.MainWindowHandle -ne 0) { $hasWin = $true; break } }
+  if (-not $hasWin) { $procs | Stop-Process -Force; $ghost = $true }
+}
+$ghost
+`;
+            execSync(`powershell -NoProfile -NonInteractive -Command "${psGhostCheck.replace(/\\r?\\n/g, ' ')}"`, { timeout: 2000, stdio: 'ignore' });
+          } catch (e) {}
+
+          // Use explorer.exe to launch cleanly decoupled
+          exec(`explorer.exe "${foundExe}"`);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: true, mode: 'desktop', path: foundExe, message: '已安全唤起 OpenChamber 原生桌面客户端' }));
+          return;
+        }
+      } else if (process.platform === 'linux') {
+        try {
+          execSync('systemctl --user start openchamber.service 2>/dev/null || true');
+        } catch (e) {}
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, mode: 'web', url: 'http://127.0.0.1:3000', message: '已就绪 Web 端工作台' }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
+  // Static Assets (Favicon & High-Def Logo)
+  if (reqUrl.pathname === '/favicon.ico' || reqUrl.pathname === '/assets/router.ico') {
+    const icoPath = path.join(__dirname, 'assets', 'router.ico');
+    if (fs.existsSync(icoPath)) {
+      res.writeHead(200, { 'Content-Type': 'image/x-icon', 'Cache-Control': 'public, max-age=86400' });
+      fs.createReadStream(icoPath).pipe(res);
+      return;
+    }
+  }
+
+  if (reqUrl.pathname === '/assets/logo.png') {
+    const pngPath = path.join(__dirname, 'assets', 'logo.png');
+    if (fs.existsSync(pngPath)) {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
+      fs.createReadStream(pngPath).pipe(res);
+      return;
+    }
+  }
+
+  // Open Local File in Native Application API (Word/Excel/PowerPoint/WPS) - Hardened Sandbox
+  if (reqUrl.pathname === '/balancer/api/open-file' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+        let filePath = (payload.path || '').trim();
+        if (!filePath) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: 'Path is required' }));
+          return;
+        }
+
+        // Support file:/// URIs and percent-encoded paths
+        if (filePath.startsWith('file://')) {
+          try {
+            const { fileURLToPath } = require('url');
+            filePath = fileURLToPath(filePath);
+          } catch (e) {
+            filePath = decodeURIComponent(filePath.replace(/^file:\/\/\/?/, process.platform === 'win32' ? '' : '/'));
+          }
+        } else if (/%[0-9A-Fa-f]{2}/.test(filePath)) {
+          try {
+            filePath = decodeURIComponent(filePath);
+          } catch (e) {}
+        }
+
+        // Strip URL fragment/query if present
+        filePath = filePath.replace(/[?#].*$/, '');
+        filePath = path.normalize(filePath);
+
+        // Security Check: Block remote UNC network paths on Windows to prevent NTLM credential theft
+        if (process.platform === 'win32') {
+          if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ success: false, error: '安全拦截：禁止通过网络 UNC 共享路径打开文件以防凭据泄露' }));
+            return;
+          }
+        }
+
+        // Security Sandbox Check: Block dangerous executable, script, and shortcut extensions
+        const sanitizedForExt = filePath.replace(/[.\s]+$/, '');
+        const ext = path.extname(sanitizedForExt).toLowerCase();
+        const DANGEROUS_EXTS = new Set([
+          '.exe', '.bat', '.cmd', '.com', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
+          '.msi', '.ps1', '.psm1', '.psd1', '.sh', '.bash', '.bin', '.pif', '.scr',
+          '.hta', '.cpl', '.jar', '.reg', '.dll', '.sys', '.lnk', '.url', '.appref-ms'
+        ]);
+        if (DANGEROUS_EXTS.has(ext)) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: '安全拦截：禁止通过 open-file API 启动可执行程序或脚本文件' }));
+          return;
+        }
+
+        if (!fs.existsSync(filePath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: 'File not found on local filesystem' }));
+          return;
+        }
+
+        if (process.platform === 'win32') {
+          const child = spawn('explorer.exe', [filePath], {
+            windowsHide: true,
+            detached: true,
+            stdio: 'ignore'
+          });
+          child.on('error', (err) => {
+            console.error('[Open File Win32 Error]', err.message);
+          });
+          child.unref();
+        } else if (process.platform === 'darwin') {
+          const child = spawn('open', [filePath], { detached: true, stdio: 'ignore' });
+          child.unref();
+        } else {
+          const isHeadless = !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+          if (isHeadless) {
+            console.warn(`[Open File] Headless Linux/NAS environment: xdg-open invoked for ${filePath}`);
+          }
+          const child = spawn('xdg-open', [filePath], { detached: true, stdio: 'ignore' });
+          child.on('error', (err) => {
+            console.error('[Open File Error]', err.message);
+          });
+          child.unref();
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, message: '已调用系统默认应用打开该文档！' }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Reset Cooldown API
+  if (reqUrl.pathname === '/balancer/api/reset-cooldown' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        let accountId = null;
+        if (body.length > 0) {
+          try {
+            const payload = JSON.parse(Buffer.concat(body).toString('utf8'));
+            accountId = payload.id;
+          } catch (e) {}
+        }
+        if (accountId) {
+          const stat = accountStats.get(accountId);
+          if (stat) {
+            stat.cooldownUntil = 0;
+            stat.lastError = null;
+          }
+        } else {
+          for (const stat of accountStats.values()) {
+            stat.cooldownUntil = 0;
+            stat.lastError = null;
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, message: '限频冷却已重置，账号已恢复健康！' }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Doctor API
+  if (reqUrl.pathname === '/balancer/api/doctor' && req.method === 'GET') {
+    (async () => {
+      try {
+        const scope = (reqUrl.query && reqUrl.query.scope) || (reqUrl.searchParams && reqUrl.searchParams.get('scope')) || 'all';
+        const report = await runSystemDoctor(scope);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(report, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: err.message }, null, 2));
+      }
+    })();
+    return;
+  }
+
+  // Repair API
+  if (reqUrl.pathname === '/balancer/api/repair' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => { chunks.push(chunk); });
+    req.on('end', async () => {
+      try {
+        let postData = {};
+        if (chunks.length > 0) {
+          const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+          if (rawBody) {
+            try { postData = JSON.parse(rawBody); } catch (_) {}
+          }
+        }
+        const scope = (reqUrl.query && reqUrl.query.scope) || (reqUrl.searchParams && reqUrl.searchParams.get('scope')) || postData.scope || 'all';
+        const results = await executeSystemRepair({ ...postData, scope });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, results, scope }, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Dynamic Official Models Sync API
+  if (reqUrl.pathname === '/balancer/api/models/sync') {
+    (async () => {
+      let apiKey = '';
+      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+      if (validAccount) apiKey = validAccount.apiKey.trim();
+
+      try {
+        const updater = require('./updater');
+        const officialModels = await updater.fetchOfficialModels(apiKey, config.upstream, 5000);
+        if (officialModels && officialModels.length > 0) {
+          const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
+          const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
+          const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port, { officialModels });
+          
+          let codexSynced = false;
+          try {
+            const codex = require('./codex-adapter');
+            codex.syncDynamicModels(officialModels);
+            codexSynced = true;
+          } catch (_) {}
+
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({
+            success: true,
+            upstream: config.upstream,
+            officialCount: officialModels.length,
+            totalModelCount: harmRes.modelCount,
+            currentModel: harmRes.currentModel,
+            codexSynced,
+            models: officialModels,
+            message: `已成功从官方上游动态嗅探并同步 ${officialModels.length} 款模型，本地客户端配置已增量热更新！`
+          }, null, 2));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({
+            success: true,
+            upstream: config.upstream,
+            officialCount: 38,
+            totalModelCount: 38,
+            fallback: true,
+            models: updater.ALL_38_SLUGS,
+            message: '当前上游网络或密钥未就绪，已安全使用内置 38 款高保真基准模型字典兜底！'
+          }, null, 2));
+        }
+      } catch (syncErr) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: syncErr.message }));
+      }
+    })();
+    return;
+  }
+
+  // Updates Check API
+  if (reqUrl.pathname === '/balancer/api/updates/check' && req.method === 'GET') {
+    const updater = require('./updater');
+    updater.checkAllUpdates().then((report) => {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(report, null, 2));
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    });
+    return;
+  }
+
+  // Updates Apply API
+  if (reqUrl.pathname === '/balancer/api/updates/apply' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      const updater = require('./updater');
+      let payload = {};
+      if (body.length > 0) {
+        try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+      }
+      payload.routerPort = payload.routerPort || config.port;
+      updater.applyUpdates(payload.components || null, payload).then((results) => {
+        loadConfig();
+        syncAccountStats();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(results, null, 2));
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      });
+    });
+    return;
+  }
+
+  // Updates Rollback API
+  if (reqUrl.pathname === '/balancer/api/updates/rollback' && req.method === 'POST') {
+    let body = [];
+    req.on('data', chunk => body.push(chunk));
+    req.on('end', () => {
+      try {
+        const updater = require('./updater');
+        let payload = {};
+        if (body.length > 0) {
+          try { payload = JSON.parse(Buffer.concat(body).toString('utf8')); } catch (e) {}
+        }
+        const results = updater.rollbackSnapshot(payload.snapshotId || null, payload);
+        loadConfig();
+        syncAccountStats();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(results, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Updates Snapshots List API
+  if (reqUrl.pathname === '/balancer/api/updates/snapshots' && req.method === 'GET') {
+    try {
+      const updater = require('./updater');
+      const list = updater.listSnapshots();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, snapshots: list }, null, 2));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
 
   // Web UI Dashboard & Graphical Config Center
   if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {

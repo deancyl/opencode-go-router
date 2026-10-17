@@ -1933,30 +1933,37 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clientRes.write(': keep-alive\n\n');
   }, 10000);
 
+  const isXHighReasoning = reqModel && (reqModel.includes('xhigh') || reqModel.includes('opus') || reqModel.includes('thinking') || reqModel.includes('reasoning'));
+  const maxStallMs = isXHighReasoning ? 600000 : 300000;
+
   const stallWatchdog = setInterval(() => {
     if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
       return;
     }
-    if (Date.now() - lastDataTime > 300000) {
+    const currentMaxStall = (reasoningStarted && !reasoningCompleted) ? 600000 : maxStallMs;
+    if (Date.now() - lastDataTime > currentMaxStall) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
-      console.error(`[Bridge Stream Watchdog] Upstream stalled for >300s on model "${reqModel}". Closing stream with response.failed.`);
-      dispatchStreamError(new Error('Upstream stalled for longer than 300s without returning data.'), true, 'upstream_stream_timeout');
+      console.error(`[Bridge Stream Watchdog] Upstream stalled for >${Math.round(currentMaxStall / 1000)}s on model "${reqModel}". Closing stream with response.failed.`);
+      dispatchStreamError(new Error(`Upstream stalled for longer than ${Math.round(currentMaxStall / 1000)}s without returning data.`), true, 'upstream_stream_timeout');
     }
   }, 5000);
 
-  const cleanup = () => {
-    clearInterval(heartbeatTimer);
-    clearInterval(stallWatchdog);
-  };
-  clientRes.once('close', () => {
+  const onCloseHandler = () => {
     cleanup();
     if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
       upstreamRes.destroy();
     }
-  });
+  };
+  clientRes.once('close', onCloseHandler);
+
+  const cleanup = () => {
+    clearInterval(heartbeatTimer);
+    clearInterval(stallWatchdog);
+    clientRes.removeListener('close', onCloseHandler);
+  };
 
   upstreamRes.on('error', (err) => {
     dispatchStreamError(err, true);
@@ -2679,6 +2686,11 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   let textIndex = 0;
   const itemIdText = 'item_text_' + Date.now();
   let fullText = '';
+  let reasoningStarted = false;
+  let reasoningCompleted = false;
+  let reasoningIndex = 0;
+  const itemIdReasoning = 'item_reasoning_' + Date.now();
+  let fullReasoning = '';
   const toolCallsMap = new Map(); // blockIndex -> { id, name, args, outIdx }
   let collectedUsage = null;
   let buffer = '';
@@ -2687,6 +2699,14 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
   const buildFinalOutput = () => {
     const finalOutput = [];
+    if (reasoningStarted || fullReasoning) {
+      finalOutput.push({
+        id: itemIdReasoning,
+        type: 'reasoning',
+        status: 'completed',
+        content: [{ type: 'reasoning_text', text: fullReasoning }]
+      });
+    }
     if (textStarted || fullText) {
       finalOutput.push({
         id: itemIdText,
@@ -2722,15 +2742,86 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     return finalOutput;
   };
 
+  const closeReasoning = () => {
+    if (reasoningStarted && !reasoningCompleted) {
+      sendEvent('response.reasoning_text.done', {
+        type: 'response.reasoning_text.done',
+        sequence_number: seq++,
+        output_index: reasoningIndex,
+        content_index: 0,
+        item_id: itemIdReasoning,
+        text: fullReasoning
+      });
+      sendEvent('response.content_part.done', {
+        type: 'response.content_part.done',
+        sequence_number: seq++,
+        output_index: reasoningIndex,
+        content_index: 0,
+        item_id: itemIdReasoning,
+        part: { type: 'reasoning_text', text: fullReasoning }
+      });
+      sendEvent('response.output_item.done', {
+        type: 'response.output_item.done',
+        sequence_number: seq++,
+        output_index: reasoningIndex,
+        item: {
+          id: itemIdReasoning,
+          type: 'reasoning',
+          status: 'completed',
+          content: [{ type: 'reasoning_text', text: fullReasoning }]
+        }
+      });
+      reasoningStarted = false;
+      reasoningCompleted = true;
+    }
+  };
+
+  const closeText = () => {
+    if (textStarted && !textCompleted) {
+      sendEvent('response.output_text.done', {
+        type: 'response.output_text.done',
+        sequence_number: seq++,
+        output_index: textIndex,
+        content_index: 0,
+        item_id: itemIdText,
+        text: fullText,
+        logprobs: []
+      });
+      sendEvent('response.content_part.done', {
+        type: 'response.content_part.done',
+        sequence_number: seq++,
+        output_index: textIndex,
+        content_index: 0,
+        item_id: itemIdText,
+        part: { type: 'output_text', text: fullText, annotations: [], logprobs: [] }
+      });
+      sendEvent('response.output_item.done', {
+        type: 'response.output_item.done',
+        sequence_number: seq++,
+        output_index: textIndex,
+        item: {
+          id: itemIdText,
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: fullText, annotations: [], logprobs: [] }]
+        }
+      });
+      textCompleted = true;
+    }
+  };
+
   const dispatchStreamError = (err, isExplicitError = false, overrideCode = null) => {
     if (streamFinished || clientRes.writableEnded || clientRes.destroyed) {
       cleanup();
       return;
     }
     streamFinished = true;
+    closeReasoning();
     closeText();
     const finalOutput = buildFinalOutput();
-    const isEmpty = fullText === '' && toolCallsMap.size === 0;
+    const isEmpty = fullText === '' && toolCallsMap.size === 0 && fullReasoning === '';
     const errCode = overrideCode || (isEmpty ? 'upstream_stream_empty_truncated' : 'upstream_stream_truncated');
     const errMsg = err?.message
       ? `Upstream stream error: ${err.message}`
@@ -2770,30 +2861,37 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clientRes.write(': keep-alive\n\n');
   }, 10000);
 
+  const isXHighReasoning = reqModel && (reqModel.includes('xhigh') || reqModel.includes('opus') || reqModel.includes('thinking') || reqModel.includes('reasoning'));
+  const maxStallMs = isXHighReasoning ? 600000 : 300000;
+
   const stallWatchdog = setInterval(() => {
     if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
       return;
     }
-    if (Date.now() - lastDataTime > 300000) {
+    const currentMaxStall = (reasoningStarted && !reasoningCompleted) ? 600000 : maxStallMs;
+    if (Date.now() - lastDataTime > currentMaxStall) {
       clearInterval(stallWatchdog);
       clearInterval(heartbeatTimer);
-      console.error(`[Anthropic Stream Watchdog] Upstream stalled for >300s on model "${reqModel}". Closing stream with response.failed.`);
-      dispatchStreamError(new Error('Upstream stalled for longer than 300s without returning data.'), true, 'upstream_stream_timeout');
+      console.error(`[Anthropic Stream Watchdog] Upstream stalled for >${Math.round(currentMaxStall / 1000)}s on model "${reqModel}". Closing stream with response.failed.`);
+      dispatchStreamError(new Error(`Upstream stalled for longer than ${Math.round(currentMaxStall / 1000)}s without returning data.`), true, 'upstream_stream_timeout');
     }
   }, 5000);
 
-  const cleanup = () => {
-    clearInterval(heartbeatTimer);
-    clearInterval(stallWatchdog);
-  };
-  clientRes.once('close', () => {
+  const onCloseHandler = () => {
     cleanup();
     if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
       upstreamRes.destroy();
     }
-  });
+  };
+  clientRes.once('close', onCloseHandler);
+
+  const cleanup = () => {
+    clearInterval(heartbeatTimer);
+    clearInterval(stallWatchdog);
+    clientRes.removeListener('close', onCloseHandler);
+  };
 
   upstreamRes.on('error', (err) => {
     dispatchStreamError(err, true);
@@ -2805,43 +2903,8 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   });
 
-  const closeText = () => {
-    if (textStarted && !textCompleted) {
-      sendEvent('response.output_text.done', {
-        type: 'response.output_text.done',
-        sequence_number: seq++,
-        output_index: textIndex,
-        content_index: 0,
-        item_id: itemIdText,
-        text: fullText,
-        logprobs: []
-      });
-      sendEvent('response.content_part.done', {
-        type: 'response.content_part.done',
-        sequence_number: seq++,
-        output_index: textIndex,
-        content_index: 0,
-        item_id: itemIdText,
-        part: { type: 'output_text', text: fullText, annotations: [], logprobs: [] }
-      });
-      sendEvent('response.output_item.done', {
-        type: 'response.output_item.done',
-        sequence_number: seq++,
-        output_index: textIndex,
-        item: {
-          id: itemIdText,
-          type: 'message',
-          status: 'completed',
-          role: 'assistant',
-          phase: 'final_answer',
-          content: [{ type: 'output_text', text: fullText, annotations: [], logprobs: [] }]
-        }
-      });
-      textCompleted = true;
-    }
-  };
-
   upstreamRes.on('data', chunk => {
+    lastDataTime = Date.now();
     buffer += chunk.toString('utf8');
     const lines = buffer.split('\n');
     buffer = lines.pop();
@@ -2863,7 +2926,27 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           };
         } else if (evType === 'content_block_start') {
           const cb = parsed.content_block;
-          if (cb?.type === 'text') {
+          if (cb?.type === 'thinking') {
+            if (!reasoningStarted) {
+              reasoningStarted = true;
+              reasoningIndex = outputIndex++;
+              sendEvent('response.output_item.added', {
+                type: 'response.output_item.added',
+                sequence_number: seq++,
+                output_index: reasoningIndex,
+                item: { id: itemIdReasoning, type: 'reasoning', status: 'in_progress', content: [] }
+              });
+              sendEvent('response.content_part.added', {
+                type: 'response.content_part.added',
+                sequence_number: seq++,
+                output_index: reasoningIndex,
+                content_index: 0,
+                item_id: itemIdReasoning,
+                part: { type: 'reasoning_text', text: '' }
+              });
+            }
+          } else if (cb?.type === 'text') {
+            closeReasoning();
             if (!textStarted) {
               textStarted = true;
               textIndex = outputIndex++;
@@ -2883,6 +2966,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               });
             }
           } else if (cb?.type === 'tool_use') {
+            closeReasoning();
             closeText();
             const bIdx = parsed.index ?? outputIndex;
             const tcOutIdx = outputIndex++;
@@ -2909,7 +2993,18 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           }
         } else if (evType === 'content_block_delta') {
           const delta = parsed.delta;
-          if (delta?.type === 'text_delta' && delta.text) {
+          if (delta?.type === 'thinking_delta' && delta.thinking) {
+            fullReasoning += delta.thinking;
+            sendEvent('response.reasoning_text.delta', {
+              type: 'response.reasoning_text.delta',
+              sequence_number: seq++,
+              output_index: reasoningIndex,
+              content_index: 0,
+              item_id: itemIdReasoning,
+              delta: delta.thinking
+            });
+          } else if (delta?.type === 'text_delta' && delta.text) {
+            closeReasoning();
             fullText += delta.text;
             sendEvent('response.output_text.delta', {
               type: 'response.output_text.delta',
@@ -2937,6 +3032,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             }
           }
         } else if (evType === 'content_block_stop') {
+          closeReasoning();
           const bIdx = parsed.index ?? 0;
           const rec = toolCallsMap.get(bIdx);
           if (rec) {
@@ -2990,9 +3086,10 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     upstreamEnded = true;
     if (streamFinished) return;
 
+    closeReasoning();
     closeText();
 
-    if (fullText === '' && toolCallsMap.size === 0) {
+    if (fullText === '' && toolCallsMap.size === 0 && fullReasoning === '') {
       dispatchStreamError(null, false);
       return;
     }
@@ -3003,7 +3100,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     const usageObj = normalizeResponsesUsage(
       collectedUsage,
       Math.max(10, Math.round(fullText.length * 0.4)),
-      Math.max(5, Math.round(fullText.length * 0.7))
+      Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
     );
 
     sendEvent('response.completed', {
@@ -3033,7 +3130,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         instructions: null,
         tool_choice: 'auto',
         tools: [],
-        reasoning: { effort: 'low', summary: null },
+        reasoning: { effort: isXHighReasoning ? 'high' : 'low', summary: null },
         text: { verbosity: null, format: { type: 'text' } },
         moderation: null
       }
