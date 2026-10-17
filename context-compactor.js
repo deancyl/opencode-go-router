@@ -40,7 +40,7 @@ const DEFAULT_COMPRESSION_CONFIG = {
   cleanDevOpsOutput: true,
   foldLockfiles: true,
   foldStructuredData: true,
-  maxStructuredItems: 30,
+  maxStructuredItems: 50,
   exemptMergeConflicts: true,
   protectSourceDiffs: true,
   foldTestPasses: true,
@@ -62,7 +62,7 @@ const DEFAULT_COMPRESSION_CONFIG = {
       enabled: true,
       foldLockfiles: true,
       foldStructuredData: true,
-      maxStructuredItems: 30,
+      maxStructuredItems: 50,
       exemptMergeConflicts: true,
       protectSourceDiffs: true
     },
@@ -96,7 +96,7 @@ const COMPRESSION_PRESETS = {
         enabled: true,
         foldLockfiles: true,
         foldStructuredData: true,
-        maxStructuredItems: 30,
+        maxStructuredItems: 50,
         exemptMergeConflicts: true,
         protectSourceDiffs: true
       },
@@ -224,7 +224,7 @@ function normalizeCompressionOptions(input = {}) {
       if (m.headroom.foldStructuredData !== undefined) result.modules.headroom.foldStructuredData = Boolean(m.headroom.foldStructuredData);
       if (m.headroom.maxStructuredItems !== undefined) {
         const val = Number(m.headroom.maxStructuredItems);
-        result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 30;
+        result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 50;
       }
       if (m.headroom.exemptMergeConflicts !== undefined) result.modules.headroom.exemptMergeConflicts = Boolean(m.headroom.exemptMergeConflicts);
       if (m.headroom.protectSourceDiffs !== undefined) result.modules.headroom.protectSourceDiffs = Boolean(m.headroom.protectSourceDiffs);
@@ -279,7 +279,7 @@ function normalizeCompressionOptions(input = {}) {
   }
   if (input.maxStructuredItems !== undefined && (!hasModHeadroom || mInput.headroom.maxStructuredItems === undefined)) {
     const val = Number(input.maxStructuredItems);
-    result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 30;
+    result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 50;
   }
   if (input.exemptMergeConflicts !== undefined && (!hasModHeadroom || mInput.headroom.exemptMergeConflicts === undefined)) {
     result.modules.headroom.exemptMergeConflicts = Boolean(input.exemptMergeConflicts);
@@ -322,7 +322,7 @@ function normalizeCompressionOptions(input = {}) {
 
   result.foldLockfiles = headroomActive ? result.modules.headroom.foldLockfiles : false;
   result.foldStructuredData = headroomActive ? result.modules.headroom.foldStructuredData : false;
-  result.maxStructuredItems = result.modules.headroom.maxStructuredItems || 30;
+  result.maxStructuredItems = result.modules.headroom.maxStructuredItems || 50;
   result.exemptMergeConflicts = result.modules.headroom.exemptMergeConflicts;
   result.protectSourceDiffs = result.modules.headroom.protectSourceDiffs;
 
@@ -732,8 +732,14 @@ function foldStructuredData(text, options = {}) {
     /\bSyntaxError\b/.test(text) ||
     text.includes('RuntimeError:') ||
     /\bRuntimeError\b/.test(text) ||
+    text.includes('RangeError:') ||
+    /\bRangeError\b/.test(text) ||
+    text.includes('NullPointerException') ||
+    text.includes('Exception in thread') ||
+    text.includes('Segmentation fault') ||
+    text.includes('panicked at') ||
     text.includes('panic:') ||
-    /\bpanic(?::|\()/.test(text) ||
+    /\bpanic(?::|\(|\b)/.test(text) ||
     text.includes('fatal error:') ||
     text.includes('BUILD FAILED:')
   ) {
@@ -744,7 +750,7 @@ function foldStructuredData(text, options = {}) {
     return text;
   }
 
-  const maxItems = Number(options.maxStructuredItems) || 30;
+  const maxItems = Number(options.maxStructuredItems) || 50;
   const headCount = Number(options.structuredHeadCount) || 5;
   const tailCount = Number(options.structuredTailCount) || 3;
 

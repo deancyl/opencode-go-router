@@ -587,29 +587,45 @@ async function runTests() {
     }
   });
 
+  let routerStderrBuf = '';
   routerProc.stdout.on('data', () => {});
   routerProc.stderr.on('data', (d) => {
+    routerStderrBuf += d.toString();
     if (process.env.DEBUG_ROUTER) process.stderr.write(d);
+  });
+  routerProc.on('exit', (code, sig) => {
+    if (code !== 0 && code !== null) {
+      console.error(`[Router Process Exited] code=${code}, signal=${sig}\nStderr: ${routerStderrBuf.slice(-1000)}`);
+    }
   });
 
   await new Promise(resolve => setTimeout(resolve, 1500));
 
-  function request(reqPath, options = {}) {
+  function request(reqPath, options = {}, retries = 2) {
     return new Promise((resolve, reject) => {
-      const req = http.request({
-        hostname: '127.0.0.1',
-        port: routerPort,
-        path: reqPath,
-        method: options.method || 'GET',
-        headers: options.headers || {}
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: data }));
-      });
-      req.on('error', reject);
-      if (options.body) req.write(options.body);
-      req.end();
+      const execute = (attemptsLeft) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: routerPort,
+          path: reqPath,
+          method: options.method || 'GET',
+          headers: options.headers || {}
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: data }));
+        });
+        req.on('error', (err) => {
+          if (attemptsLeft > 0 && (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED')) {
+            setTimeout(() => execute(attemptsLeft - 1), 150);
+          } else {
+            reject(err);
+          }
+        });
+        if (options.body) req.write(options.body);
+        req.end();
+      };
+      execute(retries);
     });
   }
 
@@ -5934,6 +5950,42 @@ $ProgressPreference = 'SilentlyContinue'
     const tracebackPayload = 'Traceback (most recent call last):\n  File "worker.py", line 42, in process\n' + raw60Str;
     const foldedTraceback = contextCompactor.foldStructuredData(tracebackPayload, { foldStructuredData: true, maxStructuredItems: 30 });
     assert.strictEqual(foldedTraceback, tracebackPayload, 'Payload with Python Traceback must be 100% untouched');
+
+    // 5e. Rust panic (thread 'main' panicked at ...)
+    const rustPanicPayload = 'thread \'main\' panicked at \'assertion failed: key.is_valid()\', src/crypto.rs:48:9\n' + raw60Str;
+    const foldedRust = contextCompactor.foldStructuredData(rustPanicPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedRust, rustPanicPayload, 'Payload with Rust panic must be 100% untouched');
+
+    // 5f. Java NullPointerException / Exception in thread
+    const javaErrPayload = 'Exception in thread "main" java.lang.NullPointerException: Cannot invoke method on null\n' + raw60Str;
+    const foldedJava = contextCompactor.foldStructuredData(javaErrPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedJava, javaErrPayload, 'Payload with Java NullPointerException must be 100% untouched');
+
+    // 5g. JavaScript RangeError
+    const rangeErrPayload = 'RangeError: Maximum call stack size exceeded\n' + raw60Str;
+    const foldedRange = contextCompactor.foldStructuredData(rangeErrPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedRange, rangeErrPayload, 'Payload with RangeError must be 100% untouched');
+
+    // 5h. C/C++ Segmentation fault
+    const segfaultPayload = 'Segmentation fault (core dumped)\n' + raw60Str;
+    const foldedSegfault = contextCompactor.foldStructuredData(segfaultPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedSegfault, segfaultPayload, 'Payload with Segmentation fault must be 100% untouched');
+
+    // 6. Default 50-items threshold boundary verification
+    // 50 items under default options: NOT folded
+    const boundaryArr50 = array60.slice(0, 50);
+    const boundaryStr50 = JSON.stringify(boundaryArr50, null, 2);
+    assert.strictEqual(contextCompactor.foldStructuredData(boundaryStr50, { foldStructuredData: true }), boundaryStr50, '<=50 items must NOT be folded under default 50-items threshold');
+
+    // 51 items under default options: IS folded
+    const boundaryArr51 = array60.slice(0, 51);
+    const boundaryStr51 = JSON.stringify(boundaryArr51, null, 2);
+    const foldedBoundary51 = contextCompactor.foldStructuredData(boundaryStr51, { foldStructuredData: true });
+    assert.ok(foldedBoundary51.includes('_headroom_smart_crusher'), '51 items must be folded under default 50-items threshold');
+    const parsedBoundary51 = JSON.parse(foldedBoundary51);
+    assert.strictEqual(parsedBoundary51.length, 9, 'Folded 51 array must have 9 elements (5 head + 1 summary + 3 tail)');
+    assert.strictEqual(parsedBoundary51[5].totalCount, 51, 'Total count must be 51');
+    assert.strictEqual(parsedBoundary51[5].foldedCount, 43, 'Folded count must be 43');
 
     console.log('✓ Web UI KV Cache Lock Principle Explanations, SmartCrusher Array Sampling & Anti-Downgrade Redlines verified');
 

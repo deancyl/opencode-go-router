@@ -34,6 +34,7 @@
         "enabled": true,
         "foldLockfiles": true,
         "foldStructuredData": true,
+        "maxStructuredItems": 50,
         "exemptMergeConflicts": true,
         "protectSourceDiffs": true
       },

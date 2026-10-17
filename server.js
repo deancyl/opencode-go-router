@@ -3748,7 +3748,7 @@ const server = http.createServer((req, res) => {
               }
               if (payload.compression.maxStructuredItems !== undefined && mergedModules.headroom) {
                 const val = Number(payload.compression.maxStructuredItems);
-                mergedModules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 30;
+                mergedModules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 50;
               }
               if (payload.compression.exemptMergeConflicts !== undefined && mergedModules.headroom) {
                 mergedModules.headroom.exemptMergeConflicts = Boolean(payload.compression.exemptMergeConflicts);
