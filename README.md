@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.3.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.3.1-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-137%2F137%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-138%2F138%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -280,7 +280,21 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.3.0 (当前最新版：高频会话 O(1) LRU 淘汰、Anthropic 深度推演看门狗防误杀、监听器防泄漏屏障、上下文计算开销优化与 4 层极限压测)
+### 🚀 v3.3.1 (当前最新版：OpenCode 官方模型费率字典与动态感知、分模型精细化节约归因与动态加权费用大盘、全套 138 项全绿测试)
+- **OpenCode 官方模型实时费率字典与动态感知引擎 (`context-compactor.js` & `server.js`)**：
+  - **内置主流全系费率表**：高保真内置 42 款主流模型基准费率（如 `deepseek-v4.1-flash` ~$0.14/1M、`deepseek-v4-pro` ~$0.55/1M、`glm-5.3-flash` ~$0.10/1M、`glm-5.3` ~$0.35/1M、`kimi-k3` ~$0.60/1M、`claude-haiku-5-5` ~$1.25/1M、`gpt-5.6-luna` ~$1.50/1M 等），未知模型 $0.25/1M 安全兜底；
+  - **守护服务动态感知同步**：支持从本地及 NAS OpenCode 守护进程 `/api/model` 动态感知并提取 `cost.input` 费率元数据，与官方上游费率无缝对齐；
+- **分模型精细化节约与动态加权费用测算引擎 (`context-compactor.js`)**：
+  - **细粒度按模型遥测 (`stats.byModel`)**：跨 OpenAI ChatCompletions、Anthropic Messages 与 OpenAI Codex Responses 三大协议，请求进入压缩管道时自动提取规范化模型标识，分别记录处理字符数、节约 Tokens、官方费率与对应节约金额；
+  - **动态加权总费用测算**：总费用彻底告别单一粗糙假设，升级为各模型真实单价动态加权累计之和 `sum(byModel[m].savedCostUSD)`；
+  - **安全持久化与一键干净重置**：`compression-stats.json` 磁盘数据结构无缝平滑迁移；调用重置 API 时自动连同分模型明细一键清零；
+- **Web 控制台分模型数据大盘与自适应抽屉 (`server.js`)**：
+  - **动态加权卡片指示**：费用卡片说明更新为“基于各模型官方实时费率动态加权测算”，增加“分模型明细 ▾”交互标签；
+  - **交互式分模型明细抽屉 (By Model Breakdown Drawer)**：点击费用卡片即可平滑展开/收起明细表格，直观呈现各模型的调用名称、处理原字符数、节约 Token 预估、官方费率参考 ($/1M Tokens) 及各自节约金额 (USD)；
+  - **移动端与桌面端自适应排版**：全面适配手机竖屏浏览器横向流畅滑动与大屏桌面展开，不破坏既有任何 DOM 与事件；
+- **全套 138 项自动化集成测试 100% 绿灯全通**。
+
+### 🚀 v3.3.0 (高频会话 O(1) LRU 淘汰、Anthropic 深度推演看门狗防误杀、监听器防泄漏屏障、上下文计算开销优化与 4 层极限压测)
 - **高频会话 O(1) LRU 增量淘汰引擎 (`server.js`)**：
   - 彻底重构当 `sessionMap.size > 5000` 时因全量遍历、多次数组拷贝与复杂排序导致的 Node.js 事件循环挂死与高延迟瓶颈（由 O(K×M) 降低为 O(1)）；
   - 引入 Map 原生插入顺序 LRU 机制（`touchSession` 与 `deleteSessionRecord`）结合 `sessionFallbackKeyMap` 二级索引，实现会话瞬时常数级增量淘汰；

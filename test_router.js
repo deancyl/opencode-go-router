@@ -6198,8 +6198,146 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Full End-to-End Headroom & Schema metrics attribution and Web UI integration verified');
 
+    // [Test 138] Testing Per-Model Savings Telemetry, Official Rate Dictionary & Web UI By-Model Breakdown
+    console.log('\n[Test 138] Testing Per-Model Savings Telemetry, Official Rate Dictionary & Web UI By-Model Breakdown...');
+
+    // 1. Reset stats via API and local instance
+    contextCompactor.resetCompressionStats();
+    await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+    let stats138 = contextCompactor.getCompressionStats();
+    assert.deepStrictEqual(stats138.byModel, {}, 'byModel must be empty upon reset');
+    assert.strictEqual(stats138.savedCostUSD, 0, 'savedCostUSD must be 0 upon reset');
+
+    // 2. Unit/Engine level telemetry across different models
+    // 2a. Model 1: deepseek-v4.1-flash ($0.14 / 1M)
+    const testToolMsg1 = '\u001b[32m' + 'Build succeeded with 0 errors. '.repeat(20) + '\u001b[0m';
+    contextCompactor.compactChatPayload({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'tool', content: testToolMsg1 }]
+    }, { enabled: true });
+
+    stats138 = contextCompactor.getCompressionStats();
+    assert.ok(stats138.byModel['deepseek-v4.1-flash'], 'byModel must contain deepseek-v4.1-flash');
+    const dsStats = stats138.byModel['deepseek-v4.1-flash'];
+    assert.strictEqual(dsStats.ratePer1M, 0.14, 'deepseek-v4.1-flash rate must be 0.14');
+    assert.ok(dsStats.savedChars > 0, 'deepseek-v4.1-flash savedChars must be > 0');
+    assert.ok(dsStats.savedTokens > 0, 'deepseek-v4.1-flash savedTokens must be > 0');
+    assert.strictEqual(dsStats.savedTokens, Math.round(dsStats.savedChars / 3.8));
+    assert.strictEqual(dsStats.savedCostUSD, Number(((dsStats.savedTokens / 1000000) * 0.14).toFixed(7)));
+
+    // 2b. Model 2: claude-haiku-5-5 ($1.25 / 1M)
+    contextCompactor.compactAnthropicPayload({
+      model: 'claude-haiku-5-5',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'tool_result', content: testToolMsg1 }]
+      }]
+    }, { enabled: true });
+
+    stats138 = contextCompactor.getCompressionStats();
+    assert.ok(stats138.byModel['claude-haiku-5-5'], 'byModel must contain claude-haiku-5-5');
+    const clStats = stats138.byModel['claude-haiku-5-5'];
+    assert.strictEqual(clStats.ratePer1M, 1.25, 'claude-haiku-5-5 rate must be 1.25');
+    assert.ok(clStats.savedChars > 0, 'claude-haiku-5-5 savedChars must be > 0');
+    assert.ok(clStats.savedTokens > 0, 'claude-haiku-5-5 savedTokens must be > 0');
+
+    // 2c. Model 3: kimi-k3 ($0.60 / 1M)
+    contextCompactor.compactResponsesPayload({
+      model: 'kimi-k3',
+      input: [{ type: 'function_call_output', call_id: 'c1', output: testToolMsg1 }]
+    }, { enabled: true });
+
+    stats138 = contextCompactor.getCompressionStats();
+    assert.ok(stats138.byModel['kimi-k3'], 'byModel must contain kimi-k3');
+    assert.strictEqual(stats138.byModel['kimi-k3'].ratePer1M, 0.60, 'kimi-k3 rate must be 0.60');
+
+    // 2d. Model 4: Unknown model fallback ($0.25 / 1M)
+    contextCompactor.compactChatPayload({
+      model: 'unknown-custom-model-x',
+      messages: [{ role: 'tool', content: testToolMsg1 }]
+    }, { enabled: true });
+
+    stats138 = contextCompactor.getCompressionStats();
+    assert.ok(stats138.byModel['unknown-custom-model-x'], 'byModel must contain unknown-custom-model-x');
+    assert.strictEqual(stats138.byModel['unknown-custom-model-x'].ratePer1M, 0.25, 'Unknown model rate must fallback to 0.25');
+
+    // 2e. Assert dynamic weighted sum: total savedCostUSD strictly equals sum of model saved costs
+    const expectedWeightedSum = Object.values(stats138.byModel).reduce((sum, m) => sum + m.savedCostUSD, 0);
+    assert.strictEqual(stats138.savedCostUSD, Number(expectedWeightedSum.toFixed(6)), 'totalSavedCostUSD must strictly match weighted sum of all models');
+    console.log(`✓ Engine level per-model savings & dynamic weighted cost verified (${Object.keys(stats138.byModel).length} models tracked, totalSavedCost: $${stats138.savedCostUSD})`);
+
+    // 3. End-to-end HTTP pipeline requests through router
+    await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+
+    // 3a. HTTP Chat request with deepseek-v4.1-flash
+    const httpDsRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [
+          { role: 'user', content: 'HTTP per-model test 1' },
+          { role: 'tool', content: '\u001b[32m' + 'Log line with ANSI green '.repeat(15) + '\u001b[0m' }
+        ]
+      })
+    });
+    assert.strictEqual(httpDsRes.statusCode, 200, 'HTTP Chat completions with deepseek must return 200');
+
+    // 3b. HTTP Messages request with claude-haiku-5-5
+    const httpClaudeRes = await request('/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-5-5',
+        messages: [
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't_claude_1', content: '\u001b[33m' + 'Log line with ANSI yellow '.repeat(15) + '\u001b[0m' }] }
+        ]
+      })
+    });
+    assert.strictEqual(httpClaudeRes.statusCode, 200, 'HTTP Messages with claude must return 200');
+
+    // 3c. Verify /balancer/api/compression/stats returns byModel with accurate rates
+    const httpStatsRes = await request('/balancer/api/compression/stats', { method: 'GET' });
+    assert.strictEqual(httpStatsRes.statusCode, 200);
+    const parsedHttpStats = JSON.parse(httpStatsRes.body);
+    assert.ok(parsedHttpStats.success, 'Stats API must return success');
+    assert.ok(parsedHttpStats.stats.byModel['deepseek-v4.1-flash'], 'API stats must have deepseek-v4.1-flash');
+    assert.ok(parsedHttpStats.stats.byModel['claude-haiku-5-5'], 'API stats must have claude-haiku-5-5');
+    assert.strictEqual(parsedHttpStats.stats.byModel['deepseek-v4.1-flash'].ratePer1M, 0.14);
+    assert.strictEqual(parsedHttpStats.stats.byModel['claude-haiku-5-5'].ratePer1M, 1.25);
+    const httpSum = parsedHttpStats.stats.byModel['deepseek-v4.1-flash'].savedCostUSD + parsedHttpStats.stats.byModel['claude-haiku-5-5'].savedCostUSD;
+    assert.strictEqual(parsedHttpStats.stats.savedCostUSD, Number(httpSum.toFixed(6)), 'HTTP stats savedCostUSD must match sum of byModel costs');
+    console.log(`✓ HTTP Proxy End-to-End per-model telemetry verified (deepseek $0.14/1M + claude $1.25/1M, total: $${parsedHttpStats.stats.savedCostUSD})`);
+
+    // 4. Verify disk persistence in compression-stats.json
+    await new Promise(r => setTimeout(r, 1200));
+    const diskStatsRaw = fs.readFileSync(path.join(__dirname, 'compression-stats.json'), 'utf8');
+    const diskStats = JSON.parse(diskStatsRaw);
+    assert.ok(diskStats.byModel, 'Disk stats must contain byModel');
+    assert.ok(diskStats.byModel['deepseek-v4.1-flash'], 'Disk stats must contain deepseek-v4.1-flash');
+    assert.ok(diskStats.byModel['claude-haiku-5-5'], 'Disk stats must contain claude-haiku-5-5');
+    console.log('✓ Disk persistence of byModel telemetry in compression-stats.json verified');
+
+    // 5. Test Web UI Dashboard elements
+    const uiRes138 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes138.statusCode, 200);
+    assert.ok(uiRes138.body.includes('id="by-model-breakdown-drawer"'), 'UI must render by-model-breakdown-drawer');
+    assert.ok(uiRes138.body.includes('id="by-model-table-body"'), 'UI must render by-model-table-body');
+    assert.ok(uiRes138.body.includes('id="by-model-tag"'), 'UI must render by-model-tag');
+    assert.ok(uiRes138.body.includes('基于各模型官方实时费率动态加权测算'), 'UI must display dynamic weighted rate subtitle');
+    assert.ok(uiRes138.body.includes('toggleByModelDrawer'), 'UI must contain toggleByModelDrawer function');
+    console.log('✓ Web UI By-Model Breakdown Drawer & dynamic weighted subtitle verified');
+
+    // 6. Test reset endpoint resets byModel cleanly
+    const resetRes138 = await request('/balancer/api/compression/stats/reset', { method: 'POST' });
+    assert.strictEqual(resetRes138.statusCode, 200);
+    const parsedReset138 = JSON.parse(resetRes138.body);
+    assert.deepStrictEqual(parsedReset138.stats.byModel, {}, 'Reset API must return empty byModel');
+    assert.strictEqual(parsedReset138.stats.savedCostUSD, 0, 'Reset API must return 0 savedCostUSD');
+    console.log('✓ Clean reset of byModel telemetry via POST /balancer/api/compression/stats/reset verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 137 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 138 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

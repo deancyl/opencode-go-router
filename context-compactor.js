@@ -304,6 +304,7 @@ function normalizeCompressionOptions(input = {}) {
     result.modules.cacheZone.trueLruRetention = Boolean(input.trueLruRetention);
   }
   if (input.customTestPassPatterns !== undefined) result.customTestPassPatterns = input.customTestPassPatterns;
+  if (input.model !== undefined) result.model = normalizeModelName(input.model);
 
   // 3. Compute effective runtime flat keys governed by both master switch and module switches
   const rtkActive = result.enabled && result.modules.rtk.enabled;
@@ -340,6 +341,199 @@ function normalizeCompressionOptions(input = {}) {
    Realtime Token & Chars Savings Metrics Engine & Lightweight Persistence
    ========================================================================== */
 
+/* ==========================================================================
+   OpenCode Official Model Pricing Rate Dictionary & Dynamic Sensing
+   ========================================================================== */
+
+const DEFAULT_MODEL_RATE_PER_1M = 0.25; // USD / 1M Tokens (fallback baseline)
+
+const OPENCODE_GO_MODEL_RATES = {
+  // DeepSeek family (OpenCode Go primary agent models)
+  'deepseek-v4.1-flash': 0.14,
+  'deepseek-flash': 0.14,
+  'deepseek-v4-flash': 0.14,
+  'deepseek-v4-pro': 0.55,
+  'deepseek-v4-flash-vision-exp': 0.18,
+
+  // GLM family
+  'glm-5.3-flash': 0.10,
+  'glm-5.3': 0.35,
+  'glm-5.2': 0.25,
+  'glm-5.1': 0.20,
+
+  // Kimi Moonshot family
+  'kimi-k3': 0.60,
+  'kimi-k2.7-code': 0.45,
+  'kimi-k2.6': 0.35,
+
+  // Qwen family
+  'qwen3.8-flash': 0.12,
+  'qwen3.6-plus': 0.35,
+  'qwen3.7-plus': 0.40,
+  'qwen3.7-max': 0.80,
+  'qwen3.8-max': 0.85,
+
+  // MiniMax family
+  'minimax-m2.5': 0.15,
+  'minimax-m2.7': 0.35,
+  'minimax-m3': 0.50,
+
+  // Grok family
+  'grok-4.6': 1.50,
+  'grok-4.7': 2.00,
+
+  // GPT Luna family
+  'gpt-5.6-luna': 1.50,
+  'gpt-6-luna': 2.50,
+
+  // Claude family
+  'claude-haiku-5-5': 1.25,
+  'claude-3-7-sonnet': 3.00,
+  'claude-3-5-sonnet': 3.00,
+
+  // MiMo family
+  'mimo-v2.6-flash': 0.12,
+  'mimo-v2.5': 0.20,
+  'mimo-v2.5-pro': 0.35,
+  'mimo-v2.6-pro': 0.40,
+
+  // Hunyuan family
+  'hy3': 0.30,
+  'hy4-preview': 0.45,
+
+  // LongCat family
+  'longcat-2.5-preview-free': 0.10,
+  'longcat-2.0': 0.15,
+
+  // Step family
+  'step-5-preview-free': 0.20,
+
+  // Muse family
+  'muse-spark-1.2-contributor': 0.15,
+  'muse-spark-1.3-contributor': 0.20,
+
+  // Omen & Space Bunny
+  'space-bunny': 0.15,
+  'omen-alpha': 0.50,
+
+  // Codex native aliases
+  'codex-mini': 0.40,
+  'codex-pro': 1.50
+};
+
+const dynamicModelRates = { ...OPENCODE_GO_MODEL_RATES };
+
+function normalizeModelName(rawModel) {
+  if (!rawModel || typeof rawModel !== 'string') return null;
+  let clean = rawModel.trim().toLowerCase();
+  if (clean.includes('/')) {
+    clean = clean.split('/').pop().trim();
+  }
+  return clean || null;
+}
+
+function getModelRate(rawModel) {
+  const model = normalizeModelName(rawModel);
+  if (!model) return DEFAULT_MODEL_RATE_PER_1M;
+  if (typeof dynamicModelRates[model] === 'number') {
+    return dynamicModelRates[model];
+  }
+  for (const [key, rate] of Object.entries(dynamicModelRates)) {
+    if (model === key || model.startsWith(key + '-') || key.startsWith(model + '-')) {
+      return rate;
+    }
+  }
+  return DEFAULT_MODEL_RATE_PER_1M;
+}
+
+function updateModelRates(newRates) {
+  if (!newRates || typeof newRates !== 'object') return dynamicModelRates;
+  for (const [rawModel, rate] of Object.entries(newRates)) {
+    const clean = normalizeModelName(rawModel);
+    if (clean && typeof rate === 'number' && rate > 0) {
+      dynamicModelRates[clean] = rate;
+    }
+  }
+  return dynamicModelRates;
+}
+
+/**
+ * Dynamically synchronizes model rates from local or NAS OpenCode daemon /api/model
+ */
+async function syncModelRatesFromOpenCode(port = null, password = null) {
+  try {
+    let p = port;
+    let pwd = password;
+    if (!p) {
+      try {
+        const updater = require('./updater');
+        const sInfo = updater.detectOpenCodeServiceInfo();
+        if (sInfo && sInfo.port) {
+          p = sInfo.port;
+          pwd = pwd || sInfo.password;
+        }
+      } catch (_) {}
+    }
+    if (!p) p = process.platform === 'linux' ? 4096 : 3000;
+
+    const http = require('node:http');
+    return new Promise((resolve) => {
+      const headers = { 'User-Agent': 'opencode-go-router-compactor' };
+      if (pwd) {
+        headers['Authorization'] = `Basic ${Buffer.from('opencode:' + pwd).toString('base64')}`;
+      }
+      const req = http.request({
+        host: '127.0.0.1',
+        port: p,
+        path: '/api/model',
+        method: 'GET',
+        headers,
+        timeout: 2500
+      }, (res) => {
+        let raw = '';
+        res.on('data', chunk => raw += chunk);
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            try {
+              const data = JSON.parse(raw);
+              let modelsList = [];
+              if (Array.isArray(data)) modelsList = data;
+              else if (Array.isArray(data.models)) modelsList = data.models;
+              else if (data && typeof data === 'object') {
+                for (const val of Object.values(data)) {
+                  if (Array.isArray(val)) modelsList.push(...val);
+                  else if (val && typeof val === 'object' && (val.id || val.cost)) modelsList.push(val);
+                }
+              }
+              const fetchedRates = {};
+              for (const m of modelsList) {
+                if (!m || typeof m !== 'object') continue;
+                const mId = m.id || m.name || m.slug;
+                const rawCost = m.cost?.input ?? m.pricing?.input ?? m.input_cost_per_million ?? m.cost?.prompt;
+                if (mId && typeof rawCost === 'number' && rawCost > 0) {
+                  const r = rawCost < 0.005 ? Number((rawCost * 1000000).toFixed(4)) : Number(rawCost.toFixed(4));
+                  const cleanId = normalizeModelName(mId);
+                  if (cleanId) fetchedRates[cleanId] = r;
+                }
+              }
+              if (Object.keys(fetchedRates).length > 0) {
+                updateModelRates(fetchedRates);
+                return resolve({ success: true, count: Object.keys(fetchedRates).length, rates: fetchedRates });
+              }
+            } catch (_) {}
+          }
+          resolve({ success: false, reason: `HTTP ${res.statusCode}` });
+        });
+      });
+      req.on('error', () => resolve({ success: false, reason: 'unreachable' }));
+      req.on('timeout', () => { req.destroy(); resolve({ success: false, reason: 'timeout' }); });
+      req.end();
+    });
+  } catch (e) {
+    return { success: false, reason: e.message };
+  }
+}
+
 const STATS_FILE = path.join(__dirname, 'compression-stats.json');
 
 let compressionStats = {
@@ -349,6 +543,7 @@ let compressionStats = {
   savedTokens: 0,
   savedCostUSD: 0,
   compressionRatio: 0,
+  byModel: {},
   modules: {
     rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
     headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
@@ -368,7 +563,30 @@ function computeDerivedStats(stats) {
     stats.totalOriginalChars = totalSavedChars;
   }
   stats.savedTokens = Math.round(totalSavedChars / 3.8);
-  stats.savedCostUSD = Number(((stats.savedTokens / 1000000) * 0.25).toFixed(6));
+
+  // Compute byModel telemetry and dynamic weighted savedCostUSD
+  stats.byModel = stats.byModel || {};
+  let modelTokensSum = 0;
+  let modelCostSum = 0;
+
+  for (const [m, data] of Object.entries(stats.byModel)) {
+    if (!data || typeof data !== 'object') continue;
+    data.savedChars = Number(data.savedChars) || 0;
+    data.originalChars = Number(data.originalChars) || 0;
+    data.savedTokens = Math.round(data.savedChars / 3.8);
+    data.ratePer1M = typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(m);
+    data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
+    modelTokensSum += data.savedTokens;
+    modelCostSum += data.savedCostUSD;
+  }
+
+  // Calculate overall savedCostUSD:
+  // Dynamically weighted sum from each model in byModel.
+  // Any unassigned tokens (calls without model attribute) use DEFAULT_MODEL_RATE_PER_1M ($0.25 / 1M).
+  const unassignedTokens = Math.max(0, stats.savedTokens - modelTokensSum);
+  const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
+  stats.savedCostUSD = Number((modelCostSum + unassignedCost).toFixed(6));
+
   stats.compressionRatio = stats.totalOriginalChars > 0
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
     : 0;
@@ -403,12 +621,36 @@ function persistStatsThrottled() {
   }, 1000);
 }
 
+function flushStatsToDisk() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  saveStatsToDisk();
+}
+
 function loadStatsFromDisk() {
   try {
     if (fs.existsSync(STATS_FILE)) {
       const raw = fs.readFileSync(STATS_FILE, 'utf8');
       const loaded = JSON.parse(raw);
       if (loaded && typeof loaded === 'object') {
+        let loadedByModel = {};
+        if (loaded.byModel && typeof loaded.byModel === 'object') {
+          for (const [m, data] of Object.entries(loaded.byModel)) {
+            if (data && typeof data === 'object') {
+              const cleanM = normalizeModelName(m) || m;
+              loadedByModel[cleanM] = {
+                savedChars: Number(data.savedChars) || 0,
+                savedTokens: Number(data.savedTokens) || 0,
+                savedCostUSD: Number(data.savedCostUSD) || 0,
+                originalChars: Number(data.originalChars) || 0,
+                ratePer1M: typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(cleanM)
+              };
+            }
+          }
+        }
+
         compressionStats = {
           totalOriginalChars: Number(loaded.totalOriginalChars) || 0,
           totalCompressedChars: Number(loaded.totalCompressedChars) || 0,
@@ -416,6 +658,7 @@ function loadStatsFromDisk() {
           savedTokens: Number(loaded.savedTokens) || 0,
           savedCostUSD: Number(loaded.savedCostUSD) || 0,
           compressionRatio: Number(loaded.compressionRatio) || 0,
+          byModel: loadedByModel,
           modules: {
             rtk: { savedChars: (loaded.modules && loaded.modules.rtk && loaded.modules.rtk.savedChars) || 0, savedTokens: 0, percentage: 0 },
             headroom: { savedChars: (loaded.modules && loaded.modules.headroom && loaded.modules.headroom.savedChars) || 0, savedTokens: 0, percentage: 0 },
@@ -441,6 +684,32 @@ function loadStatsFromDisk() {
 
 loadStatsFromDisk();
 
+function recordModelSavings(modelName, savedChars, originalChars = 0) {
+  const model = normalizeModelName(modelName);
+  if (!model || (savedChars <= 0 && originalChars <= 0)) return;
+  const validSaved = Math.max(0, savedChars);
+  const validOrig = Math.max(validSaved, originalChars);
+
+  if (!compressionStats.byModel) {
+    compressionStats.byModel = {};
+  }
+  if (!compressionStats.byModel[model]) {
+    compressionStats.byModel[model] = {
+      savedChars: 0,
+      savedTokens: 0,
+      savedCostUSD: 0,
+      originalChars: 0,
+      ratePer1M: getModelRate(model)
+    };
+  }
+  const entry = compressionStats.byModel[model];
+  entry.savedChars += validSaved;
+  entry.originalChars += validOrig;
+  entry.savedTokens = Math.round(entry.savedChars / 3.8);
+  entry.ratePer1M = getModelRate(model);
+  entry.savedCostUSD = Number(((entry.savedTokens / 1000000) * entry.ratePer1M).toFixed(7));
+}
+
 function recordModuleOnlySavings(moduleName, deltaChars) {
   if (deltaChars <= 0) return;
   if (moduleName && compressionStats.modules[moduleName]) {
@@ -452,7 +721,7 @@ function recordModuleOnlySavings(moduleName, deltaChars) {
   }
 }
 
-function recordSavings(moduleName, deltaChars, originalChars = 0) {
+function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null) {
   if (deltaChars <= 0 && originalChars <= 0) return;
   const validSaved = Math.max(0, deltaChars);
   const validOrig = Math.max(validSaved, originalChars);
@@ -462,6 +731,9 @@ function recordSavings(moduleName, deltaChars, originalChars = 0) {
   }
   compressionStats.totalOriginalChars += validOrig;
   compressionStats.totalCompressedChars += (validOrig - validSaved);
+  if (modelName) {
+    recordModelSavings(modelName, validSaved, validOrig);
+  }
   compressionStats.updatedAt = new Date().toISOString();
   computeDerivedStats(compressionStats);
   persistStatsThrottled();
@@ -488,6 +760,7 @@ function resetCompressionStats() {
     savedTokens: 0,
     savedCostUSD: 0,
     compressionRatio: 0,
+    byModel: {},
     modules: {
       rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
       headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
@@ -1761,7 +2034,8 @@ function compactToolsList(tools, opts = {}) {
     }
 
     if (deltaChars > 0) {
-      recordSavings('schema', deltaChars, Math.max(initialLen, deltaChars));
+      const modelName = normalizeModelName(opts.model || null);
+      recordSavings('schema', deltaChars, Math.max(initialLen, deltaChars), modelName);
     }
 
     return { tools: current, savedChars: deltaChars, initialLen };
@@ -1878,7 +2152,8 @@ function compactText(text, options = {}, sessionId = null) {
       const cached = getMemo(sessionId, cacheKey);
       if (cached !== null) {
         if (text.length > cached.length) {
-          recordSavings('cacheZone', text.length - cached.length, text.length);
+          const modelName = normalizeModelName(opts.model || null);
+          recordSavings('cacheZone', text.length - cached.length, text.length, modelName);
         }
         return cached;
       }
@@ -1921,6 +2196,11 @@ function compactText(text, options = {}, sessionId = null) {
       if (rtkDelta > 0) compressionStats.modules.rtk.savedChars += rtkDelta;
       if (headroomDelta > 0) compressionStats.modules.headroom.savedChars += headroomDelta;
 
+      const modelName = normalizeModelName(opts.model || null);
+      if (modelName) {
+        recordModelSavings(modelName, totalSaved, origLen);
+      }
+
       compressionStats.updatedAt = new Date().toISOString();
       computeDerivedStats(compressionStats);
       persistStatsThrottled();
@@ -1947,15 +2227,19 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
   const opts = normalizeCompressionOptions(options);
   if (!opts.enabled) return payload;
 
+  const rawModel = payload.model || opts.model || null;
+  const modelName = normalizeModelName(rawModel);
+  const compOpts = modelName ? { ...opts, model: modelName } : opts;
+
   try {
     const result = { ...payload };
 
     if (Array.isArray(result.tools)) {
-      result.tools = compactToolsList(result.tools, opts).tools;
+      result.tools = compactToolsList(result.tools, compOpts).tools;
     }
 
     if (Array.isArray(result.functions)) {
-      result.functions = compactToolsList(result.functions, opts).tools;
+      result.functions = compactToolsList(result.functions, compOpts).tools;
     }
 
     if (Array.isArray(result.messages)) {
@@ -1970,16 +2254,16 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
           if (val === null || val === undefined) {
             return { ...msg, [targetField]: '[Empty output]' };
           } else if (typeof val === 'string') {
-            const compacted = compactText(val, opts, sessionId);
+            const compacted = compactText(val, compOpts, sessionId);
             return { ...msg, [targetField]: ensureSafeNonEmptyString(compacted) };
           } else if (Array.isArray(val)) {
             let targetArray = val;
-            if (opts.foldStructuredData && targetArray.length > (opts.maxStructuredItems || 50)) {
+            if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
               try {
                 const rawArrStr = JSON.stringify(targetArray);
-                const foldedStr = foldStructuredData(rawArrStr, opts);
+                const foldedStr = foldStructuredData(rawArrStr, compOpts);
                 if (foldedStr.length < rawArrStr.length) {
-                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length);
+                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                   targetArray = JSON.parse(foldedStr);
                 }
               } catch (_) {}
@@ -1988,16 +2272,16 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
               .filter(part => part !== null && part !== undefined)
               .map(part => {
                 if (typeof part === 'string') {
-                  const compText = compactText(part, opts, sessionId);
+                  const compText = compactText(part, compOpts, sessionId);
                   return { type: 'text', text: ensureSafeNonEmptyString(compText) };
                 } else if (part && typeof part === 'object') {
                   if (part.type === 'text' && typeof part.text === 'string') {
-                    const compText = compactText(part.text, opts, sessionId);
+                    const compText = compactText(part.text, compOpts, sessionId);
                     return { ...part, text: ensureSafeNonEmptyString(compText) };
                   }
                   try {
                     const rawPart = JSON.stringify(part);
-                    const comp = compactText(rawPart, opts, sessionId);
+                    const comp = compactText(rawPart, compOpts, sessionId);
                     if (comp !== rawPart) {
                       try { return JSON.parse(comp); } catch (e) { return { type: 'text', text: comp }; }
                     }
@@ -2013,7 +2297,7 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
           } else if (typeof val === 'object' && val !== null) {
             try {
               const raw = JSON.stringify(val);
-              const compacted = compactText(raw, opts, sessionId);
+              const compacted = compactText(raw, compOpts, sessionId);
               try {
                 return { ...msg, [targetField]: JSON.parse(compacted) };
               } catch (_) {
@@ -2050,18 +2334,22 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
   const opts = normalizeCompressionOptions(options);
   if (!opts.enabled) return payload;
 
+  const rawModel = payload.model || opts.model || null;
+  const modelName = normalizeModelName(rawModel);
+  const compOpts = modelName ? { ...opts, model: modelName } : opts;
+
   try {
     const result = { ...payload };
 
     if (Array.isArray(result.tools)) {
-      result.tools = compactToolsList(result.tools, opts).tools;
+      result.tools = compactToolsList(result.tools, compOpts).tools;
     }
 
     if (Array.isArray(result.messages)) {
       result.messages = result.messages.map(msg => {
         if (!msg) return msg;
         if (msg.role === 'tool' && typeof msg.content === 'string') {
-          const compacted = compactText(msg.content, opts, sessionId);
+          const compacted = compactText(msg.content, compOpts, sessionId);
           return { ...msg, content: ensureSafeNonEmptyString(compacted) };
         }
         if ((msg.role === 'user' || msg.role === 'tool') && Array.isArray(msg.content)) {
@@ -2077,16 +2365,16 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                 if (val === null || val === undefined) {
                   return { ...block, [targetField]: '[Empty output]' };
                 } else if (typeof val === 'string') {
-                  const compacted = compactText(val, opts, sessionId);
+                  const compacted = compactText(val, compOpts, sessionId);
                   return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
                 } else if (Array.isArray(val)) {
                   let targetArray = val;
-                  if (opts.foldStructuredData && targetArray.length > (opts.maxStructuredItems || 50)) {
+                  if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
                     try {
                       const rawArrStr = JSON.stringify(targetArray);
-                      const foldedStr = foldStructuredData(rawArrStr, opts);
+                      const foldedStr = foldStructuredData(rawArrStr, compOpts);
                       if (foldedStr.length < rawArrStr.length) {
-                        recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length);
+                        recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                         targetArray = JSON.parse(foldedStr);
                       }
                     } catch (_) {}
@@ -2095,16 +2383,16 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                     .filter(part => part !== null && part !== undefined)
                     .map(part => {
                       if (typeof part === 'string') {
-                        const compText = compactText(part, opts, sessionId);
+                        const compText = compactText(part, compOpts, sessionId);
                         return { type: 'text', text: ensureSafeNonEmptyString(compText) };
                       } else if (part && typeof part === 'object') {
                         if (part.type === 'text' && typeof part.text === 'string') {
-                          const compText = compactText(part.text, opts, sessionId);
+                          const compText = compactText(part.text, compOpts, sessionId);
                           return { ...part, text: ensureSafeNonEmptyString(compText) };
                         }
                         try {
                           const rawPart = JSON.stringify(part);
-                          const comp = compactText(rawPart, opts, sessionId);
+                          const comp = compactText(rawPart, compOpts, sessionId);
                           if (comp !== rawPart) {
                             try { return JSON.parse(comp); } catch (e) { return { type: 'text', text: comp }; }
                           }
@@ -2120,7 +2408,7 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                 } else if (typeof val === 'object' && val !== null) {
                   try {
                     const raw = JSON.stringify(val);
-                    const compacted = compactText(raw, opts, sessionId);
+                    const compacted = compactText(raw, compOpts, sessionId);
                     try {
                       return { ...block, [targetField]: JSON.parse(compacted) };
                     } catch (_) {
@@ -2161,11 +2449,15 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
   const opts = normalizeCompressionOptions(options);
   if (!opts.enabled) return payload;
 
+  const rawModel = payload.model || opts.model || null;
+  const modelName = normalizeModelName(rawModel);
+  const compOpts = modelName ? { ...opts, model: modelName } : opts;
+
   try {
     const result = { ...payload };
 
     if (Array.isArray(result.tools)) {
-      result.tools = compactToolsList(result.tools, opts).tools;
+      result.tools = compactToolsList(result.tools, compOpts).tools;
     }
 
     if (Array.isArray(result.input)) {
@@ -2188,17 +2480,17 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
           if (val === null || val === undefined) {
             return { ...item, [targetField]: '[Empty output]' };
           } else if (typeof val === 'string') {
-            const comp = compactText(val, opts, sessionId);
+            const comp = compactText(val, compOpts, sessionId);
             return { ...item, [targetField]: ensureSafeNonEmptyString(comp) };
           } else if (Array.isArray(val)) {
             // If it's a giant array (> maxStructuredItems), fold with SmartCrusher first
             let targetArray = val;
-            if (opts.foldStructuredData && targetArray.length > (opts.maxStructuredItems || 50)) {
+            if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
               try {
                 const rawArrStr = JSON.stringify(targetArray);
-                const foldedStr = foldStructuredData(rawArrStr, opts);
+                const foldedStr = foldStructuredData(rawArrStr, compOpts);
                 if (foldedStr.length < rawArrStr.length) {
-                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length);
+                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                   targetArray = JSON.parse(foldedStr);
                 }
               } catch (_) {}
@@ -2208,16 +2500,16 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
               .filter(part => part !== null && part !== undefined)
               .map(part => {
                 if (typeof part === 'string') {
-                  const comp = compactText(part, opts, sessionId);
+                  const comp = compactText(part, compOpts, sessionId);
                   return ensureSafeNonEmptyString(comp);
                 } else if (part && typeof part === 'object') {
                   const clonedPart = { ...part };
                   if (typeof clonedPart.text === 'string') {
-                    const comp = compactText(clonedPart.text, opts, sessionId);
+                    const comp = compactText(clonedPart.text, compOpts, sessionId);
                     clonedPart.text = ensureSafeNonEmptyString(comp);
                   }
                   if (typeof clonedPart.output === 'string') {
-                    const comp = compactText(clonedPart.output, opts, sessionId);
+                    const comp = compactText(clonedPart.output, compOpts, sessionId);
                     clonedPart.output = ensureSafeNonEmptyString(comp);
                   }
                   return clonedPart;
@@ -2233,25 +2525,25 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
             if (hasCommonKeys) {
               const clonedOutput = { ...val };
               if (typeof clonedOutput.stdout === 'string') {
-                clonedOutput.stdout = ensureSafeNonEmptyString(compactText(clonedOutput.stdout, opts, sessionId));
+                clonedOutput.stdout = ensureSafeNonEmptyString(compactText(clonedOutput.stdout, compOpts, sessionId));
               }
               if (typeof clonedOutput.stderr === 'string') {
-                clonedOutput.stderr = ensureSafeNonEmptyString(compactText(clonedOutput.stderr, opts, sessionId));
+                clonedOutput.stderr = ensureSafeNonEmptyString(compactText(clonedOutput.stderr, compOpts, sessionId));
               }
               if (typeof clonedOutput.output === 'string') {
-                clonedOutput.output = ensureSafeNonEmptyString(compactText(clonedOutput.output, opts, sessionId));
+                clonedOutput.output = ensureSafeNonEmptyString(compactText(clonedOutput.output, compOpts, sessionId));
               }
               if (typeof clonedOutput.text === 'string') {
-                clonedOutput.text = ensureSafeNonEmptyString(compactText(clonedOutput.text, opts, sessionId));
+                clonedOutput.text = ensureSafeNonEmptyString(compactText(clonedOutput.text, compOpts, sessionId));
               }
               if (typeof clonedOutput.content === 'string') {
-                clonedOutput.content = ensureSafeNonEmptyString(compactText(clonedOutput.content, opts, sessionId));
+                clonedOutput.content = ensureSafeNonEmptyString(compactText(clonedOutput.content, compOpts, sessionId));
               } else if (Array.isArray(clonedOutput.content)) {
                 let cleanedContent = clonedOutput.content
                   .filter(part => part !== null && part !== undefined)
                   .map(part => {
                     if (part && typeof part === 'object' && typeof part.text === 'string') {
-                      const comp = compactText(part.text, opts, sessionId);
+                      const comp = compactText(part.text, compOpts, sessionId);
                       return { ...part, text: ensureSafeNonEmptyString(comp) };
                     }
                     return part;
@@ -2266,7 +2558,7 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
               // General structured object (e.g. { records: [ ... 60 items ... ] })
               try {
                 const rawObj = JSON.stringify(val);
-                const comp = compactText(rawObj, opts, sessionId);
+                const comp = compactText(rawObj, compOpts, sessionId);
                 try {
                   return { ...item, [targetField]: JSON.parse(comp) };
                 } catch (_) {
@@ -2647,5 +2939,15 @@ module.exports = {
   runPipeline,
   getOptionsSignature,
   checkCompressionHealth,
-  repairCompressionConfig
+  repairCompressionConfig,
+  DEFAULT_MODEL_RATE_PER_1M,
+  OPENCODE_GO_MODEL_RATES,
+  dynamicModelRates,
+  normalizeModelName,
+  getModelRate,
+  updateModelRates,
+  syncModelRatesFromOpenCode,
+  recordModelSavings,
+  saveStatsToDisk,
+  flushStatsToDisk
 };

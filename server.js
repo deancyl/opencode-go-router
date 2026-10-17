@@ -4149,6 +4149,7 @@ function renderDashboardHtml(config) {
     .comp-metric-label { font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
     .comp-metric-val { font-size: 1.3rem; font-weight: 700; color: var(--primary); line-height: 1.2; }
     .comp-metric-sub { font-size: 0.72rem; color: #64748b; margin-top: 4px; }
+    .by-model-table tr:hover { background: rgba(255, 255, 255, 0.03); }
     .comp-modules-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
@@ -4694,12 +4695,13 @@ function renderDashboardHtml(config) {
             <div class="comp-metric-val" id="stat-saved-tokens">~0 Tokens</div>
             <div class="comp-metric-sub" id="stat-saved-tokens-sub">基于 3.8 字符/Token 启发模型</div>
           </div>
-          <div class="comp-metric-card">
-            <div class="comp-metric-label">
+          <div class="comp-metric-card" id="card-saved-cost" style="cursor: pointer;" onclick="toggleByModelDrawer()" title="点击展开/收起分模型节约明细">
+            <div class="comp-metric-label" style="display: flex; justify-content: space-between; align-items: center;">
               <span>💵 累计节约费用预估 (USD)</span>
+              <span id="by-model-tag" style="font-size: 0.68rem; padding: 1px 6px; border-radius: 4px; background: rgba(52,211,153,0.15); color: #34d399; font-weight: normal; border: 1px solid rgba(52,211,153,0.3);">分模型明细 ▾</span>
             </div>
             <div class="comp-metric-val" id="stat-saved-cost" style="color: #34d399;">~$0.0000 USD</div>
-            <div class="comp-metric-sub">按 $0.25 / 1M Tokens 基准测算</div>
+            <div class="comp-metric-sub" id="stat-saved-cost-sub">基于各模型官方实时费率动态加权测算</div>
           </div>
           <div class="comp-metric-card">
             <div class="comp-metric-label">
@@ -4714,6 +4716,33 @@ function renderDashboardHtml(config) {
             </div>
             <div class="comp-metric-val" id="stat-original-chars" style="color: #f1f5f9;">0 Chars</div>
             <div class="comp-metric-sub" id="stat-compressed-chars-sub">压缩后: 0 字符</div>
+          </div>
+        </div>
+
+        <!-- 📊 分模型节约明细抽屉面板 (By Model Breakdown Drawer) -->
+        <div id="by-model-breakdown-drawer" style="display: none; background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #1e293b; padding-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 0.92rem; font-weight: 600; color: #f1f5f9;">📊 分模型节约明细 (By Model Breakdown)</span>
+              <span id="by-model-count-badge" style="font-size: 0.72rem; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(56,189,248,0.3);">0 款模型</span>
+            </div>
+            <button type="button" onclick="toggleByModelDrawer()" style="background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 2px 6px;" title="关闭明细面板">✕</button>
+          </div>
+          <div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+            <table class="by-model-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left; min-width: 520px;">
+              <thead>
+                <tr style="color: #94a3b8; border-bottom: 1px solid #334155;">
+                  <th style="padding: 8px 10px;">模型名称 (Model)</th>
+                  <th style="padding: 8px 10px; text-align: right;">已处理原字符</th>
+                  <th style="padding: 8px 10px; text-align: right;">节约 Tokens</th>
+                  <th style="padding: 8px 10px; text-align: right;">官方费率参考</th>
+                  <th style="padding: 8px 10px; text-align: right;">节约费用 (USD)</th>
+                </tr>
+              </thead>
+              <tbody id="by-model-table-body">
+                <tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -5139,6 +5168,26 @@ function renderDashboardHtml(config) {
       return el ? el.checked : false;
     }
 
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function toggleByModelDrawer() {
+      const drawer = document.getElementById('by-model-breakdown-drawer');
+      if (!drawer) return;
+      const isHidden = drawer.style.display === 'none';
+      drawer.style.display = isHidden ? 'block' : 'none';
+      const tag = document.getElementById('by-model-tag');
+      if (tag) {
+        const badgeEl = document.getElementById('by-model-count-badge');
+        const count = badgeEl ? badgeEl.innerText.replace(' 款模型', '') : '0';
+        tag.innerText = isHidden
+          ? '收起明细 ▴'
+          : (count !== '0' ? (count + ' 款模型 ▾') : '分模型明细 ▾');
+      }
+    }
+
     async function fetchCompressionStats() {
       if (document.hidden) return;
       try {
@@ -5156,11 +5205,53 @@ function renderDashboardHtml(config) {
         const compCharsSub = document.getElementById('stat-compressed-chars-sub');
 
         if (tokensEl) tokensEl.innerText = '~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
-        if (costEl) costEl.innerText = '~$' + Number(stats.savedCostUSD || 0).toFixed(4) + ' USD';
+        if (costEl) {
+          const costVal = Number(stats.savedCostUSD || 0);
+          costEl.innerText = '~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+        }
         if (ratioEl) ratioEl.innerText = (stats.compressionRatio || 0) + '%';
         if (origEl) origEl.innerText = Number(stats.totalOriginalChars || 0).toLocaleString() + ' Chars';
         if (savedCharsSub) savedCharsSub.innerText = '已节约 ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
         if (compCharsSub) compCharsSub.innerText = '压缩后: ' + Number(stats.totalCompressedChars || 0).toLocaleString() + ' 字符';
+
+        // Update By-Model breakdown telemetry
+        const byModelEntries = Object.entries(stats.byModel || {});
+        const tagEl = document.getElementById('by-model-tag');
+        const badgeEl = document.getElementById('by-model-count-badge');
+        const drawerEl = document.getElementById('by-model-breakdown-drawer');
+        const isDrawerOpen = drawerEl && drawerEl.style.display !== 'none';
+
+        if (tagEl) {
+          tagEl.innerText = isDrawerOpen
+            ? '收起明细 ▴'
+            : (byModelEntries.length > 0 ? (byModelEntries.length + ' 款模型 ▾') : '分模型明细 ▾');
+        }
+        if (badgeEl) badgeEl.innerText = byModelEntries.length + ' 款模型';
+
+        const tbody = document.getElementById('by-model-table-body');
+        if (tbody) {
+          if (byModelEntries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>';
+          } else {
+            byModelEntries.sort((a, b) => (b[1].savedCostUSD || 0) - (a[1].savedCostUSD || 0) || (b[1].savedTokens || 0) - (a[1].savedTokens || 0));
+            tbody.innerHTML = byModelEntries.map(([m, mData]) => {
+              const costVal = Number(mData.savedCostUSD || 0);
+              const costStr = costVal < 0.0001 && costVal > 0 ? costVal.toFixed(7) : costVal.toFixed(6);
+              const rateStr = Number(mData.ratePer1M || 0).toFixed(2);
+              const origStr = Number(mData.originalChars || 0).toLocaleString();
+              const tokensStr = Number(mData.savedTokens || 0).toLocaleString();
+              return '<tr style="border-bottom: 1px solid #1e293b; transition: background 0.15s;">' +
+                '<td style="padding: 7px 10px; font-weight: 600; color: #e2e8f0; font-family: monospace;">' +
+                '<span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; margin-right: 6px;"></span>' +
+                escapeHtml(m) + '</td>' +
+                '<td style="padding: 7px 10px; text-align: right; color: #cbd5e1;">' + origStr + ' 字符</td>' +
+                '<td style="padding: 7px 10px; text-align: right; color: #38bdf8; font-weight: 500;">~' + tokensStr + ' Tokens</td>' +
+                '<td style="padding: 7px 10px; text-align: right; color: #94a3b8;">$' + rateStr + ' / 1M</td>' +
+                '<td style="padding: 7px 10px; text-align: right; color: #34d399; font-weight: 600;">$' + costStr + '</td>' +
+                '</tr>';
+            }).join('');
+          }
+        }
 
         if (stats.modules) {
           ['rtk', 'headroom', 'schema', 'cacheZone'].forEach(mod => {
@@ -5203,6 +5294,12 @@ function renderDashboardHtml(config) {
         const data = await res.json();
         if (data && data.success) {
           showToast('✔ ' + (data.message || '压缩与 Token 节省统计已清零'));
+          const tbody = document.getElementById('by-model-table-body');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>';
+          const badgeEl = document.getElementById('by-model-count-badge');
+          if (badgeEl) badgeEl.innerText = '0 款模型';
+          const tagEl = document.getElementById('by-model-tag');
+          if (tagEl) tagEl.innerText = '分模型明细 ▾';
           fetchCompressionStats();
         } else {
           showToast('清零失败: ' + (data.error || '未知错误'), true);
@@ -7846,6 +7943,12 @@ $ghost
             codexSynced = true;
           } catch (_) {}
 
+          let compactorRatesSynced = false;
+          try {
+            const cr = await contextCompactor.syncModelRatesFromOpenCode();
+            compactorRatesSynced = Boolean(cr && cr.success);
+          } catch (_) {}
+
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
           res.end(JSON.stringify({
             success: true,
@@ -7854,10 +7957,17 @@ $ghost
             totalModelCount: harmRes.modelCount,
             currentModel: harmRes.currentModel,
             codexSynced,
+            compactorRatesSynced,
             models: officialModels,
             message: `已成功从官方上游动态嗅探并同步 ${officialModels.length} 款模型，本地客户端配置已增量热更新！`
           }, null, 2));
         } else {
+          let compactorRatesSynced = false;
+          try {
+            const cr = await contextCompactor.syncModelRatesFromOpenCode();
+            compactorRatesSynced = Boolean(cr && cr.success);
+          } catch (_) {}
+
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
           res.end(JSON.stringify({
             success: true,
@@ -7865,6 +7975,7 @@ $ghost
             officialCount: 38,
             totalModelCount: 38,
             fallback: true,
+            compactorRatesSynced,
             models: updater.ALL_38_SLUGS,
             message: '当前上游网络或密钥未就绪，已安全使用内置 38 款高保真基准模型字典兜底！'
           }, null, 2));
@@ -8074,6 +8185,9 @@ if (require.main === module) {
     console.log(`[OpenCode Go Router] Running on http://${config.host}:${config.port}`);
     console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
     console.log(`[OpenCode Go Router] Web Dashboard: http://${config.host}:${config.port}/balancer/ui`);
+    try {
+      contextCompactor.syncModelRatesFromOpenCode().catch(() => {});
+    } catch (_) {}
   });
 }
 
