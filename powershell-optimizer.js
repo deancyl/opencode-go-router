@@ -126,7 +126,7 @@ function detectPlatform(options = {}, req = null) {
  * @returns {boolean}
  */
 function isPowerShellOptimizerActive(options = {}, req = null) {
-  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...(options.powershell || options.powershellOptimizer || options) };
+  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...((options.modules && options.modules.powershell) || options.powershell || options.powershellOptimizer || options) };
   if (cfg.enabled === false) return false;
 
   if (cfg.autoDetectPlatform !== false) {
@@ -241,8 +241,8 @@ function cleanPowerShellNoise(text) {
     // 6. Clean PowerShell 7 repetitive syntax / cmdlet error boilerplate noise
     // Strips redundant "Line | ... ~~~~" and "Check the spelling of the name..." while preserving the core error
     if (result.includes('Line |') || result.includes('Check the spelling of the name')) {
-      const lineNoiseRegex = /Line\s*\|\r?\n\s*\d+\s*\|\s*…[^\r\n]*\r?\n\s*\|\s*~+\r?\n\s*\|\s*/g;
-      const stripped1 = result.replace(lineNoiseRegex, '');
+      const lineNoiseRegex = /(?:^|\r?\n)\s*Line\s*\|\r?\n\s*\d+\s*\|\s*[^\r\n]*\r?\n\s*\|\s*~+\r?\n\s*\|\s*/g;
+      const stripped1 = result.replace(lineNoiseRegex, '\n');
       const adviceRegex = /\r?\n?Check the spelling of the name, or if a path was included, verify that the path is correct and try again\.\r?\n?/g;
       const stripped2 = stripped1.replace(adviceRegex, '\n');
       if (stripped2 !== result) {
@@ -277,8 +277,12 @@ function cleanCliXmlNoise(text) {
  */
 function fixPowerShellCommandEscaping(cmd, options = {}) {
   if (typeof cmd !== 'string' || cmd.trim().length === 0) return cmd;
-  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...(options.powershell || options.powershellOptimizer || options) };
+  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...((options.modules && options.modules.powershell) || options.powershell || options.powershellOptimizer || options) };
   if (cfg.enabled === false) return cmd;
+
+  if (options.wrapComplexScript === true && isComplexCommandNeedingScriptFile(cmd)) {
+    return wrapInScriptFileExecution(cmd);
+  }
 
   let result = cmd;
 
@@ -368,17 +372,39 @@ function fixPowerShellCommandEscaping(cmd, options = {}) {
       let buffer = '';
       for (let i = 0; i < result.length; i++) {
         const char = result[i];
-        const prevChar = i > 0 ? result[i - 1] : '';
+
+        // Count preceding backslashes
+        let backslashCount = 0;
+        for (let j = i - 1; j >= 0 && result[j] === '\\'; j--) {
+          backslashCount++;
+        }
+        const isBackslashEscaped = (backslashCount % 2 === 1);
+
+        // Count preceding backticks
+        let backtickCount = 0;
+        for (let j = i - 1; j >= 0 && result[j] === '`'; j--) {
+          backtickCount++;
+        }
+        const isBacktickEscaped = (backtickCount % 2 === 1);
+
         if (char === "'" && !inDoubleQuote) {
-          inSingleQuote = !inSingleQuote;
+          if (!isBacktickEscaped) {
+            inSingleQuote = !inSingleQuote;
+          }
           buffer += char;
         } else if (char === '"' && !inSingleQuote) {
-          if (prevChar !== '`') {
+          if (!isBacktickEscaped && !isBackslashEscaped) {
+            if (inDoubleQuote && result[i + 1] === '"') {
+              // Doubled quote inside double quotes ("")
+              buffer += '""';
+              i++;
+              continue;
+            }
             inDoubleQuote = !inDoubleQuote;
           }
           buffer += char;
         } else if (inDoubleQuote && char === '$' && (result[i + 1] === '(' || result[i + 1] === '{')) {
-          if (prevChar !== '`') {
+          if (!isBacktickEscaped) {
             buffer += '`$';
           } else {
             buffer += char;
@@ -424,12 +450,27 @@ function isComplexCommandNeedingScriptFile(cmd) {
 function wrapInScriptFileExecution(scriptContent, extension = '.ps1') {
   if (typeof scriptContent !== 'string') return scriptContent;
   const ext = extension.startsWith('.') ? extension : `.${extension}`;
+  if (scriptContent.includes("'@") || scriptContent.includes('@\'')) {
+    const b64 = Buffer.from(scriptContent, 'utf8').toString('base64');
+    return [
+      `& {`,
+      `  $__tmpScript = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "opencode_inj_" + [System.Guid]::NewGuid().ToString("N") + "${ext}");`,
+      `  [System.IO.File]::WriteAllBytes($__tmpScript, [System.Convert]::FromBase64String("${b64}"));`,
+      `  try {`,
+      `    & $__tmpScript`,
+      `  } finally {`,
+      `    Remove-Item -Force $__tmpScript -ErrorAction SilentlyContinue`,
+      `  }`,
+      `}`
+    ].join('\r\n');
+  }
   return [
     `& {`,
     `  $__tmpScript = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "opencode_inj_" + [System.Guid]::NewGuid().ToString("N") + "${ext}");`,
-    `  [System.IO.File]::WriteAllText($__tmpScript, @'`,
+    `  $__scriptBody = @'`,
     scriptContent,
-    `'@, [System.Text.Encoding]::UTF8);`,
+    `'@;`,
+    `  [System.IO.File]::WriteAllText($__tmpScript, $__scriptBody, [System.Text.Encoding]::UTF8);`,
     `  try {`,
     `    & $__tmpScript`,
     `  } finally {`,
@@ -497,7 +538,16 @@ function optimizeChatPayload(payload, options = {}, req = null) {
       // Clean CLIXML noise in tool output messages
       if ((msg.role === 'tool' || msg.role === 'function') && cfg.cleanCliXmlNoise !== false) {
         if (typeof msg.content === 'string' && (msg.content.includes('#< CLIXML') || msg.content.includes('CategoryInfo') || msg.content.includes('PowerShell ') || msg.content.includes('Line |'))) {
-          return { ...msg, content: cleanCliXmlNoise(msg.content) };
+          const cleaned = cleanCliXmlNoise(msg.content);
+          if (cleaned.length < msg.content.length) {
+            try {
+              const compactor = require('./context-compactor');
+              if (compactor && typeof compactor.recordSavings === 'function') {
+                compactor.recordSavings('powershell', msg.content.length - cleaned.length, msg.content.length, cfg.model || null);
+              }
+            } catch (_) {}
+          }
+          return { ...msg, content: cleaned };
         }
       }
 
@@ -585,7 +635,16 @@ function optimizeResponsesPayload(payload, options = {}, req = null) {
         // Clean tool output CLIXML
         if (cfg.cleanCliXmlNoise !== false && typeof item.output === 'string') {
           if (item.output.includes('#< CLIXML') || item.output.includes('CategoryInfo') || item.output.includes('PowerShell ') || item.output.includes('Line |')) {
-            return { ...item, output: cleanCliXmlNoise(item.output) };
+            const cleaned = cleanCliXmlNoise(item.output);
+            if (cleaned.length < item.output.length) {
+              try {
+                const compactor = require('./context-compactor');
+                if (compactor && typeof compactor.recordSavings === 'function') {
+                  compactor.recordSavings('powershell', item.output.length - cleaned.length, item.output.length, cfg.model || null);
+                }
+              } catch (_) {}
+            }
+            return { ...item, output: cleaned };
           }
         }
 
@@ -668,7 +727,16 @@ function optimizeAnthropicPayload(payload, options = {}, req = null) {
           // Clean CLIXML noise inside tool_result
           if (block.type === 'tool_result' && cfg.cleanCliXmlNoise !== false) {
             if (typeof block.content === 'string' && (block.content.includes('#< CLIXML') || block.content.includes('CategoryInfo') || block.content.includes('PowerShell ') || block.content.includes('Line |'))) {
-              return { ...block, content: cleanCliXmlNoise(block.content) };
+              const cleaned = cleanCliXmlNoise(block.content);
+              if (cleaned.length < block.content.length) {
+                try {
+                  const compactor = require('./context-compactor');
+                  if (compactor && typeof compactor.recordSavings === 'function') {
+                    compactor.recordSavings('powershell', block.content.length - cleaned.length, block.content.length, cfg.model || null);
+                  }
+                } catch (_) {}
+              }
+              return { ...block, content: cleaned };
             }
           }
 

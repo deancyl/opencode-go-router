@@ -310,11 +310,14 @@ function normalizeCompressionOptions(input = {}) {
       if (m.powershell.enabled !== undefined) result.modules.powershell.enabled = Boolean(m.powershell.enabled);
       if (m.powershell.autoDetectPlatform !== undefined) result.modules.powershell.autoDetectPlatform = Boolean(m.powershell.autoDetectPlatform);
       if (m.powershell.cleanCliXmlNoise !== undefined) result.modules.powershell.cleanCliXmlNoise = Boolean(m.powershell.cleanCliXmlNoise);
+      if (m.powershell.cleanPowerShell7Noise !== undefined) result.modules.powershell.cleanPowerShell7Noise = Boolean(m.powershell.cleanPowerShell7Noise);
       if (m.powershell.fixQuoteEscaping !== undefined) result.modules.powershell.fixQuoteEscaping = Boolean(m.powershell.fixQuoteEscaping);
       if (m.powershell.fixCurlAlias !== undefined) result.modules.powershell.fixCurlAlias = Boolean(m.powershell.fixCurlAlias);
       if (m.powershell.fixTrailingSlash !== undefined) result.modules.powershell.fixTrailingSlash = Boolean(m.powershell.fixTrailingSlash);
       if (m.powershell.fixAndOperator !== undefined) result.modules.powershell.fixAndOperator = Boolean(m.powershell.fixAndOperator);
       if (m.powershell.fixLineContinuation !== undefined) result.modules.powershell.fixLineContinuation = Boolean(m.powershell.fixLineContinuation);
+      if (m.powershell.fixSubexpressionEscaping !== undefined) result.modules.powershell.fixSubexpressionEscaping = Boolean(m.powershell.fixSubexpressionEscaping);
+      if (m.powershell.scriptFileInjectionHelper !== undefined) result.modules.powershell.scriptFileInjectionHelper = Boolean(m.powershell.scriptFileInjectionHelper);
       if (m.powershell.injectPowerShellGuard !== undefined) result.modules.powershell.injectPowerShellGuard = Boolean(m.powershell.injectPowerShellGuard);
     }
   }
@@ -405,6 +408,15 @@ function normalizeCompressionOptions(input = {}) {
   if (input.fixLineContinuation !== undefined && (!hasModPowershell || mInput.powershell.fixLineContinuation === undefined)) {
     result.modules.powershell.fixLineContinuation = Boolean(input.fixLineContinuation);
   }
+  if (input.cleanPowerShell7Noise !== undefined && (!hasModPowershell || mInput.powershell.cleanPowerShell7Noise === undefined)) {
+    result.modules.powershell.cleanPowerShell7Noise = Boolean(input.cleanPowerShell7Noise);
+  }
+  if (input.fixSubexpressionEscaping !== undefined && (!hasModPowershell || mInput.powershell.fixSubexpressionEscaping === undefined)) {
+    result.modules.powershell.fixSubexpressionEscaping = Boolean(input.fixSubexpressionEscaping);
+  }
+  if (input.scriptFileInjectionHelper !== undefined && (!hasModPowershell || mInput.powershell.scriptFileInjectionHelper === undefined)) {
+    result.modules.powershell.scriptFileInjectionHelper = Boolean(input.scriptFileInjectionHelper);
+  }
   if (input.injectPowerShellGuard !== undefined && (!hasModPowershell || mInput.powershell.injectPowerShellGuard === undefined)) {
     result.modules.powershell.injectPowerShellGuard = Boolean(input.injectPowerShellGuard);
   }
@@ -449,11 +461,15 @@ function normalizeCompressionOptions(input = {}) {
 
   result.autoDetectPlatform = powershellActive ? result.modules.powershell.autoDetectPlatform : false;
   result.cleanCliXmlNoise = powershellActive ? result.modules.powershell.cleanCliXmlNoise : false;
+  result.cleanPowerShell7Noise = powershellActive ? result.modules.powershell.cleanPowerShell7Noise : false;
+  result.cleanPowerShellOutput = powershellActive ? (result.modules.powershell.cleanCliXmlNoise || result.modules.powershell.cleanPowerShell7Noise) : false;
   result.fixQuoteEscaping = powershellActive ? result.modules.powershell.fixQuoteEscaping : false;
   result.fixCurlAlias = powershellActive ? result.modules.powershell.fixCurlAlias : false;
   result.fixTrailingSlash = powershellActive ? result.modules.powershell.fixTrailingSlash : false;
   result.fixAndOperator = powershellActive ? result.modules.powershell.fixAndOperator : false;
   result.fixLineContinuation = powershellActive ? result.modules.powershell.fixLineContinuation : false;
+  result.fixSubexpressionEscaping = powershellActive ? result.modules.powershell.fixSubexpressionEscaping : false;
+  result.scriptFileInjectionHelper = powershellActive ? result.modules.powershell.scriptFileInjectionHelper : false;
   result.injectPowerShellGuard = powershellActive ? result.modules.powershell.injectPowerShellGuard : false;
   if (explicitPlatform) {
     result.targetPlatform = explicitPlatform;
@@ -1087,11 +1103,24 @@ function loadStatsFromDisk() {
       try { statsBak = JSON.parse(fs.readFileSync(STATS_BAK_FILE, 'utf8')); } catch (_) {}
     }
 
+    let prodStatsBak = null;
+    const prodStatsBakPath = path.join(__dirname, 'compression-stats.prod.backup.json');
+    if (fs.existsSync(prodStatsBakPath)) {
+      try { prodStatsBak = JSON.parse(fs.readFileSync(prodStatsBakPath, 'utf8')); } catch (_) {}
+    }
+    let prodHistBak = null;
+    const prodHistBakPath = path.join(__dirname, 'compression-history.prod.backup.json');
+    if (fs.existsSync(prodHistBakPath)) {
+      try { prodHistBak = JSON.parse(fs.readFileSync(prodHistBakPath, 'utf8')); } catch (_) {}
+    }
+
     const candidates = [
       loadedStats,
       loadedHistory && loadedHistory.all,
       statsBak,
-      histBak && histBak.all
+      histBak && histBak.all,
+      prodStatsBak,
+      prodHistBak && prodHistBak.all
     ].filter(s => s && typeof s === 'object');
 
     const sourceStats = candidates.find(s => Number(s.totalOriginalChars) > 0) || candidates[0] || null;

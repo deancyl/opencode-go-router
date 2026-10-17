@@ -7150,6 +7150,15 @@ $ProgressPreference = 'SilentlyContinue'
     const preEscapedFixed = psOptimizer.fixPowerShellCommandEscaping(preEscaped, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
     assert.strictEqual(preEscapedFixed, preEscaped, 'Already escaped `$( must not be double escaped');
 
+    // 4b. Escaped double quotes (\" and doubled "") must preserve inDoubleQuote context and escape $(...)
+    const escapedQuoteCmd = 'powershell -Command "echo \\"$(whoami)\\""';
+    const escapedQuoteFixed = psOptimizer.fixPowerShellCommandEscaping(escapedQuoteCmd, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
+    assert.ok(escapedQuoteFixed.includes('`$(whoami)'), 'Must escape $(...) inside escaped double quotes \\"');
+
+    const doubledQuoteCmd = 'powershell -Command "Write-Output ""$(whoami)"""';
+    const doubledQuoteFixed = psOptimizer.fixPowerShellCommandEscaping(doubledQuoteCmd, { targetPlatform: 'win32', fixSubexpressionEscaping: true });
+    assert.ok(doubledQuoteFixed.includes('`$(whoami)'), 'Must escape $(...) inside doubled double quotes ""');
+
     // 5. Script File Injection Helper detection & execution wrapper
     const simpleCmd = 'dir C:\\Windows';
     assert.strictEqual(psOptimizer.isComplexCommandNeedingScriptFile(simpleCmd), false, 'Simple command must not trigger script file injection');
@@ -7165,7 +7174,22 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(wrappedPs1.includes("@'\r\n" + multiLineScript + "\r\n'@"), 'Wrapper must use @\' ... \'@ verbatim here-string to avoid expansion');
     assert.ok(wrappedPs1.includes('Remove-Item -Force $__tmpScript'), 'Wrapper must clean up temporary script in finally block');
 
-    // 6. PowerShell 7 Boilerplate Noise Cleaning
+    // 5b. Scripts containing delimiter '@ must use Base64 WriteAllBytes wrapper
+    const scriptWithDelimiter = 'Write-Output "Testing here-string \'@ collision"';
+    const wrappedB64 = psOptimizer.wrapInScriptFileExecution(scriptWithDelimiter, '.ps1');
+    assert.ok(wrappedB64.includes('FromBase64String'), 'Wrapper must use Base64 encoding when script contains @\' or \'@');
+    assert.ok(wrappedB64.includes('WriteAllBytes'), 'Wrapper must write bytes via WriteAllBytes for Base64 injection');
+
+    // Test real execution of wrapped script in PowerShell (on Windows)
+    if (process.platform === 'win32') {
+      const execScript = 'Write-Output "B64_INJECTION_SUCCESS"';
+      const b64Exec = psOptimizer.wrapInScriptFileExecution(execScript);
+      const b64Payload = Buffer.from(b64Exec, 'utf16le').toString('base64');
+      const b64Out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${b64Payload}`, { encoding: 'utf8' }).trim();
+      assert.ok(b64Out.includes('B64_INJECTION_SUCCESS'), 'Wrapped script file must execute successfully in real PowerShell');
+    }
+
+    // 6. PowerShell 7 Boilerplate Noise Cleaning (both truncated with ellipsis and standard non-truncated)
     const ps7ErrorNoise = "PowerShell 7.6.4 on Windows_NT\r\n" +
       "Get-Process : The term 'pgrep' is not recognized as a name of a cmdlet, function, script file, or executable program.\r\n" +
       "Line |\r\n" +
@@ -7179,6 +7203,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(!cleanedPs7.includes('~~~~~'), 'Must strip PowerShell 7 squiggly tildes');
     assert.ok(!cleanedPs7.includes('Check the spelling of the name'), 'Must strip verbose boilerplate recommendation');
     assert.ok(cleanedPs7.includes("The term 'pgrep' is not recognized"), 'Must preserve the root error message');
+
+    const ps7StandardError = "Line |\r\n" +
+      "   1 |  adb shell \"su -c 'kill $(pgrep venus)'\"\r\n" +
+      "     |                          ~~~~~\r\n" +
+      "     | The term 'pgrep' is not recognized as a name of a cmdlet.\r\n" +
+      "Check the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\n";
+    const cleanedStdPs7 = psOptimizer.cleanCliXmlNoise(ps7StandardError);
+    assert.ok(!cleanedStdPs7.includes('Line |'), 'Must strip non-truncated PowerShell 7 Line | noise');
+    assert.ok(!cleanedStdPs7.includes('~~~~~'), 'Must strip non-truncated PowerShell 7 squiggly tildes');
+    assert.ok(cleanedStdPs7.includes("The term 'pgrep' is not recognized"), 'Must preserve core error in non-truncated PS7 error');
     console.log(`✓ PowerShell 7 error boilerplate cleaning verified (reduced ${ps7ErrorNoise.length}B -> ${cleanedPs7.length}B)`);
 
     // 7. PowerShell Prompt Guard Directive
@@ -7272,6 +7306,19 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(healedStats && healedStats.totalOriginalChars > 0, 'loadStatsFromDisk must self-heal from .bak when main file is corrupted');
     const repairedMainContent = fs.readFileSync(mainStatsPath, 'utf8');
     assert.ok(!repairedMainContent.includes('CORRUPTED'), 'Main file must be automatically rewritten with healthy data from .bak');
+
+    // 4. Ultimate Disaster Recovery: When both primary and .bak (and history) are missing/corrupted, self-heal from prod backup baseline
+    const histPath = path.join(__dirname, 'compression-history.json');
+    const histBakPath = `${histPath}.bak`;
+    fs.writeFileSync(mainStatsPath, 'CORRUPTED_PRIMARY_0xDEADBEEF', 'utf8');
+    fs.writeFileSync(bakStatsPath, 'CORRUPTED_BAK_0xDEADBEEF', 'utf8');
+    if (fs.existsSync(histPath)) fs.writeFileSync(histPath, 'CORRUPTED_HIST_0xDEADBEEF', 'utf8');
+    if (fs.existsSync(histBakPath)) fs.writeFileSync(histBakPath, 'CORRUPTED_HIST_BAK_0xDEADBEEF', 'utf8');
+    const healedFromProd = contextCompactor.loadStatsFromDisk();
+    assert.strictEqual(healedFromProd.totalOriginalChars, 281463, 'Must restore 281,463 baseline from prod backup when all runtime files are corrupt');
+    assert.strictEqual(healedFromProd.compressionRatio, 78.2, 'Must restore 78.2% baseline from prod backup');
+    const autoRestoredContent = fs.readFileSync(mainStatsPath, 'utf8');
+    assert.ok(!autoRestoredContent.includes('CORRUPTED'), 'Primary file must be automatically rewritten from prod backup baseline');
     console.log('✓ Dual-write & .bak disaster recovery self-healing verified');
 
     // [Test 146] Dynamic Bilingual Token Estimation Model, Anti-Inflation 100% Circuit Breaker & 4-Tier Presets Differentiation
@@ -7328,6 +7375,29 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes146.body.includes('id="preset-desc-card"'), 'Web UI must render preset explanation card (#preset-desc-card)');
     assert.ok(uiRes146.body.includes('id="cfg-comp-ps-subexpression"'), 'Web UI must render fixSubexpressionEscaping switch');
     assert.ok(uiRes146.body.includes('基于中英双语动态模型'), 'Web UI must display dynamic bilingual token model subtitle');
+
+    // 5. Verify normalizeCompressionOptions property forwarding for all new switches
+    const normPsOptions = contextCompactor.normalizeCompressionOptions({
+      modules: {
+        powershell: {
+          cleanPowerShell7Noise: false,
+          fixSubexpressionEscaping: false,
+          scriptFileInjectionHelper: false
+        }
+      }
+    });
+    assert.strictEqual(normPsOptions.modules.powershell.cleanPowerShell7Noise, false, 'normalizeCompressionOptions must forward cleanPowerShell7Noise');
+    assert.strictEqual(normPsOptions.modules.powershell.fixSubexpressionEscaping, false, 'normalizeCompressionOptions must forward fixSubexpressionEscaping');
+    assert.strictEqual(normPsOptions.modules.powershell.scriptFileInjectionHelper, false, 'normalizeCompressionOptions must forward scriptFileInjectionHelper');
+    assert.strictEqual(normPsOptions.cleanPowerShell7Noise, false, 'Derived cleanPowerShell7Noise flat key must be false');
+    assert.strictEqual(normPsOptions.fixSubexpressionEscaping, false, 'Derived fixSubexpressionEscaping flat key must be false');
+    assert.strictEqual(normPsOptions.scriptFileInjectionHelper, false, 'Derived scriptFileInjectionHelper flat key must be false');
+
+    // Verify powershell disabled sets cleanPowerShellOutput to false
+    const normPsDisabled = contextCompactor.normalizeCompressionOptions({
+      modules: { powershell: { enabled: false } }
+    });
+    assert.strictEqual(normPsDisabled.cleanPowerShellOutput, false, 'Disabled powershell module must deactivate cleanPowerShellOutput transformer');
     console.log('✓ 4-Tier Presets differentiation & Web UI explanation card verified');
 
     console.log('\n======================================================');
