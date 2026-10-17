@@ -479,6 +479,27 @@ if ($foundDist) {
     }
 }
 
+# 检查前端桌面渲染器内核状态 (本地嵌入纯净核心 -> Google Chrome -> Microsoft Edge)
+$localCore = (Test-Path (Join-Path $PSScriptRoot "bin\chromium\chrome.exe")) -or (Test-Path (Join-Path $PSScriptRoot "chromium\chrome.exe"))
+$hasChrome = (Test-Path "$env:ProgramFiles\Google\Chrome\Application\chrome.exe") -or (Test-Path "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") -or (Test-Path "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
+$hasEdge = (Test-Path "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe") -or (Test-Path "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") -or (Test-Path "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe")
+
+if ($localCore) {
+    Write-Host "  ✔ 桌面渲染内核: 本地独立纯净 Chromium 核心已就绪 (自包含独立包，零系统依赖)" -ForegroundColor Green
+} elseif ($hasChrome) {
+    Write-Host "  ✔ 桌面渲染内核: Google Chrome 原生沙箱已就绪 (优先启用，纯净受控 <64MB)" -ForegroundColor Green
+} elseif ($hasEdge) {
+    Write-Host "  ✔ 桌面渲染内核: Microsoft Edge 原生沙箱已就绪 (受控极简模式)" -ForegroundColor Green
+} else {
+    Write-Host "  ⚠ 未检测到 Chrome / Edge 或本地纯净 Chromium 内核，桌面端将降级通过系统默认浏览器访问" -ForegroundColor Yellow
+    $issuesFound.Add([PSCustomObject]@{
+        Id = "desktop_browser_engine_missing"
+        Title = "未检测到 Chrome/Edge 或本地独立 Chromium 内核"
+        Severity = "Low"
+        FixDesc = "建议安装 Google Chrome 或部署独立纯净 Chromium 内核以获得 <64MB 极致桌面端体验"
+    })
+}
+
 # 检查 Windows 桌面快捷方式与开机自启项 (Rule 10 冷启动自愈与参数转义规范)
 $desktopPath = [Environment]::GetFolderPath('Desktop')
 $desktopLnk = Join-Path $desktopPath "OpenCode 智能路由中心.lnk"

@@ -7020,6 +7020,10 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(appCsContent142.includes('--renderer-process-limit=1'), 'OpenCodeRouterApp.cs must constrain single renderer process');
     assert.ok(appCsContent142.includes('--max-old-space-size=32'), 'OpenCodeRouterApp.cs must restrict V8 heap to 32MB');
     assert.ok(appCsContent142.includes('EmptyWorkingSet'), 'OpenCodeRouterApp.cs must implement Win32 EmptyWorkingSet trimming');
+    assert.ok(appCsContent142.includes('bin\\chromium\\chrome.exe'), 'OpenCodeRouterApp.cs must support local embedded pure Chromium core');
+    const chromeIdx = appCsContent142.indexOf('Google\\Chrome\\Application\\chrome.exe');
+    const edgeIdx = appCsContent142.indexOf('Microsoft\\Edge\\Application\\msedge.exe');
+    assert.ok(chromeIdx > 0 && edgeIdx > 0 && chromeIdx < edgeIdx, 'OpenCodeRouterApp.cs must prioritize sandboxed Chrome before Edge');
 
     const trayCsPath142 = path.join(__dirname, 'src', 'OpenCodeRouterTray.cs');
     assert.ok(fs.existsSync(trayCsPath142), 'src/OpenCodeRouterTray.cs must exist');
@@ -7027,12 +7031,13 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(trayCsContent142.includes('EmptyWorkingSet'), 'OpenCodeRouterTray.cs must declare EmptyWorkingSet PInvoke');
     assert.ok(trayCsContent142.includes('TrimMemory'), 'OpenCodeRouterTray.cs must implement TrimMemory');
     assert.ok(trayCsContent142.includes('OpenCodeRouterApp.exe'), 'OpenCodeRouterTray.cs must prioritize OpenCodeRouterApp.exe');
+    assert.ok(trayCsContent142.includes('bin\\chromium\\chrome.exe'), 'OpenCodeRouterTray.cs must support local embedded pure Chromium core');
 
     const appExePath142 = path.join(__dirname, 'OpenCodeRouterApp.exe');
     assert.ok(fs.existsSync(appExePath142), 'OpenCodeRouterApp.exe must exist');
     const trayExePath142 = path.join(__dirname, 'OpenCodeRouterTray.exe');
     assert.ok(fs.existsSync(trayExePath142), 'OpenCodeRouterTray.exe must exist');
-    console.log('✓ Ultra-Light Desktop Client & Tray Daemon (<64MB Memory Trimming) verified');
+    console.log('✓ Ultra-Light Desktop Client & Tray Daemon (<64MB Memory Trimming, Chrome-first & Embedded Chromium) verified');
 
     console.log('\n======================================================');
     console.log('🎉 ALL 142 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');

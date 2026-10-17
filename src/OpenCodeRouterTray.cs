@@ -348,18 +348,26 @@ namespace OpenCodeRouter
         {
             try
             {
-                // 修剪托盘自身
+                // 1. 精准修剪托盘守护自身工作集
                 EmptyWorkingSet(Process.GetCurrentProcess().Handle);
 
-                // 修剪所有 Chromium / Edge / OpenCode 进程工作集
-                Process[] procs = Process.GetProcesses();
-                foreach (Process p in procs)
+                // 2. 精准修剪 OpenCodeRouterApp 进程
+                Process[] appProcs = Process.GetProcessesByName("OpenCodeRouterApp");
+                foreach (Process p in appProcs)
+                {
+                    try { EmptyWorkingSet(p.Handle); } catch { }
+                }
+
+                // 3. 仅精准查找拥有网关管理中心标题的窗口进程进行修剪，绝不误伤用户日常浏览器
+                Process[] allProcs = Process.GetProcesses();
+                foreach (Process p in allProcs)
                 {
                     try
                     {
-                        if (p.ProcessName.IndexOf("edge", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            p.ProcessName.IndexOf("chrome", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            p.ProcessName.IndexOf("OpenCode", StringComparison.OrdinalIgnoreCase) >= 0)
+                        if (!string.IsNullOrEmpty(p.MainWindowTitle) &&
+                            (p.MainWindowTitle.Contains("OpenCode 智能高可用网关") ||
+                             p.MainWindowTitle.Contains("OpenCode 订阅管理中心") ||
+                             p.MainWindowTitle.Contains("OpenCode 智能路由网关")))
                         {
                             EmptyWorkingSet(p.Handle);
                         }
@@ -395,10 +403,34 @@ namespace OpenCodeRouter
             }
             catch { }
 
-            string defaultBrowser = GetDefaultBrowserName();
-            string primaryBrowser = defaultBrowser;
-            string secondaryBrowser = (defaultBrowser == "chrome.exe") ? "msedge.exe" : "chrome.exe";
             string lightBrowserArgs = "--disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
+
+            // 方案 0.5: 优先使用本地嵌入纯净 Chromium 核心（若存在独立自包含包）
+            try
+            {
+                string[] localCandidates = new string[] {
+                    Path.Combine(rootDir, @"bin\chromium\chrome.exe"),
+                    Path.Combine(rootDir, @"chromium\chrome.exe"),
+                    Path.Combine(rootDir, @"runtime\chromium\chrome.exe")
+                };
+                foreach (string lp in localCandidates)
+                {
+                    if (File.Exists(lp))
+                    {
+                        ProcessStartInfo psi = new ProcessStartInfo();
+                        psi.FileName = lp;
+                        psi.Arguments = "--app=\"" + url + "\" " + lightBrowserArgs;
+                        psi.UseShellExecute = true;
+                        Process.Start(psi);
+                        return;
+                    }
+                }
+            }
+            catch { }
+
+            string defaultBrowser = GetDefaultBrowserName();
+            string primaryBrowser = "chrome.exe"; // 优先沙箱 Chrome
+            string secondaryBrowser = "msedge.exe"; // 备选沙箱 Edge
 
             // 方案 1: 优先以系统默认浏览器的独立桌面应用模式 (--app=...) 唤出（带极限内存优化参数）
             try

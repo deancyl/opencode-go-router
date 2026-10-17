@@ -67,6 +67,34 @@ namespace OpenCodeRouter
         [DllImport("psapi.dll")]
         public static extern int EmptyWorkingSet(IntPtr hwProc);
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESSENTRY32
+        {
+            public uint dwSize;
+            public uint cntUsage;
+            public uint th32ProcessID;
+            public IntPtr th32DefaultHeapID;
+            public uint th32ModuleID;
+            public uint cntThreads;
+            public uint th32ParentProcessID;
+            public int pcPriClassBase;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szExeFile;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+        [DllImport("kernel32.dll")]
+        public static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+        [DllImport("kernel32.dll")]
+        public static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool CloseHandle(IntPtr hObject);
+
         public const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
         public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
@@ -403,7 +431,7 @@ namespace OpenCodeRouter
         {
             try
             {
-                string browserExe = FindBrowserExe();
+                string browserExe = FindBrowserExe(rootDir);
                 if (string.IsNullOrEmpty(browserExe)) return;
 
                 string appProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenCodeRouter", "AppProfile");
@@ -421,7 +449,7 @@ namespace OpenCodeRouter
 
         private static void LaunchStandaloneApp(string rootDir, int port, string uiPassword, string initialHash)
         {
-            string browserExe = FindBrowserExe();
+            string browserExe = FindBrowserExe(rootDir);
             string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
             string targetUrl = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + (initialHash ?? "");
 
@@ -479,45 +507,155 @@ namespace OpenCodeRouter
         {
             try
             {
-                Process[] procs = Process.GetProcesses();
-                foreach (Process p in procs)
+                IntPtr appHwnd = FindExistingAppWindow();
+                if (appHwnd != IntPtr.Zero)
                 {
-                    try
+                    uint winPid = 0;
+                    GetWindowThreadProcessId(appHwnd, out winPid);
+                    if (winPid != 0)
                     {
-                        if (p.ProcessName.IndexOf("edge", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            p.ProcessName.IndexOf("chrome", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            EmptyWorkingSet(p.Handle);
-                        }
+                        TrimAppProcessTree((int)winPid);
+                        return;
                     }
-                    catch { }
                 }
             }
             catch { }
         }
 
-        private static string FindBrowserExe()
+        private static void TrimAppProcessTree(int rootPid)
         {
+            if (rootPid <= 0) return;
+            try
+            {
+                // 1. 精准修剪目标应用主进程工作集
+                try
+                {
+                    using (Process root = Process.GetProcessById(rootPid))
+                    {
+                        EmptyWorkingSet(root.Handle);
+                    }
+                }
+                catch { }
+
+                // 2. 精准查找并修剪该宿主绑定的渲染器子进程（彻底杜绝误伤日常浏览器）
+                IntPtr snap = CreateToolhelp32Snapshot(0x00000002, 0); // TH32CS_SNAPPROCESS
+                if (snap != IntPtr.Zero && snap.ToInt64() != -1)
+                {
+                    try
+                    {
+                        PROCESSENTRY32 pe = new PROCESSENTRY32();
+                        pe.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+                        if (Process32First(snap, ref pe))
+                        {
+                            do
+                            {
+                                if (pe.th32ParentProcessID == (uint)rootPid)
+                                {
+                                    try
+                                    {
+                                        using (Process child = Process.GetProcessById((int)pe.th32ProcessID))
+                                        {
+                                            EmptyWorkingSet(child.Handle);
+                                        }
+                                    }
+                                    catch { }
+                                }
+                            } while (Process32Next(snap, ref pe));
+                        }
+                    }
+                    finally
+                    {
+                        CloseHandle(snap);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static string FindBrowserExe(string rootDir = null)
+        {
+            // 0. 优先检测本地内嵌的纯净 Chromium 核心（自包含完整包 / 便携内核，完全脱离系统浏览器）
+            if (!string.IsNullOrEmpty(rootDir))
+            {
+                string[] localCandidates = new string[] {
+                    Path.Combine(rootDir, @"bin\chromium\chrome.exe"),
+                    Path.Combine(rootDir, @"chromium\chrome.exe"),
+                    Path.Combine(rootDir, @"runtime\chromium\chrome.exe"),
+                    Path.Combine(rootDir, @"bin\chrome.exe")
+                };
+                foreach (string lp in localCandidates)
+                {
+                    if (File.Exists(lp)) return lp;
+                }
+            }
+
             string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
             string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
-            string[] candidates = new string[] {
-                // 优先 Microsoft Edge（Windows 10/11 原生预装，深色沉浸感最佳）
-                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\msedge.exe"),
-                Path.Combine(programFiles, @"Microsoft\Edge\Application\msedge.exe"),
-                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe"),
-
-                // 备选 Google Chrome
+            // 1. 优先 Google Chrome（纯净沙箱模式无 Edge 冗余必应/侧边栏/购物同步后台服务，内存更轻更稳）
+            string[] chromeCandidates = new string[] {
                 Path.Combine(programFiles, @"Google\Chrome\Application\chrome.exe"),
                 Path.Combine(programFilesX86, @"Google\Chrome\Application\chrome.exe"),
                 Path.Combine(localAppData, @"Google\Chrome\Application\chrome.exe")
             };
-
-            foreach (string p in candidates)
+            foreach (string cp in chromeCandidates)
             {
-                if (File.Exists(p)) return p;
+                if (File.Exists(cp)) return cp;
             }
+
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+            }
+            catch { }
+
+            // 2. 备选 Microsoft Edge（Windows 10/11 原生预装，深色沉浸感良好）
+            string[] edgeCandidates = new string[] {
+                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(programFiles, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe")
+            };
+            foreach (string ep in edgeCandidates)
+            {
+                if (File.Exists(ep)) return ep;
+            }
+
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+            }
+            catch { }
 
             return null;
         }
