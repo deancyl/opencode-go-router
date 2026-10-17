@@ -717,7 +717,7 @@ function foldStructuredData(text, options = {}) {
   if (options.foldStructuredData === false) return text;
 
   // Anti-downgrade conflict markers check
-  if (text.includes('<<<<<<<') || text.includes('>>>>>>>') || text.includes('|||||||')) {
+  if (text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>') || text.includes('|||||||')) {
     return text;
   }
   // Anti-downgrade compiler errors / tracebacks check
@@ -780,14 +780,16 @@ function foldStructuredData(text, options = {}) {
         const folded = processValue(parsed, 0);
         if (wasFolded) {
           const isIndented = trimmed.includes('\n  ') || trimmed.includes('\n\t') || trimmed.startsWith('[\n') || trimmed.startsWith('{\n');
-          return isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded);
+          const leadingWs = text.match(/^\s*/)[0];
+          const trailingWs = text.match(/\s*$/)[0];
+          return leadingWs + (isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded)) + trailingWs;
         }
       } catch (_) {}
     }
 
     // Case 2: Markdown code blocks containing JSON ```json ... ``` or ``` ... ```
     if (text.includes('```')) {
-      const codeBlockRegex = /(```(?:json)?\s*[\r\n])([\s\S]*?)([\r\n]```)/g;
+      const codeBlockRegex = /(```(?:json|jsonc|javascript|js)?\s*[\r\n])([\s\S]*?)([\r\n]```)/gi;
       let anyBlockFolded = false;
       const replaced = text.replace(codeBlockRegex, (match, prefix, inner, suffix) => {
         const innerTrimmed = inner.trim();
@@ -807,6 +809,27 @@ function foldStructuredData(text, options = {}) {
         return match;
       });
       if (anyBlockFolded) return replaced;
+    }
+
+    // Case 3: Raw JSON array or object embedded in descriptive text
+    const firstArr = text.indexOf('[');
+    const firstObj = text.indexOf('{');
+    if (firstArr !== -1 || firstObj !== -1) {
+      const startIdx = (firstArr !== -1 && (firstObj === -1 || firstArr < firstObj)) ? firstArr : firstObj;
+      const endIdx = (startIdx === firstArr) ? text.lastIndexOf(']') : text.lastIndexOf('}');
+      if (endIdx > startIdx + 100) {
+        const candidate = text.substring(startIdx, endIdx + 1);
+        try {
+          wasFolded = false;
+          const parsed = JSON.parse(candidate);
+          const folded = processValue(parsed, 0);
+          if (wasFolded) {
+            const isIndented = candidate.includes('\n  ') || candidate.includes('\n\t') || candidate.startsWith('[\n') || candidate.startsWith('{\n');
+            const stringified = isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded);
+            return text.substring(0, startIdx) + stringified + text.substring(endIdx + 1);
+          }
+        } catch (_) {}
+      }
     }
 
     return text;

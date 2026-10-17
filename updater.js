@@ -2581,7 +2581,11 @@ function querySqliteRows(dbPath, sql, params = []) {
       'con.close()',
       'print(json.dumps(rows))'
     ].join('; ');
-    const res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    const pyBin = (process.platform === 'win32') ? 'python' : 'python3';
+    let res = runCmd(`${pyBin} -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    if (!res.success && pyBin === 'python3') {
+      res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    }
     if (res.success && res.output) {
       return JSON.parse(res.output);
     }
@@ -2618,7 +2622,11 @@ function execSqliteQuery(dbPath, sql, params = []) {
       'con.close()',
       'print("OK")'
     ].join('; ');
-    const res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    const pyBin = (process.platform === 'win32') ? 'python' : 'python3';
+    let res = runCmd(`${pyBin} -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    if (!res.success && pyBin === 'python3') {
+      res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    }
     return res.success && res.output.includes('OK');
   } catch (_) {}
   return false;
@@ -2799,7 +2807,7 @@ function checkOpenCodeCredentials(expectedApiKeyOrOptions, customOptions = {}) {
         }
       } catch (_) {}
     }
-    if (opts.envApiKey !== undefined && opts.envApiKey === cleanKey) {
+    if ((opts.envApiKey !== undefined && opts.envApiKey === cleanKey) || process.env.OPENCODE_API_KEY === cleanKey) {
       report.serviceEnvActive = true;
     }
   }
@@ -2820,7 +2828,8 @@ function checkOpenCodeCredentials(expectedApiKeyOrOptions, customOptions = {}) {
         }
       }
       report.winEnvVar = userKey;
-      report.winEnvActive = Boolean(userKey === cleanKey);
+      const cleanUserKey = userKey ? userKey.trim().replace(/^["']|["']$/g, '') : null;
+      report.winEnvActive = Boolean(cleanUserKey === cleanKey);
     } catch (_) {}
   }
 
@@ -2937,18 +2946,18 @@ function repairOpenCodeCredentials(apiKeyOrOptions, customOptions = {}) {
     }
 
     const upsertCred = (integId, defaultId) => {
-      const row = existingMap.get(integId);
-      if (row) {
-        const matchCol = hasCol('id') && row.id ? 'id' : (hasCol('integration_id') ? 'integration_id' : (colNames[0] || 'id'));
-        const matchVal = row.id || row.integration_id;
+      const matchingRows = Array.isArray(existingRows) ? existingRows.filter(r => (r.integration_id === integId || r.id === defaultId || r.id === integId)) : [];
+      if (matchingRows.length > 0) {
         const setClauses = ['active = 1'];
         const setParams = [];
         if (hasCol('key')) { setClauses.push('key = ?'); setParams.push(cleanKey); }
         if (hasCol('value')) { setClauses.push('value = ?'); setParams.push(valJson); }
         if (hasCol('updated_at')) { setClauses.push('updated_at = ?'); setParams.push(nowIso); }
         if (hasCol('time_updated')) { setClauses.push('time_updated = ?'); setParams.push(now); }
-        setParams.push(matchVal);
-        execSqliteQuery(dbPath, `UPDATE credential SET ${setClauses.join(', ')} WHERE ${matchCol} = ?`, setParams);
+        const whereClause = hasCol('integration_id') ? 'integration_id = ? OR id = ?' : 'id = ?';
+        setParams.push(integId);
+        if (hasCol('integration_id')) setParams.push(defaultId);
+        execSqliteQuery(dbPath, `UPDATE credential SET ${setClauses.join(', ')} WHERE ${whereClause}`, setParams);
       } else {
         const insertCols = [];
         const insertPlaceholders = [];
@@ -3020,8 +3029,11 @@ function repairOpenCodeCredentials(apiKeyOrOptions, customOptions = {}) {
         results.serviceRepaired = true;
 
         if (customOptions.skipServiceRestart !== true) {
-          runCmd('systemctl --user daemon-reload', 5000);
-          const rRes = runCmd('systemctl --user restart opencode-server.service', 15000);
+          const isUserUnit = !servicePath.startsWith('/etc/systemd/system');
+          const reloadCmd = isUserUnit ? 'systemctl --user daemon-reload' : 'systemctl daemon-reload';
+          const restartCmd = isUserUnit ? 'systemctl --user restart opencode-server.service' : 'systemctl restart opencode-server.service';
+          runCmd(reloadCmd, 5000);
+          const rRes = runCmd(restartCmd, 15000);
           results.serviceReloaded = rRes.success;
         }
       } catch (svcErr) {

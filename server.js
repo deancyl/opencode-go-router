@@ -2300,7 +2300,7 @@ function findOpenCodeBinary() {
   return null;
 }
 
-async function runSystemDoctor(scope = 'all') {
+async function runSystemDoctor(scope = 'all', options = {}) {
   if (scope === 'compression') {
     const compStats = contextCompactor.getCompressionStats();
     const compHealth = contextCompactor.checkCompressionHealth(config.compression, compStats);
@@ -2816,10 +2816,8 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
   // 8.5 Check OpenCode 2.0 Credential & Daemon Key Health (Anti-Invalid Credential)
   try {
     const updater = require('./updater');
-    let validApiKey = '';
-    const validAccount = config.accounts && config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
-    if (validAccount) validApiKey = validAccount.apiKey.trim();
-    const credStatus = updater.checkOpenCodeCredentials(validApiKey);
+    const targetKey = (options && options.apiKey && typeof options.apiKey === 'string' && options.apiKey.trim()) ? options.apiKey.trim() : 'local-router';
+    const credStatus = updater.checkOpenCodeCredentials(targetKey);
     report.opencodeCredentials = credStatus;
     if (report.opencode) {
       report.opencode.credentials = credStatus;
@@ -2955,17 +2953,13 @@ async function executeSystemRepair(options = {}) {
   // 2.1 Sync & Activate OpenCode 2.0 Credentials in opencode.db / auth.json and daemon environment
   try {
     const updater = require('./updater');
-    let validApiKey = '';
-    const validAccount = config.accounts && config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
-    if (validAccount) validApiKey = validAccount.apiKey.trim();
-    if (validApiKey) {
-      const repRes = updater.repairOpenCodeCredentials(validApiKey);
-      results.push({
-        item: 'OpenCode Credential & Daemon Key',
-        success: repRes.success,
-        message: repRes.message || '已增量激活 OpenCode 原生凭据与守护进程环境变量'
-      });
-    }
+    const targetKey = (options && options.apiKey && typeof options.apiKey === 'string' && options.apiKey.trim()) ? options.apiKey.trim() : 'local-router';
+    const repRes = updater.repairOpenCodeCredentials(targetKey);
+    results.push({
+      item: 'OpenCode Credential & Daemon Key',
+      success: repRes.success,
+      message: repRes.message || '已增量激活 OpenCode 原生凭据与守护进程环境变量'
+    });
   } catch (credErr) {
     results.push({ item: 'OpenCode Credential & Daemon Key', success: false, message: '修复 OpenCode 原生凭据异常: ' + credErr.message });
   }
@@ -7817,5 +7811,7 @@ module.exports = {
   handleModelAndContextFallback,
   dispatchResponsesRequest,
   sessionModelFallbackCache,
-  setSessionModelFallback
+  setSessionModelFallback,
+  runSystemDoctor,
+  executeSystemRepair
 };

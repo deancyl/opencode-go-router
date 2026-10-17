@@ -265,6 +265,10 @@ if (Test-Path $opencodeConfig) {
                 })
             } else {
                 Write-Host "  ✔ 提供商配置满足双轨 Schema 镜像规范 (CLI 与桌面端双兼容)" -ForegroundColor Green
+            }
+        }
+    } catch {}
+
     # 检测 OpenCode 2.0 原生凭据与后台守护进程环境变量
     try {
         $credJson = node -e "const u = require('./updater'); console.log(JSON.stringify(u.checkOpenCodeCredentials({ isWindows: true })));" 2>$null

@@ -5784,8 +5784,78 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Web UI KV Cache Lock Indicators & Headroom SmartCrusher Integration verified');
 
+    // [Test 135] Testing PowerShell AST Doctor Syntax, Gateway Credential Self-Healing & SmartCrusher Polymorphic Folding
+    console.log('\n[Test 135] Testing PowerShell AST Doctor Syntax, Gateway Credential Self-Healing & SmartCrusher Polymorphic Folding...');
+    // 1. Verify doctor-repair.ps1 PowerShell syntax cleanliness via language parser
+    if (process.platform === 'win32') {
+      const psCheckCmd = 'powershell.exe -NoProfile -NonInteractive -Command "$e = $null; $t = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path \'' + __dirname.replace(/'/g, "''") + '\' \'doctor-repair.ps1\'), [ref]$t, [ref]$e); if ($e -and $e.Count -gt 0) { $e | ForEach-Object { $_.ToString() } } else { \'SYNTAX_OK\' }"';
+      const psResult = updaterMod.runCmd(psCheckCmd, 10000);
+      assert.strictEqual(psResult.success, true, 'PowerShell parser must execute successfully');
+      assert.ok(psResult.output.includes('SYNTAX_OK'), `doctor-repair.ps1 must have 0 syntax errors, got: ${psResult.output}`);
+    }
+
+    // 2. Verify SmartCrusher polymorphic codeblocks and embedded JSON arrays
+    const rawItems50 = [];
+    for (let i = 1; i <= 50; i++) {
+      rawItems50.push({ index: i, title: `Entity item ${i}`, hash: `hash-code-${i}` });
+    }
+    const raw50Str = JSON.stringify(rawItems50, null, 2);
+
+    // 2a. Uppercase ```JSON ``` code block
+    const mdUpper = '```JSON\n' + raw50Str + '\n```';
+    const foldedUpper = contextCompactor.foldStructuredData(mdUpper, { maxStructuredItems: 30 });
+    assert.ok(foldedUpper.includes('_headroom_smart_crusher'), 'Uppercase ```JSON block must be folded');
+    assert.ok(foldedUpper.length < mdUpper.length, 'Uppercase ```JSON block must be smaller');
+
+    // 2b. ```jsonc ``` code block
+    const mdJsonc = '```jsonc\n' + raw50Str + '\n```';
+    const foldedJsonc = contextCompactor.foldStructuredData(mdJsonc, { maxStructuredItems: 30 });
+    assert.ok(foldedJsonc.includes('_headroom_smart_crusher'), '```jsonc block must be folded');
+
+    // 2c. Embedded raw JSON array in descriptive tool output
+    const toolOutputText = `Command executed successfully. Found 50 matches:\n${raw50Str}\nSummary: Processed in 12ms.`;
+    const foldedEmbedded = contextCompactor.foldStructuredData(toolOutputText, { maxStructuredItems: 30 });
+    assert.ok(foldedEmbedded.includes('Command executed successfully. Found 50 matches:'), 'Leading text must be preserved');
+    assert.ok(foldedEmbedded.includes('Summary: Processed in 12ms.'), 'Trailing text must be preserved');
+    assert.ok(foldedEmbedded.includes('_headroom_smart_crusher'), 'Embedded array must be folded');
+    assert.ok(foldedEmbedded.length < toolOutputText.length, 'Embedded output must be compressed');
+
+    // 2d. Embedded JSON object with nested array
+    const objWithArray = `API Response:\n${JSON.stringify({ status: 200, results: rawItems50 }, null, 2)}\nDone.`;
+    const foldedObjWithArray = contextCompactor.foldStructuredData(objWithArray, { maxStructuredItems: 30 });
+    assert.ok(foldedObjWithArray.includes('_headroom_smart_crusher'), 'Embedded object array must be folded');
+    assert.ok(foldedObjWithArray.startsWith('API Response:'), 'Prefix must be preserved');
+    assert.ok(foldedObjWithArray.endsWith('Done.'), 'Suffix must be preserved');
+
+    // 2e. Merge conflict with ======= must NOT be folded
+    const conflictSevenEq = `<<<<<<<\n${raw50Str}\n=======\n${raw50Str}\n>>>>>>>\n`;
+    const foldedConflict7 = contextCompactor.foldStructuredData(conflictSevenEq, { maxStructuredItems: 30 });
+    assert.strictEqual(foldedConflict7, conflictSevenEq, 'Conflict with ======= must be exempt');
+
+    // 3. Verify Server Doctor & Auto-Repair OpenCode Credential Health with local-router
+    const docApiRes = await request('/balancer/api/doctor', { method: 'GET' });
+    assert.strictEqual(docApiRes.statusCode, 200);
+    const docData = JSON.parse(docApiRes.body);
+    assert.ok(docData.opencodeCredentials, 'Doctor must report opencodeCredentials');
+    assert.strictEqual(docData.opencodeCredentials.expectedApiKey, 'local-router', 'Doctor must check standard local-router key');
+
+    // 4. Verify executeSystemRepair on /balancer/api/repair handles credentials cleanly
+    const repairApiRes = await request('/balancer/api/repair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'all' })
+    });
+    assert.strictEqual(repairApiRes.statusCode, 200);
+    const repairData = JSON.parse(repairApiRes.body);
+    assert.strictEqual(repairData.success, true);
+    const credRepairItem = repairData.results.find(r => r.item === 'OpenCode Credential & Daemon Key');
+    assert.ok(credRepairItem, 'Repair results must include OpenCode Credential & Daemon Key');
+    assert.strictEqual(credRepairItem.success, true);
+
+    console.log('✓ PowerShell AST Doctor Syntax, Gateway Credential Self-Healing & SmartCrusher Polymorphic Folding verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 134 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 135 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
