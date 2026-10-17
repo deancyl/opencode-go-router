@@ -947,6 +947,9 @@ function resetCompressionStats() {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
+  try {
+    sessionCompressionMemo.clear();
+  } catch (_) {}
   compressionStats = {
     totalOriginalChars: 0,
     totalCompressedChars: 0,

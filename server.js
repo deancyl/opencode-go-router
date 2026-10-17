@@ -1385,6 +1385,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   proxyHeaders['x-opencode-session'] = sessionId;
   proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
+  if (targetPath.includes('/messages') || clientReq.headers['x-api-key'] || clientReq.headers['anthropic-version']) {
+    proxyHeaders['x-api-key'] = account.apiKey.trim();
+    if (!proxyHeaders['anthropic-version']) {
+      proxyHeaders['anthropic-version'] = '2023-06-01';
+    }
+  }
 
   const proxyOptions = {
     protocol: upstreamUrl.protocol,
