@@ -100,3 +100,26 @@ flowchart TD
 - **Card 5 Windows 平台自适应与 PowerShell 转义自愈**：自愈路径末尾反斜杠吃引号、curl.exe 别名修正、`&&` 操作符转换为兼容语法、反斜杠续行转换为反引号；去噪 `#< CLIXML` 冗长报错与 hex 转义；在 Linux/NAS 自动保持零开销休眠旁路；
 - **官方费率动态感知字典与分模型动态加权测算**：实时追踪 `byModel` 模型独立节约指标，按 OpenCode 官方实时费率动态加权精确计算 USD 金额；
 - **压缩体检与自愈诊断 (Compression Doctor & Repair)**：提供 `/balancer/api/compression/doctor` 与 `/balancer/api/compression/repair`，秒级自检 3 大客户端兼容性与安全红线，一键自愈恢复安全配置。
+
+### 7. Windows 桌面客户端标准与渲染内核状态机 (Windows Desktop Standard)
+- **双包分发体系标准**：
+  1. **轻量标准包 (`opencode-toolkit-windows-x64.zip`)**：体积仅 ~1.6MB，零体积额外捆绑。日常开发机直接借用宿主浏览器，实现 0MB 额外磁盘开销与 ~40MB 内存驻留的最佳平衡；
+  2. **自包含完整包 (`opencode-toolkit-windows-x64-standalone.zip`)**：专供 Windows Server / LTSC / 深度精简版且无 Chrome、无 Edge 的纯离线机房环境，内嵌纯净最小化 Chromium Portable 核心（位于 `bin/chromium`），解压即用。
+- **统一内核探测状态机**：
+  `OpenCodeRouterApp.exe` 启动时按优先级智能流转：
+  $$\text{本地内嵌 } \mathtt{bin/chromium} \longrightarrow \text{系统 Google Chrome (沙箱优先)} \longrightarrow \text{系统 Microsoft Edge (备选)} \longrightarrow \text{系统默认浏览器降级}$$
+- **内存极致控制与单实例互斥**：
+  - 通过 `renderer-process-limit=1`、`--js-flags="--max-old-space-size=32"`、禁用翻译/遥测/后台网络等 12 项专属参数，并将 WorkingSet 内存定期修剪，保证前端界面总内存占用稳定在 **64MB 以内**；
+  - 配备 Win32 广播与 `SingleInstanceLock`，重复双击快捷方式瞬间激活并置顶已有窗口，关闭窗体自动最小化至托盘常驻，彻底杜绝黑框终端与僵死进程。
+
+### 8. Linux / NAS 极简稳定战略与高可用护城河 (NAS Stability Baseline)
+- **战略定位与能力裁量**：
+  - Linux 桌面端碎片化严重，坚决规避引入庞大沉重的 Electron / WebKitGTK 桌面跨平台外壳；对于具备 Linux 桌面的开发者，仅需使用极简命令 `google-chrome --app=http://127.0.0.1:4010/balancer/ui` 即可获得等位独立窗口；
+  - **核心资源 100% 聚焦于 Linux / NAS 无头服务器版本的 7×24h 极限稳定性与数据安全性**。
+- **NAS 高可用护城河矩阵**：
+  1. **内核级常驻守护**：采用 `systemd --user` 用户级单元守护常驻，并强制开启 `loginctl enable-linger`，保证 SSH 会话注销后服务持续在线；
+  2. **底层存储介质纵深探针 (Rule 24)**：自检诊断探针深入读取系统内核日志（`dmesg`、`journalctl -k`）及 BTRFS / ZFS 底层阵列状态，捕获底层 I/O 错误即刻显著警示，坚守私有数据安全防线；
+  3. **配额与状态轮询短时防抖缓存 (Rule 7)**：针对高频拉取外部上游敏感接口（官方配额、订阅用量），在网关服务端强制实现 8~10 秒内存级防抖缓存池，前端离开页面挂起轮询，杜绝上游触发 429 阻断；
+  4. **本地文档安全离线沙箱 (Rule 5)**：Air-Gapped 离线沙箱解析本地 Office/代码文档，严禁任何公网第三方云端预览 iframe，杜绝私有资产外泄；
+  5. **代码-内存脱节自愈防御 (Rule 21)**：NAS 端代码同步后强制平滑重启 systemd 守护进程并回读验证新 PID，坚决杜绝旧进程霸占端口导致隐形代码脱节；
+  6. **内存收敛与管道防死锁 (Rule 20 & 11)**：长生命周期子进程管道主动排空，LRU 缓存严格限定 500 会话上限，长周期驻留内存稳定收敛在 15~20MB 以内。
