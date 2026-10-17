@@ -4968,6 +4968,52 @@ function renderDashboardHtml(config) {
             </div>
           </div>
 
+          <!-- 📈 总览级实时节省时序波形与消耗趋势 (Overview Live Chart Card) -->
+          <div class="comp-chart-card" id="overview-chart-card" style="margin-bottom: 1.5rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 0.95rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 6px;">
+                  <span id="overview-chart-type-icon">📊</span>
+                  <span>实时节省趋势与时序分布</span>
+                </span>
+                <span id="overview-chart-summary-badge" style="font-size: 0.72rem; color: #10b981; background: rgba(16,185,129,0.12); padding: 2px 7px; border-radius: 5px; border: 1px solid rgba(16,185,129,0.3);">
+                  时序就绪
+                </span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <!-- 时间段切换 -->
+                <div class="time-range-group" style="display: flex; background: rgba(15,23,42,0.8); border: 1px solid #334155; border-radius: 8px; padding: 2px; gap: 2px;">
+                  <button type="button" class="time-range-pill" data-range="1h" onclick="switchTimeRange('1h')">1小时</button>
+                  <button type="button" class="time-range-pill" data-range="24h" onclick="switchTimeRange('24h')">24小时</button>
+                  <button type="button" class="time-range-pill" data-range="7d" onclick="switchTimeRange('7d')">7天</button>
+                  <button type="button" class="time-range-pill active" data-range="all" onclick="switchTimeRange('all')">全部</button>
+                </div>
+                <!-- 视图形态切换 -->
+                <div class="chart-btn-group">
+                  <button type="button" class="chart-pill-btn active" id="btn-overview-chart-mode-bar" onclick="switchChartMode('bar')" title="切换为离散柱状分布图">📊 柱状图</button>
+                  <button type="button" class="chart-pill-btn" id="btn-overview-chart-mode-area" onclick="switchChartMode('area')" title="切换为平滑面积趋势图">📈 面积图</button>
+                </div>
+                <!-- 度量切换 -->
+                <div class="chart-btn-group">
+                  <button type="button" class="chart-pill-btn chart-metric-btn active" id="btn-overview-chart-metric-tokens" onclick="switchChartMetric('tokens')">By Tokens</button>
+                  <button type="button" class="chart-pill-btn chart-metric-btn" id="btn-overview-chart-metric-cost" onclick="switchChartMetric('cost')">By Cost</button>
+                  <button type="button" class="chart-pill-btn chart-metric-btn" id="btn-overview-chart-metric-chars" onclick="switchChartMetric('chars')">By Chars</button>
+                </div>
+                <!-- 前往压缩中枢 -->
+                <button type="button" class="btn btn-secondary btn-sm" onclick="switchTab('compression')" style="font-size: 0.75rem; padding: 3px 8px;" title="前往 Token 压缩中枢调配 5 大引擎">⚡ 压缩中枢 ↗</button>
+              </div>
+            </div>
+
+            <!-- SVG 图表视口 -->
+            <div id="overview-chart-viewport" style="width: 100%; height: 210px; position: relative;"></div>
+
+            <!-- 交互悬浮 Tooltip 气泡 -->
+            <div id="overview-chart-tooltip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: rgba(15, 23, 42, 0.94); backdrop-filter: blur(8px); border: 1px solid #475569; border-radius: 8px; padding: 8px 12px; font-size: 0.75rem; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.6); transition: opacity 0.1s ease; min-width: 160px;"></div>
+
+            <!-- 图例区 -->
+            <div id="overview-chart-legends" style="display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; font-size: 0.75rem; color: #94a3b8;"></div>
+          </div>
+
     <!-- 🚀 新手极速向导与一键自愈看板 (Smart Quick Start & Guide) -->
     <div class="card wizard-card" id="wizard-card">
       <div class="section-title">
@@ -6235,6 +6281,9 @@ function renderDashboardHtml(config) {
         tag.innerText = isHidden
           ? '收起明细 ▴'
           : (count !== '0' ? (count + ' 款模型 ▾') : '分模型明细 ▾');
+      }
+    }
+
     // ==========================================
     // 时序图表引擎状态与渲染逻辑 (Zero-Dependency Native SVG Chart)
     // ==========================================
@@ -6267,12 +6316,19 @@ function renderDashboardHtml(config) {
       if (mode !== 'bar' && mode !== 'area') mode = 'bar';
       currentChartMode = mode;
       try { localStorage.setItem('router_comp_chart_mode', mode); } catch (_) {}
-      const barBtn = document.getElementById('btn-chart-mode-bar');
-      const areaBtn = document.getElementById('btn-chart-mode-area');
-      const iconEl = document.getElementById('chart-type-icon');
-      if (barBtn) barBtn.classList.toggle('active', mode === 'bar');
-      if (areaBtn) areaBtn.classList.toggle('active', mode === 'area');
-      if (iconEl) iconEl.innerText = mode === 'bar' ? '📊' : '📈';
+      ['bar', 'area'].forEach(m => {
+        ['btn-chart-mode-', 'btn-overview-chart-mode-'].forEach(prefix => {
+          const btn = document.getElementById(prefix + m);
+          if (btn && btn.classList) {
+            if (m === mode) btn.classList.add('active');
+            else btn.classList.remove('active');
+          }
+        });
+      });
+      ['chart-type-icon', 'overview-chart-type-icon'].forEach(id => {
+        const iconEl = document.getElementById(id);
+        if (iconEl) iconEl.innerText = mode === 'bar' ? '📊' : '📈';
+      });
       renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
     }
 
@@ -6281,8 +6337,13 @@ function renderDashboardHtml(config) {
       currentChartMetric = metric;
       try { localStorage.setItem('router_comp_chart_metric', metric); } catch (_) {}
       ['tokens', 'cost', 'chars'].forEach(m => {
-        const btn = document.getElementById('btn-chart-metric-' + m);
-        if (btn) btn.classList.toggle('active', m === metric);
+        ['btn-chart-metric-', 'btn-overview-chart-metric-'].forEach(prefix => {
+          const btn = document.getElementById(prefix + m);
+          if (btn && btn.classList) {
+            if (m === metric) btn.classList.add('active');
+            else btn.classList.remove('active');
+          }
+        });
       });
       renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
     }
@@ -6292,46 +6353,81 @@ function renderDashboardHtml(config) {
       cachedTimeSeriesRange = range;
       cachedTimeSeriesStats = stats;
 
-      const viewport = document.getElementById('comp-chart-viewport');
-      if (!viewport) return;
-
-      const summaryBadge = document.getElementById('chart-summary-badge');
-      if (summaryBadge && stats) {
-        if (currentChartMetric === 'cost') {
-          const costVal = Number(stats.savedCostUSD || 0);
-          summaryBadge.innerText = '总节约: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
-        } else if (currentChartMetric === 'chars') {
-          summaryBadge.innerText = '总节约: ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
-        } else {
-          summaryBadge.innerText = '总节约: ~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
-        }
-      }
-
-      if (!Array.isArray(series) || series.length === 0) {
-        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:0.85rem;">暂无时序数据</div>';
-        return;
-      }
-
-      const modelSet = new Set();
-      series.forEach(pt => {
-        if (pt.byModel && typeof pt.byModel === 'object') {
-          Object.keys(pt.byModel).forEach(m => modelSet.add(m));
+      // 1. 同步更新所有摘要标签 (Summary Badges)
+      ['chart-summary-badge', 'overview-chart-summary-badge'].forEach(badgeId => {
+        const badge = document.getElementById(badgeId);
+        if (badge && stats) {
+          if (currentChartMetric === 'cost') {
+            const costVal = Number(stats.savedCostUSD || 0);
+            badge.innerText = '总节约: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+          } else if (currentChartMetric === 'chars') {
+            badge.innerText = '总节约: ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
+          } else {
+            badge.innerText = '总节约: ~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+          }
         }
       });
+
+      // 2. 提取活跃模型集
+      const modelSet = new Set();
+      if (Array.isArray(series)) {
+        series.forEach(pt => {
+          if (pt.byModel && typeof pt.byModel === 'object') {
+            Object.keys(pt.byModel).forEach(m => modelSet.add(m));
+          }
+        });
+      }
       const activeModels = Array.from(modelSet);
       if (activeModels.length === 0) {
         activeModels.push('deepseek-v4.1-flash');
       }
 
-      const legendsEl = document.getElementById('comp-chart-legends');
-      if (legendsEl) {
-        legendsEl.innerHTML = activeModels.map((m, idx) => {
-          const color = getModelColor(m, idx);
-          return '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;">' +
-            '<span style="display:inline-block;width:9px;height:9px;background:' + color + ';border-radius:2px;"></span>' +
-            '<span style="font-family:monospace;color:#cbd5e1;">' + escapeHtml(m) + '</span>' +
-            '</div>';
-        }).join('');
+      // 3. 同步更新所有图例区 (Legends)
+      ['comp-chart-legends', 'overview-chart-legends'].forEach(legendsId => {
+        const legendsEl = document.getElementById(legendsId);
+        if (legendsEl) {
+          legendsEl.innerHTML = activeModels.map((m, idx) => {
+            const color = getModelColor(m, idx);
+            return '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;">' +
+              '<span style="display:inline-block;width:9px;height:9px;background:' + color + ';border-radius:2px;"></span>' +
+              '<span style="font-family:monospace;color:#cbd5e1;">' + escapeHtml(m) + '</span>' +
+              '</div>';
+          }).join('');
+        }
+      });
+
+      // 4. 定义双视口规格配置
+      const viewports = [
+        {
+          viewportId: 'comp-chart-viewport',
+          tooltipId: 'comp-chart-tooltip',
+          overlayId: 'comp-chart-overlay',
+          crosshairGroupId: 'comp-chart-crosshair-group',
+          crosshairLineId: 'comp-chart-crosshair',
+          hoverDotId: 'comp-chart-hover-dot'
+        },
+        {
+          viewportId: 'overview-chart-viewport',
+          tooltipId: 'overview-chart-tooltip',
+          overlayId: 'overview-chart-overlay',
+          crosshairGroupId: 'overview-chart-crosshair-group',
+          crosshairLineId: 'overview-chart-crosshair',
+          hoverDotId: 'overview-chart-hover-dot'
+        }
+      ];
+
+      viewports.forEach(cfg => {
+        renderSingleChartViewport(cfg, series, range, stats, activeModels);
+      });
+    }
+
+    function renderSingleChartViewport(cfg, series, range, stats, activeModels) {
+      const viewport = document.getElementById(cfg.viewportId);
+      if (!viewport) return;
+
+      if (!Array.isArray(series) || series.length === 0) {
+        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:0.85rem;">💤 暂无时序数据</div>';
+        return;
       }
 
       const getValue = (pt) => {
@@ -6457,13 +6553,14 @@ function renderDashboardHtml(config) {
 
         const areaD = pathD + ' L ' + points[points.length - 1].x + ' ' + xBaseY + ' L ' + points[0].x + ' ' + xBaseY + ' Z';
         const themeColor = '#f97316';
+        const gradId = 'compAreaGrad_' + cfg.viewportId;
         contentSvg += '<defs>' +
-          '<linearGradient id="compAreaGrad" x1="0" y1="0" x2="0" y2="1">' +
+          '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="0" y2="1">' +
           '<stop offset="0%" stop-color="' + themeColor + '" stop-opacity="0.38"/>' +
           '<stop offset="100%" stop-color="' + themeColor + '" stop-opacity="0.02"/>' +
           '</linearGradient>' +
           '</defs>' +
-          '<path d="' + areaD + '" fill="url(#compAreaGrad)" />' +
+          '<path d="' + areaD + '" fill="url(#' + gradId + ')" />' +
           '<path d="' + pathD + '" fill="none" stroke="' + themeColor + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />';
 
         points.forEach((p, i) => {
@@ -6481,11 +6578,11 @@ function renderDashboardHtml(config) {
           '</g>';
       }
 
-      const interactiveSvg = '<g id="comp-chart-crosshair-group" style="display:none;">' +
-        '<line id="comp-chart-crosshair" x1="0" y1="' + padT + '" x2="0" y2="' + xBaseY + '" stroke="#38bdf8" stroke-width="1" stroke-dasharray="3,3" />' +
-        '<circle id="comp-chart-hover-dot" cx="0" cy="0" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="2" />' +
+      const interactiveSvg = '<g id="' + cfg.crosshairGroupId + '" style="display:none;">' +
+        '<line id="' + cfg.crosshairLineId + '" x1="0" y1="' + padT + '" x2="0" y2="' + xBaseY + '" stroke="#38bdf8" stroke-width="1" stroke-dasharray="3,3" />' +
+        '<circle id="' + cfg.hoverDotId + '" cx="0" cy="0" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="2" />' +
         '</g>' +
-        '<rect id="comp-chart-overlay" x="' + padL + '" y="' + padT + '" width="' + chartW + '" height="' + chartH + '" fill="transparent" style="cursor:crosshair;" />';
+        '<rect id="' + cfg.overlayId + '" x="' + padL + '" y="' + padT + '" width="' + chartW + '" height="' + chartH + '" fill="transparent" style="cursor:crosshair;" />';
 
       viewport.innerHTML = '<svg class="chart-svg-root" viewBox="0 0 ' + svgW + ' ' + svgH + '" preserveAspectRatio="none">' +
         gridLinesSvg +
@@ -6495,11 +6592,11 @@ function renderDashboardHtml(config) {
         interactiveSvg +
         '</svg>';
 
-      const overlayEl = document.getElementById('comp-chart-overlay');
-      const crosshairGroup = document.getElementById('comp-chart-crosshair-group');
-      const crosshairLine = document.getElementById('comp-chart-crosshair');
-      const hoverDot = document.getElementById('comp-chart-hover-dot');
-      const tooltipEl = document.getElementById('comp-chart-tooltip');
+      const overlayEl = document.getElementById(cfg.overlayId);
+      const crosshairGroup = document.getElementById(cfg.crosshairGroupId);
+      const crosshairLine = document.getElementById(cfg.crosshairLineId);
+      const hoverDot = document.getElementById(cfg.hoverDotId);
+      const tooltipEl = document.getElementById(cfg.tooltipId);
 
       if (overlayEl && tooltipEl && crosshairGroup) {
         overlayEl.addEventListener('mousemove', function(e) {
@@ -6578,10 +6675,12 @@ function renderDashboardHtml(config) {
     function switchCompRange(range) {
       if (!range) range = 'all';
       currentCompRange = range;
-      const buttons = document.querySelectorAll('.comp-range-btn');
-      buttons.forEach(btn => btn.classList.remove('active'));
-      const activeBtn = document.getElementById('comp-range-' + range);
-      if (activeBtn) activeBtn.classList.add('active');
+      const allButtons = document.querySelectorAll('.comp-range-btn, .time-range-pill');
+      allButtons.forEach(btn => {
+        const btnRange = btn.getAttribute('data-range') || (btn.id ? btn.id.replace('comp-range-', '') : '');
+        if (btnRange === range) btn.classList.add('active');
+        else btn.classList.remove('active');
+      });
 
       const rangeLabels = {
         '1h': '过去 1 小时',
@@ -6594,6 +6693,10 @@ function renderDashboardHtml(config) {
         badgeEl.innerText = rangeLabels[range] || range;
       }
       fetchCompressionStats();
+    }
+
+    function switchTimeRange(range) {
+      return switchCompRange(range);
     }
 
     async function fetchCompressionStats() {
@@ -8601,17 +8704,29 @@ function renderDashboardHtml(config) {
 
     // Initialize chart UI buttons from user preferences
     if (typeof currentChartMode === 'string') {
-      const bBtn = document.getElementById('btn-chart-mode-bar');
-      const aBtn = document.getElementById('btn-chart-mode-area');
-      const iEl = document.getElementById('chart-type-icon');
-      if (bBtn) bBtn.classList.toggle('active', currentChartMode === 'bar');
-      if (aBtn) aBtn.classList.toggle('active', currentChartMode === 'area');
-      if (iEl) iEl.innerText = currentChartMode === 'bar' ? '📊' : '📈';
+      ['bar', 'area'].forEach(m => {
+        ['btn-chart-mode-', 'btn-overview-chart-mode-'].forEach(prefix => {
+          const btn = document.getElementById(prefix + m);
+          if (btn && btn.classList) {
+            if (m === currentChartMode) btn.classList.add('active');
+            else btn.classList.remove('active');
+          }
+        });
+      });
+      ['chart-type-icon', 'overview-chart-type-icon'].forEach(id => {
+        const iconEl = document.getElementById(id);
+        if (iconEl) iconEl.innerText = currentChartMode === 'bar' ? '📊' : '📈';
+      });
     }
     if (typeof currentChartMetric === 'string') {
       ['tokens', 'cost', 'chars'].forEach(m => {
-        const btn = document.getElementById('btn-chart-metric-' + m);
-        if (btn) btn.classList.toggle('active', m === currentChartMetric);
+        ['btn-chart-metric-', 'btn-overview-chart-metric-'].forEach(prefix => {
+          const btn = document.getElementById(prefix + m);
+          if (btn && btn.classList) {
+            if (m === currentChartMetric) btn.classList.add('active');
+            else btn.classList.remove('active');
+          }
+        });
       });
     }
 
@@ -9635,7 +9750,12 @@ $ghost
       return;
     }
     const parsed = url.parse(req.url, true);
-    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
+    const headers = {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    };
     if (config.uiPassword && parsed.query && parsed.query.auth) {
       const token = Buffer.from(config.uiPassword.trim()).toString('base64');
       headers['Set-Cookie'] = `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`;

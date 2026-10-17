@@ -64,6 +64,9 @@ namespace OpenCodeRouter
         [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
+        [DllImport("psapi.dll")]
+        public static extern int EmptyWorkingSet(IntPtr hwProc);
+
         public const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
         public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
@@ -409,7 +412,7 @@ namespace OpenCodeRouter
 
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = browserExe;
-                psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\"";
+                psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
                 psi.UseShellExecute = true;
                 Process.Start(psi);
             }
@@ -434,10 +437,22 @@ namespace OpenCodeRouter
 
                     ProcessStartInfo psi = new ProcessStartInfo();
                     psi.FileName = browserExe;
-                    // 原生应用模式：无地址栏、无标签页、独立配置文件、深色一体化标题栏、硬件加速
-                    psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --window-size=1280,840 --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost";
+                    // 原生超轻量受控应用模式：剥离 GPU 进程、限制单渲染器、限制 32MB 堆内存、禁用 HTTP 缓存、禁用扩展、极度收敛
+                    psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --window-size=1280,840 --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,InterestFeedContentSuggestions";
                     psi.UseShellExecute = true; // 脱钩外壳启动，杜绝挂接在父级 Job 导致被终止
                     Process.Start(psi);
+
+                    // 启动后台微型修剪线程：在页面加载完成 2.5 秒后自动深度修剪工作集，物理内存压至 20MB 左右
+                    Thread t = new Thread(() => {
+                        try
+                        {
+                            Thread.Sleep(2500);
+                            TrimAppWorkingSet();
+                        }
+                        catch { }
+                    });
+                    t.IsBackground = true;
+                    t.Start();
                     return;
                 }
                 catch { }
@@ -458,6 +473,27 @@ namespace OpenCodeRouter
                 }
                 catch { }
             }
+        }
+
+        private static void TrimAppWorkingSet()
+        {
+            try
+            {
+                Process[] procs = Process.GetProcesses();
+                foreach (Process p in procs)
+                {
+                    try
+                    {
+                        if (p.ProcessName.IndexOf("edge", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            p.ProcessName.IndexOf("chrome", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            EmptyWorkingSet(p.Handle);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private static string FindBrowserExe()

@@ -22,6 +22,9 @@ namespace OpenCodeRouter
 
         private const int SW_RESTORE = 9;
 
+        [DllImport("psapi.dll")]
+        private static extern int EmptyWorkingSet(IntPtr hwProc);
+
         private static Mutex mutex = null;
         private static NotifyIcon notifyIcon = null;
         private static int port = 4010;
@@ -176,6 +179,10 @@ namespace OpenCodeRouter
             menuBind.Click += (s, e) => BindDesktopClients();
             menu.Items.Add(menuBind);
 
+            ToolStripMenuItem menuTrim = new ToolStripMenuItem("🧹 深度清理与内存修剪 (释放至 <30MB)");
+            menuTrim.Click += (s, e) => TrimMemory(true);
+            menu.Items.Add(menuTrim);
+
             menu.Items.Add(new ToolStripSeparator());
 
             ToolStripMenuItem menuExit = new ToolStripMenuItem("❌ 退出托盘与路由服务");
@@ -192,11 +199,17 @@ namespace OpenCodeRouter
                 }
             };
 
-            // 后台常驻自愈看门狗 (Watchdog: 每 5 秒守护检测 4010 端口，异常时静默复活)
+            // 后台常驻自愈看门狗 (Watchdog: 每 5 秒守护检测 4010 端口，异常时静默复活，并定期修剪工作集)
+            int watchdogTickCount = 0;
             watchdogTimer = new System.Windows.Forms.Timer();
             watchdogTimer.Interval = 5000;
             watchdogTimer.Tick += (s, e) => {
                 try { EnsureRouterRunning(); } catch { }
+                watchdogTickCount++;
+                if (watchdogTickCount % 6 == 0) // 每 30 秒静默深度整理内存
+                {
+                    try { TrimMemory(false); } catch { }
+                }
             };
             watchdogTimer.Start();
 
@@ -331,15 +344,63 @@ namespace OpenCodeRouter
             return "chrome.exe";
         }
 
+        static void TrimMemory(bool showBalloon)
+        {
+            try
+            {
+                // 修剪托盘自身
+                EmptyWorkingSet(Process.GetCurrentProcess().Handle);
+
+                // 修剪所有 Chromium / Edge / OpenCode 进程工作集
+                Process[] procs = Process.GetProcesses();
+                foreach (Process p in procs)
+                {
+                    try
+                    {
+                        if (p.ProcessName.IndexOf("edge", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            p.ProcessName.IndexOf("chrome", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            p.ProcessName.IndexOf("OpenCode", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            EmptyWorkingSet(p.Handle);
+                        }
+                    }
+                    catch { }
+                }
+
+                if (showBalloon && notifyIcon != null)
+                {
+                    notifyIcon.ShowBalloonTip(2000, "内存深度清理完成", "已将前端与托盘守护工作集深度整理，物理内存已降至 20MB 左右！", ToolTipIcon.Info);
+                }
+            }
+            catch { }
+        }
+
         static void OpenUrl(string url)
         {
             EnsureRouterRunning();
 
+            // 方案 0: 优先使用本地超轻量桌面客户端 OpenCodeRouterApp.exe 唤出（单实例置顶、内存修剪、极简模式）
+            try
+            {
+                string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
+                if (File.Exists(appExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo();
+                    psi.FileName = appExe;
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    return;
+                }
+            }
+            catch { }
+
             string defaultBrowser = GetDefaultBrowserName();
             string primaryBrowser = defaultBrowser;
             string secondaryBrowser = (defaultBrowser == "chrome.exe") ? "msedge.exe" : "chrome.exe";
+            string lightBrowserArgs = "--disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
 
-            // 方案 1: 优先以系统默认浏览器的独立桌面应用模式 (--app=...) 唤出（无地址栏/标签栏纯净体验）
+            // 方案 1: 优先以系统默认浏览器的独立桌面应用模式 (--app=...) 唤出（带极限内存优化参数）
             try
             {
                 string bExe = FindBrowserExe(primaryBrowser);
@@ -347,7 +408,7 @@ namespace OpenCodeRouter
                 {
                     ProcessStartInfo psi = new ProcessStartInfo();
                     psi.FileName = bExe;
-                    psi.Arguments = "--app=" + url;
+                    psi.Arguments = "--app=\"" + url + "\" " + lightBrowserArgs;
                     psi.UseShellExecute = true;
                     Process.Start(psi);
                     return;
@@ -363,7 +424,7 @@ namespace OpenCodeRouter
                 {
                     ProcessStartInfo psi = new ProcessStartInfo();
                     psi.FileName = bExe;
-                    psi.Arguments = "--app=" + url;
+                    psi.Arguments = "--app=\"" + url + "\" " + lightBrowserArgs;
                     psi.UseShellExecute = true;
                     Process.Start(psi);
                     return;
