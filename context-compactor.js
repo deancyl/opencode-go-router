@@ -720,8 +720,23 @@ function foldStructuredData(text, options = {}) {
   if (text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>') || text.includes('|||||||')) {
     return text;
   }
-  // Anti-downgrade compiler errors / tracebacks check
-  if (text.includes('Traceback (most recent call last):') || text.includes('AssertionError:')) {
+  // Anti-downgrade compiler errors / tracebacks / stack traces check
+  if (
+    text.includes('Traceback (most recent call last):') ||
+    text.includes('AssertionError:') ||
+    text.includes('TypeError:') ||
+    /\bTypeError\b/.test(text) ||
+    text.includes('ReferenceError:') ||
+    /\bReferenceError\b/.test(text) ||
+    text.includes('SyntaxError:') ||
+    /\bSyntaxError\b/.test(text) ||
+    text.includes('RuntimeError:') ||
+    /\bRuntimeError\b/.test(text) ||
+    text.includes('panic:') ||
+    /\bpanic(?::|\()/.test(text) ||
+    text.includes('fatal error:') ||
+    text.includes('BUILD FAILED:')
+  ) {
     return text;
   }
   // Idempotency check

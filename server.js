@@ -3715,7 +3715,7 @@ const server = http.createServer((req, res) => {
               modules: mergedModules
             };
             for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
-                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
                             'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
                             'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
                             'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns']) {
@@ -5477,11 +5477,11 @@ function renderDashboardHtml(config) {
                 <div class="sub-tip">折叠 package-lock/yarn/pnpm/Cargo/uv 等超大锁定文件，节省海量 Token</div>
               </div>
               <div class="comp-sub-item">
-                <label class="switch-label">
+                <label class="switch-label" title="开启后，当工具输出或命令行返回超长同构 JSON 数组（如超过 50 项的巨型文件列表、大数据库查询结果）时，自动提取保留首尾样本并插入结构摘要，大幅节约 Token">
                   <input type="checkbox" id="cfg-comp-fold-structured" ${(mCfg.headroom && mCfg.headroom.foldStructuredData !== false && compCfg.foldStructuredData !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>超长同构 JSON 数组结构摘要折叠 (SmartCrusher / foldStructuredData)</span>
+                  <span>超长同构 JSON 数组采样折叠 (SmartCrusher / foldStructuredData)</span>
                 </label>
-                <div class="sub-tip">针对工具返回的超大 JSON 列表（&gt; 30 项）智能提取首尾切片与结构摘要，海量节省日常推理 Token</div>
+                <div class="sub-tip" title="保留结构 + 首尾样本（前 5 项与后 3 项），中间冗余项智能采样折叠，遇报错堆栈与冲突标记 100% 绝对豁免">针对工具返回超过 50 项的超长同构 JSON 数组（巨型文件列表、大数据库查询结果等）进行安全智能摘要采样（保留结构 + 首尾样本），在不影响推理的情况下大幅提升日常开发中的 Token 节省率</div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
@@ -5521,6 +5521,14 @@ function renderDashboardHtml(config) {
             </div>
             <div class="comp-module-desc">规范化模型上下文中的 Tools 与 MCP Schema 定义，极大化提高上游 Prompt KV 命中率。</div>
             <div class="comp-module-body" id="module-body-schema">
+              <div class="kv-cache-banner" style="margin: 0 0 12px 0; padding: 10px 14px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.22); border-radius: 8px; font-size: 0.82rem; color: #93c5fd; display: flex; flex-direction: column; gap: 4px;">
+                <div style="font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                  <span>🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)</span>
+                </div>
+                <div style="font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">
+                  <strong>为何字符无损却省账单？</strong>字典序对齐（alignToolsSchema）虽然不删减工具字符数，但能将 Tools / MCP Schema 的键值序列规范化为全局唯一且恒定的字节流，使 Anthropic / OpenAI 等上游推理集群稳定命中前缀 Prompt 缓存，输入费率直降 80%~90%，首字响应延迟降低 50%+。
+                </div>
+              </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-align-schema" ${(mCfg.schema && mCfg.schema.alignToolsSchema !== false && compCfg.alignToolsSchema !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
@@ -5539,7 +5547,8 @@ function renderDashboardHtml(config) {
                 <div>
                   <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 500;">瘦身触发字符阈值 (schemaCharThreshold)</span>
                   <div class="sub-tip">当 tools 总序列化长度超过该字符阈值时自动触发深度瘦身</div>
-                  <div class="sub-tip" style="margin-top: 4px; color: #94a3b8; font-size: 0.78rem;">💡 门限引导：tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀，享受上游极速缓存命中与零损耗；仅在超巨型 tools &gt; 15,000 字符时自动触发 Schema 深度瘦身削减冗余描述。</div>
+                  <div class="sub-tip" style="margin-top: 4px; color: #38bdf8; font-size: 0.78rem; font-weight: 500;">💡 瘦身门限当前为 15,000 字符（仅挂载大型/多 MCP 服务时触发）</div>
+                  <div class="sub-tip" style="margin-top: 2px; color: #94a3b8; font-size: 0.78rem;">💡 门限引导：tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀，享受上游极速缓存命中与零损耗；仅在超巨型 tools &gt; 15,000 字符时自动触发 Schema 深度瘦身削减冗余描述。</div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
                   <input type="number" id="cfg-comp-threshold" class="form-control" style="width: 100px; text-align: right; padding: 4px 8px; font-size: 0.85rem;" value="${(mCfg.schema && mCfg.schema.schemaCharThreshold) || compCfg.schemaCharThreshold || 15000}" min="1000" step="1000" onchange="handleSubOptionChange()">

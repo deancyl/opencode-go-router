@@ -5854,8 +5854,91 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ PowerShell AST Doctor Syntax, Gateway Credential Self-Healing & SmartCrusher Polymorphic Folding verified');
 
+    // [Test 136] Testing Web UI KV Cache Lock Principle Explanations, SmartCrusher Array Sampling & Anti-Downgrade Redlines
+    console.log('\n[Test 136] Testing Web UI KV Cache Lock Principle Explanations, SmartCrusher Array Sampling & Anti-Downgrade Redlines...');
+
+    // 1. Web UI inspection for Card 3 indicator, explanation banner, and threshold notice
+    const uiRes136 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes136.statusCode, 200);
+    const uiHtml136 = uiRes136.body;
+
+    assert.ok(uiHtml136.includes('🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)'), 'Card 3 must contain KV Cache lock indicator');
+    assert.ok(uiHtml136.includes('为何字符无损却省账单？'), 'Card 3 must explain why lexicographical sorting saves bills without reducing characters');
+    assert.ok(uiHtml136.includes('规范化为全局唯一且恒定的字节流，使 Anthropic / OpenAI 等上游推理集群稳定命中前缀 Prompt 缓存'), 'Card 3 must explain upstream Prompt cache hit');
+    assert.ok(uiHtml136.includes('💡 瘦身门限当前为 15,000 字符（仅挂载大型/多 MCP 服务时触发）'), 'Card 3 must state exact 15,000 threshold notice');
+
+    // 2. Web UI inspection for Card 2 SmartCrusher sub-switch & tooltips
+    assert.ok(uiHtml136.includes('超长同构 JSON 数组采样折叠 (SmartCrusher / foldStructuredData)'), 'Card 2 must contain SmartCrusher title');
+    assert.ok(uiHtml136.includes('针对工具返回超过 50 项的超长同构 JSON 数组'), 'Card 2 must explain > 50 items folding');
+    assert.ok(uiHtml136.includes('保留结构 + 首尾样本'), 'Card 2 must explain structure and head/tail sample preservation');
+    assert.ok(uiHtml136.includes('遇报错堆栈与冲突标记 100% 绝对豁免'), 'Card 2 must mention safety redlines');
+
+    // 3. Preset matrix cascade and config roundtrip for foldStructuredData
+    // Balanced preset has foldStructuredData: true
+    const normBalanced = contextCompactor.normalizeCompressionOptions({ preset: 'balanced' });
+    assert.strictEqual(normBalanced.modules.headroom.foldStructuredData, true, 'Balanced preset must enable foldStructuredData');
+    assert.strictEqual(normBalanced.foldStructuredData, true, 'Balanced flat switch must be true');
+
+    // Aggressive preset has foldStructuredData: true
+    const normAggressive = contextCompactor.normalizeCompressionOptions({ preset: 'aggressive' });
+    assert.strictEqual(normAggressive.modules.headroom.foldStructuredData, true, 'Aggressive preset must enable foldStructuredData');
+    assert.strictEqual(normAggressive.foldStructuredData, true, 'Aggressive flat switch must be true');
+
+    // Conservative preset has foldStructuredData: false
+    const normConservative = contextCompactor.normalizeCompressionOptions({ preset: 'conservative' });
+    assert.strictEqual(normConservative.modules.headroom.foldStructuredData, false, 'Conservative preset must disable foldStructuredData');
+    assert.strictEqual(normConservative.foldStructuredData, false, 'Conservative flat switch must be false');
+
+    // Master Headroom cascade: if headroom module disabled, derived foldStructuredData is false
+    const normMasterOff = contextCompactor.normalizeCompressionOptions({
+      enabled: true,
+      modules: { headroom: { enabled: false, foldStructuredData: true } }
+    });
+    assert.strictEqual(normMasterOff.foldStructuredData, false, 'Disabling headroom module must cascade to foldStructuredData = false');
+
+    // 4. SmartCrusher on >50 items array (e.g. 60 items)
+    const array60 = [];
+    for (let i = 1; i <= 60; i++) {
+      array60.push({ id: i, name: `Record item ${i}`, path: `/var/log/app/item-${i}.log`, size: i * 1024 });
+    }
+    const raw60Str = JSON.stringify(array60, null, 2);
+    const folded60 = contextCompactor.foldStructuredData(raw60Str, { foldStructuredData: true, maxStructuredItems: 50 });
+    assert.ok(folded60.length < raw60Str.length, 'Folded 60 items array must be compressed');
+    const parsed60 = JSON.parse(folded60);
+    assert.strictEqual(parsed60.length, 9, 'Folded array must have exactly 9 elements (5 head + 1 summary + 3 tail)');
+    assert.strictEqual(parsed60[0].id, 1, 'First item must be id 1');
+    assert.strictEqual(parsed60[4].id, 5, 'Fifth item must be id 5');
+    assert.strictEqual(parsed60[6].id, 58, 'First tail item must be id 58');
+    assert.strictEqual(parsed60[8].id, 60, 'Last tail item must be id 60');
+    assert.strictEqual(parsed60[5]._headroom_smart_crusher, true, 'Summary item must have crusher flag');
+    assert.strictEqual(parsed60[5].totalCount, 60, 'Summary totalCount must be 60');
+    assert.strictEqual(parsed60[5].foldedCount, 52, 'Summary foldedCount must be 52');
+
+    // 5. Anti-Downgrade Redlines: 100% bypass on error stacks, panics and merge conflicts
+    // 5a. JavaScript TypeError
+    const typeErrorPayload = 'TypeError: Cannot read properties of undefined (reading \'id\')\n' + raw60Str;
+    const foldedTypeError = contextCompactor.foldStructuredData(typeErrorPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedTypeError, typeErrorPayload, 'Payload with TypeError must be 100% untouched');
+
+    // 5b. Go panic
+    const panicPayload = 'panic: runtime error: index out of range [5] with length 0\n' + raw60Str;
+    const foldedPanic = contextCompactor.foldStructuredData(panicPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedPanic, panicPayload, 'Payload with panic: must be 100% untouched');
+
+    // 5c. Merge conflict markers
+    const mergeConflictPayload = '<<<<<<< HEAD\n' + raw60Str + '\n=======\n' + raw60Str + '\n>>>>>>> feature-branch';
+    const foldedConflict136 = contextCompactor.foldStructuredData(mergeConflictPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedConflict136, mergeConflictPayload, 'Payload with Git merge conflict markers must be 100% untouched');
+
+    // 5d. Python traceback
+    const tracebackPayload = 'Traceback (most recent call last):\n  File "worker.py", line 42, in process\n' + raw60Str;
+    const foldedTraceback = contextCompactor.foldStructuredData(tracebackPayload, { foldStructuredData: true, maxStructuredItems: 30 });
+    assert.strictEqual(foldedTraceback, tracebackPayload, 'Payload with Python Traceback must be 100% untouched');
+
+    console.log('✓ Web UI KV Cache Lock Principle Explanations, SmartCrusher Array Sampling & Anti-Downgrade Redlines verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 135 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 136 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

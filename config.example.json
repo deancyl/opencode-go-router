@@ -33,6 +33,7 @@
       "headroom": {
         "enabled": true,
         "foldLockfiles": true,
+        "foldStructuredData": true,
         "exemptMergeConflicts": true,
         "protectSourceDiffs": true
       },
