@@ -6752,7 +6752,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0 or 3.8.1');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1 or 3.8.2');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6996,9 +6996,9 @@ $ProgressPreference = 'SilentlyContinue'
     }
     console.log('✓ POST /balancer/api/compression/stats/reset purged all time-range buckets verified');
 
-    // 11. Verify v3.6.0 version declaration in package.json
+    // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0 or 3.8.1');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1 or 3.8.2');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7476,9 +7476,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0 or 3.8.1
+    // 4. Verify package.json version is 3.8.0, 3.8.1 or 3.8.2
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1'].includes(pkgJson147.version), 'package.json version must be 3.8.0 or 3.8.1');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1 or 3.8.2');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7555,14 +7555,45 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson148.version, '3.8.1', 'package.json version must be 3.8.1');
-    assert.ok(uiRes148.body.includes('v3.8.1 Pro'), 'Web UI must render v3.8.1 Pro version badge');
+    assert.ok(['3.8.1', '3.8.2'].includes(pkgJson148.version), 'package.json version must be 3.8.1 or 3.8.2');
+    assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
     console.log('✓ Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release verified');
 
+    // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
+    console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
+
+    // 1. Verify package.json declares v3.8.2 and npm run setup script
+    const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(pkgJson149.version, '3.8.2', 'package.json version must be 3.8.2');
+    assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
+    assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
+
+    // 2. Verify setup-windows.ps1 and setup-wizard.ps1 presence and integrity
+    const setupWinPath = path.join(__dirname, 'setup-windows.ps1');
+    const setupWizPath = path.join(__dirname, 'setup-wizard.ps1');
+    assert.ok(fs.existsSync(setupWinPath), 'setup-windows.ps1 must exist');
+    assert.ok(fs.existsSync(setupWizPath), 'setup-wizard.ps1 must exist');
+    const setupWinContent = fs.readFileSync(setupWinPath, 'utf8');
+    const setupWizContent = fs.readFileSync(setupWizPath, 'utf8');
+    assert.ok(setupWizContent.includes('setup-windows.ps1'), 'setup-wizard.ps1 must forward to setup-windows.ps1');
+    assert.ok(setupWinContent.includes('Step-InstallOpenCode'), 'setup-windows.ps1 must implement Step 1 (Step-InstallOpenCode)');
+    assert.ok(setupWinContent.includes('Step-SetupRouter'), 'setup-windows.ps1 must implement Step 2 (Step-SetupRouter)');
+    assert.ok(setupWinContent.includes('Step-Start'), 'setup-windows.ps1 must implement service start (Step-Start)');
+    assert.ok(setupWinContent.includes('New-TemporaryFile') || setupWinContent.includes('Start-Process'), 'setup-windows.ps1 must support headless / silent process control');
+
+    // 3. Verify test_sandbox_install.ps1 automated sandbox installation tester
+    const sandboxTestPath = path.join(__dirname, 'test_sandbox_install.ps1');
+    assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
+
+    // 4. Verify Web UI renders v3.8.2 Pro badge
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro'), 'Web UI must render v3.8.2 Pro version badge');
+
+    console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 148 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 149 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

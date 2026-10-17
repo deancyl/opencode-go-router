@@ -68,7 +68,7 @@ if ($origConn) {
 }
 
 # 彻底清理既有托盘进程，建立洁净基准
-$existingTrays = Get-TrayDaemonProcesses
+$existingTrays = @(Get-TrayDaemonProcesses)
 foreach ($et in $existingTrays) {
     Write-Host "  清理已有托盘守护实例 (PID: $($et.ProcessId))..." -ForegroundColor Gray
     Stop-Process -Id $et.ProcessId -Force -ErrorAction SilentlyContinue
@@ -90,7 +90,7 @@ $logPath = Join-Path $scriptRoot "tray.log"
 $p = Start-Process "wscript.exe" -ArgumentList "`"$vbsPath`" -Silent" -WorkingDirectory $scriptRoot -PassThru
 Start-Sleep -Milliseconds 2000
 
-$activeTrays = Get-TrayDaemonProcesses
+$activeTrays = @(Get-TrayDaemonProcesses)
 Assert-Test "1.1.1 主托盘静默启动" ($activeTrays.Count -ge 1) "主托盘进程已静默拉起 (PID: $($activeTrays[0].ProcessId))"
 
 $primaryTrayCim = $activeTrays[0]
@@ -122,7 +122,7 @@ for ($i = 1; $i -le 3; $i++) {
 # 等待次级实例检测互斥锁并安全退出
 Start-Sleep -Milliseconds 2500
 
-$currentTrays = Get-TrayDaemonProcesses
+$currentTrays = @(Get-TrayDaemonProcesses)
 Write-Host "  当前活动的 tray-daemon 实例数量: $($currentTrays.Count) (PID: $($currentTrays[0].ProcessId))" -ForegroundColor Gray
 Assert-Test "1.2.1 单实例互斥防多开" ($currentTrays.Count -eq 1 -and $currentTrays[0].ProcessId -eq $primaryTrayCim.ProcessId) "多开冲撞下只有 1 个主托盘进程常驻，次级实例 100% 安全退出"
 
@@ -353,7 +353,8 @@ foreach ($k in $testResults.Keys) {
     }
 }
 
-Write-Host "`n实测总计: $($testResults.Count) 项 | 通过: $passCount | 失败: $failCount" -ForegroundColor ($failCount -eq 0 ? "Green" : "Red")
+$summaryColor = if ($failCount -eq 0) { "Green" } else { "Red" }
+Write-Host "`n实测总计: $($testResults.Count) 项 | 通过: $passCount | 失败: $failCount" -ForegroundColor $summaryColor
 if ($failCount -gt 0) {
     exit 1
 }

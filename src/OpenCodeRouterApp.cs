@@ -139,24 +139,34 @@ namespace OpenCodeRouter
             string uiPassword = "";
             LoadConfig(rootDir, ref port, ref uiPassword);
 
+            bool isSilent = false;
             string initialHash = "";
             int tabCode = 0;
-            if (args != null && args.Length > 0 && !string.IsNullOrEmpty(args[0]))
+            if (args != null && args.Length > 0)
             {
-                string arg = args[0].Trim();
-                if (arg.StartsWith("#"))
+                for (int i = 0; i < args.Length; i++)
                 {
-                    initialHash = arg;
-                }
-                else
-                {
-                    string low = arg.ToLowerInvariant();
-                    if (low.Contains("overview")) { initialHash = "#/overview"; tabCode = 1; }
-                    else if (low.Contains("compress") || low.Contains("comp")) { initialHash = "#/compression"; tabCode = 2; }
-                    else if (low.Contains("client") || low.Contains("codex")) { initialHash = "#/clients"; tabCode = 3; }
-                    else if (low.Contains("account")) { initialHash = "#/accounts"; tabCode = 4; }
-                    else if (low.Contains("doctor") || low.Contains("heal") || low.Contains("repair")) { initialHash = "#/doctor"; tabCode = 5; }
-                    else if (low.Contains("setting") || low.Contains("update") || low.Contains("config")) { initialHash = "#/settings"; tabCode = 6; }
+                    string a = args[i];
+                    if (string.IsNullOrEmpty(a)) continue;
+                    string trimmed = a.Trim();
+                    if (trimmed.IndexOf("silent", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        isSilent = true;
+                    }
+                    else if (trimmed.StartsWith("#"))
+                    {
+                        initialHash = trimmed;
+                    }
+                    else
+                    {
+                        string low = trimmed.ToLowerInvariant();
+                        if (low.Contains("overview")) { initialHash = "#/overview"; tabCode = 1; }
+                        else if (low.Contains("compress") || low.Contains("comp")) { initialHash = "#/compression"; tabCode = 2; }
+                        else if (low.Contains("client") || low.Contains("codex")) { initialHash = "#/clients"; tabCode = 3; }
+                        else if (low.Contains("account")) { initialHash = "#/accounts"; tabCode = 4; }
+                        else if (low.Contains("doctor") || low.Contains("heal") || low.Contains("repair")) { initialHash = "#/doctor"; tabCode = 5; }
+                        else if (low.Contains("setting") || low.Contains("update") || low.Contains("config")) { initialHash = "#/settings"; tabCode = 6; }
+                    }
                 }
             }
 
@@ -165,6 +175,11 @@ namespace OpenCodeRouter
 
             // 2. 确保系统托盘守护常驻
             EnsureTrayRunning(rootDir);
+
+            if (isSilent)
+            {
+                return;
+            }
 
             // 3. 单实例激活检测：若桌面应用窗口已打开，直接置顶前台并导航
             IntPtr existingHwnd = FindExistingAppWindow();

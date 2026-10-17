@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.1-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.2-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-148%2F148%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-149%2F149%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,25 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.8.1 (当前最新版：管理接口 4MB 内存防御护栏、HTTP 413 顺序自愈、跨 Tab 锚点导航与控制台精炼)
+### 🚀 v3.8.2 (当前最新版：Windows 全生命周期安装引擎、从零冷启动沙箱实测套件、无损配置合并与多端鲁棒性增强)
+- **Windows 全生命周期安装与部署引擎 (`setup-windows.ps1`)**：
+  - 新增全功能 PowerShell 安装与服务生命周期脚本，与 Linux 端的 `setup-linux.sh` 形成 100% 对称标准；
+  - 全面支持 `-Step`, `-All`, `-Silent`, `-Start`, `-Stop`, `-Restart`, `-Status`, `-Doctor`, `-Repair`, `-Bind`, `-Port`, `-HostName`, `-Key1`, `-Key2`, `-Password`, `-InstallDir`, `-NoShortcuts` 全套参数；
+  - 完美兼容已有 `setup-wizard.ps1`，无缝透明转发参数；`package.json` 同步挂载 `npm run setup` 快捷指令。
+- **无损配置写入与多端环境鲁棒性自愈**：
+  - **无 D 盘环境自愈**：消除硬编码 `D:\opencode\default` 路径，动态探测 `D:\` 盘符存在性，不存在时自动回退至 `$HOME\opencode\default`，彻底杜绝在无 D 盘机器上的 `DriveNotFoundException` 致命中断；
+  - **配置平滑合并保全 (Zero-Loss Config Merge)**：重构向导与安装配置更新管道，写入新配置时自动深度保留用户原有的 `uiPassword`、`compression` 瘦身选项及系统定制参数，坚决杜绝配置覆盖丢失数据；
+  - **PowerShell 5.1 / 7.x 语法全面兼容**：消除 `test_m3_windows_host_adversarial.ps1` 中的三元运算符与数组解包 `.Count` 空指针缺陷，确保在 Windows 默认 PS 5.1 环境下一键跑通。
+- **零黑框静默启动与托盘/服务防死锁防御**：
+  - `launch-gui.vbs` 与 `src/OpenCodeRouterApp.cs` 全面扩充 `-Silent` 参数支持，静默启动时只确保网关和托盘就绪后立即退出，绝不意外唤出桌面主窗口；
+  - `stop-all.ps1` 与 `launcher.ps1` 增强对 `tray-daemon.ps1` 看门狗进程的生命周期识别与彻底终止，杜绝服务停止后后台看门狗自动复活网关引发的端口抢占。
+- **自动化隔离沙箱全新安装实测套件 (`test_sandbox_install.ps1`)**：
+  - 新增从零冷启动的沙箱安装回归套件，在临时隔离环境内完整验证 15 项核心指标：从零配置生成、动态端口分配、账号凭据注入、密码固化、零控制台黑框后台静默托管、HTTP `/health`、Web 控制台 `/balancer/ui`、带鉴权 `/balancer/api/compression/doctor` 探针、生命周期停止与平滑冷启动复活。
+- **全量自动化与双端实测全绿 (Test 149)**：
+  - 新增 Test 149（Windows 安装引擎、沙箱自动化测试、无损配置合并与 v3.8.2 全量回归）；
+  - 全量 149 项自动化集成测试、15 项沙箱安装测试、18 项 Windows 主机对抗实测及 5 项 Linux NAS 远程对抗测试全部 100% 绿灯通过。
+
+### 🚀 v3.8.1 (管理接口 4MB 内存防御护栏、HTTP 413 顺序自愈、跨 Tab 锚点导航与控制台精炼)
 - **内部管理接口 OOM 纵深防御 (Internal Management API 4MB Ceiling)**：
   - 对 `/balancer/api/config`、`/balancer/api/test-account`、`/balancer/api/account-quota`、`/balancer/api/repair`、`/balancer/api/bind-codex`、`/balancer/api/restore-codex`、`/balancer/api/open-file`、`/balancer/api/reset-cooldown`、`/balancer/api/updates/apply`、`/balancer/api/updates/rollback`、`/balancer/api/compression/repair` 等所有内部 POST 接口统一引入 `MAX_INTERNAL_PAYLOAD = 4MB` 硬上限防护；
   - 采用流式累积实时校验，超限瞬时熔断并响应标准 HTTP 413，彻底消除恶意构造巨型 JSON 耗尽 Node.js 堆内存引发 OOM 崩溃隐患。

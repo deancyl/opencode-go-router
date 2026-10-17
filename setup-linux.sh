@@ -75,6 +75,7 @@ ARG_KEY1=""
 ARG_KEY2=""
 ARG_PASSWORD=""
 FLAG_PASSWORD_SET=0
+OPT_NO_SYSTEMD=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -93,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --key1) ARG_KEY1="$2"; shift 2 ;;
     --key2) ARG_KEY2="$2"; shift 2 ;;
     --password) ARG_PASSWORD="$2"; FLAG_PASSWORD_SET=1; shift 2 ;;
+    --no-systemd|--nohup) OPT_NO_SYSTEMD=true; shift ;;
     -h|--help)
       echo "用法: ./setup-linux.sh [选项]"
       echo "选项:"

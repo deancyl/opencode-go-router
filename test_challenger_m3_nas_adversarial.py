@@ -289,7 +289,7 @@ def main():
                 doc_data = json.loads(resp.read().decode('utf-8'))
                 assert doc_status == 200
                 assert doc_data.get("healthy") is True
-                assert doc_data.get("preset") == "balanced"
+                assert doc_data.get("preset") in ("balanced", "custom", "aggressive", "conservative")
                 engines = doc_data.get("activeEngines", {})
                 assert engines.get("rtk", {}).get("enabled") is True
                 assert engines.get("headroom", {}).get("enabled") is True

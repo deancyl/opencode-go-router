@@ -3836,7 +3836,7 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.8.1';
+  let pkgVersion = '3.8.2';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -9860,7 +9860,9 @@ $ghost
   const chunks = [];
   let totalReqBytes = 0;
   const MAX_REQ_BYTES = 32 * 1024 * 1024; // 32MB safety ceiling to prevent heap allocation exhaustion
+  let reqRejected = false;
   req.on('error', err => {
+    if (reqRejected) return;
     if (!res.headersSent) {
       try {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -9869,8 +9871,10 @@ $ghost
     }
   });
   req.on('data', chunk => {
+    if (reqRejected) return;
     totalReqBytes += chunk.length;
     if (totalReqBytes > MAX_REQ_BYTES) {
+      reqRejected = true;
       if (!res.headersSent) {
         try {
           res.writeHead(413, { 'Content-Type': 'application/json' });
@@ -9883,6 +9887,7 @@ $ghost
     chunks.push(chunk);
   });
   req.on('end', () => {
+    if (reqRejected) return;
     const reqBody = Buffer.concat(chunks);
     const sessionId = codexAdapter.extractOrDeriveSessionId(req, reqBody);
     const account = selectAccount(sessionId);

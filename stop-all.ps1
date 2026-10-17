@@ -43,7 +43,7 @@ if ($routerConns) {
 # 3. 停止托盘守护进程与原生托盘客户端
 Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process -Name "OpenCodeWizard" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$trayProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-runner.ps1*" }
+$trayProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-runner.ps1*" -or $_.CommandLine -like "*tray-daemon.ps1*" }
 if ($trayProcs) {
     foreach ($tp in $trayProcs) {
         try { Stop-Process -Id $tp.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
