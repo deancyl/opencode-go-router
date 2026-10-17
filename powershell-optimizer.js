@@ -48,8 +48,11 @@ const DEFAULT_POWERSHELL_CONFIG = {
  */
 function detectPlatform(options = {}, req = null) {
   // 1. Explicit override in options
-  if (options && options.targetPlatform) {
-    const p = String(options.targetPlatform).toLowerCase();
+  const explicitPlat = (options && (options.targetPlatform || options.platform)) ||
+    (options && options.modules && options.modules.powershell && (options.modules.powershell.targetPlatform || options.modules.powershell.platform)) ||
+    (options && options.powershell && (options.powershell.targetPlatform || options.powershell.platform));
+  if (explicitPlat) {
+    const p = String(explicitPlat).toLowerCase();
     const isWin = p === 'win32' || p === 'windows' || p === 'win';
     return {
       isWindows: isWin,

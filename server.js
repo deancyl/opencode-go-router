@@ -143,6 +143,23 @@ function loadConfig() {
 }
 loadConfig();
 
+/**
+ * Resolves effective compression options with target platform detection from client headers.
+ * Ensures Linux NAS services adapt PowerShell optimization and denoising for Windows clients.
+ */
+function getEffectiveCompressionOptions(baseCompressionConfig, clientReq = null) {
+  if (!baseCompressionConfig) return baseCompressionConfig;
+  const comp = { ...baseCompressionConfig };
+  try {
+    const psOpt = require('./powershell-optimizer');
+    const platInfo = psOpt.detectPlatform(comp, clientReq);
+    if (platInfo && platInfo.platform) {
+      comp.targetPlatform = platInfo.platform;
+    }
+  } catch (_) {}
+  return comp;
+}
+
 // Runtime account state tracking
 const accountStats = new Map();
 function syncAccountStats() {
@@ -1341,14 +1358,15 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   // Apply context and token compression for direct upstream requests
   if (parsedBody && config.compression && config.compression.enabled !== false) {
     try {
+      const compOpts = getEffectiveCompressionOptions(config.compression, clientReq);
       if (isResponsesReq) {
-        parsedBody = contextCompactor.compactResponsesPayload(parsedBody, config.compression, sessionId);
+        parsedBody = contextCompactor.compactResponsesPayload(parsedBody, compOpts, sessionId);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
       } else if (targetPath.includes('/messages')) {
-        parsedBody = contextCompactor.compactAnthropicPayload(parsedBody, config.compression, sessionId);
+        parsedBody = contextCompactor.compactAnthropicPayload(parsedBody, compOpts, sessionId);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
       } else if (parsedBody.messages || targetPath.includes('/chat/completions')) {
-        parsedBody = contextCompactor.compactChatPayload(parsedBody, config.compression, sessionId);
+        parsedBody = contextCompactor.compactChatPayload(parsedBody, compOpts, sessionId);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
       }
     } catch (compErr) {
@@ -1781,7 +1799,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
   }
 
-  const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody, config.compression, sessionId);
+  const effectiveComp = getEffectiveCompressionOptions(config.compression, clientReq);
+  const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
   const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
   const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
@@ -2148,7 +2167,8 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     stat.lastUsedAt = Date.now();
   }
 
-  const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody, config.compression, sessionId);
+  const effectiveComp = getEffectiveCompressionOptions(config.compression, clientReq);
+  const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody, effectiveComp, sessionId);
   const reqModel = anthropicPayload.model || 'claude-haiku-5-5';
   const isStream = anthropicPayload.stream !== false;
   const anthropicBody = Buffer.from(JSON.stringify(anthropicPayload), 'utf8');

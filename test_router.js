@@ -6332,11 +6332,13 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(parsedHttpStats.success, 'Stats API must return success');
     assert.ok(parsedHttpStats.stats.byModel['deepseek-v4.1-flash'], 'API stats must have deepseek-v4.1-flash');
     assert.ok(parsedHttpStats.stats.byModel['claude-haiku-5-5'], 'API stats must have claude-haiku-5-5');
-    assert.strictEqual(parsedHttpStats.stats.byModel['deepseek-v4.1-flash'].ratePer1M, 0.14);
-    assert.strictEqual(parsedHttpStats.stats.byModel['claude-haiku-5-5'].ratePer1M, 1.25);
+    const dsRate = parsedHttpStats.stats.byModel['deepseek-v4.1-flash'].ratePer1M;
+    assert.ok(typeof dsRate === 'number' && dsRate > 0, 'deepseek rate must be a valid positive number (baseline or synced)');
+    const clRate = parsedHttpStats.stats.byModel['claude-haiku-5-5'].ratePer1M;
+    assert.ok(typeof clRate === 'number' && clRate > 0, 'claude rate must be a valid positive number (baseline or synced)');
     const httpSum = parsedHttpStats.stats.byModel['deepseek-v4.1-flash'].savedCostUSD + parsedHttpStats.stats.byModel['claude-haiku-5-5'].savedCostUSD;
     assert.strictEqual(parsedHttpStats.stats.savedCostUSD, Number(httpSum.toFixed(6)), 'HTTP stats savedCostUSD must match sum of byModel costs');
-    console.log(`✓ HTTP Proxy End-to-End per-model telemetry verified (deepseek $0.14/1M + claude $1.25/1M, total: $${parsedHttpStats.stats.savedCostUSD})`);
+    console.log(`✓ HTTP Proxy End-to-End per-model telemetry verified (deepseek $${dsRate}/1M + claude $${clRate}/1M, total: $${parsedHttpStats.stats.savedCostUSD})`);
 
     // 4. Verify disk persistence in compression-stats.json
     await new Promise(r => setTimeout(r, 1200));

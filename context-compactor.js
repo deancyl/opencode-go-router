@@ -392,6 +392,13 @@ function normalizeCompressionOptions(input = {}) {
   if (input.customTestPassPatterns !== undefined) result.customTestPassPatterns = input.customTestPassPatterns;
   if (input.model !== undefined) result.model = normalizeModelName(input.model);
 
+  const explicitPlatform = input.targetPlatform || input.platform ||
+    (input.modules && input.modules.powershell && (input.modules.powershell.targetPlatform || input.modules.powershell.platform)) ||
+    (input.powershell && (input.powershell.targetPlatform || input.powershell.platform)) || null;
+  if (explicitPlatform) {
+    result.targetPlatform = explicitPlatform;
+  }
+
   // 3. Compute effective runtime flat keys governed by both master switch and module switches
   const rtkActive = result.enabled && result.modules.rtk.enabled;
   const headroomActive = result.enabled && result.modules.headroom.enabled;
@@ -429,6 +436,9 @@ function normalizeCompressionOptions(input = {}) {
   result.fixAndOperator = powershellActive ? result.modules.powershell.fixAndOperator : false;
   result.fixLineContinuation = powershellActive ? result.modules.powershell.fixLineContinuation : false;
   result.injectPowerShellGuard = powershellActive ? result.modules.powershell.injectPowerShellGuard : false;
+  if (explicitPlatform) {
+    result.targetPlatform = explicitPlatform;
+  }
 
   return result;
 }
@@ -2968,7 +2978,8 @@ function checkCompressionHealth(configInput = {}, statsInput = null) {
       ].filter(Boolean)
     },
     powershell: {
-      enabled: powershellActive,
+      enabled: Boolean(norm.enabled && powershell.enabled),
+      active: powershellActive,
       platform: psPlatform,
       status: powershellActive ? 'running' : (psPlatform.isLinux ? 'linux_dormant' : (norm.enabled ? 'module_off' : 'master_off')),
       activeSwitches: [

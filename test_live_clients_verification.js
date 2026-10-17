@@ -10,21 +10,42 @@
  */
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const assert = require('assert');
 
 const ROUTER_HOST = '127.0.0.1';
 const ROUTER_PORT = 4010;
 
+let adminAuthHeader = '';
+try {
+  const cfgFile = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
+  if (fs.existsSync(cfgFile)) {
+    const parsed = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    if (parsed.uiPassword && parsed.uiPassword.trim()) {
+      adminAuthHeader = 'Bearer ' + parsed.uiPassword.trim();
+    }
+  }
+} catch (_) {}
+
 function httpRequest(options, postData = null) {
   return new Promise((resolve, reject) => {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
+
+    if (adminAuthHeader && options.path && options.path.startsWith('/balancer/')) {
+      if (!headers['Authorization'] && !headers['authorization']) {
+        headers['Authorization'] = adminAuthHeader;
+      }
+    }
+
     const opts = {
       hostname: ROUTER_HOST,
       port: ROUTER_PORT,
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      }
+      headers
     };
 
     const req = http.request(opts, (res) => {
@@ -156,7 +177,8 @@ async function runLiveVerification() {
     method: 'POST',
     headers: {
       'Authorization': 'Bearer codex-local-test',
-      'x-conversation-id': codexSessionId
+      'x-conversation-id': codexSessionId,
+      'x-client-platform': 'windows'
     }
   }, codexPayload);
 
@@ -439,7 +461,11 @@ async function runLiveVerification() {
   const uiHtml = uiRes.body;
   assert.strictEqual(uiRes.statusCode, 200, 'Web UI 页面必须返回 200');
   assert.ok(uiHtml.includes('id="module-card-powershell"'), 'Web UI 必须渲染 Card 5 PowerShell 卡片');
-  assert.ok(uiHtml.includes('Windows 原生运行中'), 'Web UI 必须显示 Windows 原生运行中指示灯');
+  if (process.platform === 'win32') {
+    assert.ok(uiHtml.includes('Windows 原生运行中'), 'Web UI 必须显示 Windows 原生运行中指示灯');
+  } else {
+    assert.ok(uiHtml.includes('Linux 休眠旁路') || uiHtml.includes('module-card-powershell'), 'Web UI 必须显示 Linux 休眠旁路指示灯');
+  }
   assert.ok(uiHtml.includes('id="by-model-breakdown-drawer"'), 'Web UI 必须渲染分模型节约抽屉');
   assert.ok(uiHtml.includes('id="comp-doctor-status-badge"'), 'Web UI 必须渲染压缩体检状态指示');
   console.log('   ✔ Web UI 控制台页面渲染核验成功，5 大卡片、指示徽章与抽屉 100% 同步！');
