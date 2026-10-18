@@ -257,9 +257,13 @@ function Step-SetupRouter {
     try {
         $updaterScript = Join-Path $rootDir "updater.js"
         if (Test-Path $updaterScript) {
-            $escPath = $opencodeConfigFile.Replace('\', '/')
-            node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $port);"
-            Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量 38 款模型、双轨规范与智能体定义就绪)" -ForegroundColor Green
+            $nodeCmd = "const p = require('path'); const u = require(p.resolve(process.argv[1])); u.harmonizeOpencodeConfig(process.argv[2], parseInt(process.argv[3], 10));"
+            & node -e $nodeCmd "$updaterScript" "$opencodeConfigFile" "$port"
+            if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
+                Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量 38 款模型、双轨规范与智能体定义就绪)" -ForegroundColor Green
+            } else {
+                Write-Host "⚠ opencode.jsonc 绑定执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+            }
         }
     } catch {
         Write-Host "⚠ opencode.jsonc 网关绑定提醒: $_" -ForegroundColor Yellow
@@ -323,9 +327,11 @@ function Step-SetupOMO {
     try {
         $updaterScript = Join-Path $rootDir "updater.js"
         if (Test-Path $updaterScript) {
-            $escPath = $opencodeConfigFile.Replace('\', '/')
-            node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $port);"
-            Write-Host "✔ OMO 插件规范与标签已动态双向对齐 (无硬编码版本漂移)" -ForegroundColor Green
+            $nodeCmd = "const p = require('path'); const u = require(p.resolve(process.argv[1])); u.harmonizeOpencodeConfig(process.argv[2], parseInt(process.argv[3], 10));"
+            & node -e $nodeCmd "$updaterScript" "$opencodeConfigFile" "$port"
+            if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
+                Write-Host "✔ OMO 插件规范与标签已动态双向对齐 (无硬编码版本漂移)" -ForegroundColor Green
+            }
         }
     } catch {
         Write-Host "ℹ OMO 插件配置提醒: $_" -ForegroundColor DarkGray
@@ -515,7 +521,7 @@ function Step-SetupOfficePreview {
 function Step-ManageUpdates {
     $updaterJs = Join-Path $rootDir "updater.js"
     if (Test-Path $updaterJs) {
-        & node $updaterJs check
+        & node "$updaterJs" check
     }
 }
 
@@ -524,8 +530,9 @@ function Step-SetupCodex {
     Write-Header "【步骤 10】OpenAI Codex CLI 智能接入与模型调度"
     $codexAdapterJs = Join-Path $rootDir "codex-adapter.js"
     if (-not (Test-Path $codexAdapterJs)) { return }
-    $bindCmd = "const a = require('./codex-adapter'); const r = a.bindCodexConfig({ routerPort: $port, defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
-    $bindRes = (& node -e $bindCmd 2>$null | ConvertFrom-Json)
+    $bindCmd = "const p = require('path'); const a = require(p.resolve(process.argv[1])); const r = a.bindCodexConfig({ routerPort: parseInt(process.argv[2], 10), defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
+    $rawRes = (& node -e $bindCmd "$codexAdapterJs" "$port" 2>$null)
+    $bindRes = if ($rawRes) { try { $rawRes | ConvertFrom-Json } catch { $null } } else { $null }
     if ($bindRes -and $bindRes.success) {
         Write-Host "🎉 成功接入 Codex！(默认: deepseek-v4.1-flash / 思考: high / 端口: $port)" -ForegroundColor Green
     }
@@ -570,13 +577,15 @@ function Step-Start {
 
 function Step-Stop {
     Write-Host "正在停止智能网关与托盘守护进程..." -ForegroundColor Yellow
-    # 停止托盘
-    Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Get-Process -Name "OpenCodeRouterApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    $trays = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" }
-    if ($trays) {
-        foreach ($t in $trays) {
-            try { Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+    # 停止托盘 (仅在默认端口 4010 且未指定 NoShortcuts 时处理全局托盘，保护沙箱/多实例互不干扰)
+    if ($port -eq 4010 -and -not $NoShortcuts) {
+        Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process -Name "OpenCodeRouterApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $trays = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" }
+        if ($trays) {
+            foreach ($t in $trays) {
+                try { Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+            }
         }
     }
     # 停止端口上的路由进程

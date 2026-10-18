@@ -27,7 +27,7 @@ const path = require('node:path');
 const os = require('node:os');
 const https = require('node:https');
 const http = require('node:http');
-const { execSync, spawn } = require('node:child_process');
+const { execSync } = require('node:child_process');
 
 function stripJsonComments(str) {
   if (typeof str !== 'string') return '';

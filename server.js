@@ -202,10 +202,20 @@ const sessionToFallbackKeys = sessionFallbackKeyMap;
 // CacheKey to SessionId reverse mapping for delimiter-safe O(1) invalidation
 const cacheKeyToSessionMap = new Map();
 
+const MAX_ROUTER_SESSIONS = 5000;
+
 function touchSession(sessionId, now = Date.now()) {
   if (!sessionId) return;
   sessionLastSeen.delete(sessionId);
   sessionLastSeen.set(sessionId, now);
+
+  // Bounded LRU eviction to prevent memory leak under session flooding
+  if (sessionLastSeen.size > MAX_ROUTER_SESSIONS) {
+    const oldestSession = sessionLastSeen.keys().next().value;
+    if (oldestSession) {
+      deleteSessionRecord(oldestSession);
+    }
+  }
 }
 
 function getSessionModelFallback(sessionId, model) {
@@ -1705,6 +1715,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       console.error('[Upstream Stream Error]', err.message);
       clientRes.removeListener('error', onClientPipeError);
       clientRes.removeListener('close', onClientPipeError);
+      clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
       try {
         upstreamRes.unpipe(clientRes);
       } catch (_) {}
@@ -1720,6 +1732,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     upstreamRes.on('end', () => {
       clientRes.removeListener('error', onClientPipeError);
       clientRes.removeListener('close', onClientPipeError);
+      clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
       finishRequest();
     });
   });
@@ -3836,7 +3850,7 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.8.2';
+  let pkgVersion = '3.8.3';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -8832,13 +8846,27 @@ function readInternalBody(req, res, maxBytes = MAX_INTERNAL_PAYLOAD) {
   return new Promise((resolve) => {
     const chunks = [];
     let totalBytes = 0;
-    let rejected = false;
+    let settled = false;
 
-    req.on('data', (chunk) => {
-      if (rejected) return;
+    const cleanup = () => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      req.removeListener('close', onClose);
+    };
+
+    const done = (val) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(val);
+    };
+
+    const onData = (chunk) => {
+      if (settled) return;
       totalBytes += chunk.length;
       if (totalBytes > maxBytes) {
-        rejected = true;
+        chunks.length = 0;
         if (!res.headersSent) {
           try {
             res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -8846,16 +8874,36 @@ function readInternalBody(req, res, maxBytes = MAX_INTERNAL_PAYLOAD) {
           } catch (_) {}
         }
         try { req.destroy(); } catch (_) {}
-        resolve(null);
+        done(null);
         return;
       }
       chunks.push(chunk);
-    });
+    };
 
-    req.on('end', () => {
-      if (rejected) return;
-      resolve(Buffer.concat(chunks));
-    });
+    const onEnd = () => {
+      done(Buffer.concat(chunks));
+    };
+
+    const onError = () => {
+      chunks.length = 0;
+      done(null);
+    };
+
+    const onClose = () => {
+      if (!req.readableEnded) {
+        chunks.length = 0;
+        done(null);
+      }
+    };
+
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+    req.on('close', onClose);
+
+    if (req.readableEnded) {
+      done(Buffer.concat(chunks));
+    }
   });
 }
 
@@ -9863,6 +9911,8 @@ $ghost
   let reqRejected = false;
   req.on('error', err => {
     if (reqRejected) return;
+    reqRejected = true;
+    chunks.length = 0;
     if (!res.headersSent) {
       try {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -9870,11 +9920,18 @@ $ghost
       } catch (_) {}
     }
   });
+  req.on('close', () => {
+    if (!req.readableEnded) {
+      reqRejected = true;
+      chunks.length = 0;
+    }
+  });
   req.on('data', chunk => {
     if (reqRejected) return;
     totalReqBytes += chunk.length;
     if (totalReqBytes > MAX_REQ_BYTES) {
       reqRejected = true;
+      chunks.length = 0;
       if (!res.headersSent) {
         try {
           res.writeHead(413, { 'Content-Type': 'application/json' });
@@ -10002,6 +10059,10 @@ module.exports = {
   getSessionModelFallback,
   setSessionModelFallback,
   deleteSessionRecord,
+  sessionMap,
+  sessionLastSeen,
+  MAX_ROUTER_SESSIONS,
+  readInternalBody,
   runSystemDoctor,
   executeSystemRepair
 };

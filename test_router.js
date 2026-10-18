@@ -6752,7 +6752,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1 or 3.8.2');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2 or 3.8.3');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6998,7 +6998,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1 or 3.8.2');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2 or 3.8.3');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7476,9 +7476,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0, 3.8.1 or 3.8.2
+    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2 or 3.8.3
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1 or 3.8.2');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2 or 3.8.3');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7555,7 +7555,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2'].includes(pkgJson148.version), 'package.json version must be 3.8.1 or 3.8.2');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2 or 3.8.3');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7564,9 +7564,9 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
     console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
 
-    // 1. Verify package.json declares v3.8.2 and npm run setup script
+    // 1. Verify package.json declares v3.8.2 or v3.8.3 and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson149.version, '3.8.2', 'package.json version must be 3.8.2');
+    assert.ok(['3.8.2', '3.8.3'].includes(pkgJson149.version), 'package.json version must be 3.8.2 or 3.8.3');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7587,13 +7587,48 @@ $ProgressPreference = 'SilentlyContinue'
     const sandboxTestPath = path.join(__dirname, 'test_sandbox_install.ps1');
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
-    // 4. Verify Web UI renders v3.8.2 Pro badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro'), 'Web UI must render v3.8.2 Pro version badge');
+    // 4. Verify Web UI renders version badge
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro'), 'Web UI must render v3.8.2 Pro or v3.8.3 Pro version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
+    // [Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release
+    console.log('\n[Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release...');
+
+    // 1. Verify package.json declares v3.8.3
+    const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(pkgJson150.version, '3.8.3', 'package.json version must be 3.8.3');
+
+    // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
+    const routerModule = require('./server');
+    assert.strictEqual(routerModule.MAX_ROUTER_SESSIONS, 5000, 'server.js must define MAX_ROUTER_SESSIONS = 5000');
+    assert.ok(routerModule.sessionMap instanceof Map, 'server.js must export sessionMap');
+    assert.ok(routerModule.sessionLastSeen instanceof Map, 'server.js must export sessionLastSeen');
+    assert.strictEqual(typeof routerModule.readInternalBody, 'function', 'server.js must export readInternalBody');
+
+    // 3. Verify readInternalBody settles cleanly on client connection close/abort without memory leak
+    const mockReq = new (require('events').EventEmitter)();
+    mockReq.readableEnded = false;
+    const mockRes = { headersSent: false, writeHead: () => {}, end: () => {} };
+    const bodyPromise = routerModule.readInternalBody(mockReq, mockRes);
+    mockReq.emit('close'); // Simulate immediate client disconnection
+    const bodyResult = await bodyPromise;
+    assert.strictEqual(bodyResult, null, 'readInternalBody must resolve to null upon premature socket close');
+    assert.strictEqual(mockReq.listenerCount('data'), 0, 'data listener must be cleaned up on premature close');
+    assert.strictEqual(mockReq.listenerCount('end'), 0, 'end listener must be cleaned up on premature close');
+
+    // 4. Verify setup-windows.ps1 uses path-independent node process.argv execution and isolated tray stopping
+    const setupWinContent150 = fs.readFileSync(setupWinPath, 'utf8');
+    assert.ok(setupWinContent150.includes('process.argv'), 'setup-windows.ps1 must use process.argv for path-independent execution');
+    assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
+
+    // 5. Verify Web UI renders v3.8.3 Pro badge
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro'), 'Web UI must render v3.8.3 Pro version badge');
+
+    console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 149 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 150 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

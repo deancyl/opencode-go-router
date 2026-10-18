@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.2-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.3-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-149%2F149%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-150%2F150%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,23 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.8.2 (当前最新版：Windows 全生命周期安装引擎、从零冷启动沙箱实测套件、无损配置合并与多端鲁棒性增强)
+### 🚀 v3.8.3 (当前最新版：全生命周期内存护栏、OOM 隐患根治、无锁路径解耦与多实例隔离沙箱)
+- **会话亲和性 LRU 有界内存收敛 (Bounded LRU Session Shield)**：
+  - 在 `server.js` 核心网关中引入 `MAX_ROUTER_SESSIONS = 5000` 强力有界约束；在 `touchSession` 时实施 O(1) 淘汰机制，当活跃会话超过 5000 时自动驱逐最旧的 LRU 会话及关联的压缩备忘与异构节点模型记忆，彻底消除巨量突发会话引发的内存无限线性增长与 OOM 隐患。
+- **管理流与代理流内存彻底回收 (Zero-Leak Lifecycle & Stream Cleanup)**：
+  - **管理接口零挂起自愈**：全面重构 `readInternalBody(req, res)`，在客户端异常断开或传输错误时及时解构清理监听器并安全决议，杜绝未决议 Promise 与大 JSON 挂死在内存中；
+  - **32MB 超限 Buffer 瞬时回收**：请求体超过 32MB 触发 413 时瞬时将 `chunks` 数组置空 (`chunks.length = 0`)，无需等待请求句柄 GC 即可瞬时向 V8 堆归还最高 32MB 内存；
+  - **代理响应事件监听器闭环清理**：在 200 OK 正常数据流结束（`upstreamRes.on('end')`）或上游异常中断时，强制从客户端响应对象注销 `clientCloseHandler` 与 `clientErrorHandler`，彻底消除长连接事件监听器泄漏。
+- **安装引擎路径解耦与非 ASCII / 空格免疫**：
+  - 彻底消除 `setup-windows.ps1` 中对当前终端工作目录的脆弱依赖，通过 Node.js 原生 `process.argv` 安全参数通道传递 `$updaterScript` 与 `$codexAdapterJs`，无论从任何路径、任何盘符拉起均杜绝 `MODULE_NOT_FOUND`；
+  - 全面支持非 ASCII 字符（中文）与空格路径部署（如 `C:\Users\张 三\...`），无损转义安全运行。
+- **多实例并发沙箱隔离与生产主服务免疫**：
+  - 重构 `Step-Stop` 进程终止逻辑：仅在管理默认端口 4010 且未指定 `-NoShortcuts` 时停止全局托盘与看门狗，沙箱实例与次级端口退出时仅定向释放本端口进程，绝不误杀主服务与桌面托盘；
+  - 升级 `test_sandbox_install.ps1` 沙箱测试套件至 19 项指标，覆盖中文空格路径、外部工作区拉起、双沙箱并发并行与生产主服务免杀断言。
+- **测试矩阵扩充至 150 项全绿 (Test 150)**：
+  - 新增 Test 150 深度核验会话 5000 门限 LRU 收敛、管理接口断链自愈、32MB 堆内存即时归还与路径无关性调用，全套 150 项自动化集成测试 100% 绿灯。
+
+### 🚀 v3.8.2 (Windows 全生命周期安装引擎、从零冷启动沙箱实测套件、无损配置合并与多端鲁棒性增强)
 - **Windows 全生命周期安装与部署引擎 (`setup-windows.ps1`)**：
   - 新增全功能 PowerShell 安装与服务生命周期脚本，与 Linux 端的 `setup-linux.sh` 形成 100% 对称标准；
   - 全面支持 `-Step`, `-All`, `-Silent`, `-Start`, `-Stop`, `-Restart`, `-Status`, `-Doctor`, `-Repair`, `-Bind`, `-Port`, `-HostName`, `-Key1`, `-Key2`, `-Password`, `-InstallDir`, `-NoShortcuts` 全套参数；

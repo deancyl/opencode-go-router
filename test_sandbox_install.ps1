@@ -1,11 +1,12 @@
 # test_sandbox_install.ps1: OpenCode Go Router 独立隔离沙箱全新安装与全生命周期自动化核验套件
 # 
 # 验证目标:
-# 1. 临时隔离目录中从零安装 (冷启动全新部署，模拟纯净新机环境)
-# 2. 从零初始化 config.json、端口检测、账号与安全密码配置
+# 1. 临时隔离目录中从零安装 (冷启动全新部署，模拟纯净新机环境，支持中文与空格路径)
+# 2. 从零初始化 config.json、端口检测、账号与安全密码配置 (路径脱钩，无论从何处运行均无 MODULE_NOT_FOUND)
 # 3. 后台纯静默常驻 (内核级 CREATE_NO_WINDOW / VBScript，零终端黑框)
 # 4. 全链路健康探针 (/health、/balancer/ui、/balancer/api/compression/doctor)
-# 5. 服务停止、端口释放与沙箱无痕回收
+# 5. 多实例并发沙箱隔离与端口互斥 (不误杀主服务 4010 与托盘进程)
+# 6. 服务停止、端口释放与沙箱无痕回收
 [CmdletBinding()]
 param()
 
@@ -15,7 +16,7 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { "C:\Users\deanc\.opencode-go-router" }
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "🧪 OpenCode Go Router 隔离沙箱全新冷启动安装测试启动" -ForegroundColor Cyan
+Write-Host "🧪 OpenCode Go Router 隔离沙箱全新冷启动安装测试启动 (v3.8.3 深度增强版)" -ForegroundColor Cyan
 Write-Host "代码基线目录: $scriptRoot" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 
@@ -33,8 +34,9 @@ function Assert-SandboxTest([string]$name, [bool]$condition, [string]$detail) {
     }
 }
 
-function Get-FreeTcpPort([int]$startPort = 4800, [int]$endPort = 4900) {
+function Get-FreeTcpPort([int]$startPort = 4800, [int]$endPort = 4900, [int[]]$excludePorts = @()) {
     for ($p = $startPort; $p -le $endPort; $p++) {
+        if ($excludePorts -contains $p) { continue }
         $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
         if (-not $conn) {
             return $p
@@ -53,14 +55,14 @@ function Test-PortActive([int]$targetPort) {
 }
 
 # -------------------------------------------------------------
-# 1. 建立独立临时沙箱隔离目录
+# 1. 建立独立临时沙箱隔离目录 (包含复杂空格与非 ASCII 中文字符路径)
 # -------------------------------------------------------------
 $sandboxId = [System.Guid]::NewGuid().ToString("N").Substring(0, 8)
-$sandboxDir = Join-Path $env:TEMP "opencode_sandbox_$sandboxId"
+$sandboxDir = Join-Path $env:TEMP "opencode 沙箱 测试_$sandboxId"
 New-Item -ItemType Directory -Path $sandboxDir -Force | Out-Null
-Write-Host "`n[Stage 1] 成功创建隔离沙箱目录: $sandboxDir" -ForegroundColor Yellow
+Write-Host "`n[Stage 1] 成功创建非 ASCII 与空格隔离沙箱目录: $sandboxDir" -ForegroundColor Yellow
 
-$sandboxPort = Get-FreeTcpPort 4810 4890
+$sandboxPort = Get-FreeTcpPort 4810 4850
 Write-Host "  动态分配独立沙箱测试端口: $sandboxPort" -ForegroundColor Gray
 
 # 复制核心运行时文件到沙箱
@@ -103,9 +105,9 @@ $sandboxCfg = Join-Path $sandboxDir "config.json"
 Assert-SandboxTest "1.2 零初始配置基线" (-not (Test-Path $sandboxCfg)) "确认沙箱初始无 config.json 配置文件"
 
 # -------------------------------------------------------------
-# 2. 执行 setup-windows.ps1 沙箱自动化安装
+# 2. 从外部不同目录执行 setup-windows.ps1 沙箱自动化安装 (路径无关性验证)
 # -------------------------------------------------------------
-Write-Host "`n[Stage 2] 执行 setup-windows.ps1 沙箱全新安装 (Step 2 路由配置与部署)..." -ForegroundColor Yellow
+Write-Host "`n[Stage 2] 执行 setup-windows.ps1 沙箱全新安装 (Step 2 路由配置与部署，路径解耦)..." -ForegroundColor Yellow
 
 $testKey1 = "oc_sk_sandbox_test_alpha_001"
 $testKey2 = "oc_sk_sandbox_test_beta_002"
@@ -114,7 +116,12 @@ $testPassword = "SandboxSecurePass_777!"
 $setupScript = Join-Path $sandboxDir "setup-windows.ps1"
 
 $stopwatch.Restart()
-& $setupScript -Step 2 -Silent -Port $sandboxPort -HostName "127.0.0.1" -Key1 $testKey1 -Key2 $testKey2 -Password $testPassword -InstallDir $sandboxDir -NoShortcuts
+Push-Location $env:TEMP
+try {
+    & $setupScript -Step 2 -Silent -Port $sandboxPort -HostName "127.0.0.1" -Key1 $testKey1 -Key2 $testKey2 -Password $testPassword -InstallDir $sandboxDir -NoShortcuts
+} finally {
+    Pop-Location
+}
 $installDuration = $stopwatch.ElapsedMilliseconds
 $stopwatch.Stop()
 
@@ -179,7 +186,6 @@ try {
         $uiResp.Close()
     }
 } catch [System.Net.WebException] {
-    # 存在密码时可能返回 302 重定向到登录页或 401，均属于正常业务表现
     if ($_.Response -ne $null) { $uiOk = $true }
 }
 Assert-SandboxTest "5.2 /balancer/ui 页面可达" $uiOk "Web 控制台页面成功响应"
@@ -194,19 +200,54 @@ try {
 Assert-SandboxTest "5.3 Doctor 体检探针 200 OK" ($doctorRes -ne $null -and $doctorRes.healthy -eq $true) "Doctor 压缩诊断全绿就绪: healthy=$($doctorRes.healthy)"
 
 # -------------------------------------------------------------
-# 6. 生命周期控制实测: 停止与平滑重启自愈
+# 6. 多实例并发沙箱隔离与宿主服务保护实测
 # -------------------------------------------------------------
-Write-Host "`n[Stage 6] 核验生命周期管理 (Stop -> Port Release -> Restart)..." -ForegroundColor Yellow
+Write-Host "`n[Stage 6] 核验多实例并发沙箱隔离与生产服务免受误杀保护..." -ForegroundColor Yellow
 
-# 6.1 停止沙箱服务
-& $setupScript -Stop -Port $sandboxPort -InstallDir $sandboxDir
+# 6.1 启动并发次级沙箱
+$sandboxPort2 = Get-FreeTcpPort 4851 4899 @($sandboxPort)
+$sandboxDir2 = Join-Path $env:TEMP "opencode 并发沙箱_$sandboxId"
+New-Item -ItemType Directory -Path $sandboxDir2 -Force | Out-Null
+
+foreach ($f in $filesToCopy) {
+    $src = Join-Path $scriptRoot $f
+    if (Test-Path $src) { Copy-Item -Path $src -Destination $sandboxDir2 -Force }
+}
+
+$setupScript2 = Join-Path $sandboxDir2 "setup-windows.ps1"
+& $setupScript2 -Step 2 -Silent -Port $sandboxPort2 -HostName "127.0.0.1" -Key1 "key_second_inst" -Key2 "key_second_inst_2" -InstallDir $sandboxDir2 -NoShortcuts
+
+$inst2Active = $false
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 150
+    if (Test-PortActive $sandboxPort2) { $inst2Active = $true; break }
+}
+Assert-SandboxTest "6.1 并发次级沙箱拉起" $inst2Active "次级沙箱实例已在独立端口 $sandboxPort2 成功监听"
+Assert-SandboxTest "6.2 主次双沙箱并行" (Test-PortActive $sandboxPort -and Test-PortActive $sandboxPort2) "两个隔离沙箱端口 ($sandboxPort 与 $sandboxPort2) 同时健康运行，互不冲撞"
+
+# 6.3 优雅停止次级沙箱，断言主沙箱毫发无损
+& $setupScript2 -Stop -Port $sandboxPort2 -InstallDir $sandboxDir2 -NoShortcuts
+Start-Sleep -Milliseconds 500
+
+Assert-SandboxTest "6.3 次级沙箱安全退出" (-not (Test-PortActive $sandboxPort2)) "次级沙箱端口 $sandboxPort2 已彻底释放"
+Assert-SandboxTest "6.4 主沙箱免疫隔离" (Test-PortActive $sandboxPort) "主沙箱在次级实例销毁后依然正常服务，未受任何误杀影响"
+
+try { Remove-Item -Path $sandboxDir2 -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+
+# -------------------------------------------------------------
+# 7. 生命周期控制实测: 停止与平滑重启自愈
+# -------------------------------------------------------------
+Write-Host "`n[Stage 7] 核验生命周期管理 (Stop -> Port Release -> Restart)..." -ForegroundColor Yellow
+
+# 7.1 停止沙箱服务
+& $setupScript -Stop -Port $sandboxPort -InstallDir $sandboxDir -NoShortcuts
 Start-Sleep -Milliseconds 600
 
 $stoppedPort = -not (Test-PortActive $sandboxPort)
-Assert-SandboxTest "6.1 优雅停止并释放端口" $stoppedPort "沙箱端口 $sandboxPort 已完全释放"
+Assert-SandboxTest "7.1 优雅停止并释放端口" $stoppedPort "沙箱端口 $sandboxPort 已完全释放"
 
-# 6.2 重新启动沙箱服务
-& $setupScript -Start -Port $sandboxPort -InstallDir $sandboxDir
+# 7.2 重新启动沙箱服务
+& $setupScript -Start -Port $sandboxPort -InstallDir $sandboxDir -NoShortcuts
 Start-Sleep -Milliseconds 800
 
 $restartedPort = $false
@@ -217,20 +258,20 @@ for ($i = 0; $i -lt 25; $i++) {
         break
     }
 }
-Assert-SandboxTest "6.2 冷启动平滑复活" $restartedPort "沙箱服务已重新拉起并监听 $sandboxPort"
+Assert-SandboxTest "7.2 冷启动平滑复活" $restartedPort "沙箱服务已重新拉起并监听 $sandboxPort"
 
 # -------------------------------------------------------------
-# 7. 清理与沙箱回收
+# 8. 清理与沙箱回收
 # -------------------------------------------------------------
-Write-Host "`n[Stage 7] 清理沙箱服务与临时环境..." -ForegroundColor Yellow
-& $setupScript -Stop -Port $sandboxPort -InstallDir $sandboxDir
+Write-Host "`n[Stage 8] 清理沙箱服务与临时环境..." -ForegroundColor Yellow
+& $setupScript -Stop -Port $sandboxPort -InstallDir $sandboxDir -NoShortcuts
 Start-Sleep -Milliseconds 500
 
 try {
     Remove-Item -Path $sandboxDir -Recurse -Force -ErrorAction SilentlyContinue
 } catch { }
 
-Assert-SandboxTest "7.1 沙箱环境干净回收" (-not (Test-PortActive $sandboxPort)) "端口 $sandboxPort 已归还系统，测试无污染"
+Assert-SandboxTest "8.1 沙箱环境干净回收" (-not (Test-PortActive $sandboxPort)) "端口 $sandboxPort 已归还系统，测试无污染"
 
 # -------------------------------------------------------------
 # 总结测试报告
