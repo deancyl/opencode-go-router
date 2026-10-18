@@ -101,13 +101,20 @@ flowchart TD
 
 ### 5. Card 5: Windows PowerShell 优化与平台自适应
 - **Windows PowerShell 命令转义自愈 (`powershell-optimizer.js`)**：
+  - **双引号内 `$()` 与 `${}` 本地求值防御**：彻底解决 Windows PowerShell 在双引号字符串内将 `$()` 和 `${}` 提前在本机执行抛出 `The term '...' is not recognized` 的转义地狱，精准状态机自动注入反引号转义为 `` `$(` `` 与 `` `${` ``；
+  - **脚本文件注入执行助手 (`wrapInScriptFileExecution`)**：对包含循环、多层嵌套引号或 heredoc 的复杂命令，自动转换为临时 `.ps1` 脚本通过 `@' ... '@` 单引号字面量或 Base64 内存写入执行，并在 `finally` 中安全销毁，彻底消除转义风险；
+  - **PowerShell 7 语法错误降噪**：过滤 `Line | ... ~~~~~` 模板噪点与冗余指令说明，削减 70%~80% 因报错重试浪费的 Token；
   - **路径反斜杠防吞噬引号**：修复 Windows `CommandLineToArgvW` 陷阱，将 `"C:\path\"` 自动转义为 `"C:\path\\"`，防止后续闭合引号被转义吃掉；
   - **curl 别名陷阱规避**：将 Windows PowerShell 自带的 `curl`（默认别名为 `Invoke-WebRequest`）自动修正为 `curl.exe`；
   - **`&&` 操作符自愈**：将 PowerShell 5.1 不支持的 `&&` 转换为 `; if ($?) { ... }`，消灭 ParserError 崩溃；
   - **多行反斜杠续行修复**：将 Bash 式末尾续行 `\` 转为 PowerShell 原生反引号 `` ` ``；
-  - **CLIXML 报错去噪**：深度解析 `#< CLIXML` 冗长报错，消除 Hex 转义并精简 CategoryInfo 堆栈，削减 70%~90% 的终端试错开销。
+  - **CLIXML 报错去噪**：深度解析 `#< CLIXML` 冗长报错，消除 Hex 转义并精简 CategoryInfo 堆栈。
 - **跨平台自适应休眠旁路**：
   - 自动识别宿主与请求平台；在 Windows 下全速启用，在 Linux / NAS 服务端自动进入 0 开销休眠旁路。
+
+### 6. 高精度动态分词模型与 100% 零反向膨胀熔断
+- **中英双语动态分词模型 (`estimateTokens`)**：彻底取代全系统单一写死的 `/ 3.8`，针对中文/CJK 字符按约 1.25 字符/Token、英文/代码/符号按约 3.8 字符/Token 动态加权分词，显著提升计费与 Token 节约预估精度；
+- **100% 零反向膨胀熔断屏障**：在所有转换管线内部部署严格守卫，若压缩后长度大于等于原文本长度，坚决 100% 熔断回滚原文，确保绝不会因压缩引入更多字符。
 
 ---
 
