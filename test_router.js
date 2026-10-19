@@ -6792,7 +6792,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -7038,7 +7038,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7545,9 +7545,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0
+    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7624,7 +7624,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7633,9 +7633,9 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
     console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
 
-    // 1. Verify package.json declares v3.8.2, v3.8.3, v3.9.0 or v3.10.0 and npm run setup script
+    // 1. Verify package.json declares v3.8.2, v3.8.3, v3.9.0, v3.10.0 or v3.10.1 and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
+    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7657,16 +7657,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro'), 'Web UI must render v3.8.2 Pro, v3.8.3 Pro, v3.9.0 Pro or v3.10.0 Pro version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
     // [Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release
     console.log('\n[Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release...');
 
-    // 1. Verify package.json declares v3.8.3, v3.9.0 or v3.10.0
+    // 1. Verify package.json declares v3.8.3, v3.9.0, v3.10.0 or v3.10.1
     const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.3', '3.9.0', '3.10.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0 or 3.10.0');
+    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
 
     // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
     const routerModule = require('./server');
@@ -7967,11 +7967,11 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro'), 'Web UI must render v3.9.0 Pro or v3.10.0 Pro version badge');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro'), 'Web UI must render version badge');
 
-    // 6. Verify package.json declares 3.9.0 or 3.10.0
+    // 6. Verify package.json declares 3.9.0, 3.10.0 or 3.10.1
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.9.0', '3.10.0'].includes(pkgJson153.version), 'package.json version must be 3.9.0 or 3.10.0');
+    assert.ok(['3.9.0', '3.10.0', '3.10.1'].includes(pkgJson153.version), 'package.json version must be 3.9.0, 3.10.0 or 3.10.1');
 
     console.log('✓ CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence verified');
 
@@ -8091,19 +8091,266 @@ $ProgressPreference = 'SilentlyContinue'
     const initialSaved = contextCompactor.getCompressionStats().totalSavedChars;
     assert.ok(initialSaved > 0, 'Initial compression must save characters');
 
-    // 7. Verify package.json declares 3.10.0 and Web UI renders v3.10.0 Pro badge
+    // 7. Verify package.json declares 3.10.0 or 3.10.1 and Web UI renders badge
     const pkgJson154 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson154.version, '3.10.0', 'package.json version must be 3.10.0');
+    assert.ok(['3.10.0', '3.10.1'].includes(pkgJson154.version), 'package.json version must be 3.10.0 or 3.10.1');
 
     const uiRes154 = await request('/balancer/ui', { method: 'GET' });
     assert.strictEqual(uiRes154.statusCode, 200);
-    assert.ok(uiRes154.body.includes('v3.10.0 Pro'), 'Web UI must render v3.10.0 Pro badge');
+    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro'), 'Web UI must render v3.10.0 Pro or v3.10.1 Pro badge');
     assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
 
     console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
 
+    // =========================================================================
+    // [Test 155] Top 15 Architectural Defect Fixes Comprehensive Verification:
+    // 1. Session Affinity & KV Cache Determinism (extractOrDeriveSessionId)
+    // 2. Cross-chunk <think> Tag Split State Machine (bridgeResponsesStream)
+    // 3. Non-streaming apply_patch & thinking block conversions
+    // 4. Anthropic Tool Result Contiguity (tool_result before text in user role)
+    // 5. Multi-turn Session Model Fallback Suffix Normalization (-r<ts>)
+    // 6. Safe writeFileSyncAtomic with tmp/rename and cleanup on error
+    // 7. Security: UI Password / API Key Authorization & LAN Protection (401 vs 200)
+    // 8. Air-Gapped Office Preview DOM XSS Prevention (escapeHtml)
+    // 9. Linux/macOS Safe Process Clean (pkill -x instead of pkill -f)
+    // 10. SQLite Injection Defense (safe stdin JSON)
+    // 11. C# Tray Dynamic Auth Configuration & Compilation
+    // 12. Universal Daemon Runner & Office Regex Hook
+    // =========================================================================
+    console.log('\n--- [Test 155] Top 15 Architectural Defect Fixes Comprehensive Verification ---');
+
+    // 1. Session Affinity & KV Cache Determinism
+    // 1A. Context header priority over x-request-id
+    const fakeReqWithPrev = {
+      headers: {
+        'previous_response_id': 'resp_prev_155',
+        'x-request-id': 'req_ephemeral_155'
+      }
+    };
+    const derivedPrev = codexAdapter.extractOrDeriveSessionId(fakeReqWithPrev, Buffer.from('{}'));
+    assert.strictEqual(derivedPrev, 'session-resp-resp_prev_155', 'extractOrDeriveSessionId must prioritize previous_response_id over x-request-id');
+
+    const fakeReqWithConv = {
+      headers: {
+        'conversation_id': 'conv_uuid_155',
+        'x-request-id': 'req_ephemeral_155'
+      }
+    };
+    const derivedConv = codexAdapter.extractOrDeriveSessionId(fakeReqWithConv, Buffer.from('{}'));
+    assert.strictEqual(derivedConv, 'session-conv-conv_uuid_155', 'extractOrDeriveSessionId must prioritize conversation_id over x-request-id');
+
+    // 1B. Deterministic content hash for headerless Chat / Anthropic requests
+    const chatBodySame = JSON.stringify({
+      messages: [
+        { role: 'user', content: 'KV cache determinism test prompt across turns' }
+      ]
+    });
+    const s1 = codexAdapter.extractOrDeriveSessionId({ headers: {} }, Buffer.from(chatBodySame));
+    const s2 = codexAdapter.extractOrDeriveSessionId({ headers: {} }, Buffer.from(chatBodySame));
+    assert.strictEqual(s1, s2, 'Same message content without session header must generate identical session ID across turns');
+    assert.ok(s1.startsWith('session-chat-'), 'Deterministic chat session must have session-chat- prefix');
+
+    // 1C. Anti-collision: Distinct user conversations sharing identical system prompt must NOT collide
+    const chatSysA = JSON.stringify({
+      messages: [
+        { role: 'system', content: 'You are an AI assistant.' },
+        { role: 'user', content: 'Write a poem about spring flowers' }
+      ]
+    });
+    const chatSysB = JSON.stringify({
+      messages: [
+        { role: 'system', content: 'You are an AI assistant.' },
+        { role: 'user', content: 'Debug this Python script deadlock' }
+      ]
+    });
+    const sSysA = codexAdapter.extractOrDeriveSessionId({ headers: {} }, Buffer.from(chatSysA));
+    const sSysB = codexAdapter.extractOrDeriveSessionId({ headers: {} }, Buffer.from(chatSysB));
+    assert.notStrictEqual(sSysA, sSysB, 'Distinct user conversations with identical system prompt must generate distinct session IDs');
+
+    // 2. Cross-chunk <think> Tag Split State Machine (including leading newlines/whitespace)
+    const mockUpstream155 = new EventEmitter();
+    mockUpstream155.destroy = () => {};
+    const clientRes155 = new EventEmitter();
+    clientRes155.writableEnded = false;
+    clientRes155.destroyed = false;
+    let streamCaptured = '';
+    clientRes155.writeHead = () => {};
+    clientRes155.write = (chunk) => { streamCaptured += chunk; return true; };
+    clientRes155.end = () => { clientRes155.writableEnded = true; };
+
+    codexAdapter.bridgeResponsesStream(mockUpstream155, clientRes155, 'deepseek-reasoner', 'req-think-155', () => {});
+
+    mockUpstream155.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"\\n\\n<th"}}]}\n\n'));
+    mockUpstream155.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"ink>Deep thoughts formed across chunks</th"}}]}\n\n'));
+    mockUpstream155.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"ink>Final synthesized solution"}}]}\n\n'));
+    mockUpstream155.emit('data', Buffer.from('data: [DONE]\n\n'));
+    mockUpstream155.emit('end');
+
+    assert.ok(streamCaptured.includes('response.reasoning_text.delta'), 'Must emit response.reasoning_text.delta event');
+    assert.ok(streamCaptured.includes('Deep thoughts formed across chunks'), 'Must capture full thinking text across chunk split');
+    assert.ok(streamCaptured.includes('response.output_text.delta'), 'Must emit response.output_text.delta event');
+    assert.ok(streamCaptured.includes('Final synthesized solution'), 'Must capture answer text after thinking tag closed');
+    assert.ok(!streamCaptured.includes('<think>') && !streamCaptured.includes('</think>') && !streamCaptured.includes('ink>Deep thoughts'), 'Must NOT leak raw <think> or </think> tags to client');
+
+    // 3. Non-streaming apply_patch, thinking block and <think> tag conversions
+    const chatToolResp = {
+      id: 'chat-patch-155',
+      model: 'deepseek-v4.1-flash',
+      choices: [{
+        message: {
+          role: 'assistant',
+          tool_calls: [{
+            id: 'call_patch_155',
+            type: 'function',
+            function: {
+              name: 'apply_patch',
+              arguments: JSON.stringify({ patch: '*** Begin Patch\n+line added\n*** End Patch' })
+            }
+          }]
+        }
+      }]
+    };
+    const convChat155 = codexAdapter.convertChatResponseToResponses(chatToolResp, 'deepseek-v4.1-flash', 'req-tool-155');
+    assert.strictEqual(convChat155.output[0].type, 'custom_tool_call', 'apply_patch in Chat must convert to custom_tool_call');
+    assert.strictEqual(convChat155.output[0].name, 'apply_patch');
+    assert.ok(convChat155.output[0].input.includes('+line added'), 'cleanInput must contain the patch body');
+
+    const chatThinkTagResp = {
+      id: 'chat-think-155',
+      model: 'deepseek-r1',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: '<think>Non-streaming internal reflection</think>The final clean answer.'
+        }
+      }]
+    };
+    const convChatThink155 = codexAdapter.convertChatResponseToResponses(chatThinkTagResp, 'deepseek-r1', 'req-chat-think-155');
+    const chatReasoningItem = convChatThink155.output.find(o => o.type === 'reasoning');
+    const chatMsgItem = convChatThink155.output.find(o => o.type === 'message');
+    assert.ok(chatReasoningItem, 'convertChatResponseToResponses must extract <think> tag into reasoning item');
+    assert.strictEqual(chatReasoningItem.content[0].text, 'Non-streaming internal reflection');
+    assert.strictEqual(chatMsgItem.content[0].text, 'The final clean answer.');
+
+    const antThinkingResp = {
+      id: 'msg-ant-155',
+      model: 'claude-3-7-sonnet',
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'Internal reasoning steps in Anthropic format' },
+        { type: 'text', text: 'Anthropic final answer' }
+      ]
+    };
+    const convAnt155 = codexAdapter.convertAnthropicResponseToResponses(antThinkingResp, 'claude-3-7-sonnet', 'req-ant-155');
+    const reasoningOut155 = convAnt155.output.find(o => o.type === 'reasoning');
+    assert.ok(reasoningOut155, 'Anthropic response with thinking block must produce reasoning output item');
+    assert.strictEqual(reasoningOut155.content[0].text, 'Internal reasoning steps in Anthropic format');
+    assert.strictEqual(reasoningOut155.status, 'completed');
+
+    // 4. Anthropic Tool Result Contiguity
+    const responsesPayloadUserTool = {
+      model: 'claude-3-5-sonnet',
+      input: [
+        { role: 'user', content: 'Please inspect the patch' },
+        { type: 'function_call_output', call_id: 'call_155', output: 'Success output' }
+      ]
+    };
+    const antConvertedPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesPayloadUserTool);
+    const convertedUserMsg = antConvertedPayload.messages.find(m => m.role === 'user');
+    assert.ok(Array.isArray(convertedUserMsg.content));
+    assert.strictEqual(convertedUserMsg.content[0].type, 'tool_result', 'tool_result blocks must precede text blocks in merged user message');
+    assert.strictEqual(convertedUserMsg.content[0].tool_use_id, 'call_155');
+    assert.strictEqual(convertedUserMsg.content[1].type, 'text', 'text block must follow tool_result blocks');
+    assert.strictEqual(convertedUserMsg.content[1].text, 'Please inspect the patch');
+
+    // 5. Multi-turn Session Model Fallback Suffix Normalization (-r<timestamp>)
+    const baseSession155 = 'session-fallback-norm-155';
+    const retrySession155 = `${baseSession155}-r1729348800-r1729349999`;
+    serverModule.setSessionModelFallback(retrySession155, 'deepseek-v4.1-flash', 'deepseek-flash');
+    const queryBaseFallback = serverModule.getSessionModelFallback(baseSession155, 'deepseek-v4.1-flash');
+    assert.strictEqual(queryBaseFallback, 'deepseek-flash', 'Model fallback saved with multiple -r<ts> suffixes must be normalized and queryable by base sessionId');
+    const queryNextRetryFallback = serverModule.getSessionModelFallback(`${baseSession155}-r1729359999`, 'deepseek-v4.1-flash');
+    assert.strictEqual(queryNextRetryFallback, 'deepseek-flash', 'Model fallback must be retrievable across subsequent retry turns');
+
+    // 6. Safe writeFileSyncAtomic
+    const atomicTestFile = path.join(testConfigDir, 'atomic-verify-155.json');
+    updaterMod.writeFileSyncAtomic(atomicTestFile, JSON.stringify({ verified: true, ts: Date.now() }));
+    assert.strictEqual(JSON.parse(fs.readFileSync(atomicTestFile, 'utf8')).verified, true);
+    const strayTmpFiles = fs.readdirSync(testConfigDir).filter(f => f.includes('atomic-verify-155.json.tmp.'));
+    assert.strictEqual(strayTmpFiles.length, 0, 'writeFileSyncAtomic must clean up temporary files');
+
+    // 7. Security: UI Password & LAN Protection (401 vs 200)
+    const origAccounts155 = serverModule.config.accounts;
+    const origUiPassword155 = serverModule.config.uiPassword;
+    serverModule.config.accounts = [
+      { id: 'acc1', apiKey: 'key-account-1', enabled: true },
+      { id: 'acc2', apiKey: 'key-account-2', enabled: true }
+    ];
+    serverModule.config.uiPassword = 'test-top15-secret-pwd';
+    try {
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: {}, socket: { remoteAddress: '127.0.0.1' } }), false, 'Unauthorized request without headers must be rejected');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'x-ui-password': 'wrong' }, socket: { remoteAddress: '127.0.0.1' } }), false, 'Wrong password must be rejected');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'x-ui-password': 'test-top15-secret-pwd' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Correct x-ui-password must authorize');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'authorization': 'Bearer test-top15-secret-pwd' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Correct Bearer UI password must authorize');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'authorization': 'Bearer key-account-1' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Valid account API key in Authorization header must authorize');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'x-api-key': 'key-account-2' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Valid account API key in x-api-key header must authorize');
+    } finally {
+      if (origUiPassword155 !== undefined) {
+        serverModule.config.uiPassword = origUiPassword155;
+      } else {
+        delete serverModule.config.uiPassword;
+      }
+      serverModule.config.accounts = origAccounts155;
+    }
+
+    // 8. Air-Gapped Office Preview DOM XSS Prevention (escapeHtml)
+    const officeEnginePath = path.join(__dirname, 'assets', 'office-preview-engine.js');
+    const officeEngineSrc = fs.readFileSync(officeEnginePath, 'utf8');
+    assert.ok(officeEngineSrc.includes('function escapeHtml(str)'), 'office-preview-engine.js must declare escapeHtml');
+    assert.ok(officeEngineSrc.includes('escapeHtml(ext)'), 'Badge extension must be escaped');
+    assert.ok(officeEngineSrc.includes('escapeHtml(name)'), 'File title and name must be escaped');
+    assert.ok(officeEngineSrc.includes('escapeHtml(t)'), 'Extracted legacy document text must be escaped');
+    const vm = require('node:vm');
+    const escapeMatch = officeEngineSrc.match(/function escapeHtml\(str\)\s*\{[\s\S]*?\n  \}/);
+    assert.ok(escapeMatch, 'escapeHtml regex match must succeed');
+    const escapeSandbox = {};
+    vm.runInNewContext(escapeMatch[0] + '\nfn = escapeHtml;', escapeSandbox);
+    assert.strictEqual(escapeSandbox.fn('<script>alert("xss")</script>'), '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+    assert.strictEqual(escapeSandbox.fn('Hello & "World" \'test\' > 5 < 10'), 'Hello &amp; &quot;World&quot; &#39;test&#39; &gt; 5 &lt; 10');
+    assert.strictEqual(escapeSandbox.fn(null), '');
+    assert.strictEqual(escapeSandbox.fn(undefined), '');
+
+    // 9. Linux/macOS Safe Process Clean (pkill -x instead of pkill -f)
+    const codexCode = fs.readFileSync(path.join(__dirname, 'codex-adapter.js'), 'utf8');
+    assert.ok(codexCode.includes('pkill -x "codex"'), 'codex-adapter.js must use pkill -x for exact binary matching');
+    assert.ok(!codexCode.includes('pkill -f "codex"'), 'codex-adapter.js must NOT use dangerous pkill -f wildcard matching');
+
+    // 10. SQLite Injection Defense (safe stdin JSON)
+    const updaterCode = fs.readFileSync(path.join(__dirname, 'updater.js'), 'utf8');
+    assert.ok(updaterCode.includes('payload["dbPath"]'), 'updater.js must pass dbPath via JSON payload');
+    assert.ok(updaterCode.includes('input: JSON.stringify({ dbPath, sql, params })'), 'updater.js must pass SQLite parameters via safe stdin JSON');
+    assert.ok(!updaterCode.includes('python -c "import sqlite3'), 'updater.js must NOT interpolate SQL into shell strings');
+
+    // 11. C# Tray Dynamic Auth Configuration & Compilation
+    const trayCs = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeRouterTray.cs'), 'utf8');
+    assert.ok(trayCs.includes('LoadConfig('), 'OpenCodeRouterTray.cs must load config dynamically');
+    assert.ok(trayCs.includes('x-ui-password'), 'OpenCodeRouterTray.cs must send x-ui-password header');
+    assert.ok(fs.existsSync(path.join(__dirname, 'OpenCodeRouterTray.exe')), 'OpenCodeRouterTray.exe must exist and be compiled');
+    assert.ok(fs.existsSync(path.join(__dirname, 'OpenCodeRouterApp.exe')), 'OpenCodeRouterApp.exe must exist and be compiled');
+    assert.ok(fs.existsSync(path.join(__dirname, 'OpenCodeWizard.exe')), 'OpenCodeWizard.exe must exist and be compiled');
+
+    // 12. Universal Daemon Runner & Office Regex Hook
+    const daemonPyCode = fs.readFileSync(path.join(__dirname, 'daemon_runner.py'), 'utf8');
+    assert.ok(daemonPyCode.includes('root_dir = os.path.dirname(os.path.abspath(__file__))'), 'daemon_runner.py must dynamically resolve root_dir');
+    assert.ok(daemonPyCode.includes('CREATE_NO_WINDOW'), 'daemon_runner.py must support CREATE_NO_WINDOW');
+
+    const patchPs1Code = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.ps1'), 'utf8');
+    assert.ok(patchPs1Code.includes('([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>{') || patchPs1Code.includes('([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>\\{'), 'patch-openchamber-office.ps1 must use universal parameter regex');
+
+    console.log('✓ Top 15 Architectural Defect Fixes Fully Verified (Session Affinity, Think Streaming, Contiguity, Fallback Normalization, Atomic Writes, LAN Auth, Air-Gapped DOM XSS, Safe Pkill, SQLite Defense, C# Tray & Scripts)');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 154 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 155 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

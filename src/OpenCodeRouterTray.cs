@@ -28,6 +28,7 @@ namespace OpenCodeRouter
         private static Mutex mutex = null;
         private static NotifyIcon notifyIcon = null;
         private static int port = 4010;
+        private static string uiPassword = "";
         private static string rootDir = "";
         private static string icoPath = "";
         private static System.Windows.Forms.Timer watchdogTimer = null;
@@ -48,6 +49,8 @@ namespace OpenCodeRouter
                     rootDir = candidate;
                 }
             }
+
+            LoadConfig(rootDir, ref port, ref uiPassword);
 
             icoPath = Path.Combine(rootDir, "assets", "router.ico");
             string logPath = Path.Combine(rootDir, "tray.log");
@@ -496,9 +499,59 @@ namespace OpenCodeRouter
             catch { }
         }
 
+        private static void LoadConfig(string dir, ref int port, ref string uiPassword)
+        {
+            try
+            {
+                string cfgPath = Path.Combine(dir, "config.json");
+                if (File.Exists(cfgPath))
+                {
+                    string json = File.ReadAllText(cfgPath);
+                    int portIdx = json.IndexOf("\"port\"");
+                    if (portIdx >= 0)
+                    {
+                        int colonIdx = json.IndexOf(":", portIdx);
+                        if (colonIdx >= 0)
+                        {
+                            int endIdx = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colonIdx + 1);
+                            if (endIdx > colonIdx)
+                            {
+                                string portStr = json.Substring(colonIdx + 1, endIdx - colonIdx - 1).Trim();
+                                int p;
+                                if (int.TryParse(portStr, out p) && p > 0 && p < 65536)
+                                {
+                                    port = p;
+                                }
+                            }
+                        }
+                    }
+
+                    int passIdx = json.IndexOf("\"uiPassword\"");
+                    if (passIdx >= 0)
+                    {
+                        int colonIdx = json.IndexOf(":", passIdx);
+                        if (colonIdx >= 0)
+                        {
+                            int q1 = json.IndexOf("\"", colonIdx);
+                            if (q1 >= 0)
+                            {
+                                int q2 = json.IndexOf("\"", q1 + 1);
+                                if (q2 > q1)
+                                {
+                                    uiPassword = json.Substring(q1 + 1, q2 - q1 - 1).Trim();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
         static void OpenDashboard(string hash = "")
         {
             EnsureRouterRunning();
+            LoadConfig(rootDir, ref port, ref uiPassword);
             string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
             if (File.Exists(appExe))
             {
@@ -512,7 +565,8 @@ namespace OpenCodeRouter
                 }
                 catch { }
             }
-            string url = "http://127.0.0.1:" + port + "/balancer/ui" + (hash ?? "");
+            string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
+            string url = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + (hash ?? "");
             try
             {
                 if (notifyIcon != null)
@@ -643,9 +697,15 @@ namespace OpenCodeRouter
         {
             try
             {
+                LoadConfig(rootDir, ref port, ref uiPassword);
                 using (WebClient client = new WebClient())
                 {
                     client.Encoding = System.Text.Encoding.UTF8;
+                    if (!string.IsNullOrEmpty(uiPassword))
+                    {
+                        client.Headers["x-ui-password"] = uiPassword;
+                        client.Headers["x-api-key"] = uiPassword;
+                    }
                     string json = client.DownloadString("http://127.0.0.1:" + port + "/status");
                     notifyIcon.ShowBalloonTip(3000, "OpenCode 路由正常", "本地端口: " + port + "\n服务在线，详细指标请查看面板。", ToolTipIcon.Info);
                 }
@@ -660,10 +720,16 @@ namespace OpenCodeRouter
         {
             try
             {
+                LoadConfig(rootDir, ref port, ref uiPassword);
                 using (WebClient client = new WebClient())
                 {
                     client.Encoding = System.Text.Encoding.UTF8;
                     client.Headers[HttpRequestHeader.ContentType] = "application/json";
+                    if (!string.IsNullOrEmpty(uiPassword))
+                    {
+                        client.Headers["x-ui-password"] = uiPassword;
+                        client.Headers["x-api-key"] = uiPassword;
+                    }
                     string res = client.UploadString("http://127.0.0.1:" + port + "/balancer/api/reset-cooldown", "POST", "{}");
                     notifyIcon.ShowBalloonTip(2500, "冷却已重置", "账号限频冷却已立即清空并恢复健康轮询！", ToolTipIcon.Info);
                 }
@@ -718,9 +784,15 @@ namespace OpenCodeRouter
             {
                 try
                 {
+                    LoadConfig(rootDir, ref port, ref uiPassword);
                     HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + "/balancer/api/bind-desktop");
                     req.Method = "POST";
                     req.ContentType = "application/json";
+                    if (!string.IsNullOrEmpty(uiPassword))
+                    {
+                        req.Headers["x-ui-password"] = uiPassword;
+                        req.Headers["x-api-key"] = uiPassword;
+                    }
                     req.Timeout = 6000;
                     byte[] data = Encoding.UTF8.GetBytes("{}");
                     req.ContentLength = data.Length;

@@ -2003,12 +2003,15 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
   let outputIndex = 0;
   let reasoningStarted = false;
+  let reasoningEverStarted = false;
   let reasoningCompleted = false;
   let reasoningIndex = 0;
   let textStarted = false;
   let textCompleted = false;
   let textIndex = 0;
   let inThinkTag = false;
+  let thinkBuffer = '';
+  let pendingPrefixText = '';
   const itemIdReasoning = 'item_reasoning_' + Date.now();
   const itemIdText = 'item_text_' + Date.now();
   let fullReasoning = '';
@@ -2021,7 +2024,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
   const buildFinalOutput = () => {
     const finalOutput = [];
-    if (reasoningCompleted || fullReasoning) {
+    if (reasoningEverStarted || fullReasoning) {
       finalOutput.push({
         id: itemIdReasoning,
         type: 'reasoning',
@@ -2199,6 +2202,8 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       });
       reasoningStarted = false;
       reasoningCompleted = true;
+    } else {
+      reasoningCompleted = true;
     }
   };
 
@@ -2262,28 +2267,69 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         let reasoningChunk = delta.reasoning || delta.reasoning_content;
         let textChunk = delta.content;
 
-        // Support models that stream <think>...</think> inside delta.content
+        // Support models that stream <think>...</think> inside delta.content across arbitrary SSE chunk boundaries
         if (textChunk && !textStarted && !reasoningCompleted) {
-          if (textChunk.includes('<think>')) {
-            inThinkTag = true;
-            const parts = textChunk.split('<think>');
-            textChunk = parts[1] || '';
-          }
-          if (inThinkTag) {
-            if (textChunk.includes('</think>')) {
-              const parts = textChunk.split('</think>');
-              const thinkDelta = parts[0] || '';
-              textChunk = parts[1] || '';
-              inThinkTag = false;
-              if (thinkDelta) {
-                if (!reasoningChunk) reasoningChunk = thinkDelta;
-                else reasoningChunk += thinkDelta;
+          thinkBuffer += textChunk;
+          textChunk = '';
+
+          if (!inThinkTag) {
+            const startIdx = thinkBuffer.indexOf('<think>');
+            if (startIdx !== -1) {
+              const before = thinkBuffer.slice(0, startIdx);
+              thinkBuffer = thinkBuffer.slice(startIdx + 7);
+              inThinkTag = true;
+              if (before && before.trim()) {
+                pendingPrefixText = (pendingPrefixText || '') + before;
               }
-              closeReasoning();
             } else {
-              if (!reasoningChunk) reasoningChunk = textChunk;
-              else reasoningChunk += textChunk;
-              textChunk = '';
+              const trimmedLead = thinkBuffer.trimStart();
+              if (trimmedLead === '') {
+                // Leading whitespace before potential <think> - keep buffering without prematurely starting text
+              } else if (trimmedLead.length < 7 && '<think>'.startsWith(trimmedLead)) {
+                // Partial <think> prefix match - keep buffering
+              } else {
+                // Definitely not a think tag envelope
+                closeReasoning();
+                textChunk = (pendingPrefixText ? pendingPrefixText : '') + thinkBuffer;
+                thinkBuffer = '';
+                pendingPrefixText = '';
+              }
+            }
+          }
+
+          if (inThinkTag) {
+            const endIdx = thinkBuffer.indexOf('</think>');
+            if (endIdx !== -1) {
+              const thinkPart = thinkBuffer.slice(0, endIdx);
+              const after = thinkBuffer.slice(endIdx + 8);
+              thinkBuffer = '';
+              inThinkTag = false;
+              if (thinkPart) {
+                if (!reasoningChunk) reasoningChunk = thinkPart;
+                else reasoningChunk += thinkPart;
+              }
+              textChunk = (pendingPrefixText ? pendingPrefixText : '') + after;
+              pendingPrefixText = '';
+            } else {
+              let matchLen = 0;
+              for (let len = Math.min(7, thinkBuffer.length); len >= 1; len--) {
+                if ('</think>'.startsWith(thinkBuffer.slice(-len))) {
+                  matchLen = len;
+                  break;
+                }
+              }
+              if (matchLen > 0) {
+                const safeReasoning = thinkBuffer.slice(0, -matchLen);
+                thinkBuffer = thinkBuffer.slice(-matchLen);
+                if (safeReasoning) {
+                  if (!reasoningChunk) reasoningChunk = safeReasoning;
+                  else reasoningChunk += safeReasoning;
+                }
+              } else {
+                if (!reasoningChunk) reasoningChunk = thinkBuffer;
+                else reasoningChunk += thinkBuffer;
+                thinkBuffer = '';
+              }
             }
           }
         }
@@ -2292,6 +2338,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         if (reasoningChunk && !textStarted) {
           if (!reasoningStarted && !reasoningCompleted) {
             reasoningStarted = true;
+            reasoningEverStarted = true;
             reasoningIndex = outputIndex++;
             sendEvent('response.output_item.added', {
               type: 'response.output_item.added',
@@ -2422,6 +2469,74 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     upstreamEnded = true;
     if (streamFinished) return;
 
+    if (thinkBuffer || pendingPrefixText) {
+      if (inThinkTag) {
+        if (!reasoningStarted) {
+          reasoningStarted = true;
+          reasoningEverStarted = true;
+          reasoningIndex = outputIndex++;
+          sendEvent('response.output_item.added', {
+            type: 'response.output_item.added',
+            sequence_number: seq++,
+            output_index: reasoningIndex,
+            item: { id: itemIdReasoning, type: 'reasoning', status: 'in_progress', content: [], summary: [] }
+          });
+          sendEvent('response.content_part.added', {
+            type: 'response.content_part.added',
+            sequence_number: seq++,
+            output_index: reasoningIndex,
+            content_index: 0,
+            item_id: itemIdReasoning,
+            part: { type: 'reasoning_text', text: '' }
+          });
+        }
+        fullReasoning += thinkBuffer;
+        sendEvent('response.reasoning_text.delta', {
+          type: 'response.reasoning_text.delta',
+          sequence_number: seq++,
+          output_index: reasoningIndex,
+          content_index: 0,
+          item_id: itemIdReasoning,
+          delta: thinkBuffer
+        });
+      } else {
+        const remainingText = (pendingPrefixText || '') + (thinkBuffer || '');
+        if (remainingText) {
+          closeReasoning();
+          if (!textStarted) {
+            textStarted = true;
+            textIndex = outputIndex++;
+            sendEvent('response.output_item.added', {
+              type: 'response.output_item.added',
+              sequence_number: seq++,
+              output_index: textIndex,
+              item: { id: itemIdText, type: 'message', status: 'in_progress', role: 'assistant', phase: 'final_answer', content: [] }
+            });
+            sendEvent('response.content_part.added', {
+              type: 'response.content_part.added',
+              sequence_number: seq++,
+              output_index: textIndex,
+              content_index: 0,
+              item_id: itemIdText,
+              part: { type: 'output_text', text: '', annotations: [], logprobs: [] }
+            });
+          }
+          fullText += remainingText;
+          sendEvent('response.output_text.delta', {
+            type: 'response.output_text.delta',
+            sequence_number: seq++,
+            output_index: textIndex,
+            content_index: 0,
+            item_id: itemIdText,
+            delta: remainingText,
+            logprobs: []
+          });
+        }
+      }
+      thinkBuffer = '';
+      pendingPrefixText = '';
+    }
+
     closeReasoning();
     closeText();
 
@@ -2526,8 +2641,15 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
   const respId = reqId || chatJson.id || ('resp_' + Date.now());
   const choice = chatJson.choices?.[0] || {};
   const msg = choice.message || {};
-  const content = msg.content || '';
-  const reasoning = msg.reasoning_content || msg.reasoning || '';
+  let content = msg.content || '';
+  let reasoning = msg.reasoning_content || msg.reasoning || '';
+  if (!reasoning && typeof content === 'string' && content.includes('<think>')) {
+    const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+    if (thinkMatch) {
+      reasoning = thinkMatch[1].trim();
+      content = content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+    }
+  }
   const output = [];
 
   if (reasoning) {
@@ -2552,14 +2674,28 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
 
   if (Array.isArray(msg.tool_calls)) {
     for (const tc of msg.tool_calls) {
-      output.push({
-        id: tc.id || `call_${Date.now()}`,
-        type: 'function_call',
-        name: tc.function?.name || '',
-        call_id: tc.id || '',
-        arguments: tc.function?.arguments || '{}',
-        status: 'completed'
-      });
+      const toolName = tc.function?.name || '';
+      const rawArgs = tc.function?.arguments || '{}';
+      if (toolName === 'apply_patch') {
+        const cleanInput = extractPatchInput(rawArgs);
+        output.push({
+          id: tc.id || `call_${Date.now()}`,
+          type: 'custom_tool_call',
+          name: 'apply_patch',
+          call_id: tc.id || '',
+          input: cleanInput,
+          status: 'completed'
+        });
+      } else {
+        output.push({
+          id: tc.id || `call_${Date.now()}`,
+          type: 'function_call',
+          name: toolName,
+          call_id: tc.id || '',
+          arguments: rawArgs,
+          status: 'completed'
+        });
+      }
     }
   }
 
@@ -2764,6 +2900,17 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
       }
     } else {
       mergedMessages.push(m);
+    }
+  }
+
+  // Ensure tool_result blocks are strictly positioned at the beginning of user turn content arrays (Anthropic protocol requirement)
+  for (const msg of mergedMessages) {
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      const toolResults = msg.content.filter(c => c && c.type === 'tool_result');
+      const otherBlocks = msg.content.filter(c => !c || c.type !== 'tool_result');
+      if (toolResults.length > 0 && otherBlocks.length > 0) {
+        msg.content = [...toolResults, ...otherBlocks];
+      }
     }
   }
 
@@ -3365,15 +3512,35 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
           phase: 'final_answer',
           content: [{ type: 'output_text', text: c.text || '', annotations: [], logprobs: [] }]
         });
-      } else if (c.type === 'tool_use') {
+      } else if (c.type === 'thinking') {
         output.push({
-          id: c.id || `call_${Date.now()}`,
-          type: 'function_call',
-          name: c.name || 'custom_tool',
-          call_id: c.id || '',
-          arguments: typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {}),
-          status: 'completed'
+          id: 'reasoning_' + Date.now(),
+          type: 'reasoning',
+          status: 'completed',
+          content: [{ type: 'reasoning_text', text: c.thinking || '' }]
         });
+      } else if (c.type === 'tool_use') {
+        const rawArgs = typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {});
+        if (c.name === 'apply_patch' || c.isCustomTool) {
+          const cleanInput = extractPatchInput(rawArgs);
+          output.push({
+            id: c.id || `call_${Date.now()}`,
+            type: 'custom_tool_call',
+            name: c.name || 'apply_patch',
+            call_id: c.id || '',
+            input: cleanInput,
+            status: 'completed'
+          });
+        } else {
+          output.push({
+            id: c.id || `call_${Date.now()}`,
+            type: 'function_call',
+            name: c.name || 'custom_tool',
+            call_id: c.id || '',
+            arguments: rawArgs,
+            status: 'completed'
+          });
+        }
       }
     }
   }
@@ -4218,7 +4385,7 @@ public class SuspendedResumer {
   } else {
     // Linux / macOS
     try {
-      execSync('pkill -f "codex" || true', { timeout: 5000 });
+      execSync('pkill -x "codex" || pkill -x "codex-app" || pkill -x "ChatGPT" || true', { timeout: 5000 });
       messages.push('已清理旧版 Codex 后台进程');
       return { success: true, restarted: true, messages };
     } catch (e) {
@@ -4269,11 +4436,23 @@ function extractOrDeriveSessionId(req, body) {
     return headerSession.trim();
   }
 
-  // 2. Explicit x-conversation-id header
-  const convHeader = req?.headers?.['x-conversation-id'];
+  // 2. Explicit previous_response_id, conversation_id, thread_id request headers
+  const prevHeader = req?.headers?.['x-previous-response-id'] || req?.headers?.['previous_response_id'] || req?.headers?.['previous-response-id'];
+  if (prevHeader && typeof prevHeader === 'string' && prevHeader.trim()) {
+    const trimmed = prevHeader.trim();
+    return trimmed.startsWith('session-') ? trimmed : `session-resp-${trimmed}`;
+  }
+
+  const convHeader = req?.headers?.['x-conversation-id'] || req?.headers?.['conversation_id'] || req?.headers?.['conversation-id'];
   if (convHeader && typeof convHeader === 'string' && convHeader.trim()) {
     const trimmed = convHeader.trim();
     return trimmed.startsWith('session-') ? trimmed : `session-conv-${trimmed}`;
+  }
+
+  const threadHeader = req?.headers?.['x-thread-id'] || req?.headers?.['thread_id'] || req?.headers?.['thread-id'];
+  if (threadHeader && typeof threadHeader === 'string' && threadHeader.trim()) {
+    const trimmed = threadHeader.trim();
+    return trimmed.startsWith('session-') ? trimmed : `session-thread-${trimmed}`;
   }
 
   // 3. Codex-native turn metadata headers (x-codex-turn-metadata, x-codex-parent-thread-id, x-thread-id)
@@ -4286,20 +4465,13 @@ function extractOrDeriveSessionId(req, body) {
       return trimmed.startsWith('session-') ? trimmed : `session-codex-${trimmed}`;
     }
   }
-  const codexParentThread = req?.headers?.['x-codex-parent-thread-id'] || req?.headers?.['x-thread-id'];
+  const codexParentThread = req?.headers?.['x-codex-parent-thread-id'];
   if (codexParentThread && typeof codexParentThread === 'string' && codexParentThread.trim()) {
     const trimmed = codexParentThread.trim();
     return trimmed.startsWith('session-') ? trimmed : `session-codex-${trimmed}`;
   }
 
-  // 4. Explicit x-request-id / x-client-request-id header
-  const reqIdHeader = req?.headers?.['x-request-id'] || req?.headers?.['x-client-request-id'];
-  if (reqIdHeader && typeof reqIdHeader === 'string' && reqIdHeader.trim()) {
-    const trimmed = reqIdHeader.trim();
-    return trimmed.startsWith('session-') ? trimmed : `session-req-${trimmed}`;
-  }
-
-  // 5. previous_response_id / parent_response_id / thread_id / conversation_id in Responses payload body
+  // 4. previous_response_id / parent_response_id / thread_id / conversation_id / messages in payload body
   let parsed = body;
   if (Buffer.isBuffer(body) || typeof body === 'string') {
     if (body.length > 0) {
@@ -4350,9 +4522,54 @@ function extractOrDeriveSessionId(req, body) {
       const sId = parsed.session_id.trim();
       return sId.startsWith('session-') ? sId : `session-${sId}`;
     }
+
+    // 5. Stable conversation anchor hashing for headless Chat completions / Anthropic messages
+    if (Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+      const firstUser = parsed.messages.find(m => m && m.role === 'user');
+      const firstSys = parsed.messages.find(m => m && (m.role === 'system' || m.role === 'developer'));
+      const anchorParts = [];
+      if (firstSys) {
+        const sysText = typeof firstSys.content === 'string'
+          ? firstSys.content
+          : (Array.isArray(firstSys.content) ? JSON.stringify(firstSys.content) : JSON.stringify(firstSys));
+        if (sysText && sysText.trim()) anchorParts.push(sysText.trim());
+      }
+      if (firstUser) {
+        const userText = typeof firstUser.content === 'string'
+          ? firstUser.content
+          : (Array.isArray(firstUser.content) ? JSON.stringify(firstUser.content) : JSON.stringify(firstUser));
+        if (userText && userText.trim()) anchorParts.push(userText.trim());
+      }
+      if (anchorParts.length === 0) {
+        const rootMsg = parsed.messages[0];
+        const rootText = typeof rootMsg.content === 'string'
+          ? rootMsg.content
+          : (Array.isArray(rootMsg.content) ? JSON.stringify(rootMsg.content) : JSON.stringify(rootMsg));
+        if (rootText && rootText.trim()) anchorParts.push(rootText.trim());
+      }
+      if (anchorParts.length > 0) {
+        const anchorStr = anchorParts.join('::');
+        const hash = require('crypto').createHash('sha256').update(anchorStr).digest('hex').slice(0, 16);
+        return `session-chat-${hash}`;
+      }
+    } else if (Array.isArray(parsed.input) && parsed.input.length > 0) {
+      const rootItem = parsed.input[0];
+      const rootText = typeof rootItem === 'string' ? rootItem : JSON.stringify(rootItem);
+      if (rootText && rootText.trim()) {
+        const hash = require('crypto').createHash('sha256').update(rootText.trim()).digest('hex').slice(0, 16);
+        return `session-resp-${hash}`;
+      }
+    }
   }
 
-  // 6. Fallback: dynamic session isolation per connection/turn to prevent upstream concurrent collision
+  // 6. Explicit x-request-id / x-client-request-id header (fallback if no conversation anchor found)
+  const reqIdHeader = req?.headers?.['x-request-id'] || req?.headers?.['x-client-request-id'];
+  if (reqIdHeader && typeof reqIdHeader === 'string' && reqIdHeader.trim()) {
+    const trimmed = reqIdHeader.trim();
+    return trimmed.startsWith('session-') ? trimmed : `session-req-${trimmed}`;
+  }
+
+  // 7. Dynamic session isolation per connection/turn fallback
   return `session-auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 

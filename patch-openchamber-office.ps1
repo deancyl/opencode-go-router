@@ -82,7 +82,7 @@ $backupFilesView = "$($filesViewJs.FullName).bak"
 # 检查当前状态
 $hasScriptInHtml = (Get-Content $indexHtml -Raw) -like "*office-preview-engine.js*"
 $jsContentCheck = Get-Content $filesViewJs.FullName -Raw
-$hasHookInJs = $jsContentCheck -like "*OpenChamberOfficeViewer.isOfficeFile*" -and ($jsContentCheck -match '([A-Za-z0-9_$]+)=r=>\{if\(window\.OpenChamberOfficeViewer')
+$hasHookInJs = $jsContentCheck -like "*OpenChamberOfficeViewer.isOfficeFile*" -and ($jsContentCheck -match '([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>\{if\(window\.OpenChamberOfficeViewer')
 $isInstalled = $hasScriptInHtml -and $hasHookInJs -and (Test-Path $targetEngine)
 
 if ($Status) {
@@ -177,11 +177,11 @@ if ($binaryIdx -eq -1) {
     exit 1
 }
 
-# 向前寻找最近的函数定义入口 ([A-Za-z0-9_$]+)=r=>\{
+# 向前寻找最近的函数定义入口 ([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>\{
 $searchStart = [Math]::Max(0, $binaryIdx - 2000)
 $searchLen = $binaryIdx - $searchStart
 $preText = $jsContent.Substring($searchStart, $searchLen)
-$funcMatches = [regex]::Matches($preText, '([A-Za-z0-9_$]+)=r=>\{')
+$funcMatches = [regex]::Matches($preText, '([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>\{')
 
 if ($funcMatches.Count -eq 0) {
     Write-Host "  ❌ 未能精准定位二进制分发组件入口！" -ForegroundColor Red
@@ -190,7 +190,8 @@ if ($funcMatches.Count -eq 0) {
 
 $targetFuncMatch = $funcMatches[$funcMatches.Count - 1]
 $compVar = $targetFuncMatch.Groups[1].Value
-$targetPattern = "$compVar=r=>{"
+$paramVar = $targetFuncMatch.Groups[2].Value
+$targetPattern = "$compVar=$paramVar=>{"
 
 # 自动探测该组件内使用的 JSX 运行时标识 (如 n.jsx 或 s.jsx)
 $compBodyLen = [Math]::Min(3000, $jsContent.Length - ($searchStart + $targetFuncMatch.Index))
@@ -200,10 +201,10 @@ $jsxId = if ($jsxMatch.Success) { $jsxMatch.Groups[1].Value } else { "n" }
 
 # 清理旧的遗留/错位 Hook (防止多重注入或污染 Font 组件)
 if ($jsContent.Contains("OpenChamberOfficeViewer")) {
-    $jsContent = [regex]::Replace($jsContent, 'if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(r\.path\|\|r\.name\)\)\{return [^;]+;?\}', '')
+    $jsContent = [regex]::Replace($jsContent, 'if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(([A-Za-z0-9_$]+)\.path\|\|\1\.name\)\)\{return [^;]+;?\}', '')
 }
 
-$hook = "if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return $($jsxId).jsx(`"div`",{key:r.path||r.name,className:`"h-full w-full min-h-0`",ref:node=>{if(node&&node.dataset.file!==(r.path||r.name)){node.dataset.file=r.path||r.name;window.OpenChamberOfficeViewer.mount(node,r)}}});}"
+$hook = "if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile($paramVar.path||$paramVar.name)){return $($jsxId).jsx(`"div`",{key:$paramVar.path||$paramVar.name,className:`"h-full w-full min-h-0`",ref:node=>{if(node&&node.dataset.file!==($paramVar.path||$paramVar.name)){node.dataset.file=$paramVar.path||$paramVar.name;window.OpenChamberOfficeViewer.mount(node,$paramVar)}}});}"
 
 $targetIdx = $jsContent.IndexOf($targetPattern)
 if ($targetIdx -ne -1) {

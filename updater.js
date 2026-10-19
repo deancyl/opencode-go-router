@@ -27,7 +27,25 @@ const path = require('node:path');
 const os = require('node:os');
 const https = require('node:https');
 const http = require('node:http');
-const { execSync } = require('node:child_process');
+const { execSync, spawnSync } = require('node:child_process');
+
+function writeFileSyncAtomic(targetFile, data, encoding = 'utf8') {
+  const dir = path.dirname(targetFile);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmpFile = `${targetFile}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmpFile, data, encoding);
+  try {
+    fs.renameSync(tmpFile, targetFile);
+  } catch (err) {
+    try {
+      fs.copyFileSync(tmpFile, targetFile);
+      fs.unlinkSync(tmpFile);
+    } catch (_) {
+      fs.writeFileSync(targetFile, data, encoding);
+      try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch (_) {}
+    }
+  }
+}
 
 function stripJsonComments(str) {
   if (typeof str !== 'string') return '';
@@ -574,7 +592,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     try { fs.copyFileSync(p, p + '.bak'); } catch (_) {}
   }
 
-  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
+  writeFileSyncAtomic(p, JSON.stringify(data, null, 2), 'utf8');
 
   return {
     success: true,
@@ -2599,26 +2617,37 @@ function querySqliteRows(dbPath, sql, params = []) {
       try { db.close(); } catch (_) {}
     }
   }
-  // Fallback to python sqlite3
+  // Safe fallback to python sqlite3 via stdin JSON to eliminate shell injection & syntax issues
   try {
     const script = [
       'import sqlite3, json, sys',
-      'con = sqlite3.connect(sys.argv[1])',
+      'payload = json.load(sys.stdin)',
+      'con = sqlite3.connect(payload["dbPath"])',
       'cur = con.cursor()',
-      'params = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else []',
-      'cur.execute(sys.argv[2], tuple(params))',
+      'p = payload.get("params") or []',
+      'cur.execute(payload["sql"], tuple(p))',
       'cols = [c[0] for c in cur.description] if cur.description else []',
       'rows = [dict(zip(cols, r)) for r in cur.fetchall()]',
       'con.close()',
       'print(json.dumps(rows))'
-    ].join('; ');
+    ].join('\n');
     const pyBin = (process.platform === 'win32') ? 'python' : 'python3';
-    let res = runCmd(`${pyBin} -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
-    if (!res.success && pyBin === 'python3') {
-      res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    let proc = spawnSync(pyBin, ['-c', script], {
+      input: JSON.stringify({ dbPath, sql, params }),
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true
+    });
+    if ((proc.error || proc.status !== 0) && pyBin === 'python3') {
+      proc = spawnSync('python', ['-c', script], {
+        input: JSON.stringify({ dbPath, sql, params }),
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true
+      });
     }
-    if (res.success && res.output) {
-      return JSON.parse(res.output);
+    if (proc.status === 0 && proc.stdout) {
+      return JSON.parse(proc.stdout.trim());
     }
   } catch (_) {}
   return [];
@@ -2640,25 +2669,36 @@ function execSqliteQuery(dbPath, sql, params = []) {
       try { db.close(); } catch (_) {}
     }
   }
-  // Fallback to python sqlite3
+  // Safe fallback to python sqlite3 via stdin JSON to eliminate shell injection & syntax issues
   try {
     const script = [
       'import sqlite3, json, sys',
-      'con = sqlite3.connect(sys.argv[1])',
+      'payload = json.load(sys.stdin)',
+      'con = sqlite3.connect(payload["dbPath"])',
       'cur = con.cursor()',
-      'params = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else []',
-      'if params: cur.execute(sys.argv[2], tuple(params))',
-      'else: cur.execute(sys.argv[2])',
+      'p = payload.get("params") or []',
+      'if p: cur.execute(payload["sql"], tuple(p))',
+      'else: cur.execute(payload["sql"])',
       'con.commit()',
       'con.close()',
       'print("OK")'
-    ].join('; ');
+    ].join('\n');
     const pyBin = (process.platform === 'win32') ? 'python' : 'python3';
-    let res = runCmd(`${pyBin} -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
-    if (!res.success && pyBin === 'python3') {
-      res = runCmd(`python -c "${script}" "${dbPath}" "${sql}" "${JSON.stringify(params).replace(/"/g, '\\"')}"`, 5000);
+    let proc = spawnSync(pyBin, ['-c', script], {
+      input: JSON.stringify({ dbPath, sql, params }),
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true
+    });
+    if ((proc.error || proc.status !== 0) && pyBin === 'python3') {
+      proc = spawnSync('python', ['-c', script], {
+        input: JSON.stringify({ dbPath, sql, params }),
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true
+      });
     }
-    return res.success && res.output.includes('OK');
+    return proc.status === 0 && proc.stdout && proc.stdout.includes('OK');
   } catch (_) {}
   return false;
 }
@@ -3138,7 +3178,8 @@ module.exports = {
   getSnapshotsDir,
   getOpenChamberDistCandidates,
   canWriteGlobalNpm,
-  findScopedComponentDir
+  findScopedComponentDir,
+  writeFileSyncAtomic
 };
 
 // CLI entry point

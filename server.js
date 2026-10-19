@@ -39,6 +39,29 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
 
+function writeFileSyncAtomic(filePath, data, encoding = 'utf8') {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.tmp-${path.basename(filePath)}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  fs.writeFileSync(tmpPath, data, encoding);
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.copyFileSync(tmpPath, filePath);
+      fs.unlinkSync(tmpPath);
+    } catch (_) {
+      try {
+        fs.writeFileSync(filePath, data, encoding);
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch (finalErr) {
+        try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
+        throw finalErr;
+      }
+    }
+  }
+}
+
 const DEFAULT_CONFIG = {
   port: 4010,
   host: '127.0.0.1',
@@ -138,7 +161,7 @@ function loadConfig() {
     }
   } else {
     try {
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+      writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
     } catch (err) {
       console.error('[Config] Failed to create default config.json:', err.message);
     }
@@ -535,8 +558,9 @@ function touchSession(sessionId, now = Date.now()) {
 function getSessionModelFallback(sessionId, model) {
   if (!sessionId || !model) return null;
   const cleanReq = model.replace(/^opencode-go\//, '');
-  const cacheKey = `${sessionId}:${cleanReq}`;
-  return sessionModelFallbackCache.get(cacheKey) || null;
+  const effectiveSessionId = typeof sessionId === 'string' ? sessionId.replace(/(?:-r\d+)+$/, '') : sessionId;
+  const cacheKey = `${effectiveSessionId}:${cleanReq}`;
+  return sessionModelFallbackCache.get(cacheKey) || (sessionId !== effectiveSessionId ? sessionModelFallbackCache.get(`${sessionId}:${cleanReq}`) : null) || null;
 }
 
 function deleteSessionRecord(sess) {
@@ -556,7 +580,8 @@ function deleteSessionRecord(sess) {
 function setSessionModelFallback(sessionId, model, fallbackModel) {
   if (!sessionId || !model || !fallbackModel) return;
   const cleanReq = model.replace(/^opencode-go\//, '');
-  const cacheKey = `${sessionId}:${cleanReq}`;
+  const effectiveSessionId = typeof sessionId === 'string' ? sessionId.replace(/(?:-r\d+)+$/, '') : sessionId;
+  const cacheKey = `${effectiveSessionId}:${cleanReq}`;
   if (!sessionModelFallbackCache.has(cacheKey) && sessionModelFallbackCache.size >= 5000) {
     let pruneCount = Math.floor(sessionModelFallbackCache.size * 0.2) || 1;
     for (const key of sessionModelFallbackCache.keys()) {
@@ -576,13 +601,26 @@ function setSessionModelFallback(sessionId, model, fallbackModel) {
   // Refresh insertion order if key already exists
   sessionModelFallbackCache.delete(cacheKey);
   sessionModelFallbackCache.set(cacheKey, fallbackModel);
-  cacheKeyToSessionMap.set(cacheKey, sessionId);
-  let fbSet = sessionFallbackKeyMap.get(sessionId);
+  cacheKeyToSessionMap.set(cacheKey, effectiveSessionId);
+  let fbSet = sessionFallbackKeyMap.get(effectiveSessionId);
   if (!fbSet) {
     fbSet = new Set();
-    sessionFallbackKeyMap.set(sessionId, fbSet);
+    sessionFallbackKeyMap.set(effectiveSessionId, fbSet);
   }
   fbSet.add(cacheKey);
+
+  // Also store exact sessionId if different
+  if (sessionId && sessionId !== effectiveSessionId) {
+    const rawCacheKey = `${sessionId}:${cleanReq}`;
+    sessionModelFallbackCache.set(rawCacheKey, fallbackModel);
+    cacheKeyToSessionMap.set(rawCacheKey, sessionId);
+    let rawFbSet = sessionFallbackKeyMap.get(sessionId);
+    if (!rawFbSet) {
+      rawFbSet = new Set();
+      sessionFallbackKeyMap.set(sessionId, rawFbSet);
+    }
+    rawFbSet.add(rawCacheKey);
+  }
 }
 
 // Clean up stale sessions periodically (every 10 minutes)
@@ -625,12 +663,15 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
     return null;
   }
 
+  const effectiveSessionId = typeof sessionId === 'string' ? sessionId.replace(/(?:-r\d+)+$/, '') : sessionId;
+
   // 1. Session affinity check (if enabled)
-  if (config.sessionAffinityEnabled && sessionId && sessionMap.has(sessionId)) {
-    const pinnedId = sessionMap.get(sessionId);
+  if (config.sessionAffinityEnabled && effectiveSessionId && (sessionMap.has(effectiveSessionId) || (sessionId && sessionMap.has(sessionId)))) {
+    const pinnedId = sessionMap.get(effectiveSessionId) || (sessionId ? sessionMap.get(sessionId) : null);
     const candidate = available.find(a => a.id === pinnedId);
     if (candidate) {
-      touchSession(sessionId, now);
+      touchSession(effectiveSessionId, now);
+      if (sessionId && sessionId !== effectiveSessionId) touchSession(sessionId, now);
       return candidate;
     }
   }
@@ -639,7 +680,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
   const chosen = available[rrIndex % available.length];
   rrIndex = (rrIndex + 1) % available.length;
 
-  if (config.sessionAffinityEnabled && sessionId) {
+  if (config.sessionAffinityEnabled && effectiveSessionId) {
     if (sessionMap.size > 5000) {
       let pruneCount = Math.floor(sessionMap.size * 0.2) || 1;
       for (const sess of sessionLastSeen.keys()) {
@@ -654,8 +695,12 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
         }
       }
     }
-    sessionMap.set(sessionId, chosen.id);
-    touchSession(sessionId, now);
+    sessionMap.set(effectiveSessionId, chosen.id);
+    if (sessionId && sessionId !== effectiveSessionId) {
+      sessionMap.set(sessionId, chosen.id);
+    }
+    touchSession(effectiveSessionId, now);
+    if (sessionId && sessionId !== effectiveSessionId) touchSession(sessionId, now);
   }
 
   return chosen;
@@ -1674,7 +1719,7 @@ function dispatchResponsesRequest(clientReq, clientRes, responsesBody, account, 
   }
 }
 
-function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
+function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedParsedBody = null) {
   triedAccountIds.add(account.id);
 
   const upstreamUrl = new URL(config.upstream);
@@ -1692,8 +1737,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   const upstreamPath = upstreamPathname + (targetPath.startsWith('/') ? targetPath : '/' + targetPath);
 
   // Model prefix normalization & Responses protocol check
-  let parsedBody = null;
-  if (reqBody && reqBody.length > 0) {
+  let parsedBody = precomputedParsedBody || null;
+  if (!parsedBody && reqBody && reqBody.length > 0) {
     try {
       parsedBody = JSON.parse(reqBody.toString('utf8'));
       if (parsedBody && typeof parsedBody.model === 'string' && parsedBody.model.startsWith('opencode-go/')) {
@@ -1891,7 +1936,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         clientCloseHandler,
         clientErrorHandler,
         retryFn: (nextAccount) => {
-          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
         },
         errorFallbackFn: (errText) => {
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
@@ -1982,7 +2027,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
             clientCloseHandler,
             clientErrorHandler,
             retryFn: (nextAccount) => {
-              sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+              sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
             }
           });
           if (handled) return;
@@ -2006,16 +2051,16 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
             clientCloseHandler,
             clientErrorHandler,
             retryCurrentAccount: (retrySessionId) => {
-              sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+              sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId, parsedBody);
             },
             retryNextAccount: (nextAccount) => {
-              sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+              sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
             },
             fallbackModelFn: (targetFallback) => {
               if (parsedBody && typeof parsedBody === 'object') {
                 parsedBody.model = targetFallback;
                 const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-                sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
+                sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, new Set([account.id]), sessionId, parsedBody);
               }
             }
           });
@@ -2041,7 +2086,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           retryWithPayload: (newPayload, isModelChanged) => {
             parsedBody = newPayload;
             const newReqBody = Buffer.from(JSON.stringify(newPayload), 'utf8');
-            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId);
+            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, isModelChanged ? new Set([account.id]) : triedAccountIds, sessionId, newPayload);
           }
         });
         if (handledFallback) return;
@@ -2087,8 +2132,40 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         upstreamRes.resume();
       } catch (_) {}
       finishRequest();
-      if (!clientRes.writableEnded) {
-        clientRes.end();
+      if (!clientRes.writableEnded && !clientRes.destroyed) {
+        if (clientRes.headersSent) {
+          try {
+            clientRes.write(`event: error\ndata: ${JSON.stringify({ error: { message: 'Upstream stream terminated prematurely: ' + err.message, type: 'upstream_stream_error' } })}\n\n`);
+          } catch (_) {}
+          try {
+            clientRes.destroy(err);
+          } catch (_) {
+            try { clientRes.end(); } catch (_) {}
+          }
+        } else {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          clientRes.end(JSON.stringify({ error: { message: 'Upstream stream error: ' + err.message, type: 'upstream_stream_error' } }));
+        }
+      }
+    });
+
+    upstreamRes.on('close', () => {
+      if (!upstreamRes.readableEnded && !clientRes.writableEnded && !clientRes.destroyed) {
+        clientRes.removeListener('error', onClientPipeError);
+        clientRes.removeListener('close', onClientPipeError);
+        clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+        finishRequest();
+        const err = new Error('Upstream stream closed prematurely before completion');
+        if (clientRes.headersSent) {
+          try {
+            clientRes.write(`event: error\ndata: ${JSON.stringify({ error: { message: err.message, type: 'upstream_stream_error' } })}\n\n`);
+          } catch (_) {}
+          try { clientRes.destroy(err); } catch (_) { try { clientRes.end(); } catch (_) {} }
+        } else {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          clientRes.end(JSON.stringify({ error: { message: err.message, type: 'upstream_stream_error' } }));
+        }
       }
     });
 
@@ -2128,16 +2205,16 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         clientCloseHandler,
         clientErrorHandler,
         retryCurrentAccount: (retrySessionId) => {
-          sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+          sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber + 1, triedAccountIds, retrySessionId, parsedBody);
         },
         retryNextAccount: (nextAccount) => {
-          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+          sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
         },
         fallbackModelFn: (targetFallback) => {
           if (parsedBody && typeof parsedBody === 'object') {
             parsedBody.model = targetFallback;
             const newReqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, new Set([account.id]), sessionId);
+            sendProxyRequest(clientReq, clientRes, newReqBody, account, attemptNumber + 1, new Set([account.id]), sessionId, parsedBody);
           }
         }
       });
@@ -2483,7 +2560,14 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             }
           });
           if (clientRes.headersSent) {
-            clientRes.end(errPayload);
+            try {
+              clientRes.write(`event: error\ndata: ${errPayload}\n\n`);
+            } catch (_) {}
+            try {
+              clientRes.destroy(err);
+            } catch (_) {
+              try { clientRes.end(); } catch (_) {}
+            }
           } else {
             clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
             clientRes.end(errPayload);
@@ -2761,10 +2845,10 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             clientCloseHandler,
             clientErrorHandler,
             retryCurrentAccount: (retrySessionId) => {
-              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId, anthropicPayload);
             },
             retryNextAccount: (nextAccount) => {
-              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
             },
             fallbackModelFn: (targetFallback) => {
               const healedBody = { ...responsesBody, model: targetFallback };
@@ -2860,7 +2944,14 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             }
           });
           if (clientRes.headersSent) {
-            clientRes.end(errPayload);
+            try {
+              clientRes.write(`event: error\ndata: ${errPayload}\n\n`);
+            } catch (_) {}
+            try {
+              clientRes.destroy(err);
+            } catch (_) {
+              try { clientRes.end(); } catch (_) {}
+            }
           } else {
             clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
             clientRes.end(errPayload);
@@ -3559,7 +3650,7 @@ async function executeSystemRepair(options = {}) {
         if (fs.existsSync(CONFIG_FILE)) {
           try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
         }
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+        writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
       }
       if (repairResult && repairResult.results) {
         results.push(...repairResult.results);
@@ -3987,27 +4078,7 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
     results.push({ item: 'Updater Environment', success: false, message: '自愈更新环境异常: ' + envErr.message });
   }
 
-  // 8. Auto-Patch OMO Plugin for OpenCode v2 compatibility (setup/effect shim)
-  try {
-    const updater = require('./updater');
-    const omoRes = updater.patchOmoPluginV2();
-    if (omoRes.patchedCount > 0) {
-      if (process.platform === 'linux') {
-        try {
-          execSync('systemctl --user restart opencode-server.service 2>/dev/null || true', { timeout: 2000 });
-        } catch (_) {}
-      }
-      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已成功为 ${omoRes.patchedCount} 处 oh-my-openagent 注入 OpenCode v2 兼容适配桥接（setup/effect 垫片），并平滑刷新内存缓存` });
-    } else if (omoRes.targets > 0) {
-      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: `已校验 ${omoRes.targets} 处 oh-my-openagent 均具备 OpenCode v2 兼容适配桥接` });
-    } else {
-      results.push({ item: 'OMO v2 Bridge Patch', success: true, message: '未检测到已安装的 OMO 插件目录' });
-    }
-  } catch (e) {
-    results.push({ item: 'OMO v2 Bridge Patch', success: false, message: '修补 OMO 插件异常: ' + e.message });
-  }
-
-  // 9. Context Compression Engine auto-healing (when scope === 'all')
+  // 8. Context Compression Engine auto-healing (when scope === 'all')
   if (scope === 'all') {
     try {
       const compStats = contextCompactor.getCompressionStats();
@@ -4019,7 +4090,7 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
           if (fs.existsSync(CONFIG_FILE)) {
             try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
           }
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+          writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
         }
         if (compRep && compRep.results) {
           results.push(...compRep.results);
@@ -4040,11 +4111,20 @@ function isAuthorized(req) {
   const expected = config.uiPassword.trim();
   const expectedB64 = Buffer.from(expected).toString('base64');
 
-  // 1. Authorization header: Bearer <pwd_or_b64> or Basic <base64>
+  const validApiKeys = new Set(
+    (config.accounts || [])
+      .filter(a => a && a.enabled && a.apiKey && a.apiKey.trim())
+      .map(a => a.apiKey.trim())
+  );
+  if (config.apiKey && typeof config.apiKey === 'string' && config.apiKey.trim()) {
+    validApiKeys.add(config.apiKey.trim());
+  }
+
+  // 1. Authorization header: Bearer <pwd_or_b64_or_key> or Basic <base64>
   const authHeader = req.headers['authorization'] || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
-    if (token === expected || token === expectedB64) return true;
+    if (token === expected || token === expectedB64 || validApiKeys.has(token)) return true;
   } else if (authHeader.startsWith('Basic ')) {
     const b64 = authHeader.slice(6).trim();
     if (b64 === expected || b64 === expectedB64) return true;
@@ -4052,13 +4132,13 @@ function isAuthorized(req) {
       const decoded = Buffer.from(b64, 'base64').toString('utf8');
       const parts = decoded.split(':');
       const pass = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
-      if (pass === expected || decoded === expected) return true;
+      if (pass === expected || decoded === expected || validApiKeys.has(pass)) return true;
     } catch (e) {}
   }
 
-  // 2. Custom header: x-ui-password or x-router-auth
-  const customHeader = (req.headers['x-ui-password'] || req.headers['x-router-auth'] || '').trim();
-  if (customHeader === expected || customHeader === expectedB64) return true;
+  // 2. Custom header: x-ui-password, x-router-auth, or x-api-key
+  const customHeader = (req.headers['x-ui-password'] || req.headers['x-router-auth'] || req.headers['x-api-key'] || '').trim();
+  if (customHeader === expected || customHeader === expectedB64 || validApiKeys.has(customHeader)) return true;
 
   // 3. Cookie: router_auth=<pwd_or_b64>
   const cookieHeader = req.headers['cookie'] || '';
@@ -4069,10 +4149,14 @@ function isAuthorized(req) {
   }
 
   // 4. Query param: ?auth=<pwd_or_b64>
-  const parsed = url.parse(req.url, true);
-  if (parsed.query && parsed.query.auth) {
-    const val = String(parsed.query.auth).trim();
-    if (val === expected || val === expectedB64) return true;
+  if (typeof req.url === 'string') {
+    try {
+      const parsed = url.parse(req.url, true);
+      if (parsed.query && parsed.query.auth) {
+        const val = String(parsed.query.auth).trim();
+        if (val === expected || val === expectedB64) return true;
+      }
+    } catch (_) {}
   }
 
   return false;
@@ -4231,7 +4315,7 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.10.0';
+  let pkgVersion = '3.10.1';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -9434,6 +9518,14 @@ const server = http.createServer((req, res) => {
 
   // Status endpoint (JSON)
   if (reqUrl.pathname === '/status' || reqUrl.pathname === '/balancer/status') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入访问密码' }));
+      return;
+    }
     const now = Date.now();
     const accountsData = config.accounts.map(acc => {
       const stat = accountStats.get(acc.id) || {};
@@ -9722,7 +9814,7 @@ const server = http.createServer((req, res) => {
           fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak');
         }
 
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
+        writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
         config = newConfig;
         syncAccountStats();
         clearProxyAgentCache();
@@ -9813,7 +9905,7 @@ const server = http.createServer((req, res) => {
           if (fs.existsSync(CONFIG_FILE)) {
             try { fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak'); } catch (_) {}
           }
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+          writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
         }
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
@@ -10417,6 +10509,21 @@ $ghost
   }
 
   // All other API calls: Proxy to OpenCode Go upstream
+  if (config.uiPassword && !isAuthorized(req)) {
+    res.writeHead(401, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({
+      error: {
+        message: 'Unauthorized: 请提供有效的访问密码或 API Key (Bearer / x-api-key / x-ui-password)',
+        type: 'authentication_error',
+        code: 401
+      }
+    }));
+    return;
+  }
+
   const chunks = [];
   let totalReqBytes = 0;
   const MAX_REQ_BYTES = 32 * 1024 * 1024; // 32MB safety ceiling to prevent heap allocation exhaustion
@@ -10516,7 +10623,7 @@ server.on('error', (err) => {
         if (process.platform === 'win32') {
           execSync(`powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"`, { timeout: 4000, stdio: 'ignore' });
         } else {
-          execSync(`fuser -k ${config.port}/tcp 2>/dev/null || (lsof -t -i :${config.port} 2>/dev/null | xargs -r kill 2>/dev/null) || (ss -tlpn 'sport = :${config.port}' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | xargs -r kill 2>/dev/null) || true`, { timeout: 3000, stdio: 'ignore' });
+          execSync(`(lsof -t -sTCP:LISTEN -i :${config.port} 2>/dev/null | xargs -r kill -9 2>/dev/null) || (ss -tlpn 'sport = :${config.port}' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | xargs -r kill -9 2>/dev/null) || true`, { timeout: 3000, stdio: 'ignore' });
         }
         setTimeout(() => {
           console.log(`[Port Self-Healing] 端口已释放，正在重新启动监听 ${config.host}:${config.port}...`);
@@ -10581,5 +10688,7 @@ module.exports = {
   HttpTunnelAgent,
   getProxyAgent,
   getEffectiveProxyForRequest,
-  clearProxyAgentCache
+  clearProxyAgentCache,
+  isAuthorized,
+  writeFileSyncAtomic
 };

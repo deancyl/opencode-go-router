@@ -1,21 +1,37 @@
-import subprocess, time, sys, os
+import subprocess, time, sys, os, shutil
 
-node_exe = r'C:\Program Files\nodejs\node.exe'
-server_js = r'C:\Users\deanc\.opencode-go-router\server.js'
-root_dir = r'C:\Users\deanc\.opencode-go-router'
+root_dir = os.path.dirname(os.path.abspath(__file__))
+server_js = os.path.join(root_dir, 'server.js')
 
-CREATE_NO_WINDOW = 0x08000000
+# Dynamically resolve node executable path
+node_exe = shutil.which('node') or shutil.which('node.exe')
+if not node_exe:
+    candidates = [
+        r'C:\Program Files\nodejs\node.exe',
+        r'C:\Program Files (x86)\nodejs\node.exe',
+        os.path.expandvars(r'%LOCALAPPDATA%\Programs\node\node.exe'),
+        '/usr/bin/node',
+        '/usr/local/bin/node',
+        os.path.expanduser('~/.bun/bin/bun')
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            node_exe = c
+            break
+if not node_exe:
+    node_exe = 'node'
 
-print("[Supervisor] Starting background node server with CREATE_NO_WINDOW...")
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
+
+print(f"[Supervisor] Starting background node server ({node_exe}) from {root_dir}...")
 sys.stdout.flush()
 
 while True:
     try:
-        p = subprocess.Popen(
-            [node_exe, server_js],
-            cwd=root_dir,
-            creationflags=CREATE_NO_WINDOW
-        )
+        kwargs = {'cwd': root_dir}
+        if CREATE_NO_WINDOW:
+            kwargs['creationflags'] = CREATE_NO_WINDOW
+        p = subprocess.Popen([node_exe, server_js], **kwargs)
         print(f"[Supervisor] Node process running with PID: {p.pid}")
         sys.stdout.flush()
         p.wait()

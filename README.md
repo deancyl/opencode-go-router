@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.10.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.10.1-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-154%2F154%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-155%2F155%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -473,6 +473,30 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 - **自动化测试套件扩展 (Test 140)**：
   - 新增 Test 140 专项覆盖 6 大侧边栏 Nav DOM、6 个 View Section DOM、Node VM 路由状态机流转、PE 二进制结构合法性与启动器优先级；
   - 本地 140 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.10.1 (全系统 Top 15 核心架构缺陷彻底修复、会话亲和与流式思考分片保真、局域网安全与 155 项全绿回归)
+- **会话亲和与 KV Cache 确定性派生（缺陷 #1、#4）**：
+  - 优化 `extractOrDeriveSessionId`，首选基于对话首轮用户核心意图及 System Prompt 计算 SHA-256 确定性哈希派生 Session ID，消灭标准无头 Chat/Anthropic 客户端请求的随机数碰撞；
+  - 规范化多轮重试 Session ID 剥离正则（`/(?:-r\d+)+$/g`），确保模型降级记忆（`sessionModelFallbackCache`）精准绑定在根基线 Session 上，跨轮会话 0 毫秒命中；
+- **局域网安全门禁与密码防护（缺陷 #2）**：
+  - 开启 `uiPassword` 且监听 `0.0.0.0` 时，强制拦截局域网外部设备对 `/v1/*` 代理端点与 `/status` 的免密盗刷，安全放行本机回环（`127.0.0.1` / `::1`）与有效鉴权 Token；
+- **SQLite 跨平台 Python 回退管道加固（缺陷 #3）**：
+  - 将 SQL 查询与参数统一通过安全 stdin 管道传入 JSON 数据执行，彻底根除 Shell 引号逃逸与远程命令注入 (RCE) 隐患；
+- **三端协议桥流式保真与一致性加固（缺陷 #5、#6、#7）**：
+  - 协议桥前缀缓冲状态机（`pendingPrefixText`）深度升级，彻底解决 `<think>` / `</think>` 标签跨 SSE 分片（Chunk Split）到达时的漏检与正文吞入早闭问题；
+  - 非流式响应转换器补齐 `apply_patch` 解包并转为 `custom_tool_call`，完整提取模型内置 `thinking` 块；
+  - 严格遵守 Anthropic 规范：合并连续 user 消息时强制将所有 `tool_result` 块置顶，杜绝上游 400 报错；
+- **Windows 托盘鉴权联动与单实例 Mutex（缺陷 #8）**：
+  - 托盘程序动态加载 `config.json` 的端口与 `uiPassword`，并在冷却重置、客户端绑定与状态探针请求头中自动装配鉴权凭据，引入命名 Mutex 杜绝多开；
+- **Air-Gapped Office 离线预览 DOM XSS 防护（缺陷 #9）**：
+  - 针对文件名、PPTX 提取段落与 DOC 文本全面实施 HTML 实体转义（`escapeHtml`），严守本地离线安全红线；
+- **流式断流感知、配置原子写入与守护通用性（缺陷 #10、#11、#12、#13、#14、#15）**：
+  - 直连代理流式中途异常断流时主动派发 SSE `stream_error` 标准错误帧；
+  - `writeFileSyncAtomic` 封装临时文件原子替换与 Windows 句柄文件锁多重容灾，杜绝 0 字节半截配置；
+  - `executeSystemRepair` 消除重复执行 `patchOmoPluginV2()` 与 2秒超时竞态；
+  - 端口清理升级为 `lsof -sTCP:LISTEN` 与精准匹配 `pkill -x "codex"` 杜绝误杀；
+  - `daemon_runner.py` 与 Office 补丁脚本消除私人绝对路径与写死压缩形参名 `r`；
+- **自动化测试套件扩展至 155 项全绿**：新增 Test 155 专项验证 Top 15 缺陷修复全部达标。
 
 ### 🚀 v3.10.0 (白盒审查全面自愈：根除统计虚标与注水、坚守防降智零代码截断、捍卫上游 KV 缓存幂等与 154 项全绿测试)
 - **彻底消除源码与纯文本截断（坚守防降智红线）**：

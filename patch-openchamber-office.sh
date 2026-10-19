@@ -184,13 +184,14 @@ if command -v node >/dev/null 2>&1; then
 
     // 2. 向前寻找最近的函数定义入口
     const before = content.substring(Math.max(0, binaryIdx - 2000), binaryIdx);
-    const matches = [...before.matchAll(/([A-Za-z0-9_$]+)=r=>\{/g)];
+    const matches = [...before.matchAll(/([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>\{/g)];
     if (!matches.length) {
       console.error("  ❌ 未能精准定位二进制分发组件入口！");
       process.exit(1);
     }
     const compMatch = matches[matches.length - 1];
     const compName = compMatch[1];
+    const paramName = compMatch[2];
     const compPattern = compMatch[0];
 
     // 3. 探测 JSX 运行时标识
@@ -201,11 +202,11 @@ if command -v node >/dev/null 2>&1; then
 
     // 4. 清理旧错位 Hook
     if (content.includes("OpenChamberOfficeViewer")) {
-      content = content.replace(/if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(r\.path\|\|r\.name\)\)\{return [^;]+;?\}/g, "");
+      content = content.replace(/if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(([A-Za-z0-9_$]+)\.path\|\|\1\.name\)\)\{return [^;]+;?\}/g, "");
     }
 
     // 5. 注入最新 Hook
-    const hook = `if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){return ${jsxId}.jsx("div",{key:r.path||r.name,className:"h-full w-full min-h-0",ref:node=>{if(node&&node.dataset.file!==(r.path||r.name)){node.dataset.file=r.path||r.name;window.OpenChamberOfficeViewer.mount(node,r)}}});}`;
+    const hook = `if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(${paramName}.path||${paramName}.name)){return ${jsxId}.jsx("div",{key:${paramName}.path||${paramName}.name,className:"h-full w-full min-h-0",ref:node=>{if(node&&node.dataset.file!==(${paramName}.path||${paramName}.name)){node.dataset.file=${paramName}.path||${paramName}.name;window.OpenChamberOfficeViewer.mount(node,${paramName})}}});}`;
     const targetIdx = content.indexOf(compPattern);
     if (targetIdx !== -1) {
       content = content.substring(0, targetIdx + compPattern.length) + hook + content.substring(targetIdx + compPattern.length);
@@ -227,15 +228,16 @@ b_idx = content.find("filesView.artifact.binary")
 if b_idx != -1:
     search_start = max(0, b_idx - 2000)
     pre = content[search_start:b_idx]
-    matches = list(re.finditer(r"([A-Za-z0-9_$]+)=r=>\{", pre))
+    matches = list(re.finditer(r"([A-Za-z0-9_$]+)=([A-Za-z0-9_$]+)=>\{", pre))
     if matches:
         comp = matches[-1].group(1)
-        pat = f"{comp}=r={{"
+        param = matches[-1].group(2)
+        pat = matches[-1].group(0)
         comp_body = content[search_start + matches[-1].start():b_idx + 1500]
         jsx_match = re.search(r"([A-Za-z0-9_$]+)\.(?:jsx|jsxs)\(", comp_body)
         jsx_id = jsx_match.group(1) if jsx_match else "n"
-        content = re.sub(r"if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(r\.path\|\|r\.name\)\)\{return [^;]+;?\}", "", content)
-        hook = f"if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile(r.path||r.name)){{return {jsx_id}.jsx(\"div\",{{key:r.path||r.name,className:\"h-full w-full min-h-0\",ref:node=>{{if(node&&node.dataset.file!==(r.path||r.name)){{node.dataset.file=r.path||r.name;window.OpenChamberOfficeViewer.mount(node,r)}}}}}});}}"
+        content = re.sub(r"if\(window\.OpenChamberOfficeViewer&&window\.OpenChamberOfficeViewer\.isOfficeFile\(([A-Za-z0-9_$]+)\.path\|\|\1\.name\)\)\{return [^;]+;?\}", "", content)
+        hook = f"if(window.OpenChamberOfficeViewer&&window.OpenChamberOfficeViewer.isOfficeFile({param}.path||{param}.name)){{return {jsx_id}.jsx(\"div\",{{key:{param}.path||{param}.name,className:\"h-full w-full min-h-0\",ref:node=>{{if(node&&node.dataset.file!==({param}.path||{param}.name)){{node.dataset.file={param}.path||{param}.name;window.OpenChamberOfficeViewer.mount(node,{param})}}}}}});}}"
         idx = content.find(pat)
         if idx != -1:
             content = content[:idx + len(pat)] + hook + content[idx + len(pat):]

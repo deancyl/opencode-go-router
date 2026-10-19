@@ -357,8 +357,19 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
     }
   }
 
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   // 主控制器
   window.OpenChamberOfficeViewer = {
+    escapeHtml: escapeHtml,
     isOfficeFile: function(filePathOrName) {
       if (!filePathOrName) return false;
       const ext = filePathOrName.split(/[/\\]/).pop().split('.').pop().toLowerCase();
@@ -383,9 +394,9 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       const left = document.createElement('div');
       left.className = 'oc-office-toolbar-left';
       left.innerHTML = `
-        <span class="oc-office-badge oc-badge-${ext}">${ext}</span>
-        <span class="oc-office-filename" title="${name}">${name}</span>
-        <span class="oc-office-filesize">${formatSize(sizeBytes)}</span>
+        <span class="oc-office-badge oc-badge-${escapeHtml(ext)}">${escapeHtml(ext)}</span>
+        <span class="oc-office-filename" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        <span class="oc-office-filesize">${escapeHtml(formatSize(sizeBytes))}</span>
       `;
 
       const center = document.createElement('div');
@@ -429,7 +440,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       viewport.innerHTML = `
         <div class="oc-loading">
           <div class="oc-spinner"></div>
-          <div>正在纯本地安全解析 ${ext.toUpperCase()} 文档...</div>
+          <div>正在纯本地安全解析 ${escapeHtml(ext.toUpperCase())} 文档...</div>
         </div>
       `;
       root.appendChild(viewport);
@@ -460,7 +471,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
           viewport.innerHTML = `
             <div class="oc-legacy-card" style="border-color: rgba(248,113,113,0.4);">
               <div style="color: #f87171; font-weight: 600; margin-bottom: 8px;">⚠ 离线解析异常</div>
-              <div style="font-size: 13px; color: var(--muted-foreground); margin-bottom: 16px;">${err.message}</div>
+              <div style="font-size: 13px; color: var(--muted-foreground); margin-bottom: 16px;">${escapeHtml(err.message)}</div>
               <button class="oc-btn oc-btn-primary" id="oc-err-open-native">
                 💻 改用系统本地 Office / WPS 打开
               </button>
@@ -500,7 +511,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
           ignoreWidth: false,
           breakPages: true
         }).catch(e => {
-          wrapper.innerHTML = '<div style="color:#f87171;">DOCX 渲染异常: ' + e.message + '</div>';
+          wrapper.innerHTML = '<div style="color:#f87171;">DOCX 渲染异常: ' + escapeHtml(e.message) + '</div>';
         });
       } else {
         wrapper.innerHTML = '<div style="color:#f87171;">docx-preview 引擎未就绪</div>';
@@ -560,7 +571,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
 
         showSheet(sheetNames[0]);
       } catch (e) {
-        viewport.innerHTML = '<div style="color:#f87171;">Excel 解析异常: ' + e.message + '</div>';
+        viewport.innerHTML = '<div style="color:#f87171;">Excel 解析异常: ' + escapeHtml(e.message) + '</div>';
       }
     },
 
@@ -606,9 +617,9 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
           slideCard.className = 'oc-pptx-slide';
           slideCard.innerHTML = `
             <div class="oc-pptx-slide-header">幻灯片 ${idx + 1} / ${slideFiles.length}</div>
-            <div class="oc-pptx-slide-title">${paragraphs[0] || '幻灯片 ' + (idx + 1)}</div>
+            <div class="oc-pptx-slide-title">${escapeHtml(paragraphs[0] || '幻灯片 ' + (idx + 1))}</div>
             <div class="oc-pptx-slide-body">
-              ${paragraphs.slice(1).map(p => '<p style="margin:6px 0;">• ' + p + '</p>').join('') || '<p style="color:var(--muted-foreground);">[纯图或图形版式]</p>'}
+              ${paragraphs.slice(1).map(p => '<p style="margin:6px 0;">• ' + escapeHtml(p) + '</p>').join('') || '<p style="color:var(--muted-foreground);">[纯图或图形版式]</p>'}
             </div>
           `;
           wrapper.appendChild(slideCard);
@@ -616,7 +627,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
 
         viewport.appendChild(wrapper);
       } catch (e) {
-        viewport.innerHTML = '<div style="color:#f87171;">PPTX 解析异常: ' + e.message + '</div>';
+        viewport.innerHTML = '<div style="color:#f87171;">PPTX 解析异常: ' + escapeHtml(e.message) + '</div>';
       }
     },
 
@@ -645,7 +656,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       card.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
           <div>
-            <h3 style="margin:0 0 4px 0; font-size:16px; color:var(--primary);">${ext.toUpperCase()} 传统复合二进制文档</h3>
+            <h3 style="margin:0 0 4px 0; font-size:16px; color:var(--primary);">${escapeHtml(ext.toUpperCase())} 传统复合二进制文档</h3>
             <p style="margin:0; font-size:12px; color:var(--muted-foreground);">
               当前文件为 Office 97-2003 历史格式，已在本地安全为您提取正文内容。如需原样复杂排版，请点击右侧按钮直接在本地原厂软件中打开。
             </p>
@@ -655,7 +666,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
           </button>
         </div>
         <div style="background:var(--surface-background); padding:16px; border-radius:6px; border:1px solid var(--border); max-height:450px; overflow:auto; font-size:13px; line-height:1.7;">
-          ${extracted.length > 0 ? extracted.map(t => '<p style="margin:0 0 10px 0;">' + t + '</p>').join('') : '<p style="color:var(--muted-foreground);">未提取到连续可读文本，建议直接用系统本地应用打开。</p>'}
+          ${extracted.length > 0 ? extracted.map(t => '<p style="margin:0 0 10px 0;">' + escapeHtml(t) + '</p>').join('') : '<p style="color:var(--muted-foreground);">未提取到连续可读文本，建议直接用系统本地应用打开。</p>'}
         </div>
       `;
       const legacyBtn = card.querySelector('#oc-legacy-open-native');
@@ -663,6 +674,11 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       viewport.appendChild(card);
     },
 
-    openNativeApp: openNativeApp
+    openNativeApp: openNativeApp,
+    escapeHtml: escapeHtml
   };
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = window.OpenChamberOfficeViewer;
+  }
 })();
