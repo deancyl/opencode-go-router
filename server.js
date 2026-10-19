@@ -19,6 +19,8 @@
 
 const http = require('node:http');
 const https = require('node:https');
+const net = require('node:net');
+const tls = require('node:tls');
 const url = require('node:url');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -45,6 +47,14 @@ const DEFAULT_CONFIG = {
   maxFailoverRetries: 2,
   sessionAffinityEnabled: true,
   uiPassword: '',
+  allowModelAutoUpgrade: false,
+  allowRegionFallback: false,
+  proxy: {
+    enabled: false,
+    url: '',
+    scope: 'all',
+    models: ['gpt-5.6-luna', 'gpt-6-luna', 'claude-haiku-5-5']
+  },
   accounts: [
     {
       id: 'account-1',
@@ -90,6 +100,15 @@ const DEFAULT_OMO_CONFIG = {
   }
 };
 
+const proxyAgentCache = new Map();
+
+function clearProxyAgentCache() {
+  for (const [key, agent] of proxyAgentCache.entries()) {
+    try { agent.destroy(); } catch (_) {}
+  }
+  proxyAgentCache.clear();
+}
+
 // Load or initialize config
 let config = { ...DEFAULT_CONFIG };
 function loadConfig() {
@@ -98,6 +117,22 @@ function loadConfig() {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^\uFEFF/, '');
       config = Object.assign({}, DEFAULT_CONFIG, JSON.parse(raw));
       config.compression = contextCompactor.normalizeCompressionOptions(config.compression || DEFAULT_CONFIG.compression);
+      config.allowModelAutoUpgrade = Boolean(config.allowModelAutoUpgrade);
+      config.allowRegionFallback = Boolean(config.allowRegionFallback);
+      if (typeof config.proxy === 'string') {
+        config.proxy = { enabled: Boolean(config.proxy.trim()), url: config.proxy.trim(), scope: 'all', models: [] };
+      } else if (config.proxy && typeof config.proxy === 'object') {
+        config.proxy = {
+          enabled: config.proxy.enabled !== false,
+          url: (config.proxy.url || '').trim(),
+          scope: config.proxy.scope || 'all',
+          models: Array.isArray(config.proxy.models) ? config.proxy.models : ['gpt-5.6-luna', 'gpt-6-luna', 'claude-haiku-5-5']
+        };
+      } else {
+        config.proxy = { ...DEFAULT_CONFIG.proxy };
+      }
+      clearProxyAgentCache();
+      codexAdapter.configureAdapter(config);
     } catch (err) {
       console.error('[Config] Failed to load config.json, using defaults:', err.message);
     }
@@ -142,6 +177,285 @@ function loadConfig() {
   }
 }
 loadConfig();
+
+/**
+ * Zero-dependency native HTTP CONNECT tunnel forward proxy agent for Node.js 18+
+ * Allows routing upstream requests through HTTP/HTTPS proxies (e.g. http://127.0.0.1:7890)
+ * to bypass geographic IP restrictions (403 unsupported_country_region_territory) for Luna models.
+ */
+class HttpsTunnelAgent extends https.Agent {
+  constructor(proxyUrlOrOpts, options = {}) {
+    let proxyUrlStr = proxyUrlOrOpts;
+    let agentOpts = options;
+    if (proxyUrlOrOpts && typeof proxyUrlOrOpts === 'object') {
+      proxyUrlStr = proxyUrlOrOpts.proxyUrl || proxyUrlOrOpts.url;
+      agentOpts = { ...proxyUrlOrOpts, ...options };
+    }
+    super({ keepAlive: true, keepAliveMsecs: 10000, maxSockets: 50, ...agentOpts });
+    let norm = String(proxyUrlStr || '').trim();
+    if (norm && !/^https?:\/\//i.test(norm)) {
+      norm = 'http://' + norm;
+    }
+    this.proxyUrl = new URL(norm || 'http://127.0.0.1:80');
+    this.agentOpts = agentOpts;
+  }
+
+  createConnection(options, callback) {
+    const isProxyHttps = this.proxyUrl.protocol === 'https:';
+    const proxyModule = isProxyHttps ? https : http;
+    const proxyPort = parseInt(this.proxyUrl.port, 10) || (isProxyHttps ? 443 : 80);
+    const targetHost = options.host || options.hostname;
+    const targetPort = options.port || 443;
+
+    const connectHeaders = {
+      'Host': `${targetHost}:${targetPort}`,
+      'Proxy-Connection': 'Keep-Alive',
+      'User-Agent': 'OpenCode-Router-ProxyTunnel/1.0'
+    };
+
+    if (this.proxyUrl.username || this.proxyUrl.password) {
+      const auth = `${decodeURIComponent(this.proxyUrl.username)}:${decodeURIComponent(this.proxyUrl.password)}`;
+      connectHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(auth).toString('base64')}`;
+    } else if (this.agentOpts?.auth) {
+      connectHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(String(this.agentOpts.auth)).toString('base64')}`;
+    }
+
+    const connectReq = proxyModule.request({
+      host: this.proxyUrl.hostname,
+      port: proxyPort,
+      method: 'CONNECT',
+      path: `${targetHost}:${targetPort}`,
+      headers: connectHeaders,
+      timeout: 15000
+    });
+
+    let settled = false;
+    const onError = (err) => {
+      if (settled) return;
+      settled = true;
+      try { connectReq.destroy(); } catch (_) {}
+      callback(err);
+    };
+
+    connectReq.on('timeout', () => {
+      onError(new Error(`Proxy CONNECT timeout after 15s (${this.proxyUrl.host})`));
+    });
+
+    connectReq.on('error', onError);
+
+    connectReq.on('connect', (res, socket, head) => {
+      if (settled) {
+        try { socket.destroy(); } catch (_) {}
+        return;
+      }
+      if (res.statusCode !== 200) {
+        settled = true;
+        try { socket.destroy(); } catch (_) {}
+        return callback(new Error(`Proxy CONNECT rejected with HTTP ${res.statusCode}: ${res.statusMessage || ''}`));
+      }
+
+      if (head && head.length > 0) {
+        socket.unshift(head);
+      }
+
+      socket.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          callback(err);
+        }
+      });
+
+      const rejectUnauthorized = options.rejectUnauthorized !== undefined
+        ? options.rejectUnauthorized
+        : (this.agentOpts?.rejectUnauthorized !== undefined ? this.agentOpts.rejectUnauthorized : true);
+
+      const tlsSocket = tls.connect({
+        socket: socket,
+        servername: options.servername || targetHost,
+        rejectUnauthorized
+      }, () => {
+        if (settled) return;
+        settled = true;
+        callback(null, tlsSocket);
+      });
+
+      tlsSocket.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          callback(err);
+        }
+      });
+    });
+
+    connectReq.end();
+  }
+}
+
+class HttpTunnelAgent extends http.Agent {
+  constructor(proxyUrlOrOpts, options = {}) {
+    let proxyUrlStr = proxyUrlOrOpts;
+    let agentOpts = options;
+    if (proxyUrlOrOpts && typeof proxyUrlOrOpts === 'object') {
+      proxyUrlStr = proxyUrlOrOpts.proxyUrl || proxyUrlOrOpts.url;
+      agentOpts = { ...proxyUrlOrOpts, ...options };
+    }
+    super({ keepAlive: true, keepAliveMsecs: 10000, maxSockets: 50, ...agentOpts });
+    let norm = String(proxyUrlStr || '').trim();
+    if (norm && !/^https?:\/\//i.test(norm)) {
+      norm = 'http://' + norm;
+    }
+    this.proxyUrl = new URL(norm || 'http://127.0.0.1:80');
+    this.agentOpts = agentOpts;
+  }
+
+  createConnection(options, callback) {
+    const isProxyHttps = this.proxyUrl.protocol === 'https:';
+    const proxyModule = isProxyHttps ? https : http;
+    const proxyPort = parseInt(this.proxyUrl.port, 10) || (isProxyHttps ? 443 : 80);
+    const targetHost = options.host || options.hostname;
+    const targetPort = options.port || 80;
+
+    const connectHeaders = {
+      'Host': `${targetHost}:${targetPort}`,
+      'Proxy-Connection': 'Keep-Alive',
+      'User-Agent': 'OpenCode-Router-ProxyTunnel/1.0'
+    };
+
+    if (this.proxyUrl.username || this.proxyUrl.password) {
+      const auth = `${decodeURIComponent(this.proxyUrl.username)}:${decodeURIComponent(this.proxyUrl.password)}`;
+      connectHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(auth).toString('base64')}`;
+    } else if (this.agentOpts?.auth) {
+      connectHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(String(this.agentOpts.auth)).toString('base64')}`;
+    }
+
+    const connectReq = proxyModule.request({
+      host: this.proxyUrl.hostname,
+      port: proxyPort,
+      method: 'CONNECT',
+      path: `${targetHost}:${targetPort}`,
+      headers: connectHeaders,
+      timeout: 15000
+    });
+
+    let settled = false;
+    const onError = (err) => {
+      if (settled) return;
+      settled = true;
+      try { connectReq.destroy(); } catch (_) {}
+      callback(err);
+    };
+
+    connectReq.on('timeout', () => {
+      onError(new Error(`Proxy CONNECT timeout after 15s (${this.proxyUrl.host})`));
+    });
+
+    connectReq.on('error', onError);
+
+    connectReq.on('connect', (res, socket, head) => {
+      if (settled) {
+        try { socket.destroy(); } catch (_) {}
+        return;
+      }
+      if (res.statusCode !== 200) {
+        settled = true;
+        try { socket.destroy(); } catch (_) {}
+        return callback(new Error(`Proxy CONNECT rejected with HTTP ${res.statusCode}: ${res.statusMessage || ''}`));
+      }
+      if (head && head.length > 0) {
+        socket.unshift(head);
+      }
+      socket.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          callback(err);
+        }
+      });
+      settled = true;
+      callback(null, socket);
+    });
+
+    connectReq.end();
+  }
+}
+
+function getProxyAgent(proxyUrlInput, isHttps = true) {
+  if (!proxyUrlInput) return null;
+  const proxyUrlStr = typeof proxyUrlInput === 'string'
+    ? proxyUrlInput.trim()
+    : (proxyUrlInput.proxyUrl || proxyUrlInput.url || '').toString().trim();
+  if (!proxyUrlStr) return null;
+  const key = `${isHttps ? 'https' : 'http'}://${proxyUrlStr}`;
+  if (proxyAgentCache.has(key)) {
+    return proxyAgentCache.get(key);
+  }
+  try {
+    const agent = isHttps ? new HttpsTunnelAgent(proxyUrlStr) : new HttpTunnelAgent(proxyUrlStr);
+    proxyAgentCache.set(key, agent);
+    return agent;
+  } catch (err) {
+    console.error(`[Proxy Agent Error] Failed to initialize proxy agent for "${proxyUrlStr}":`, err.message);
+    return null;
+  }
+}
+
+const OVERSEAS_RESTRICTED_MODELS = new Set([
+  'gpt-5.6-luna',
+  'gpt-6-luna',
+  'claude-haiku-5-5'
+]);
+
+function getEffectiveProxyForRequest(modelName = null) {
+  let proxyConf = config.proxy;
+
+  // 1. If explicit config.proxy exists
+  if (proxyConf !== undefined && proxyConf !== null) {
+    if (typeof proxyConf === 'string' && proxyConf.trim()) {
+      return { url: proxyConf.trim(), scope: 'all' };
+    }
+    if (typeof proxyConf === 'object') {
+      if (proxyConf.enabled === false) {
+        return null;
+      }
+      const url = (proxyConf.url || '').trim();
+      if (!url) {
+        return null;
+      }
+      const scope = proxyConf.scope || 'all';
+      if (scope === 'all') {
+        return { url, scope: 'all' };
+      }
+      const cleanModel = (modelName || '').toLowerCase().trim();
+      const models = Array.isArray(proxyConf.models) ? proxyConf.models : [];
+      if (scope === 'restricted') {
+        const isRestricted = OVERSEAS_RESTRICTED_MODELS.has(cleanModel) ||
+          cleanModel.includes('luna') ||
+          models.some(m => (m || '').toLowerCase().trim() === cleanModel);
+        if (isRestricted) {
+          return { url, scope: 'restricted' };
+        }
+        return null;
+      }
+      if (scope === 'custom') {
+        const isCustom = models.some(m => (m || '').toLowerCase().trim() === cleanModel);
+        if (isCustom) {
+          return { url, scope: 'custom' };
+        }
+        return null;
+      }
+      return null;
+    }
+  }
+
+  // 2. Fallback to standard environment variables when no explicit config.proxy
+  const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy ||
+    process.env.HTTP_PROXY || process.env.http_proxy ||
+    process.env.ALL_PROXY || process.env.all_proxy;
+  if (envProxy && envProxy.trim()) {
+    return { url: envProxy.trim(), scope: 'env' };
+  }
+
+  return null;
+}
 
 /**
  * Resolves effective compression options with target platform detection from client headers.
@@ -380,7 +694,7 @@ function testAccountConnection(upstream, apiKey) {
       }
       const parsed = new URL(endpoint);
       const mod = parsed.protocol === 'https:' ? https : http;
-      const req = mod.request(parsed, {
+      const reqOptions = {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${apiKey.trim()}`,
@@ -389,7 +703,13 @@ function testAccountConnection(upstream, apiKey) {
           'Accept': 'application/json'
         },
         timeout: 6000
-      }, (res) => {
+      };
+      const proxyInfo = getEffectiveProxyForRequest(null);
+      if (proxyInfo) {
+        const agent = getProxyAgent(proxyInfo.url, parsed.protocol === 'https:');
+        if (agent) reqOptions.agent = agent;
+      }
+      const req = mod.request(parsed, reqOptions, (res) => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => {
@@ -468,7 +788,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
       }
       const parsed = new URL(endpoint);
       const mod = parsed.protocol === 'https:' ? https : http;
-      const req = mod.request(parsed, {
+      const reqOptions = {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${apiKey.trim()}`,
@@ -477,7 +797,13 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
           'Accept': 'application/json'
         },
         timeout: 8000
-      }, (res) => {
+      };
+      const proxyInfo = getEffectiveProxyForRequest(null);
+      if (proxyInfo) {
+        const agent = getProxyAgent(proxyInfo.url, parsed.protocol === 'https:');
+        if (agent) reqOptions.agent = agent;
+      }
+      const req = mod.request(parsed, reqOptions, (res) => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => {
@@ -545,7 +871,9 @@ async function bindDesktopConfig(options = {}) {
       const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
       if (validAccount) {
         try {
-          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500);
+          const proxyInfo = getEffectiveProxyForRequest(null);
+          const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
+          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500, { agent: proxyAgent });
         } catch (_) {}
       }
     }
@@ -1052,7 +1380,10 @@ function handleUpstreamGlitchAndFailover({
 
   // Step 3: Dynamic fallback to equivalent compatible model (Rule 15 & 19)
   if (model && typeof fallbackModelFn === 'function') {
-    const targetFallback = codexAdapter.resolveCompatibleFallbackModel(model, errText, { reasoningEffort });
+    const targetFallback = codexAdapter.resolveCompatibleFallbackModel(model, errText, { 
+      reasoningEffort,
+      allowUpgrade: config.allowModelAutoUpgrade
+    });
     if (targetFallback && targetFallback !== model) {
       console.warn(`[Auto Self-Healing] 上游集群节点持续报错，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
       if (sessionId) {
@@ -1147,7 +1478,10 @@ function handleNetworkErrorFailover({
 
   // Step 3: Fallback to equivalent compatible model if available
   if (model && typeof fallbackModelFn === 'function') {
-    const targetFallback = codexAdapter.resolveCompatibleFallbackModel(model, err.message, { reasoningEffort });
+    const targetFallback = codexAdapter.resolveCompatibleFallbackModel(model, err.message, { 
+      reasoningEffort,
+      allowUpgrade: config.allowModelAutoUpgrade
+    });
     if (targetFallback && targetFallback !== model) {
       console.warn(`[Auto Self-Healing] 网络连接持续异常，自动无缝跃迁至等位模型 "${targetFallback}" 兜底执行...`);
       if (sessionId) {
@@ -1224,9 +1558,26 @@ function handleModelAndContextFallback({
     return true;
   }
 
-  // 2. Region blocked, protocol unsupported, or model unsupported -> fallback model
+  // 2. Region blocked (403): check allowRegionFallback switch
+  if (classified.isRegionBlocked) {
+    if (!config.allowRegionFallback) {
+      console.warn(`[Proxy 403 Region Block] 模型 "${model}" 触发上游地域限制 (403)，且未开启自动降级回退 (allowRegionFallback: false)。`);
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+        clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+      }
+      sendStandardizedError(clientRes, null, 403, '上游返回 403: 当前公网 IP 受地域限制，请配置网关代理服务器或开启海外/Tailscale 节点');
+      return true;
+    }
+  }
+
+  // 2b. Protocol unsupported, model unsupported, or region blocked (if allowRegionFallback is enabled) -> fallback model
   if ((classified.isRegionBlocked || classified.isProtocolUnsupported || classified.isModelUnsupported) && model) {
-    const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(model, errText, { reasoningEffort });
+    const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(model, errText, { 
+      reasoningEffort,
+      allowUpgrade: config.allowModelAutoUpgrade
+    });
     if (fallbackModel && fallbackModel !== model) {
       if (sessionId && model) {
         setSessionModelFallback(sessionId, model, fallbackModel);
@@ -1315,6 +1666,9 @@ function dispatchResponsesRequest(clientReq, clientRes, responsesBody, account, 
 
   if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(model)) {
     bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds, sessionId);
+  } else if (codexAdapter.isNativeResponsesModel && codexAdapter.isNativeResponsesModel(model)) {
+    const reqBody = Buffer.from(JSON.stringify(responsesBody), 'utf8');
+    sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds, sessionId);
   } else {
     bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds, sessionId);
   }
@@ -1389,7 +1743,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(reqModel)) {
       bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
       return;
-    } else if (!codexAdapter.NATIVE_RESPONSES_MODELS.has(reqModel)) {
+    } else if (codexAdapter.isNativeResponsesModel ? !codexAdapter.isNativeResponsesModel(reqModel) : !codexAdapter.NATIVE_RESPONSES_MODELS.has(reqModel)) {
       bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
       return;
     }
@@ -1459,6 +1813,15 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     headers: proxyHeaders,
     timeout: 300000 // 5 minutes timeout for long generation
   };
+
+  const reqModelName = (parsedBody && parsedBody.model) || null;
+  const effectiveProxy = getEffectiveProxyForRequest(reqModelName);
+  if (effectiveProxy) {
+    const agent = getProxyAgent(effectiveProxy.url, isHttps);
+    if (agent) {
+      proxyOptions.agent = agent;
+    }
+  }
 
   const proxyReq = transport.request(proxyOptions);
   let responded = false;
@@ -1870,6 +2233,14 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     timeout: 300000
   };
 
+  const effectiveProxy = getEffectiveProxyForRequest(chatPayload.model);
+  if (effectiveProxy) {
+    const agent = getProxyAgent(effectiveProxy.url, isHttps);
+    if (agent) {
+      proxyOptions.agent = agent;
+    }
+  }
+
   const proxyReq = transport.request(proxyOptions);
   let responded = false;
   let requestFinished = false;
@@ -2238,6 +2609,14 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     headers: proxyHeaders,
     timeout: 300000
   };
+
+  const effectiveProxy = getEffectiveProxyForRequest(anthropicPayload.model);
+  if (effectiveProxy) {
+    const agent = getProxyAgent(effectiveProxy.url, isHttps);
+    if (agent) {
+      proxyOptions.agent = agent;
+    }
+  }
 
   const proxyReq = transport.request(proxyOptions);
   let responded = false;
@@ -3266,7 +3645,9 @@ async function executeSystemRepair(options = {}) {
       const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
       if (validAccount) {
         try {
-          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500);
+          const proxyInfo = getEffectiveProxyForRequest(null);
+          const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
+          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500, { agent: proxyAgent });
         } catch (_) {}
       }
     }
@@ -3850,7 +4231,7 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.8.3';
+  let pkgVersion = '3.9.0';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -5852,6 +6233,66 @@ function renderDashboardHtml(config) {
             </label>
             <div class="sub-tip" style="margin-left:22px;">【白话】：让同一个任务的后续对话找同一个账号，AI 能记住上文并享受官方 KV 缓存折扣</div>
           </div>
+
+          <!-- Proxy Tunnel Settings -->
+          <div class="form-group" style="grid-column: 1 / -1; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+            <div style="font-weight: 700; color: #38bdf8; margin-bottom: 6px; font-size: 0.95rem;">
+              🌐 上游网络代理与地域限制穿透 (Forward Proxy Tunnel)
+            </div>
+            <div class="sub-tip" style="margin-left:0; margin-bottom: 10px;">
+              为访问官方上游配置 HTTP/HTTPS 代理（如 <code>http://127.0.0.1:7890</code>），让 GPT-5.6/6 Luna 等海外受限模型在大陆 IP 环境下免受 403 阻断；支持零外部依赖 Node.js 原生 CONNECT 隧道转发。
+            </div>
+          </div>
+          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
+            <label class="switch-label" style="margin-bottom:4px;">
+              <input type="checkbox" id="cfg-proxy-enabled" ${config.proxy && config.proxy.enabled ? 'checked' : ''} onchange="markConfigDirty()">
+              <span style="font-weight:600; color:#e2e8f0;">启用上游网络代理 (Enable Proxy)</span>
+            </label>
+            <div class="sub-tip" style="margin-left:22px;">勾选后，指定流量将通过下方代理服务器隧道转发至上游</div>
+          </div>
+          <div class="form-group">
+            <label>代理服务器地址 (Proxy URL)</label>
+            <input type="text" id="cfg-proxy-url" class="form-control" placeholder="http://127.0.0.1:7890" value="${(config.proxy && config.proxy.url) || ''}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">支持 HTTP/HTTPS 代理，未配置时自动继承系统环境变量 (HTTP_PROXY / HTTPS_PROXY)</div>
+          </div>
+          <div class="form-group">
+            <label>代理生效范围 (Proxy Scope)</label>
+            <select id="cfg-proxy-scope" class="form-control" onchange="markConfigDirty()">
+              <option value="all" ${(!config.proxy || config.proxy.scope === 'all') ? 'selected' : ''}>全局代理 (所有上游请求均走代理)</option>
+              <option value="restricted" ${(config.proxy && config.proxy.scope === 'restricted') ? 'selected' : ''}>受限模型代理 (仅 Luna、Claude 等受地域限制模型走代理)</option>
+              <option value="custom" ${(config.proxy && config.proxy.scope === 'custom') ? 'selected' : ''}>自定义模型清单 (仅下方指定模型走代理)</option>
+            </select>
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">按需指定哪些模型流量走代理，兼顾国内低延迟与海外模型可用性</div>
+          </div>
+          <div class="form-group">
+            <label>走代理的模型清单 (Custom Proxy Models - 逗号分隔)</label>
+            <input type="text" id="cfg-proxy-models" class="form-control" placeholder="gpt-5.6-luna, gpt-6-luna, claude-haiku-5-5" value="${(config.proxy && Array.isArray(config.proxy.models)) ? config.proxy.models.join(', ') : 'gpt-5.6-luna, gpt-6-luna, claude-haiku-5-5'}" oninput="markConfigDirty()">
+            <div class="sub-tip" style="margin-left:0; margin-top:3px;">仅在范围为“受限模型”或“自定义清单”时生效</div>
+          </div>
+
+          <!-- Model Fallback & Anti-Upgrade Policy -->
+          <div class="form-group" style="grid-column: 1 / -1; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+            <div style="font-weight: 700; color: #a78bfa; margin-bottom: 6px; font-size: 0.95rem;">
+              🛡️ 模型容灾与禁止逆向升阶铁律 (Anti-Upgrade Barrier & Fallback Control)
+            </div>
+            <div class="sub-tip" style="margin-left:0; margin-bottom: 10px;">
+              严格杜绝任何模型未经许可擅自升阶至 Pro 等昂贵慢速旗舰，消除费用与延迟不可控风险。
+            </div>
+          </div>
+          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
+            <label class="switch-label" style="margin-bottom:4px;">
+              <input type="checkbox" id="cfg-allow-upgrade" ${config.allowModelAutoUpgrade ? 'checked' : ''} onchange="markConfigDirty()">
+              <span style="font-weight:600; color:#e2e8f0;">允许模型自动逆向升阶 (默认禁止)</span>
+            </label>
+            <div class="sub-tip" style="margin-left:22px;">【铁律保护】：保持关闭状态。严禁将 Flash/Standard 请求升阶为昂贵的 Pro/Flagship 旗舰</div>
+          </div>
+          <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
+            <label class="switch-label" style="margin-bottom:4px;">
+              <input type="checkbox" id="cfg-allow-region-fallback" ${config.allowRegionFallback ? 'checked' : ''} onchange="markConfigDirty()">
+              <span style="font-weight:600; color:#e2e8f0;">允许 403 地域限制自动 Fallback 降级 (默认禁止)</span>
+            </label>
+            <div class="sub-tip" style="margin-left:22px;">【透明感知】：保持关闭时，403 明确报错并提示开启代理或海外节点；开启后才尝试静默替换兼容模型</div>
+          </div>
         </div>
       </div>
     </div>
@@ -7428,6 +7869,16 @@ function renderDashboardHtml(config) {
         if (document.getElementById('cfg-host')) document.getElementById('cfg-host').value = currentConfig.host || '127.0.0.1';
         if (document.getElementById('cfg-port')) document.getElementById('cfg-port').value = currentConfig.port || 4010;
         if (document.getElementById('cfg-uipassword')) document.getElementById('cfg-uipassword').value = currentConfig.uiPassword || '';
+        if (document.getElementById('cfg-allow-upgrade')) document.getElementById('cfg-allow-upgrade').checked = Boolean(currentConfig.allowModelAutoUpgrade);
+        if (document.getElementById('cfg-allow-region-fallback')) document.getElementById('cfg-allow-region-fallback').checked = Boolean(currentConfig.allowRegionFallback);
+        if (currentConfig.proxy) {
+          if (document.getElementById('cfg-proxy-enabled')) document.getElementById('cfg-proxy-enabled').checked = Boolean(currentConfig.proxy.enabled);
+          if (document.getElementById('cfg-proxy-url')) document.getElementById('cfg-proxy-url').value = currentConfig.proxy.url || '';
+          if (document.getElementById('cfg-proxy-scope')) document.getElementById('cfg-proxy-scope').value = currentConfig.proxy.scope || 'all';
+          if (document.getElementById('cfg-proxy-models')) {
+            document.getElementById('cfg-proxy-models').value = Array.isArray(currentConfig.proxy.models) ? currentConfig.proxy.models.join(', ') : (currentConfig.proxy.models || '');
+          }
+        }
         if (currentConfig.compression) {
           const comp = currentConfig.compression;
           const m = comp.modules || {};
@@ -7949,6 +8400,15 @@ function renderDashboardHtml(config) {
         injectPowerShellGuard: (compEnabled && psEnabled) ? compPsGuardDirective : false
       };
 
+      const proxyEnabled = document.getElementById('cfg-proxy-enabled') ? document.getElementById('cfg-proxy-enabled').checked : false;
+      const proxyUrl = document.getElementById('cfg-proxy-url') ? document.getElementById('cfg-proxy-url').value.trim() : '';
+      const proxyScope = document.getElementById('cfg-proxy-scope') ? document.getElementById('cfg-proxy-scope').value : 'all';
+      const proxyModelsStr = document.getElementById('cfg-proxy-models') ? document.getElementById('cfg-proxy-models').value.trim() : '';
+      const proxyModels = proxyModelsStr ? proxyModelsStr.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean) : ['gpt-5.6-luna', 'gpt-6-luna', 'claude-haiku-5-5'];
+
+      const allowModelAutoUpgrade = document.getElementById('cfg-allow-upgrade') ? document.getElementById('cfg-allow-upgrade').checked : false;
+      const allowRegionFallback = document.getElementById('cfg-allow-region-fallback') ? document.getElementById('cfg-allow-region-fallback').checked : false;
+
       const payload = {
         upstream,
         host,
@@ -7957,6 +8417,14 @@ function renderDashboardHtml(config) {
         defaultCooldownMs: cooldownSec * 1000,
         maxFailoverRetries: retries,
         sessionAffinityEnabled: affinity,
+        allowModelAutoUpgrade,
+        allowRegionFallback,
+        proxy: {
+          enabled: proxyEnabled,
+          url: proxyUrl,
+          scope: proxyScope,
+          models: proxyModels
+        },
         accounts: currentConfig.accounts,
         compression
       };
@@ -9057,6 +9525,9 @@ const server = http.createServer((req, res) => {
       defaultCooldownMs: config.defaultCooldownMs,
       maxFailoverRetries: config.maxFailoverRetries,
       sessionAffinityEnabled: config.sessionAffinityEnabled,
+      allowModelAutoUpgrade: Boolean(config.allowModelAutoUpgrade),
+      allowRegionFallback: Boolean(config.allowRegionFallback),
+      proxy: config.proxy || { enabled: false, url: '', scope: 'all', models: [] },
       hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
       uiPassword: config.uiPassword || '',
       accounts: config.accounts,
@@ -9071,26 +9542,52 @@ const server = http.createServer((req, res) => {
       if (!buf) return;
       try {
         const payload = JSON.parse(buf.toString('utf8'));
-        if (!Array.isArray(payload.accounts) || payload.accounts.length === 0) {
-          throw new Error('至少需要保留一个账号配置');
-        }
+        let newAccounts = config.accounts;
+        if (payload.accounts !== undefined) {
+          if (!Array.isArray(payload.accounts) || payload.accounts.length === 0) {
+            throw new Error('至少需要保留一个账号配置');
+          }
 
-        // Clean & validate accounts
-        const newAccounts = payload.accounts.map((acc, index) => ({
-          id: acc.id || `account-${Date.now()}-${index}`,
-          name: (acc.name || `账号 ${index + 1}`).trim(),
-          apiKey: (acc.apiKey || '').trim(),
-          enabled: Boolean(acc.enabled)
-        }));
+          // Clean & validate accounts
+          newAccounts = payload.accounts.map((acc, index) => ({
+            id: acc.id || `account-${Date.now()}-${index}`,
+            name: (acc.name || `账号 ${index + 1}`).trim(),
+            apiKey: (acc.apiKey || '').trim(),
+            enabled: Boolean(acc.enabled)
+          }));
+        }
 
         const newConfig = {
           ...config,
-          upstream: (payload.upstream || config.upstream).trim(),
-          defaultCooldownMs: Number(payload.defaultCooldownMs) || config.defaultCooldownMs,
-          maxFailoverRetries: Number(payload.maxFailoverRetries) || config.maxFailoverRetries,
+          upstream: (payload.upstream !== undefined ? String(payload.upstream).trim() : config.upstream),
+          defaultCooldownMs: payload.defaultCooldownMs !== undefined ? (Number(payload.defaultCooldownMs) || config.defaultCooldownMs) : config.defaultCooldownMs,
+          maxFailoverRetries: payload.maxFailoverRetries !== undefined ? (Number(payload.maxFailoverRetries) || config.maxFailoverRetries) : config.maxFailoverRetries,
           sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
+          allowModelAutoUpgrade: payload.allowModelAutoUpgrade !== undefined ? Boolean(payload.allowModelAutoUpgrade) : Boolean(config.allowModelAutoUpgrade),
+          allowRegionFallback: payload.allowRegionFallback !== undefined ? Boolean(payload.allowRegionFallback) : Boolean(config.allowRegionFallback),
           accounts: newAccounts
         };
+        if (payload.proxy !== undefined) {
+          if (typeof payload.proxy === 'string') {
+            newConfig.proxy = {
+              enabled: Boolean(payload.proxy.trim()),
+              url: payload.proxy.trim(),
+              scope: 'all',
+              models: []
+            };
+          } else if (payload.proxy && typeof payload.proxy === 'object') {
+            newConfig.proxy = {
+              enabled: payload.proxy.enabled !== false,
+              url: (payload.proxy.url || '').trim(),
+              scope: payload.proxy.scope || 'all',
+              models: Array.isArray(payload.proxy.models)
+                ? payload.proxy.models.map(m => String(m).trim()).filter(Boolean)
+                : (typeof payload.proxy.models === 'string'
+                    ? payload.proxy.models.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean)
+                    : [])
+            };
+          }
+        }
         if (payload.host !== undefined && String(payload.host).trim()) {
           newConfig.host = String(payload.host).trim();
         }
@@ -9217,6 +9714,8 @@ const server = http.createServer((req, res) => {
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
         config = newConfig;
         syncAccountStats();
+        clearProxyAgentCache();
+        codexAdapter.configureAdapter(config);
 
         console.log('[Config] Configuration successfully updated via Graphical UI!');
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -9749,7 +10248,9 @@ $ghost
 
       try {
         const updater = require('./updater');
-        const officialModels = await updater.fetchOfficialModels(apiKey, config.upstream, 5000);
+        const proxyInfo = getEffectiveProxyForRequest(null);
+        const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
+        const officialModels = await updater.fetchOfficialModels(apiKey, config.upstream, 5000, { agent: proxyAgent });
         if (officialModels && officialModels.length > 0) {
           const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
           const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
@@ -10064,5 +10565,10 @@ module.exports = {
   MAX_ROUTER_SESSIONS,
   readInternalBody,
   runSystemDoctor,
-  executeSystemRepair
+  executeSystemRepair,
+  HttpsTunnelAgent,
+  HttpTunnelAgent,
+  getProxyAgent,
+  getEffectiveProxyForRequest,
+  clearProxyAgentCache
 };

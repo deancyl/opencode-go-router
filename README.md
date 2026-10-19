@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.8.3-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.9.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-150%2F150%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-153%2F153%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,41 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.8.3 (当前最新版：全生命周期内存护栏、OOM 隐患根治、无锁路径解耦与多实例隔离沙箱)
+### 🚀 v3.9.0 (当前最新版：Luna 模型原生直连、零依赖 CONNECT 代理隧道、模型防逆向升阶铁律与 153 项全绿)
+- **彻底解除 Luna 等模型硬编码别名，放行原生 `/v1/responses` 直连 (Luna Model Liberation & Native Responses)**：
+  - 从 `MODEL_COMPATIBILITY_ALIASES` 彻底净化移除 `gpt-5.6-luna` 与 `gpt-6-luna` 的别名映射，解除人为降级截断；
+  - 在 `NATIVE_RESPONSES_MODELS` 白名单集合中完整纳入 Luna 等海外高推理模型；
+  - 客户端请求 `gpt-5.6-luna` / `gpt-6-luna` 或带有提供商前缀 `opencode-go/gpt-*` 时，网关完整保留真实模型名称，放行原生 `/v1/responses` 直连透传，充分释放 Luna 原生推演与上下文能力。
+- **零依赖原生 HTTP/HTTPS CONNECT 隧道代理引擎 (Zero-Dependency CONNECT Proxy Tunnel)**：
+  - 纯 Node.js 18+ 原生零外部依赖实现 `HttpsTunnelAgent` 与 `HttpTunnelAgent`，支持标准 `HTTP CONNECT` 握手与基本鉴权（Basic Auth）；
+  - 支持上游 HTTP/HTTPS 代理配置（`config.proxy: { enabled, url, scope, models }`），支持 `all`（全局代理）、`restricted`（针对 Luna / Claude Haiku 等海外受限模型定向代理）与 `custom`（用户自定义指定模型）三重作用域，并无感回退至系统环境变量（`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`）；
+  - **403 地域限制错误清洗与透明指引 (Region Block Sanitization & Fallback Guard)**：
+    - 当上游节点返回 HTTP 403 / `unsupported_country_region_territory` 时，网关层自动将非标错误清洗为合规标准 JSON，明确提示“当前公网 IP 受地域限制，请配置网关代理服务器或开启海外/Tailscale 节点”；
+    - 默认关闭 403 自动 Fallback（`allowRegionFallback: false`），杜绝暗中静默降级；
+  - **Web 控制台仪表盘设置持久化**：
+    - 在 Web UI 中增设专属【🌐 上游 HTTP/HTTPS CONNECT 代理服务器】配置卡片，支持图形化配置代理开关、代理地址、作用域与自定义模型清单，实时保存与热重载。
+- **全面杜绝任何模型的逆向升阶铁律 (Anti-Upgrade Barrier & Ladder Matching)**：
+  - 彻底重构 `resolveCompatibleFallbackModel`，建立模型三级梯队分类字典 `MODEL_TIERS`（`FLASH=1`、`STANDARD=2`、`FLAGSHIP=3`）与阶梯匹配算法；
+  - **全梯队绝对防逆向升阶**：默认模式下（`allowModelAutoUpgrade: false`）严格杜绝任何梯队的逆向越级升阶：Flash 极速模型（Tier 1）绝对禁止升阶至 Standard（Tier 2）或 Flagship（Tier 3）；Standard 标准模型（Tier 2）绝对禁止升阶至 Flagship（Tier 3，如 `glm-5.3` 故障时仅在 Standard 内部回退至同族 `glm-5.2` 或平滑降级至 `deepseek-flash`，绝不擅自越级至 `deepseek-v4-pro` 或 `qwen3.7-max`）；
+  - **参数越界免疫**：修复以往 `preferFlagship: true` 或局部高推理参数绕过 `allowUpgrade` 的隐患，严格受控于全局 `allowModelAutoUpgrade` 总闸；
+  - **高思考旗舰防降智红线融合 (Rule 19 Harmony)**：当请求本身属于 Flagship 旗舰档或未知异构节点模型且指定 `reasoning_effort: xhigh` 时，坚守 Rule 19 红线，优先路由至 671B 深度思考旗舰（`deepseek-v4-pro`），确保复杂推演思维链完整不降智；
+  - **图形化自由控制开关**：在 Web UI 增设【🛡️ 模型容灾与禁止逆向升阶铁律】控制面板，支持用户按需一键开启或关闭模型自动逆向升阶（默认严格关闭）。
+- **零依赖原生 HTTP/HTTPS CONNECT 隧道代理引擎加固 (Zero-Dependency CONNECT Proxy Tunnel)**：
+  - 纯 Node.js 18+ 原生零外部依赖实现 `HttpsTunnelAgent` 与 `HttpTunnelAgent`，支持标准 `HTTP CONNECT` 握手与基本鉴权（Basic Auth）；
+  - 支持无协议前缀的 `host:port` 格式（如 `127.0.0.1:7890`）自愈解析；完善底层 Socket 错误挂接与初始 Head 字节 Unshift 缓冲补偿，彻底消除代理握手异常引发的进程崩溃；
+  - 联动 `updater.fetchOfficialModels` 代理穿透支持，海外与私有云环境下模型动态同步不再断流；
+  - 支持上游 HTTP/HTTPS 代理配置（`config.proxy: { enabled, url, scope, models }`），支持 `all`、`restricted` 与 `custom` 三重作用域，并无感回退至系统环境变量；
+  - **403 地域限制错误清洗与透明指引 (Region Block Sanitization & Fallback Guard)**：
+    - 当上游节点返回 HTTP 403 / `unsupported_country_region_territory` 时，网关层自动将非标错误清洗为合规标准 JSON，明确提示“当前公网 IP 受地域限制，请配置网关代理服务器或开启海外/Tailscale 节点”；默认关闭 403 自动 Fallback，杜绝暗中静默降级；
+  - **Web 控制台仪表盘设置持久化**：
+    - 在 Web UI 中增设专属【🌐 上游 HTTP/HTTPS CONNECT 代理服务器】配置卡片，支持图形化配置代理开关、代理地址、作用域与自定义模型清单，实时保存与热重载。
+- **测试矩阵扩充至 153 项全绿 (Test 151 - 153)**：
+  - 新增 Test 151（模型梯队划分、Anti-Upgrade 梯阶匹配锁、Candidate 严格过滤、全模型梯队防越级断言与动态配置同步）；
+  - 新增 Test 152（Luna 真实模型名称保留、`isNativeResponsesModel` 动态通配、MODEL_COMPATIBILITY_ALIASES 别名净化与 `/v1/responses` 原生直连透传）；
+  - 新增 Test 153（Node.js 原生 CONNECT 隧道代理连通性、host:port 自愈解析、403 地域限制错误规范化清洗、Web UI 代理配置 API 往返持久化）；
+  - 全套 153 项自动化集成测试全部 100% 绿灯。
+
+### 🚀 v3.8.3 (全生命周期内存护栏、OOM 隐患根治、无锁路径解耦与多实例隔离沙箱)
 - **会话亲和性 LRU 有界内存收敛 (Bounded LRU Session Shield)**：
   - 在 `server.js` 核心网关中引入 `MAX_ROUTER_SESSIONS = 5000` 强力有界约束；在 `touchSession` 时实施 O(1) 淘汰机制，当活跃会话超过 5000 时自动驱逐最旧的 LRU 会话及关联的压缩备忘与异构节点模型记忆，彻底消除巨量突发会话引发的内存无限线性增长与 OOM 隐患。
 - **管理流与代理流内存彻底回收 (Zero-Leak Lifecycle & Stream Cleanup)**：

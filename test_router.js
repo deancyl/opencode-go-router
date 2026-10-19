@@ -317,23 +317,44 @@ async function runTests() {
       return;
     }
 
+    if (session === 'session-upstream-403-region') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: {
+          code: 'unsupported_country_region_territory',
+          message: 'Country, region, or territory not supported',
+          type: 'request_forbidden'
+        }
+      }));
+      return;
+    }
+
     if (req.url === '/v1/responses') {
       if (auth.includes('key-account-1')) account1Calls++;
       else account2Calls++;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        id: 'resp-native-1',
-        object: 'response',
-        status: 'completed',
-        model: 'native-model-test',
-        output: [{
-          id: 'msg_1',
-          type: 'message',
+      let b = [];
+      req.on('data', c => b.push(c));
+      req.on('end', () => {
+        let echoModel = 'native-model-test';
+        try {
+          const parsed = JSON.parse(Buffer.concat(b).toString('utf8'));
+          if (parsed && parsed.model) echoModel = parsed.model;
+        } catch (_) {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'resp-native-1',
+          object: 'response',
           status: 'completed',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: 'response from native test' }]
-        }]
-      }));
+          model: echoModel,
+          output: [{
+            id: 'msg_1',
+            type: 'message',
+            status: 'completed',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'response from native test' }]
+          }]
+        }));
+      });
       return;
     }
 
@@ -2163,12 +2184,14 @@ async function runTests() {
     // [Test 64] Testing Model Compatibility Aliases for Codex Bridge...
     console.log('\n[Test 64] Testing Model Compatibility Aliases for Codex Bridge...');
     const alias1 = codexAdapter.convertResponsesToChatPayload({ model: 'gpt-5.6-luna', input: 'test' });
-    assert.strictEqual(alias1.model, 'deepseek-v4-pro', 'gpt-5.6-luna must map to deepseek-v4-pro');
+    assert.strictEqual(alias1.model, 'gpt-5.6-luna', 'gpt-5.6-luna must preserve real model without silent alias replacement');
+    const aliasLuna6 = codexAdapter.convertResponsesToChatPayload({ model: 'gpt-6-luna', input: 'test' });
+    assert.strictEqual(aliasLuna6.model, 'gpt-6-luna', 'gpt-6-luna must preserve real model');
     const alias2 = codexAdapter.convertResponsesToChatPayload({ model: 'grok-4.7', input: 'test' });
     assert.strictEqual(alias2.model, 'qwen3.7-max', 'grok-4.7 must map to qwen3.7-max');
     const alias3 = codexAdapter.convertResponsesToChatPayload({ model: 'minimax-m2.7', input: 'test' });
     assert.strictEqual(alias3.model, 'minimax-m3', 'minimax-m2.7 must map to minimax-m3');
-    console.log('✓ Model Compatibility Aliases for Codex Bridge verified (5 models mapped to flagship peers)');
+    console.log('✓ Model Compatibility Aliases for Codex Bridge verified (Luna models preserved, third-party mapped)');
 
     // [Test 65] Testing Context Pruning & Sliding-Window Compression Engine...
     console.log('\n[Test 65] Testing Context Pruning & Sliding-Window Compression Engine...');
@@ -4950,9 +4973,12 @@ $ProgressPreference = 'SilentlyContinue'
     const resChatTurn2Json = JSON.parse(resChatTurn2.body);
     assert.strictEqual(resChatTurn2Json.model, 'deepseek-flash', 'Turn 2 response model must reflect pre-emptively memorized fallback model');
 
-    // Anti-Downgrade flagship test in Section 2 fallback:
-    const flagshipResolved = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' });
-    assert.strictEqual(flagshipResolved, 'deepseek-v4-pro', 'High reasoning effort (xhigh) must strictly resolve to 671B flagship deepseek-v4-pro');
+    // Anti-Upgrade barrier: default allowUpgrade is false, so flash with xhigh stays in flash tier (Ladder Matching)
+    const flashStayResolved = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' });
+    assert.strictEqual(flashStayResolved, 'deepseek-flash', 'Flash tier model deepseek-v4.1-flash with xhigh must stay within flash tier by default');
+    // When explicit allowUpgrade is enabled, xhigh can auto-upgrade to 671B flagship deepseek-v4-pro
+    const flagshipResolved = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh', allowUpgrade: true });
+    assert.strictEqual(flagshipResolved, 'deepseek-v4-pro', 'Explicit allowUpgrade: true with xhigh resolves to 671B flagship deepseek-v4-pro');
 
     console.log('✓ Multi-Turn Pre-Emptive Model Memory Hit on Chat & Flagship Anti-Downgrade verified');
 
@@ -5181,9 +5207,15 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('llama-3.3-70b'), 'deepseek-v4-pro');
     assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('minimax-m3'), 'deepseek-v4-pro');
 
-    // 5. Reasoning effort anti-downgrade (both 'high' and 'xhigh')
-    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'high' }), 'deepseek-v4-pro');
-    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-v4-pro');
+    // 5. Anti-Upgrade Lock & Reasoning effort tier matching:
+    // Default allowUpgrade=false: flash models cannot be upgraded to Pro
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'high' }), 'deepseek-flash');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-flash');
+    // When allowUpgrade=true: auto-upgrade to Pro is allowed for high reasoning effort
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'high', allowUpgrade: true }), 'deepseek-v4-pro');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh', allowUpgrade: true }), 'deepseek-v4-pro');
+    // Flagship tier requested models (e.g. deepseek-v4.1-pro) remain in flagship tier
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-pro', '', { reasoningEffort: 'high' }), 'deepseek-v4-pro');
 
     // 6. Bounded cache capacity guard in setSessionModelFallback
     if (typeof serverModule.setSessionModelFallback === 'function') {
@@ -6752,7 +6784,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2 or 3.8.3');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -6998,7 +7030,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2 or 3.8.3');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7476,9 +7508,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2 or 3.8.3
+    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2 or 3.8.3');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7555,7 +7587,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2', '3.8.3'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2 or 3.8.3');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7564,9 +7596,9 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
     console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
 
-    // 1. Verify package.json declares v3.8.2 or v3.8.3 and npm run setup script
+    // 1. Verify package.json declares v3.8.2, v3.8.3 or v3.9.0 and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.2', '3.8.3'].includes(pkgJson149.version), 'package.json version must be 3.8.2 or 3.8.3');
+    assert.ok(['3.8.2', '3.8.3', '3.9.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3 or 3.9.0');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7588,16 +7620,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro'), 'Web UI must render v3.8.2 Pro or v3.8.3 Pro version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro'), 'Web UI must render v3.8.2 Pro, v3.8.3 Pro or v3.9.0 Pro version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
     // [Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release
     console.log('\n[Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release...');
 
-    // 1. Verify package.json declares v3.8.3
+    // 1. Verify package.json declares v3.8.3 or v3.9.0
     const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson150.version, '3.8.3', 'package.json version must be 3.8.3');
+    assert.ok(['3.8.3', '3.9.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3 or 3.9.0');
 
     // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
     const routerModule = require('./server');
@@ -7622,13 +7654,292 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('process.argv'), 'setup-windows.ps1 must use process.argv for path-independent execution');
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
-    // 5. Verify Web UI renders v3.8.3 Pro badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro'), 'Web UI must render v3.8.3 Pro version badge');
+    // 5. Verify Web UI renders v3.8.3 Pro or v3.9.0 Pro badge
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
+    // [Test 151] Testing Anti-Upgrade Barrier, Ladder Matching & Model Tier Categorization (v3.9.0)
+    console.log('\n[Test 151] Testing Anti-Upgrade Barrier, Ladder Matching & Model Tier Categorization (v3.9.0)...');
+
+    // 1. Verify MODEL_TIERS constants and getModelTier function
+    assert.strictEqual(codexAdapter.MODEL_TIERS.FLASH, 1, 'MODEL_TIERS.FLASH must be 1');
+    assert.strictEqual(codexAdapter.MODEL_TIERS.STANDARD, 2, 'MODEL_TIERS.STANDARD must be 2');
+    assert.strictEqual(codexAdapter.MODEL_TIERS.FLAGSHIP, 3, 'MODEL_TIERS.FLAGSHIP must be 3');
+
+    // 1.1 Flash tier (speed) categorization
+    assert.strictEqual(codexAdapter.getModelTier('deepseek-v4.1-flash'), 1);
+    assert.strictEqual(codexAdapter.getModelTier('deepseek-flash'), 1);
+    assert.strictEqual(codexAdapter.getModelTier('gemini-2.5-flash'), 1);
+    assert.strictEqual(codexAdapter.getModelTier('glm-5.1-flash'), 1);
+    assert.strictEqual(codexAdapter.getModelTier('claude-haiku-4.5'), 1);
+    assert.strictEqual(codexAdapter.getModelTier('gpt-4o-mini'), 1);
+
+    // 1.2 Standard tier categorization
+    assert.strictEqual(codexAdapter.getModelTier('kimi-k3'), 2);
+    assert.strictEqual(codexAdapter.getModelTier('glm-5.3'), 2);
+    assert.strictEqual(codexAdapter.getModelTier('deepseek-chat'), 2);
+    assert.strictEqual(codexAdapter.getModelTier('gpt-4o'), 2);
+
+    // 1.3 Flagship tier categorization
+    assert.strictEqual(codexAdapter.getModelTier('deepseek-v4-pro'), 3);
+    assert.strictEqual(codexAdapter.getModelTier('qwen3.7-max'), 3);
+    assert.strictEqual(codexAdapter.getModelTier('minimax-m3'), 3);
+    assert.strictEqual(codexAdapter.getModelTier('gpt-5.6-luna'), 3);
+    assert.strictEqual(codexAdapter.getModelTier('gpt-6-luna'), 3);
+    assert.strictEqual(codexAdapter.getModelTier('claude-opus-4'), 3);
+
+    // 2. Anti-Upgrade Lock with upstream candidates in error text
+    const candidateErr = 'The supported API model names are: deepseek-v4-pro, deepseek-flash, glm-5.2';
+    // Default allowUpgrade=false: requesting deepseek-v4.1-flash (tier 1) with xhigh reasoning
+    // MUST match deepseek-flash (tier 1) and CANNOT auto-upgrade to deepseek-v4-pro (tier 3)!
+    const lockedCandidate = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', candidateErr, {
+      reasoningEffort: 'xhigh',
+      allowUpgrade: false
+    });
+    assert.strictEqual(lockedCandidate, 'deepseek-flash', 'Flash model with xhigh must strictly match deepseek-flash when allowUpgrade is false');
+
+    // Explicit allowUpgrade=true: auto-upgrade to deepseek-v4-pro is permitted
+    const upgradedCandidate = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', candidateErr, {
+      reasoningEffort: 'xhigh',
+      allowUpgrade: true
+    });
+    assert.strictEqual(upgradedCandidate, 'deepseek-v4-pro', 'Explicit allowUpgrade: true allows promotion to deepseek-v4-pro');
+
+    // Standard tier requesting with candidates: glm-5.3 (tier 2) -> glm-5.2 (tier 2), not Pro
+    const standardCandidate = codexAdapter.resolveCompatibleFallbackModel('glm-5.3', candidateErr, { allowUpgrade: false });
+    assert.strictEqual(standardCandidate, 'glm-5.2', 'Standard model must resolve to glm-5.2 within tier 2');
+    // Anti-Upgrade Barrier on Standard model with xhigh reasoning effort
+    const standardXhighCandidate = codexAdapter.resolveCompatibleFallbackModel('glm-5.3', candidateErr, { reasoningEffort: 'xhigh', allowUpgrade: false });
+    assert.strictEqual(standardXhighCandidate, 'glm-5.2', 'Standard model with xhigh must not upgrade to Pro when allowUpgrade is false');
+
+    // 3. Heuristic Fallback Ladder Matching (no candidate list in error text)
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-flash');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'high' }), 'deepseek-flash');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { preferFlagship: true, allowUpgrade: false }), 'deepseek-flash', 'Flash model with preferFlagship must not upgrade when allowUpgrade is false');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('glm-5.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-flash');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('glm-5.3', '', { reasoningEffort: 'high' }), 'glm-5.2');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('glm-5.3', '', { reasoningEffort: 'xhigh', allowUpgrade: false }), 'glm-5.2', 'glm-5.3 with xhigh must stay within tier 2');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('kimi-k3', '', { reasoningEffort: 'xhigh', allowUpgrade: false }), 'kimi-k2.7-code', 'kimi-k3 with xhigh must stay within tier 2');
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('gpt-6-luna', '', { reasoningEffort: 'high' }), 'deepseek-v4-pro');
+
+    // 4. configureAdapter dynamic synchronization
+    codexAdapter.configureAdapter({ allowModelAutoUpgrade: true });
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-v4-pro');
+    codexAdapter.configureAdapter({ allowModelAutoUpgrade: false });
+    assert.strictEqual(codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', '', { reasoningEffort: 'xhigh' }), 'deepseek-flash');
+
+    console.log('✓ Anti-Upgrade Barrier, Ladder Matching & Model Tier Categorization verified');
+
+    // [Test 152] Testing Luna Real Model Preservation & Native /responses Direct Pass-Through
+    console.log('\n[Test 152] Testing Luna Real Model Preservation & Native /responses Direct Pass-Through...');
+
+    // 1. Verify MODEL_COMPATIBILITY_ALIASES no longer silences Luna models
+    assert.strictEqual(codexAdapter.MODEL_COMPATIBILITY_ALIASES['gpt-5.6-luna'], undefined, 'gpt-5.6-luna alias must be purged');
+    assert.strictEqual(codexAdapter.MODEL_COMPATIBILITY_ALIASES['gpt-6-luna'], undefined, 'gpt-6-luna alias must be purged');
+    assert.ok(!('gpt-5.6-luna' in codexAdapter.MODEL_COMPATIBILITY_ALIASES));
+    assert.ok(!('gpt-6-luna' in codexAdapter.MODEL_COMPATIBILITY_ALIASES));
+
+    // 2. Verify NATIVE_RESPONSES_MODELS set and isNativeResponsesModel helper
+    assert.ok(codexAdapter.NATIVE_RESPONSES_MODELS.has('gpt-5.6-luna'), 'NATIVE_RESPONSES_MODELS must include gpt-5.6-luna');
+    assert.ok(codexAdapter.NATIVE_RESPONSES_MODELS.has('gpt-6-luna'), 'NATIVE_RESPONSES_MODELS must include gpt-6-luna');
+    assert.strictEqual(codexAdapter.isNativeResponsesModel('gpt-6-luna'), true);
+    assert.strictEqual(codexAdapter.isNativeResponsesModel('opencode-go/gpt-5.6-luna'), true);
+    assert.strictEqual(codexAdapter.isNativeResponsesModel('gpt-5-luna'), true);
+    assert.strictEqual(codexAdapter.isNativeResponsesModel('deepseek-v4.1-flash'), false);
+
+    // 3. Verify convertResponsesToChatPayload retains true model
+    const convLuna5 = codexAdapter.convertResponsesToChatPayload({ model: 'gpt-5.6-luna', input: 'test prompt' });
+    assert.strictEqual(convLuna5.model, 'gpt-5.6-luna', 'Converter must preserve original gpt-5.6-luna model');
+    const convLuna6 = codexAdapter.convertResponsesToChatPayload({ model: 'gpt-6-luna', input: 'test prompt' });
+    assert.strictEqual(convLuna6.model, 'gpt-6-luna', 'Converter must preserve original gpt-6-luna model');
+
+    // 4. E2E HTTP Test: Native direct pass-through on /v1/responses (not bridged to /v1/chat/completions)
+    const resLuna6Native = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-6-luna', input: 'Hello Luna 6 Native' })
+    });
+    assert.strictEqual(resLuna6Native.statusCode, 200, 'Direct native pass-through must return 200');
+    const jsonLuna6 = JSON.parse(resLuna6Native.body);
+    assert.strictEqual(jsonLuna6.model, 'gpt-6-luna', 'Direct native pass-through must preserve gpt-6-luna in upstream responses');
+
+    const resLuna5Native = await request('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'opencode-go/gpt-5.6-luna', input: 'Hello Luna 5 Native with prefix' })
+    });
+    assert.strictEqual(resLuna5Native.statusCode, 200);
+    const jsonLuna5 = JSON.parse(resLuna5Native.body);
+    assert.strictEqual(jsonLuna5.model, 'gpt-5.6-luna', 'Provider prefix must be normalized and model preserved as gpt-5.6-luna');
+
+    console.log('✓ Luna Real Model Preservation & Native /responses Direct Pass-Through verified');
+
+    // [Test 153] Testing CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence
+    console.log('\n[Test 153] Testing CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence...');
+
+    // 1. Verify Node.js 18+ zero-dependency CONNECT Tunnel Agent exports
+    assert.strictEqual(typeof routerModule.HttpsTunnelAgent, 'function', 'server.js must export HttpsTunnelAgent');
+    assert.strictEqual(typeof routerModule.HttpTunnelAgent, 'function', 'server.js must export HttpTunnelAgent');
+    assert.strictEqual(typeof routerModule.getProxyAgent, 'function', 'server.js must export getProxyAgent');
+    assert.strictEqual(typeof routerModule.getEffectiveProxyForRequest, 'function', 'server.js must export getEffectiveProxyForRequest');
+
+    // 1.1 Local Mock CONNECT Proxy Server verification
+    const mockProxyPort = await getFreePort();
+    let connectMethodReceived = false;
+    const mockProxyServer = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('Mock proxy direct');
+    });
+    mockProxyServer.on('connect', (req, clientSocket, head) => {
+      connectMethodReceived = true;
+      const [targetHost, targetPort] = req.url.split(':');
+      const srvSocket = net.connect(Number(targetPort) || 80, targetHost, () => {
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        srvSocket.write(head);
+        srvSocket.pipe(clientSocket);
+        clientSocket.pipe(srvSocket);
+      });
+      srvSocket.on('error', () => clientSocket.end());
+      clientSocket.on('error', () => srvSocket.end());
+    });
+    await new Promise(resolve => mockProxyServer.listen(mockProxyPort, '127.0.0.1', resolve));
+
+    try {
+      const tunnelAgent = new routerModule.HttpTunnelAgent({
+        proxyUrl: `http://127.0.0.1:${mockProxyPort}`
+      });
+      const proxyTestRes = await new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: mockPort,
+          path: '/v1/usage',
+          method: 'GET',
+          agent: tunnelAgent
+        }, (res) => {
+          let d = '';
+          res.on('data', c => { d += c; });
+          res.on('end', () => resolve({ statusCode: res.statusCode, body: d }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      assert.strictEqual(proxyTestRes.statusCode, 200, 'HTTP CONNECT tunnel must proxy request successfully');
+      assert.strictEqual(connectMethodReceived, true, 'Mock proxy must have received CONNECT handshake');
+      tunnelAgent.destroy();
+
+      // Verify proxy URL without protocol prefix (e.g. 127.0.0.1:7890) normalizes safely
+      const normAgent = routerModule.getProxyAgent(`127.0.0.1:${mockProxyPort}`, false);
+      assert.ok(normAgent, 'Proxy agent must accept host:port without protocol prefix');
+      assert.strictEqual(normAgent.proxyUrl.protocol, 'http:');
+    } finally {
+      mockProxyServer.close();
+    }
+
+    // 2. Verify getEffectiveProxyForRequest scope resolution
+    const origProxyConfig = serverModule.config.proxy;
+    try {
+      // 2.1 Scope: restricted
+      serverModule.config.proxy = {
+        enabled: true,
+        url: 'http://127.0.0.1:7890',
+        scope: 'restricted',
+        models: ['custom-overseas']
+      };
+      assert.ok(routerModule.getEffectiveProxyForRequest('gpt-6-luna'), 'Restricted scope must match gpt-6-luna');
+      assert.ok(routerModule.getEffectiveProxyForRequest('gpt-5.6-luna'), 'Restricted scope must match gpt-5.6-luna');
+      assert.ok(routerModule.getEffectiveProxyForRequest('claude-haiku-5-5'), 'Restricted scope must match claude-haiku-5-5');
+      assert.ok(routerModule.getEffectiveProxyForRequest('custom-overseas'), 'Restricted scope must match explicit custom model');
+      assert.strictEqual(routerModule.getEffectiveProxyForRequest('deepseek-v4.1-flash'), null, 'Restricted scope must not match domestic flash model');
+
+      // 2.2 Scope: custom
+      serverModule.config.proxy.scope = 'custom';
+      assert.strictEqual(routerModule.getEffectiveProxyForRequest('gpt-6-luna'), null, 'Custom scope must not match models not in list');
+      assert.ok(routerModule.getEffectiveProxyForRequest('custom-overseas'), 'Custom scope must match model in list');
+
+      // 2.3 Scope: all
+      serverModule.config.proxy.scope = 'all';
+      assert.ok(routerModule.getEffectiveProxyForRequest('deepseek-v4.1-flash'), 'All scope must match any model');
+    } finally {
+      serverModule.config.proxy = origProxyConfig;
+    }
+
+    // 3. Verify Upstream 403 Region Block Sanitization & Fallback Guard
+    const res403Blocked = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-session': 'session-upstream-403-region'
+      },
+      body: JSON.stringify({
+        model: 'gpt-6-luna',
+        messages: [{ role: 'user', content: 'Testing 403 region block' }]
+      })
+    });
+    assert.strictEqual(res403Blocked.statusCode, 403, 'Upstream 403 with allowRegionFallback: false must return HTTP 403');
+    const json403 = JSON.parse(res403Blocked.body);
+    assert.ok(json403.error && json403.error.message.includes('当前公网 IP 受地域限制'), '403 error must guide user to configure proxy or overseas node');
+
+    // 4. Verify Management API (/balancer/api/config) & Web UI Settings Persistence
+    const updateConfigRes153 = await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        allowModelAutoUpgrade: true,
+        allowRegionFallback: true,
+        proxy: {
+          enabled: true,
+          url: 'http://127.0.0.1:10809',
+          scope: 'restricted',
+          models: ['gpt-6-luna', 'gpt-5.6-luna']
+        }
+      })
+    });
+    assert.strictEqual(updateConfigRes153.statusCode, 200, 'POST /balancer/api/config must succeed');
+    const updateJson = JSON.parse(updateConfigRes153.body);
+    assert.strictEqual(updateJson.success, true);
+
+    // Read back config via GET /balancer/api/config
+    const getConfigRes153 = await request('/balancer/api/config', { method: 'GET' });
+    assert.strictEqual(getConfigRes153.statusCode, 200);
+    const savedConfig = JSON.parse(getConfigRes153.body);
+    assert.strictEqual(savedConfig.allowModelAutoUpgrade, true, 'allowModelAutoUpgrade must be true');
+    assert.strictEqual(savedConfig.allowRegionFallback, true, 'allowRegionFallback must be true');
+    assert.strictEqual(savedConfig.proxy.enabled, true, 'proxy.enabled must be true');
+    assert.strictEqual(savedConfig.proxy.url, 'http://127.0.0.1:10809', 'proxy.url must be persisted');
+    assert.strictEqual(savedConfig.proxy.scope, 'restricted', 'proxy.scope must be restricted');
+    assert.ok(savedConfig.proxy.models.includes('gpt-6-luna'), 'proxy.models must include gpt-6-luna');
+
+    // Revert settings to standard clean defaults
+    await request('/balancer/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        allowModelAutoUpgrade: false,
+        allowRegionFallback: false,
+        proxy: { enabled: false, url: '', scope: 'all', models: [] }
+      })
+    });
+
+    // 5. Verify Web UI Settings form fields and v3.9.0 Pro badge
+    const uiRes153 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes153.statusCode, 200);
+    assert.ok(uiRes153.body.includes('cfg-proxy-enabled'), 'Web UI must contain cfg-proxy-enabled input');
+    assert.ok(uiRes153.body.includes('cfg-proxy-url'), 'Web UI must contain cfg-proxy-url input');
+    assert.ok(uiRes153.body.includes('cfg-proxy-scope'), 'Web UI must contain cfg-proxy-scope select');
+    assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
+    assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
+    assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro'), 'Web UI must render v3.9.0 Pro version badge');
+
+    // 6. Verify package.json declares 3.9.0
+    const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(pkgJson153.version, '3.9.0', 'package.json version must be 3.9.0');
+
+    console.log('✓ CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 150 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 153 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

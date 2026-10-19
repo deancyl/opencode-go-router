@@ -126,7 +126,7 @@ const ALL_38_SLUGS = [
  * Dynamically fetch official OpenCode Go models catalog from upstream API
  * Returns array of model slugs or null if offline/unreachable
  */
-function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000) {
+function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
   return new Promise((resolve) => {
     if (!apiKey || !apiKey.trim()) {
       return resolve(null);
@@ -143,14 +143,18 @@ function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1',
       const parsed = new URL(endpoint);
       const transport = parsed.protocol === 'https:' ? https : http;
       let finished = false;
-      const req = transport.request(parsed, {
+      const reqOpts = {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${apiKey.trim()}`,
           'User-Agent': 'opencode-go-router-updater'
         },
         timeout: timeoutMs
-      }, (res) => {
+      };
+      if (options && options.agent) {
+        reqOpts.agent = options.agent;
+      }
+      const req = transport.request(parsed, reqOpts, (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
@@ -560,7 +564,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
 
   // 4. Model selection: preserve user's valid choice, default to deepseek-v4.1-flash
   let modelPreserved = true;
-  if (!data.model || data.model === 'opencode-go/gpt-6-luna' || data.model === 'gpt-6-luna') {
+  if (!data.model) {
     data.model = 'opencode-go/deepseek-v4.1-flash';
     modelPreserved = false;
   }

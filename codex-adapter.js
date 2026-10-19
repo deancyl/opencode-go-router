@@ -963,9 +963,16 @@ function syncDynamicModels(slugList) {
 // route through our resilient local ChatCompletions bridge with active watchdog & keep-alives,
 // completely eliminating upstream /responses proxy deadlocks and 28-minute hangs on complex contexts.
 const NATIVE_RESPONSES_MODELS = new Set([
-  'native-model-test'
+  'native-model-test',
+  'gpt-5.6-luna',
+  'gpt-6-luna'
 ]);
 
+function isNativeResponsesModel(modelName) {
+  if (!modelName || typeof modelName !== 'string') return false;
+  const clean = modelName.replace(/^opencode-go\//, '').toLowerCase().trim();
+  return NATIVE_RESPONSES_MODELS.has(clean) || clean.includes('luna');
+}
 
 // Models using Anthropic Messages protocol on upstream
 const ANTHROPIC_MODELS = new Set([
@@ -974,118 +981,209 @@ const ANTHROPIC_MODELS = new Set([
 
 // Upstream compatibility aliases: models that upstream has not fully opened for standard ChatCompletions
 // are transparently mapped to equivalent top-tier flagship models with 100% feature parity.
+// Note: Luna models (gpt-5.6-luna, gpt-6-luna) have been completely removed from hardcoded aliases to return real execution rights.
 const MODEL_COMPATIBILITY_ALIASES = {
-  'gpt-5.6-luna': 'deepseek-v4-pro',
-  'gpt-6-luna': 'deepseek-v4-pro',
   'grok-4.6': 'qwen3.7-max',
   'grok-4.7': 'qwen3.7-max',
   'minimax-m2.7': 'minimax-m3'
 };
 
+const MODEL_TIERS = {
+  FLASH: 1,    // Flash, Mini, Speed, Turbo, Lite, Haiku
+  STANDARD: 2, // Standard, Code, Plus (non-pro), Balanced
+  FLAGSHIP: 3  // Pro, Max, Luna, Sonnet, Opus, o1, o3, o4
+};
+
+function getModelTier(modelName) {
+  if (!modelName || typeof modelName !== 'string') return MODEL_TIERS.STANDARD;
+  const name = modelName.toLowerCase();
+  if (name.includes('flash') || /(?:^|[-_.])mini(?:[-_.0-9]|$)/.test(name) || name.includes('speed') || 
+      name.includes('turbo') || name.includes('lite') || name.includes('haiku')) {
+    return MODEL_TIERS.FLASH;
+  }
+  if (/(?:^|[-_.])pro(?:[-_.0-9]|$)/.test(name) || name.includes('max') || name.includes('luna') || 
+      name.includes('opus') || name.includes('sonnet') || name.includes('grok') ||
+      name.startsWith('o1') || name.startsWith('o3') || name.startsWith('o4') ||
+      name.includes('-o1') || name.includes('-o3') ||
+      name.startsWith('llama') || name.startsWith('minimax-m') || name.includes('ultra')) {
+    return MODEL_TIERS.FLAGSHIP;
+  }
+  return MODEL_TIERS.STANDARD;
+}
+
+let adapterConfig = {
+  allowModelAutoUpgrade: false
+};
+
+function configureAdapter(cfg = {}) {
+  if (cfg && typeof cfg === 'object') {
+    if (cfg.allowModelAutoUpgrade !== undefined) {
+      adapterConfig.allowModelAutoUpgrade = Boolean(cfg.allowModelAutoUpgrade);
+    }
+  }
+}
+
 /**
  * Automatically determines the most compatible fallback model when upstream reports
  * an unsupported model or restricted model list.
- * e.g. "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash."
+ * Enforces strict Ladder Matching and Anti-Upgrade Barrier: lower tiers (Flash/Standard)
+ * can NEVER be automatically upgraded to Pro/Flagship unless allowUpgrade is explicitly true.
  */
 function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   if (typeof errText !== 'string') errText = '';
   const cleanReq = (reqModel || '').toLowerCase().trim();
+  const allowUpgrade = Boolean(
+    options.allowUpgrade !== undefined
+      ? options.allowUpgrade
+      : (typeof adapterConfig !== 'undefined' && adapterConfig.allowModelAutoUpgrade)
+  );
+  const reqTier = getModelTier(cleanReq);
+  const isHighReasoningTask = (options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high' || options.preferFlagship);
+
+  // Heterogeneous cluster exception (Rule 19): If the model is an unknown external model
+  // (not in standard domestic families) and specifies xhigh reasoning, route to deepseek-v4-pro
+  const isHeterogeneousRule19 = (
+    options.reasoningEffort === 'xhigh' &&
+    reqTier !== MODEL_TIERS.FLASH &&
+    !cleanReq.startsWith('glm') &&
+    !cleanReq.startsWith('kimi') &&
+    !cleanReq.startsWith('qwen') &&
+    !cleanReq.startsWith('deepseek')
+  );
+
+  const allowableTier = (allowUpgrade || isHeterogeneousRule19 || reqTier === MODEL_TIERS.FLAGSHIP)
+    ? MODEL_TIERS.FLAGSHIP
+    : reqTier;
 
   // 1. Try parsing explicitly listed candidate model names from upstream error
   const match = errText.match(/supported(?:\s+API)?\s+model\s+names\s+are\s+[:\s]*([^.]+?)(?:,\s*but\s+you\s+passed|\s+but\s+you\s+passed|\.|\(|$)/i);
   if (match && match[1]) {
-    const candidates = match[1]
+    const rawCandidates = match[1]
       .split(/[,，]/)
       .map(s => s.trim().replace(/^['"`\[]+|['"`\]]+$/g, ''))
       .filter(s => s && /^[a-zA-Z0-9_.-]+$/.test(s) && s.toLowerCase() !== cleanReq);
 
-    if (candidates.length > 0) {
-      // 1.0 Flagship preference guard: If high/xhigh reasoning effort or flagship preference is explicitly set, prioritize pro/max
-      if (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high') {
-        const proHit = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('max'));
-        if (proHit) return proHit;
-      }
+    if (rawCandidates.length > 0) {
+      // Anti-Upgrade Lock: candidate pool cannot exceed allowableTier
+      const candidates = (allowableTier === MODEL_TIERS.FLAGSHIP)
+        ? rawCandidates
+        : rawCandidates.filter(c => getModelTier(c) <= allowableTier);
 
-      // 1.1 Pro/Advanced reasoning models (gpt-*, o1/o3, grok-*, claude-*, deepseek-v4-pro, etc.)
-      const isProOrAdvanced = cleanReq.includes('pro') || cleanReq.includes('max') || cleanReq.includes('luna') || 
-        cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-') || cleanReq.startsWith('claude-');
-      if (isProOrAdvanced) {
-        const proHit = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('max'));
-        if (proHit) return proHit;
-      }
-
-      // 1.2 Speed / Flash models
-      const isFlash = cleanReq.includes('flash') || cleanReq.includes('speed') || cleanReq.includes('mini') || cleanReq.includes('turbo');
-      if (isFlash) {
-        const flashHit = candidates.find(c => c.toLowerCase().includes('flash') || c.toLowerCase().includes('mini'));
-        if (flashHit) return flashHit;
-      }
-
-      // 1.3 Specific keyword match (code, vision, etc.)
-      for (const kw of ['code', 'vision', 'plus', 'preview']) {
-        if (cleanReq.includes(kw)) {
-          const hit = candidates.find(c => c.toLowerCase().includes(kw));
-          if (hit) return hit;
+      if (candidates.length > 0) {
+        // 1.0 Flagship tier models (or upgrade allowed with high reasoning / Rule 19): match to pro/max/flagship candidate
+        if (allowableTier === MODEL_TIERS.FLAGSHIP && (reqTier === MODEL_TIERS.FLAGSHIP || isHighReasoningTask || isHeterogeneousRule19)) {
+          const proHit = candidates.find(c => getModelTier(c) === MODEL_TIERS.FLAGSHIP);
+          if (proHit) return proHit;
         }
+
+        // 1.1 Speed / Flash tier models: strictly match to flash/speed candidate
+        if (reqTier === MODEL_TIERS.FLASH && !allowUpgrade) {
+          const prefix = cleanReq.split(/[-_.]/)[0];
+          const familyFlash = candidates.find(c => c.toLowerCase().startsWith(prefix) && getModelTier(c) === MODEL_TIERS.FLASH);
+          if (familyFlash) return familyFlash;
+
+          const anyFlash = candidates.find(c => getModelTier(c) === MODEL_TIERS.FLASH);
+          if (anyFlash) return anyFlash;
+        }
+
+        // 1.2 Family prefix match within allowable candidates
+        const prefix = cleanReq.split(/[-_.]/)[0];
+        if (prefix && prefix.length > 2) {
+          const familyHit = candidates.find(c => c.toLowerCase().startsWith(prefix));
+          if (familyHit) return familyHit;
+        }
+
+        // 1.3 Keyword match (code, vision, etc.)
+        for (const kw of ['code', 'vision', 'plus', 'preview']) {
+          if (cleanReq.includes(kw)) {
+            const hit = candidates.find(c => c.toLowerCase().includes(kw));
+            if (hit) return hit;
+          }
+        }
+
+        // 1.4 Same tier match
+        const sameTierHit = candidates.find(c => getModelTier(c) === reqTier);
+        if (sameTierHit) return sameTierHit;
+
+        // 1.5 Pick first candidate in allowable pool (<= allowableTier)
+        return candidates[0];
       }
 
-      // 1.4 Family prefix match (e.g. deepseek- -> deepseek-)
-      const prefix = cleanReq.split(/[-_.]/)[0];
-      if (prefix && prefix.length > 2) {
-        const familyHit = candidates.find(c => c.toLowerCase().startsWith(prefix));
-        if (familyHit) return familyHit;
+      // If no allowable candidate found and allowUpgrade is false, do not upgrade
+      if (!allowUpgrade) {
+        return cleanReq;
       }
-
-      // 1.5 Prefer pro/flagship if available in candidates, otherwise first candidate
-      const defaultFlagship = candidates.find(c => c.toLowerCase().includes('pro') || c.toLowerCase().includes('flash')) || candidates[0];
-      return defaultFlagship;
     }
   }
 
   // 2. Heuristic rules when candidate list is absent from error text
-  if (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high') {
-    return 'deepseek-v4-pro';
-  }
-  if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash') {
-    return 'deepseek-flash';
-  }
-  if (cleanReq === 'deepseek-flash') {
-    return 'deepseek-v4-pro';
-  }
-  if (cleanReq.startsWith('deepseek')) {
-    return 'deepseek-flash';
-  }
-  if (cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-')) {
-    return 'deepseek-v4-pro';
-  }
-  if (cleanReq.startsWith('claude-')) {
-    if (cleanReq.includes('haiku') || cleanReq.includes('flash')) return 'deepseek-flash';
-    return 'deepseek-v4-pro';
-  }
-  if (cleanReq.startsWith('kimi-')) {
-    return cleanReq === 'kimi-k3' ? 'kimi-k2.7-code' : 'kimi-k3';
-  }
-  if (cleanReq.startsWith('glm')) {
-    if (cleanReq.includes('flash') || cleanReq.includes('speed') || cleanReq.includes('mini')) {
-      return 'deepseek-flash';
-    }
-    return cleanReq === 'glm-5.3' ? 'glm-5.2' : 'glm-5.3';
-  }
-  if (cleanReq.startsWith('qwen')) {
-    return cleanReq === 'qwen3.7-max' ? 'deepseek-v4-pro' : 'qwen3.7-max';
-  }
-  if (cleanReq.startsWith('gemini')) {
-    if (cleanReq.includes('flash')) return 'deepseek-flash';
-    return 'deepseek-v4-pro';
-  }
-  if (cleanReq.startsWith('llama')) {
-    return 'deepseek-v4-pro';
-  }
-  if (cleanReq.startsWith('minimax')) {
+  // 2.0 Explicit upgrade allowed with flagship preference or high reasoning
+  if (allowUpgrade && (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high')) {
     return 'deepseek-v4-pro';
   }
 
-  return cleanReq === 'deepseek-flash' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  // 2.1 Flash tier: strictly stay in flash tier when allowUpgrade is false
+  if (reqTier === MODEL_TIERS.FLASH) {
+    if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash') {
+      return 'deepseek-flash';
+    }
+    if (cleanReq === 'deepseek-flash') {
+      return 'deepseek-flash';
+    }
+    if (cleanReq.startsWith('glm')) {
+      return 'deepseek-flash';
+    }
+    if (cleanReq.startsWith('gemini')) {
+      return 'deepseek-flash';
+    }
+    if (cleanReq.startsWith('claude')) {
+      return 'deepseek-flash';
+    }
+    return 'deepseek-flash';
+  }
+
+  // 2.2 Standard tier: stay in standard or degrade downward, never upgrade to Pro/Flagship
+  if (reqTier === MODEL_TIERS.STANDARD) {
+    if (cleanReq.startsWith('kimi-')) {
+      return cleanReq === 'kimi-k3' ? 'kimi-k2.7-code' : 'kimi-k3';
+    }
+    if (cleanReq.startsWith('glm')) {
+      return cleanReq === 'glm-5.3' ? 'glm-5.2' : 'glm-5.3';
+    }
+    if (cleanReq.startsWith('qwen')) {
+      return allowUpgrade ? 'qwen3.7-max' : cleanReq;
+    }
+    // Rule 19: Unknown heterogeneous model without domestic standard peers under xhigh reasoning routes to deepseek-v4-pro
+    if (isHeterogeneousRule19) {
+      return 'deepseek-v4-pro';
+    }
+    return 'deepseek-flash';
+  }
+
+  // 2.3 Flagship tier: flagship to flagship candidates (Rule 19 Anti-Downgrade)
+  if (reqTier === MODEL_TIERS.FLAGSHIP) {
+    if (cleanReq.startsWith('gpt-') || cleanReq.startsWith('grok-') || cleanReq.includes('luna')) {
+      return 'deepseek-v4-pro';
+    }
+    if (cleanReq.startsWith('claude-')) {
+      return 'deepseek-v4-pro';
+    }
+    if (cleanReq.startsWith('gemini')) {
+      return 'deepseek-v4-pro';
+    }
+    if (cleanReq.startsWith('llama')) {
+      return 'deepseek-v4-pro';
+    }
+    if (cleanReq.startsWith('minimax')) {
+      return 'deepseek-v4-pro';
+    }
+    if (cleanReq.startsWith('qwen')) {
+      return 'deepseek-v4-pro';
+    }
+    return 'deepseek-v4-pro';
+  }
+
+  return 'deepseek-flash';
 }
 
 /**
@@ -1417,6 +1515,22 @@ function formatUpstreamErrorResponse(rawBodyText, statusCode = 400) {
         message: `上游推理节点返回空错误 (HTTP ${code})，已安全拦截`,
         type: 'upstream_error',
         code: code
+      }
+    });
+  }
+
+  // 1b. Region blocked / 403 sanitization (Notice 1 & Rule 13)
+  const lower = rawText.toLowerCase();
+  const isRegion = code === 403 || 
+    lower.includes('unsupported_country_region_territory') ||
+    lower.includes('territory not supported') ||
+    lower.includes('not available in your country');
+  if (isRegion) {
+    return JSON.stringify({
+      error: {
+        message: '上游返回 403: 当前公网 IP 受地域限制，请配置网关代理服务器或开启海外/Tailscale 节点',
+        type: 'region_blocked_error',
+        code: 403
       }
     });
   }
@@ -4874,8 +4988,13 @@ function repairCodexLocaleAndEnvironment(options = {}) {
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
   NATIVE_RESPONSES_MODELS,
+  isNativeResponsesModel,
   ANTHROPIC_MODELS,
   MODEL_COMPATIBILITY_ALIASES,
+  MODEL_TIERS,
+  getModelTier,
+  configureAdapter,
+  adapterConfig,
   pruneResponsesPayload,
   pruneChatMessages,
   getCodexConfigDir,
