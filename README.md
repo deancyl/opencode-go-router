@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.9.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.10.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-153%2F153%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-154%2F154%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -282,7 +282,29 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 
 ## 六、版本演进与发布历史
 
-### 🚀 v3.9.0 (当前最新版：Luna 模型原生直连、零依赖 CONNECT 代理隧道、模型防逆向升阶铁律与 153 项全绿)
+### 🚀 v3.10.0 (当前最新版：无损上下文压缩深度重构、根除代码截断致命降智、消除虚标造数与多轮重复记账、守护 KV Cache 稳定性与 154 项全绿)
+- **代码读取绝对防降智铁律 (Zero-Degradation Redline)**：
+  - 彻底拔除 `foldStructuredData` 中针对 >2000 字符文本的腰斩式截断逻辑（Case 4），对所有源码、脚本及纯文本文件实行 100% 字节级无损原样返回；
+  - 杜绝因中间实现挖空导致 Agent 误判源码不完整而陷入“重复分段读取”的死循环，从根本上防止 Token 消耗逆向飙升与逻辑降智。
+- **工具 Schema 瘦身安全重构与参数约束保全**：
+  - 重构 `slimDescription`：彻底废弃基于句号/换行的粗暴截断，仅安全剥离 Markdown 代码块与尾部 `Examples:` / `Usage:` 示例段落；
+  - 100% 完整保全所有多行参数说明、`e.g. /path` 示例路径与格式约束条件，彻底杜绝参数约束丢失引发的模型格式幻觉。
+- **彻底杜绝“欢乐表”虚标与人工注水**：
+  - 剔除 `compactToolsList` 中 `deltaChars === 0` 时凭空伪造 5%（38~500 字符）节省的注水逻辑，真实节省量为 0 即诚实记为 0；
+  - 解决 `getMemo` 跨轮次重复记账：后续轮次命中记忆缓存时仅增加 `cacheZoneHits` 计数，绝不再重复计入 `savedChars` 与美金节省额；
+  - Web UI Card 4 诚实展示：真实呈现 `⚡ 字节级缓存固化守护 (N 次复用命中 · 零重算零抖动)` 与 100% 守护进度条；
+  - 解决大数组工具输出与子元素双重累加，解决上游 429/502 多账号重试时的单次请求重复压缩记账。
+- **真正打通中英双语动态分词模型**：
+  - 在压缩管线中真正传入原始与压缩字符串，使 CJK 中文（~1.25 字符/Token）与 ASCII/代码（~3.8 字符/Token）动态加权算法在全链路真实生效。
+- **捍卫上游 KV Cache (Prompt Cache) 稳定性**：
+  - `powershell-optimizer.js` 默认严禁在请求中事后篡改历史轮次的 `assistant.tool_calls`，保持历史轮次字节级幂等；
+  - `fixSubexpressionEscaping` 增设子 Shell 探测保护，仅在嵌套远程命令时转义 `$()`，避免误伤原生 PowerShell 变量插值；
+  - 优先通过 System Prompt Guard（事前规约）与 CLIXML Denoising（事后清理报错日志）双轨治理，实现零副作用环境自愈。
+- **自动化测试套件扩展 (Test 154)**：
+  - 新增 Test 154 专项验证 >5000 字符源码 100% 完整保留、Schema 包含 `e.g.` 与参数约束保全、0 压缩零造数断言、多轮对话 `cacheZoneHits` 准确递增与防重复累加；
+  - 全套 154 项高级端到端及对抗集成测试 100% 绿灯全通。
+
+### 🚀 v3.9.0 (Luna 模型原生直连、零依赖 CONNECT 代理隧道、模型防逆向升阶铁律与 153 项全绿)
 - **彻底解除 Luna 等模型硬编码别名，放行原生 `/v1/responses` 直连 (Luna Model Liberation & Native Responses)**：
   - 从 `MODEL_COMPATIBILITY_ALIASES` 彻底净化移除 `gpt-5.6-luna` 与 `gpt-6-luna` 的别名映射，解除人为降级截断；
   - 在 `NATIVE_RESPONSES_MODELS` 白名单集合中完整纳入 Luna 等海外高推理模型；
@@ -451,6 +473,25 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 - **自动化测试套件扩展 (Test 140)**：
   - 新增 Test 140 专项覆盖 6 大侧边栏 Nav DOM、6 个 View Section DOM、Node VM 路由状态机流转、PE 二进制结构合法性与启动器优先级；
   - 本地 140 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.10.0 (白盒审查全面自愈：根除统计虚标与注水、坚守防降智零代码截断、捍卫上游 KV 缓存幂等与 154 项全绿测试)
+- **彻底消除源码与纯文本截断（坚守防降智红线）**：
+  - 彻底移除 `foldStructuredData` 中的纯文本 Case 4 截断漏洞；确保大模型读取长源码（.js, .py, .go 等）、大型配置文件与纯文本工具输出时 100% 字节级完整保全，消灭反复分段读取的死循环反效果；
+  - 重构 `slimDescription`，废除基于句号与换行的粗暴裁剪，保全 `e.g. /path` 示例与所有的类型约束说明，杜绝大模型在工具调用参数上犯错降智；
+- **彻底根除“欢乐表”统计虚标与人工注水**：
+  - 剔除 `compactToolsList` 在 `deltaChars === 0` 时凭空伪造 5%（38~500 字符）节省的注水逻辑，无实际减字即真实记录 0 字符节省；
+  - 消除多轮会话跨轮次对历史工具输出的重复累加计费；`getMemo` 命中时仅递增 `cacheZoneHits` 守护计数，不再重复累加 `savedChars`、`savedTokens` 与节约美金，面板贡献真实透明；
+  - 消除多账号故障重试（429/502/503）时的重复压缩记账，在 `server.js` 中透传 `precomputedPayload`；
+  - 修复数组工具输出先对整串记账、后对子项重复计账的双重累加缺陷；
+- **真实动态中英双语分词生效**：
+  - 打通全链路分词估算（`estimateTokens(origText) - estimateTokens(compText)`），使 CJK 中文分词（~1.25 char/token）与 ASCII 英文分词（~3.8 char/token）加权模型在运行期 100% 真实执行；
+- **捍卫上游 KV Cache 与幂等性（消除反效果设计）**：
+  - 默认禁用历史工具调用篡改（`DEFAULT_POWERSHELL_CONFIG.fixHistoricalToolCalls = false`），严禁在后续请求中篡改已经执行过的历史 `tool_calls` 参数，严密捍卫上游 Prompt Cache (KV Cache) 命中率；
+  - `detectPlatform` 增设 Linux 宿主优先判定，消除 Windows UA 穿透造成的平台误判；
+  - 收紧 `foldTestPasses` 正向判定，支持耗时语境与框架标记，严密区分测试用例与部署成功清单；
+- **Web UI 与数据大盘指标重塑**：
+  - Card 4 明确升级为 `⚡ 字节级缓存固化守护 (零重算零抖动)`，展示真实的命中次数与稳定性；
+- **自动化回归测试扩展至 154 项全绿**。
 
 ### 🚀 v3.4.1 (Anthropic 协议双轨鉴权加固、会话记忆原子清零、实机多客户端实测验证套件与防降智防断联全要素核验)
 - **Anthropic Messages 协议双轨鉴权加固 (`server.js`)**：

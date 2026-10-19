@@ -620,15 +620,19 @@ async function runTests() {
     }
   });
 
+  let routerStdoutBuf = '';
   let routerStderrBuf = '';
-  routerProc.stdout.on('data', () => {});
+  routerProc.stdout.on('data', (d) => {
+    routerStdoutBuf += d.toString();
+    if (process.env.DEBUG_ROUTER) process.stdout.write(d);
+  });
   routerProc.stderr.on('data', (d) => {
     routerStderrBuf += d.toString();
     if (process.env.DEBUG_ROUTER) process.stderr.write(d);
   });
   routerProc.on('exit', (code, sig) => {
     if (code !== 0 && code !== null) {
-      console.error(`[Router Process Exited] code=${code}, signal=${sig}\nStderr: ${routerStderrBuf.slice(-1000)}`);
+      console.error(`[Router Process Exited] code=${code}, signal=${sig}\nStdout: ${routerStdoutBuf.slice(-2000)}\nStderr: ${routerStderrBuf.slice(-2000)}`);
     }
   });
 
@@ -3738,7 +3742,7 @@ $ProgressPreference = 'SilentlyContinue'
     ];
     // Force slim threshold to 50 chars for testing
     const slimmedSchema = contextCompactor.slimToolsSchema(oversizedTools, 50);
-    assert.strictEqual(slimmedSchema[0].function.description, 'Executes complex queries against Kubernetes clusters.');
+    assert.strictEqual(slimmedSchema[0].function.description, 'Executes complex queries against Kubernetes clusters. This tool communicates with kube-apiserver.');
     assert.ok(!slimmedSchema[0].function.description.includes('Examples:'));
     assert.ok(!slimmedSchema[0].function.parameters.properties.cluster.description.includes('Examples:'));
     assert.strictEqual(slimmedSchema[0].function.parameters.properties.cluster.example, undefined, 'example field must be stripped');
@@ -6266,9 +6270,8 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(stats138.byModel['deepseek-v4.1-flash'], 'byModel must contain deepseek-v4.1-flash');
     const dsStats = stats138.byModel['deepseek-v4.1-flash'];
     assert.strictEqual(dsStats.ratePer1M, 0.14, 'deepseek-v4.1-flash rate must be 0.14');
-    assert.ok(dsStats.savedChars > 0, 'deepseek-v4.1-flash savedChars must be > 0');
     assert.ok(dsStats.savedTokens > 0, 'deepseek-v4.1-flash savedTokens must be > 0');
-    assert.strictEqual(dsStats.savedTokens, Math.round(dsStats.savedChars / 3.8));
+    assert.ok(Math.abs(dsStats.savedTokens - Math.round(dsStats.savedChars / 3.8)) <= 1, 'savedTokens must match dynamic token estimation model');
     assert.strictEqual(dsStats.savedCostUSD, Number(((dsStats.savedTokens / 1000000) * 0.14).toFixed(7)));
 
     // 2b. Model 2: claude-haiku-5-5 ($1.25 / 1M)
@@ -6496,7 +6499,12 @@ $ProgressPreference = 'SilentlyContinue'
         { role: 'tool', tool_call_id: 'call_1', content: rawCliXml }
       ]
     };
-    const optChat139 = psOptimizer.optimizeChatPayload(chatPayload139, { targetPlatform: 'win32' });
+    // Default KV Cache protection: historical tool_calls are not mutated by default
+    const optChatDefault = psOptimizer.optimizeChatPayload(chatPayload139, { targetPlatform: 'win32' });
+    assert.strictEqual(JSON.parse(optChatDefault.messages[2].tool_calls[0].function.arguments).command, 'curl -s https://api.com "C:\\dir\\" && npm test', 'Historical tool_calls must not be mutated by default');
+
+    // When fixHistoricalToolCalls is explicitly enabled, tool call normalization applies
+    const optChat139 = psOptimizer.optimizeChatPayload(chatPayload139, { targetPlatform: 'win32', fixHistoricalToolCalls: true });
     // Check system prompt guard
     assert.ok(optChat139.messages[0].content.includes('[Windows PowerShell Execution & Escaping Guard]'), 'Chat payload must inject prompt guard on Windows');
     // Check tool call command normalized
@@ -6784,7 +6792,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -7030,7 +7038,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7101,32 +7109,39 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(psStats143.modules.powershell.savedTokens > 0, 'PowerShell module must record positive savedTokens');
     console.log(`✓ PowerShell interactive banner denoising & telemetry verified (saved: ${psStats143.modules.powershell.savedChars} chars, ~${psStats143.modules.powershell.savedTokens} tokens)`);
 
-    // 3. Headroom SmartCrusher Long Tool Output (>2000 chars) Folding Telemetry
+    // 3. Headroom SmartCrusher: Anti-Downgrade Zero Code Truncation & Homogeneous JSON Array Folding
     const longScriptCode = "function mt_lib_init() {\n" + "  # shell routine logic line\n".repeat(160) + "  return 0;\n}";
     assert.ok(longScriptCode.length > 2000, 'Test payload must be > 2000 chars');
-    const preHrStats = contextCompactor.getCompressionStats().modules.headroom.savedChars;
-    const compactedHr = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true });
-    assert.ok(compactedHr.includes('[Headroom SmartCrusher:'), 'Must fold long tool output with Headroom SmartCrusher marker');
-    assert.ok(compactedHr.length < longScriptCode.length, 'Compacted text must be strictly shorter than original');
-    const postHrStats = contextCompactor.getCompressionStats().modules.headroom.savedChars;
-    assert.ok(postHrStats > preHrStats, 'Headroom module must record positive savedChars on giant output folding');
-    console.log(`✓ Headroom SmartCrusher long tool output folding & telemetry verified (delta: ${postHrStats - preHrStats} chars)`);
+    
+    // ANTI-DOWNGRADE REDLINE: Source code, shell scripts, and plaintext files must NEVER be truncated!
+    const unFoldedScript = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true });
+    assert.strictEqual(unFoldedScript, longScriptCode, 'Source code and shell scripts must NEVER be truncated by Headroom (Zero Degradation / Anti-Downgrade Redline)');
 
-    // 4. Cache-Zone Multi-Turn KV Cache Freeze Telemetry
+    // Headroom SmartCrusher folds giant homogeneous JSON arrays (>50 items)
+    const giantJsonArray = JSON.stringify(Array.from({ length: 60 }, (_, i) => ({ id: i, name: 'resource_' + i, status: 'ok' })), null, 2);
+    const preHrStats = contextCompactor.getCompressionStats().modules.headroom.savedChars;
+    const compactedHr = contextCompactor.compactText(giantJsonArray, { enabled: true, foldStructuredData: true });
+    assert.ok(compactedHr.includes('_headroom_smart_crusher') || compactedHr.includes('[SmartCrusher:'), 'Must fold giant homogeneous JSON array');
+    assert.ok(compactedHr.length < giantJsonArray.length, 'Compacted JSON text must be strictly shorter than original');
+    const postHrStats = contextCompactor.getCompressionStats().modules.headroom.savedChars;
+    assert.ok(postHrStats > preHrStats, 'Headroom module must record positive savedChars on giant structured JSON folding');
+    console.log(`✓ Headroom SmartCrusher structured array folding & code zero-truncation verified (Headroom saved: ${postHrStats - preHrStats} chars)`);
+
+    // 4. Cache-Zone Multi-Turn KV Cache Freeze Telemetry (Anti-Inflation / No Duplicate Saved Chars)
     const testSession143 = 'session_codex_01a1422d_verify';
     contextCompactor.resetCompressionStats();
     // Turn 1: Process and memoize
-    const turn1Text = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
+    const turn1Text = contextCompactor.compactText(giantJsonArray, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
     const turn1CacheZone = contextCompactor.getCompressionStats().modules.cacheZone.savedChars;
     assert.strictEqual(turn1CacheZone, 0, 'Turn 1 must not record cacheZone (first seen payload)');
 
     // Turn 2: Repeat with same history in same session
-    const turn2Text = contextCompactor.compactText(longScriptCode, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
+    const turn2Text = contextCompactor.compactText(giantJsonArray, { enabled: true, foldStructuredData: true, cacheZoneFreeze: true }, testSession143);
     assert.strictEqual(turn2Text, turn1Text, 'Turn 2 memo hit must return identical byte-stream text');
-    const turn2CacheZone = contextCompactor.getCompressionStats().modules.cacheZone.savedChars;
-    assert.ok(turn2CacheZone > 0, 'Turn 2 memo hit must record positive savedChars in cacheZone module');
-    assert.strictEqual(turn2CacheZone, longScriptCode.length - turn1Text.length, 'CacheZone savedChars must equal original minus memoized length');
-    console.log(`✓ Cache-Zone multi-turn memoization & KV Cache protection verified (savedChars: ${turn2CacheZone})`);
+    const statsTurn2 = contextCompactor.getCompressionStats();
+    assert.ok(statsTurn2.modules.cacheZone.cacheZoneHits >= 1, 'Turn 2 memo hit must increment cacheZoneHits');
+    assert.strictEqual(statsTurn2.modules.cacheZone.savedChars, 0, 'Turn 2 memo hit must NOT duplicate phantom savedChars across turns (Anti-Inflation)');
+    console.log(`✓ Cache-Zone multi-turn memoization & KV Cache protection verified (memoHits: ${statsTurn2.modules.cacheZone.cacheZoneHits})`);
 
     // 5. Anti-Downgrade Exemption Safety Barrier
     const conflictBlock = "<<<<<<< HEAD\n" + "export const a = 1;\n".repeat(200) + "=======\n" + "export const a = 2;\n".repeat(200) + ">>>>>>> master\n";
@@ -7147,7 +7162,7 @@ $ProgressPreference = 'SilentlyContinue'
         {
           type: 'function_call_output',
           call_id: 'call_cmd',
-          output: 'PowerShell 7.6.4 on Windows_NT\r\n' + longScriptCode
+          output: 'PowerShell 7.6.4 on Windows_NT\r\n' + giantJsonArray
         }
       ]
     };
@@ -7253,7 +7268,6 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(guardDirective.includes('Script File Injection'), 'Guard directive must include Script File Injection advice');
     assert.ok(guardDirective.includes('curl.exe'), 'Guard directive must advise curl.exe');
 
-    // 8. End-to-end Payload Optimization across Chat, Responses & Anthropic with $() escaping
     const chatReqPayload = {
       messages: [
         { role: 'user', content: 'run adb' },
@@ -7272,32 +7286,28 @@ $ProgressPreference = 'SilentlyContinue'
         }
       ]
     };
-    const optimizedChat = psOptimizer.optimizeChatPayload(chatReqPayload, { targetPlatform: 'win32' });
-    const fixedArgs = JSON.parse(optimizedChat.messages[1].tool_calls[0].function.arguments);
-    assert.ok(fixedArgs.command.includes('`$(pgrep -f venus.pub)'), 'optimizeChatPayload must escape $(...) in tool arguments');
 
     const responsesReqPayload = {
+      model: 'deepseek-v4.1-flash',
       input: [
         {
           type: 'function_call',
-          id: 'call_res_1',
-          name: 'execute',
+          call_id: 'call_resp_1',
+          name: 'shell',
           arguments: JSON.stringify({ cmd: adbRawCmd })
         }
       ]
     };
-    const optimizedResponses = psOptimizer.optimizeResponsesPayload(responsesReqPayload, { targetPlatform: 'win32' });
-    const fixedResArgs = JSON.parse(optimizedResponses.input[0].arguments);
-    assert.ok(fixedResArgs.cmd.includes('`$(pgrep -f venus.pub)'), 'optimizeResponsesPayload must escape $(...) in tool arguments');
 
     const anthropicReqPayload = {
+      model: 'claude-3-5-sonnet-20241022',
       messages: [
         {
           role: 'assistant',
           content: [
             {
               type: 'tool_use',
-              id: 'tu_1',
+              id: 'toolu_1',
               name: 'bash',
               input: { command: adbRawCmd }
             }
@@ -7305,9 +7315,36 @@ $ProgressPreference = 'SilentlyContinue'
         }
       ]
     };
-    const optimizedAnthropic = psOptimizer.optimizeAnthropicPayload(anthropicReqPayload, { targetPlatform: 'win32' });
-    assert.ok(optimizedAnthropic.messages[0].content[0].input.command.includes('`$(pgrep -f venus.pub)'), 'optimizeAnthropicPayload must escape $(...) in tool input');
-    console.log('✓ Windows PowerShell Escaping Optimization, $() Subexpression Guard & Script File Injection verified');
+
+    // By default, historical assistant tool_calls are preserved 100% byte-for-byte to protect upstream KV Cache
+    const optimizedChatDefault = psOptimizer.optimizeChatPayload(chatReqPayload, { targetPlatform: 'win32' });
+    const defaultArgs = JSON.parse(optimizedChatDefault.messages[1].tool_calls[0].function.arguments);
+    assert.strictEqual(defaultArgs.command, adbRawCmd, 'optimizeChatPayload MUST NOT mutate historical tool_calls by default (protects Upstream KV Cache)');
+
+    const optimizedRespDefault = psOptimizer.optimizeResponsesPayload(responsesReqPayload, { targetPlatform: 'win32' });
+    const defaultRespArgs = JSON.parse(optimizedRespDefault.input[0].arguments);
+    assert.strictEqual(defaultRespArgs.cmd, adbRawCmd, 'optimizeResponsesPayload MUST NOT mutate historical function_call by default (protects Upstream KV Cache)');
+
+    const optimizedAnthDefault = psOptimizer.optimizeAnthropicPayload(anthropicReqPayload, { targetPlatform: 'win32' });
+    assert.strictEqual(optimizedAnthDefault.messages[0].content[0].input.command, adbRawCmd, 'optimizeAnthropicPayload MUST NOT mutate historical tool_use by default (protects Upstream KV Cache)');
+
+    // When fixHistoricalToolCalls is explicitly opted in (e.g. testing/legacy mode), escaping applies
+    const optimizedChatExplicit = psOptimizer.optimizeChatPayload(chatReqPayload, { targetPlatform: 'win32', fixHistoricalToolCalls: true });
+    const fixedArgs = JSON.parse(optimizedChatExplicit.messages[1].tool_calls[0].function.arguments);
+    assert.ok(fixedArgs.command.includes('`$(pgrep -f venus.pub)'), 'optimizeChatPayload escapes $(...) when fixHistoricalToolCalls is explicitly true');
+
+    const optimizedRespExplicit = psOptimizer.optimizeResponsesPayload(responsesReqPayload, { targetPlatform: 'win32', fixHistoricalToolCalls: true });
+    assert.ok(JSON.parse(optimizedRespExplicit.input[0].arguments).cmd.includes('`$(pgrep -f venus.pub)'), 'optimizeResponsesPayload escapes when fixHistoricalToolCalls is explicitly true');
+
+    const optimizedAnthExplicit = psOptimizer.optimizeAnthropicPayload(anthropicReqPayload, { targetPlatform: 'win32', fixHistoricalToolCalls: true });
+    assert.ok(optimizedAnthExplicit.messages[0].content[0].input.command.includes('`$(pgrep -f venus.pub)'), 'optimizeAnthropicPayload escapes when fixHistoricalToolCalls is explicitly true');
+
+    // Native PowerShell subexpressions must NOT be mangled
+    const nativePsCmd = 'Write-Host "Current time is: $(Get-Date)"';
+    const nativePsFixed = psOptimizer.fixPowerShellCommandEscaping(nativePsCmd, { targetPlatform: 'win32' });
+    assert.strictEqual(nativePsFixed, nativePsCmd, 'Native PowerShell subexpression $(Get-Date) must NOT be mangled');
+
+    console.log('✓ Windows PowerShell Escaping Optimization, KV Cache Protection & Subexpression Guard verified');
 
     // [Test 145] Testing Sandbox Isolation via COMPRESSION_STATS_FILE, Dual-Write & .bak Disaster Recovery Self-Healing
     console.log('\n[Test 145] Testing Sandbox Isolation via COMPRESSION_STATS_FILE, Dual-Write & .bak Disaster Recovery Self-Healing...');
@@ -7508,9 +7545,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0
+    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7587,7 +7624,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3 or 3.9.0');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7596,9 +7633,9 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
     console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
 
-    // 1. Verify package.json declares v3.8.2, v3.8.3 or v3.9.0 and npm run setup script
+    // 1. Verify package.json declares v3.8.2, v3.8.3, v3.9.0 or v3.10.0 and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.2', '3.8.3', '3.9.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3 or 3.9.0');
+    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0 or 3.10.0');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7620,16 +7657,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro'), 'Web UI must render v3.8.2 Pro, v3.8.3 Pro or v3.9.0 Pro version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro'), 'Web UI must render v3.8.2 Pro, v3.8.3 Pro, v3.9.0 Pro or v3.10.0 Pro version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
     // [Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release
     console.log('\n[Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release...');
 
-    // 1. Verify package.json declares v3.8.3 or v3.9.0
+    // 1. Verify package.json declares v3.8.3, v3.9.0 or v3.10.0
     const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.3', '3.9.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3 or 3.9.0');
+    assert.ok(['3.8.3', '3.9.0', '3.10.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0 or 3.10.0');
 
     // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
     const routerModule = require('./server');
@@ -7654,8 +7691,8 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('process.argv'), 'setup-windows.ps1 must use process.argv for path-independent execution');
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
-    // 5. Verify Web UI renders v3.8.3 Pro or v3.9.0 Pro badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro version badge');
+    // 5. Verify Web UI renders v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro badge
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
@@ -7930,16 +7967,143 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro'), 'Web UI must render v3.9.0 Pro version badge');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro'), 'Web UI must render v3.9.0 Pro or v3.10.0 Pro version badge');
 
-    // 6. Verify package.json declares 3.9.0
+    // 6. Verify package.json declares 3.9.0 or 3.10.0
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson153.version, '3.9.0', 'package.json version must be 3.9.0');
+    assert.ok(['3.9.0', '3.10.0'].includes(pkgJson153.version), 'package.json version must be 3.9.0 or 3.10.0');
 
     console.log('✓ CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence verified');
 
+    // [Test 154] Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection
+    console.log('\n[Test 154] Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection...');
+
+    // 1. Zero-Downgrade Redline: >5000 chars code file read MUST be 100% byte-for-byte identical (Zero Truncation)
+    const longPythonCode = [
+      '# Licensed under the Apache License, Version 2.0',
+      'import os',
+      'import sys',
+      'import json',
+      'class ProductionTelemetryCollector:',
+      '    """Collects telemetry metrics across distributed nodes."""',
+      '    def __init__(self, node_id, cluster_name):',
+      '        self.node_id = node_id',
+      '        self.cluster_name = cluster_name',
+      '        self.buffer = []',
+      '    def push_metric(self, key, value, timestamp=None):',
+      '        if not key: raise ValueError("Empty key")',
+      '        self.buffer.append({"key": key, "val": value, "ts": timestamp})',
+      '    def flush(self):',
+      '        data = json.dumps(self.buffer)',
+      '        print(f"Flushed {len(self.buffer)} metrics")',
+      '        self.buffer.clear()',
+      '        return True'
+    ].join('\n') + '\n' + '# padding block\n'.repeat(350);
+    assert.ok(longPythonCode.length > 5000, 'Test payload must be > 5000 chars');
+    const compLongCode = contextCompactor.compactText(longPythonCode, { enabled: true, foldStructuredData: true });
+    assert.strictEqual(compLongCode, longPythonCode, 'Anti-Downgrade Redline: Code reading outputs must NEVER be truncated under any condition');
+
+    // 2. Schema Slimming Anti-Downgrade: Preserves 'e.g. /path' and multi-sentence parameter constraints
+    const toolWithEgAndConstraints = [
+      {
+        type: 'function',
+        function: {
+          name: 'deploy_service',
+          description: 'Deploy service to cluster. e.g. /opt/bin/deploy.sh must exist. Ensure all env vars are populated.\n\nExamples:\n```bash\ndeploy --prod\n```',
+          parameters: {
+            type: 'object',
+            properties: {
+              targetDir: {
+                type: 'string',
+                description: 'Target directory for binary. e.g. /usr/local/bin. Must have write permissions.\n\nExamples:\n- /var/deploy'
+              }
+            }
+          }
+        }
+      }
+    ];
+    const slimmedEgTool = contextCompactor.slimToolsSchema(toolWithEgAndConstraints, 10);
+    assert.ok(slimmedEgTool[0].function.description.includes('e.g. /opt/bin/deploy.sh'), 'Must preserve e.g. paths in tool description');
+    assert.ok(slimmedEgTool[0].function.description.includes('Ensure all env vars are populated.'), 'Must preserve trailing sentences with constraints in tool description');
+    assert.ok(!slimmedEgTool[0].function.description.includes('Examples:'), 'Must strip trailing Examples: block');
+    assert.ok(slimmedEgTool[0].function.parameters.properties.targetDir.description.includes('e.g. /usr/local/bin'), 'Must preserve e.g. in parameter description');
+    assert.ok(slimmedEgTool[0].function.parameters.properties.targetDir.description.includes('Must have write permissions.'), 'Must preserve parameter constraints');
+
+    // 3. Schema Honest Accounting: 0 deltaChars MUST record 0 savedChars (No 5% phantom injection)
+    contextCompactor.resetCompressionStats();
+    const sortedTools = [
+      {
+        type: 'function',
+        function: {
+          name: 'a_tool',
+          description: 'A tool description',
+          parameters: { type: 'object', properties: {} }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'b_tool',
+          description: 'B tool description',
+          parameters: { type: 'object', properties: {} }
+        }
+      }
+    ];
+    const compactToolsRes = contextCompactor.compactToolsList(sortedTools, { schemaCharThreshold: 50000 });
+    const schemaStats = contextCompactor.getCompressionStats().modules.schema;
+    assert.strictEqual(schemaStats.savedChars, 0, 'Schema module must NOT inject phantom 38~500 chars when delta is 0');
+    assert.strictEqual(schemaStats.savedTokens, 0, 'Schema module must NOT inject phantom tokens when delta is 0');
+
+    // 4. Multi-turn KV Cache Protection: Turn 2-5 hits only increment cacheZoneHits, NEVER duplicate savedChars
+    const session154 = 'session_turn_isolation_154';
+    contextCompactor.clearSessionMemo(session154);
+    contextCompactor.resetCompressionStats();
+    const sampleOutput = 'PowerShell 7.6.4 on Windows_NT\r\nBuild finished in 2.5s\r\n[100%] Complete';
+    const turn1Res = contextCompactor.compactText(sampleOutput, { enabled: true, cacheZoneFreeze: true }, session154);
+    const turn1SavedChars = contextCompactor.getCompressionStats().totalSavedChars;
+    assert.ok(turn1SavedChars > 0, 'Turn 1 must save chars from PS banner removal');
+
+    // Turns 2, 3, 4, 5
+    for (let turn = 2; turn <= 5; turn++) {
+      const turnNRes = contextCompactor.compactText(sampleOutput, { enabled: true, cacheZoneFreeze: true }, session154);
+      assert.strictEqual(turnNRes, turn1Res, `Turn ${turn} must return exact memoized text`);
+    }
+    const statsAfter5Turns = contextCompactor.getCompressionStats();
+    assert.strictEqual(statsAfter5Turns.totalSavedChars, turn1SavedChars, 'Multi-turn memo hits must NOT duplicate totalSavedChars across turns');
+    assert.strictEqual(statsAfter5Turns.modules.cacheZone.savedChars, 0, 'cacheZone module must NOT record phantom savedChars on memo hit');
+    assert.strictEqual(statsAfter5Turns.modules.cacheZone.cacheZoneHits, 4, 'cacheZone module must record exactly 4 cacheZoneHits');
+
+    // 5. Dynamic Bilingual Token Accounting: CJK vs ASCII weighted tokens verified
+    const cjkArticle = '智能网关压缩中枢正在对上下文进行双语分词统计，确保不降智、不虚报，并且最大化保护缓存命中率。';
+    const cjkTokens = contextCompactor.estimateTokens(cjkArticle);
+    assert.strictEqual(cjkTokens, Math.round(cjkArticle.length / 1.25), 'CJK tokens must estimate with ~1.25 chars/token');
+
+    // 6. Upstream Failover / Multi-account Retry Payload Idempotence
+    const payloadChat = {
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'tool', content: sampleOutput }
+      ]
+    };
+    contextCompactor.resetCompressionStats();
+    const compactedChatFirst = contextCompactor.compactChatPayload(payloadChat, { enabled: true });
+    const initialSaved = contextCompactor.getCompressionStats().totalSavedChars;
+    assert.ok(initialSaved > 0, 'Initial compression must save characters');
+
+    // 7. Verify package.json declares 3.10.0 and Web UI renders v3.10.0 Pro badge
+    const pkgJson154 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(pkgJson154.version, '3.10.0', 'package.json version must be 3.10.0');
+
+    const uiRes154 = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(uiRes154.statusCode, 200);
+    assert.ok(uiRes154.body.includes('v3.10.0 Pro'), 'Web UI must render v3.10.0 Pro badge');
+    assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
+
+    console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 153 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 154 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

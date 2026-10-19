@@ -906,9 +906,13 @@ function getOrCreateBucket(tier, ts, now = Date.now()) {
   return bucket;
 }
 
-function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelName) {
+function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelName, customSavedTokens = null) {
   const bucket = getOrCreateBucket(tier, ts);
   if (!bucket) return;
+
+  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+    ? customSavedTokens
+    : estimateTokens(validSaved);
 
   bucket.totalOriginalChars += validOrig;
   bucket.totalCompressedChars += (validOrig - validSaved);
@@ -916,7 +920,7 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
 
   if (moduleName && bucket.modules && bucket.modules[moduleName]) {
     bucket.modules[moduleName].savedChars += validSaved;
-    bucket.modules[moduleName].savedTokens = estimateTokens(bucket.modules[moduleName].savedChars);
+    bucket.modules[moduleName].savedTokens = (bucket.modules[moduleName].savedTokens || 0) + validTokens;
   }
 
   if (modelName) {
@@ -935,7 +939,7 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
       const mEntry = bucket.byModel[model];
       mEntry.savedChars += validSaved;
       mEntry.originalChars += validOrig;
-      mEntry.savedTokens = estimateTokens(mEntry.savedChars);
+      mEntry.savedTokens = (mEntry.savedTokens || 0) + validTokens;
       mEntry.ratePer1M = getModelRate(model);
       mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
     }
@@ -959,7 +963,23 @@ function computeDerivedStats(stats) {
   if ((Number(stats.totalOriginalChars) || 0) < totalSavedChars) {
     stats.totalOriginalChars = totalSavedChars;
   }
-  stats.savedTokens = estimateTokens(totalSavedChars);
+
+  // Modules token calculation & percentage
+  let modulesTokenSum = 0;
+  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
+    const mod = stats.modules[modKey] || { savedChars: 0, savedTokens: 0, percentage: 0 };
+    mod.savedChars = Number(mod.savedChars) || 0;
+    if (mod.savedTokens === undefined || mod.savedTokens === null || mod.savedTokens === 0) {
+      mod.savedTokens = estimateTokens(mod.savedChars);
+    }
+    modulesTokenSum += mod.savedTokens;
+    mod.percentage = totalSavedChars > 0
+      ? Number((((Number(mod.savedChars) || 0) / totalSavedChars) * 100).toFixed(1))
+      : 0;
+    stats.modules[modKey] = mod;
+  }
+
+  stats.savedTokens = modulesTokenSum > 0 ? modulesTokenSum : estimateTokens(totalSavedChars);
 
   // Compute byModel telemetry and dynamic weighted savedCostUSD
   stats.byModel = stats.byModel || {};
@@ -971,7 +991,9 @@ function computeDerivedStats(stats) {
     if (!data || typeof data !== 'object') continue;
     data.savedChars = Number(data.savedChars) || 0;
     data.originalChars = Number(data.originalChars) || 0;
-    data.savedTokens = estimateTokens(data.savedChars);
+    if (data.savedTokens === undefined || data.savedTokens === null || data.savedTokens === 0) {
+      data.savedTokens = estimateTokens(data.savedChars);
+    }
     const officialRate = getModelRate(m);
     data.ratePer1M = (officialRate !== DEFAULT_MODEL_RATE_PER_1M || typeof data.ratePer1M !== 'number') ? officialRate : data.ratePer1M;
     data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
@@ -990,14 +1012,6 @@ function computeDerivedStats(stats) {
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
     : 0;
 
-  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
-    const mod = stats.modules[modKey] || { savedChars: 0, savedTokens: 0, percentage: 0 };
-    mod.savedTokens = estimateTokens(Number(mod.savedChars) || 0);
-    mod.percentage = totalSavedChars > 0
-      ? Number((((Number(mod.savedChars) || 0) / totalSavedChars) * 100).toFixed(1))
-      : 0;
-    stats.modules[modKey] = mod;
-  }
   return stats;
 }
 
@@ -1200,11 +1214,14 @@ function loadStatsFromDisk() {
 
 loadStatsFromDisk();
 
-function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp = Date.now()) {
+function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp = Date.now(), customSavedTokens = null) {
   const model = normalizeModelName(modelName);
   if (!model || (savedChars <= 0 && originalChars <= 0)) return;
   const validSaved = Math.max(0, savedChars);
   const validOrig = Math.max(validSaved, originalChars);
+  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+    ? customSavedTokens
+    : estimateTokens(validSaved);
 
   if (!compressionStats.byModel) {
     compressionStats.byModel = {};
@@ -1221,50 +1238,58 @@ function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp 
   const entry = compressionStats.byModel[model];
   entry.savedChars += validSaved;
   entry.originalChars += validOrig;
-  entry.savedTokens = estimateTokens(entry.savedChars);
+  entry.savedTokens = (entry.savedTokens || 0) + validTokens;
   entry.ratePer1M = getModelRate(model);
   entry.savedCostUSD = Number(((entry.savedTokens / 1000000) * entry.ratePer1M).toFixed(7));
   pruneByModelEntriesIfNeeded();
 }
 
-function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now()) {
+function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now(), customSavedTokens = null) {
   if (deltaChars <= 0) return;
   const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
+  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+    ? customSavedTokens
+    : estimateTokens(deltaChars);
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += deltaChars;
+    compressionStats.modules[moduleName].savedTokens = (compressionStats.modules[moduleName].savedTokens || 0) + validTokens;
     compressionStats.totalOriginalChars += deltaChars;
     compressionStats.updatedAt = new Date().toISOString();
     computeDerivedStats(compressionStats);
 
-    recordBucketSavings('m5', ts, moduleName, deltaChars, deltaChars, null);
-    recordBucketSavings('h1', ts, moduleName, deltaChars, deltaChars, null);
-    recordBucketSavings('d1', ts, moduleName, deltaChars, deltaChars, null);
+    recordBucketSavings('m5', ts, moduleName, deltaChars, deltaChars, null, validTokens);
+    recordBucketSavings('h1', ts, moduleName, deltaChars, deltaChars, null, validTokens);
+    recordBucketSavings('d1', ts, moduleName, deltaChars, deltaChars, null, validTokens);
     pruneExpiredBuckets();
     persistStatsThrottled();
   }
 }
 
-function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null, timestamp = Date.now()) {
+function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null, timestamp = Date.now(), customSavedTokens = null) {
   if (deltaChars <= 0 && originalChars <= 0) return;
   const validSaved = Math.max(0, deltaChars);
   const validOrig = Math.max(validSaved, originalChars);
   const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
+  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+    ? customSavedTokens
+    : estimateTokens(validSaved);
 
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += validSaved;
+    compressionStats.modules[moduleName].savedTokens = (compressionStats.modules[moduleName].savedTokens || 0) + validTokens;
   }
   compressionStats.totalOriginalChars += validOrig;
   compressionStats.totalCompressedChars += (validOrig - validSaved);
   if (modelName) {
-    recordModelSavings(modelName, validSaved, validOrig, ts);
+    recordModelSavings(modelName, validSaved, validOrig, ts, validTokens);
   }
   compressionStats.updatedAt = new Date().toISOString();
   computeDerivedStats(compressionStats);
 
   // Synchronously record to all 3 ring-buffer time tiers
-  recordBucketSavings('m5', ts, moduleName, validSaved, validOrig, modelName);
-  recordBucketSavings('h1', ts, moduleName, validSaved, validOrig, modelName);
-  recordBucketSavings('d1', ts, moduleName, validSaved, validOrig, modelName);
+  recordBucketSavings('m5', ts, moduleName, validSaved, validOrig, modelName, validTokens);
+  recordBucketSavings('h1', ts, moduleName, validSaved, validOrig, modelName, validTokens);
+  recordBucketSavings('d1', ts, moduleName, validSaved, validOrig, modelName, validTokens);
 
   pruneExpiredBuckets();
   persistStatsThrottled();
@@ -2184,28 +2209,11 @@ function foldStructuredData(text, options = {}, context = {}) {
       }
     }
 
-    // Case 4: Giant Long Non-JSON Tool Output / Script / Log output folding (SmartCrusher Long Text Mode)
-    // ONLY applies to plaintext / terminal / script outputs, NEVER to valid JSON structures (which follow Case 1/2/3)
-    const isJsonDoc = (trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'));
-    if (!isJsonDoc) {
-      const allowLongOutputFold = (options.foldLongOutput !== false && options.foldLongText !== false) &&
-        (Boolean(context && context.isPipeline) || options.fromPipeline === true || options.foldLongOutput === true);
-      if (allowLongOutputFold) {
-        const maxOutputLimit = Number(options.maxOutputChars) || 2000;
-        if (text.length > maxOutputLimit && !text.includes('[Headroom SmartCrusher:') && !text.includes('智能网关自愈：已自动折叠')) {
-          const isDiff = text.includes('diff --git') || text.includes('@@ -');
-          const shouldProtectDiff = options.protectSourceDiffs !== false && isDiff;
-          if (!shouldProtectDiff) {
-            const head = text.slice(0, 600);
-            const tail = text.slice(-600);
-            const omitted = text.length - 1200;
-            if (omitted > 300) {
-              return `${head}\n\n[Headroom SmartCrusher: 折叠了 ${omitted} 字符超长工具输出（首尾关键内容已完整保留）]\n\n${tail}`;
-            }
-          }
-        }
-      }
-    }
+    // ANTI-DOWNGRADE REDLINE:
+    // foldStructuredData is STRICTLY for JSON/Lockfile structures (Case 1, 2, 3).
+    // NEVER truncate plaintext, source code, scripts, or file outputs. Plaintext
+    // is 100% preserved to guarantee zero code loss, zero hallucination, and zero patch failures.
+    return text;
 
     return text;
   } catch (err) {
@@ -2249,7 +2257,8 @@ const RE_RUST_ERROR = /error\[E\d+\]/i;
 const RE_EXPECTED = /^\s*(?:expected|received)\b/i;
 const RE_CONFLICT_MARKERS = /<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|/;
 const RE_DIFF_HEADER = /^(?:diff --git|--- |\+\+\+|@@ )/;
-const RE_CHECKMARK_PASS = /^[✓✔]\s+.+/;
+const RE_CHECKMARK_TEST_PASS = /^[✓✔]\s+(?:should\b|it\b|test\b|t\d+\b|spec\b|case\b|can\b|must\b|verif|assert|expect|validat|check|test_|\S+.*?(?:\(\s*\d+(?:\.\d+)?\s*m?s\s*\)|\[\s*\d+\s*m?s\s*\])$)/i;
+const RE_CHECKMARK_GENERAL = /^[✓✔]\s+.+/;
 const RE_TAP_PASS = /^ok\s+(?:\d+\b|-\s+|\S+\s+-)/;
 const RE_JEST_PASS = /^PASS\s+\S+/;
 const RE_PYTEST_PASS = /(?:::|\.py\b).+?\bPASSED\b/;
@@ -2277,6 +2286,9 @@ function foldTestPasses(text, options = {}) {
     const lines = text.split(/\r?\n/);
     const result = [];
     let passingRun = [];
+
+    // Context detector: Differentiates real test suite runs from non-test deployment/installation checklists
+    const hasTestFrameworkContext = /(?:PASS\s+\S+|Test Suites:|Tests:\s+\d+|passed,\s+\d+|tests passed|completed in \d+|finished in \d+|vitest|jest|mocha|pytest|cargo test|go test|ctest)/i.test(text);
 
     // Compile custom regex patterns safely (supports Array or single string)
     const customRegexes = [];
@@ -2313,8 +2325,9 @@ function foldTestPasses(text, options = {}) {
       if (RE_DIFF_HEADER.test(trimmed)) return false;
 
       // Positive indicators for major testing frameworks:
-      // 1. Jest / Vitest / Mocha: ✓ or ✔
-      if (RE_CHECKMARK_PASS.test(trimmed)) return true;
+      // 1. Jest / Vitest / Mocha: ✓ or ✔ (safeguarded against non-test checklists)
+      if (hasTestFrameworkContext && RE_CHECKMARK_GENERAL.test(trimmed)) return true;
+      if (RE_CHECKMARK_TEST_PASS.test(trimmed)) return true;
       // 2. TAP / node:test: ok 1 - name
       if (RE_TAP_PASS.test(trimmed)) return true;
       // 3. Jest suite pass: PASS src/...
@@ -2707,30 +2720,26 @@ function alignToolsSchema(tools) {
 }
 
 /**
- * Slim a single description string by removing markdown code blocks, examples, and extracting the first sentence.
- * If trimming leaves nothing, falls back to the first line of the original description.
+ * Slim a single description string by removing markdown code blocks and trailing verbose example blocks.
+ * ANTI-DOWNGRADE REDLINE:
+ * NEVER truncate sentences or split on periods ('.'). Preserves all parameter constraints,
+ * types, options, and descriptions intact without cutting off 'e.g. /path' or vital rules.
  */
 function slimDescription(desc) {
   if (typeof desc !== 'string' || !desc.trim()) return desc;
   try {
     let text = desc;
-    // 1. Strip markdown code blocks
+    // 1. Strip markdown code blocks (e.g. verbose multi-line code examples)
     text = text.replace(/```[\s\S]*?```/g, '');
-    // 2. Strip example sections (Examples:, Usage:, Sample:, etc.)
-    text = text.replace(/(?:\r?\n)+\s*(?:Examples?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '');
-    text = text.trim();
-    if (!text) {
-      const fallback = desc.trim().split(/\r?\n/)[0].trim();
-      return fallback || desc;
+    // 2. Strip trailing example sections (Examples:, Usage:, Sample:) only if description remains meaningful
+    const strippedExamples = text.replace(/(?:\r?\n)+\s*(?:Examples?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '').trim();
+    if (strippedExamples && strippedExamples.length >= 1) {
+      text = strippedExamples;
     }
-    // 3. Extract first paragraph
-    const firstPara = text.split(/\r?\n\s*\r?\n/)[0].trim();
-    // 4. Extract first sentence if descriptive (>= 12 chars)
-    const match = firstPara.match(/^.*?[.!?。！](?:\s|$)/);
-    if (match && match[0].trim().length >= 12) {
-      return match[0].trim();
-    }
-    return firstPara || desc;
+    // 3. Collapse multiple consecutive empty lines and trailing whitespace
+    text = text.replace(/\r?\n\s*\r?\n\s*\r?\n+/g, '\n\n').trim();
+
+    return text || desc;
   } catch (e) {
     return desc;
   }
@@ -2917,13 +2926,10 @@ function compactToolsList(tools, opts = {}) {
       recordBucketSchemaAlignment('h1', Date.now(), 1, tools.length);
       recordBucketSchemaAlignment('d1', Date.now(), 1, tools.length);
 
-      // KV Cache Prefix Lock baseline benefit:
-      // Even if schema was already minified (deltaChars == 0), deterministic prefix alignment
-      // locks prompt cache upstream (saving 80%~90% KV Cache tokens on upstream).
-      // Credit nominal alignment savings so Card 3 reflects active contribution.
-      if (deltaChars === 0 && initialLen > 0) {
-        deltaChars = Math.max(38, Math.min(500, Math.round(initialLen * 0.05)));
-      }
+      // ANTI-INFLATION REDLINE:
+      // When schema was already sorted and minified (deltaChars === 0), do NOT fabricate
+      // artificial character savings. Aligned rounds and tool counts accurately record
+      // KV Cache lock contribution without phantom number inflation.
     }
 
     if (deltaChars > 0) {
@@ -3047,16 +3053,14 @@ function compactText(text, options = {}, sessionId = null) {
       cacheKey = `${hash}_${optsSig}`;
       const cached = getMemo(sessionId, cacheKey);
       if (cached !== null) {
-        const delta = text.length - cached.length;
-        const modelName = normalizeModelName(opts.model || null);
-        if (delta > 0) {
-          recordSavings('cacheZone', delta, text.length, modelName);
-        } else {
-          if (!compressionStats.modules.cacheZone.cacheZoneHits) {
-            compressionStats.modules.cacheZone.cacheZoneHits = 0;
-          }
-          compressionStats.modules.cacheZone.cacheZoneHits += 1;
+        if (!compressionStats.modules.cacheZone.cacheZoneHits) {
+          compressionStats.modules.cacheZone.cacheZoneHits = 0;
         }
+        compressionStats.modules.cacheZone.cacheZoneHits += 1;
+        // ANTI-INFLATION & ACCURACY REDLINE:
+        // Do not re-accumulate historical savings on every turn into cacheZone.
+        // Original character savings were already credited to RTK / Headroom / PowerShell in Turn 1.
+        // Cache-Zone tracks memoization hits and preserves byte-for-byte prompt stability for KV Cache.
         return cached;
       }
     }
@@ -3121,6 +3125,11 @@ function compactText(text, options = {}, sessionId = null) {
       compressionStats.totalOriginalChars += origLen;
       compressionStats.totalCompressedChars += compLen;
 
+      // Real dynamic bilingual token difference:
+      const origTokens = estimateTokens(text);
+      const compTokens = estimateTokens(result);
+      const dynamicSavedTokens = Math.max(0, origTokens - compTokens);
+
       let rtkDelta = moduleDeltas.rtk || 0;
       let headroomDelta = moduleDeltas.headroom || 0;
       let powershellDelta = moduleDeltas.powershell || 0;
@@ -3137,17 +3146,30 @@ function compactText(text, options = {}, sessionId = null) {
         headroomDelta = totalSaved - rtkDelta - powershellDelta;
       }
 
-      if (rtkDelta > 0) compressionStats.modules.rtk.savedChars += rtkDelta;
-      if (headroomDelta > 0) compressionStats.modules.headroom.savedChars += headroomDelta;
-      if (powershellDelta > 0) compressionStats.modules.powershell.savedChars += powershellDelta;
+      const rtkTokens = totalSaved > 0 ? Math.round((rtkDelta / totalSaved) * dynamicSavedTokens) : 0;
+      const psTokens = totalSaved > 0 ? Math.round((powershellDelta / totalSaved) * dynamicSavedTokens) : 0;
+      const hrTokens = dynamicSavedTokens - rtkTokens - psTokens;
+
+      if (rtkDelta > 0) {
+        compressionStats.modules.rtk.savedChars += rtkDelta;
+        compressionStats.modules.rtk.savedTokens = (compressionStats.modules.rtk.savedTokens || 0) + rtkTokens;
+      }
+      if (headroomDelta > 0) {
+        compressionStats.modules.headroom.savedChars += headroomDelta;
+        compressionStats.modules.headroom.savedTokens = (compressionStats.modules.headroom.savedTokens || 0) + hrTokens;
+      }
+      if (powershellDelta > 0) {
+        compressionStats.modules.powershell.savedChars += powershellDelta;
+        compressionStats.modules.powershell.savedTokens = (compressionStats.modules.powershell.savedTokens || 0) + psTokens;
+      }
 
       const modelName = normalizeModelName(opts.model || null);
+      const textTs = Date.now();
       if (modelName) {
-        recordModelSavings(modelName, totalSaved, origLen);
+        recordModelSavings(modelName, totalSaved, origLen, textTs, dynamicSavedTokens);
       }
 
       // Synchronously record to all 3 ring-buffer time tiers
-      const textTs = Date.now();
       for (const tier of ['m5', 'h1', 'd1']) {
         const bucket = getOrCreateBucket(tier, textTs);
         if (bucket) {
@@ -3156,15 +3178,15 @@ function compactText(text, options = {}, sessionId = null) {
           bucket.totalSavedChars += totalSaved;
           if (rtkDelta > 0 && bucket.modules && bucket.modules.rtk) {
             bucket.modules.rtk.savedChars += rtkDelta;
-            bucket.modules.rtk.savedTokens = estimateTokens(bucket.modules.rtk.savedChars);
+            bucket.modules.rtk.savedTokens = (bucket.modules.rtk.savedTokens || 0) + rtkTokens;
           }
           if (headroomDelta > 0 && bucket.modules && bucket.modules.headroom) {
             bucket.modules.headroom.savedChars += headroomDelta;
-            bucket.modules.headroom.savedTokens = estimateTokens(bucket.modules.headroom.savedChars);
+            bucket.modules.headroom.savedTokens = (bucket.modules.headroom.savedTokens || 0) + hrTokens;
           }
           if (powershellDelta > 0 && bucket.modules && bucket.modules.powershell) {
             bucket.modules.powershell.savedChars += powershellDelta;
-            bucket.modules.powershell.savedTokens = estimateTokens(bucket.modules.powershell.savedChars);
+            bucket.modules.powershell.savedTokens = (bucket.modules.powershell.savedTokens || 0) + psTokens;
           }
           if (modelName) {
             if (!bucket.byModel) bucket.byModel = {};
@@ -3180,7 +3202,7 @@ function compactText(text, options = {}, sessionId = null) {
             const mEntry = bucket.byModel[modelName];
             mEntry.savedChars += totalSaved;
             mEntry.originalChars += origLen;
-            mEntry.savedTokens = estimateTokens(mEntry.savedChars);
+            mEntry.savedTokens = (mEntry.savedTokens || 0) + dynamicSavedTokens;
             mEntry.ratePer1M = getModelRate(modelName);
             mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
           }
@@ -3245,6 +3267,7 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
             return { ...msg, [targetField]: ensureSafeNonEmptyString(compacted) };
           } else if (Array.isArray(val)) {
             let targetArray = val;
+            let wasArrayFolded = false;
             if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
               try {
                 const rawArrStr = JSON.stringify(targetArray);
@@ -3252,8 +3275,12 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
                 if (foldedStr.length < rawArrStr.length) {
                   recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                   targetArray = JSON.parse(foldedStr);
+                  wasArrayFolded = true;
                 }
               } catch (_) {}
+            }
+            if (wasArrayFolded) {
+              return { ...msg, [targetField]: targetArray };
             }
             let cleaned = targetArray
               .filter(part => part !== null && part !== undefined)
@@ -3363,6 +3390,7 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                   return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
                 } else if (Array.isArray(val)) {
                   let targetArray = val;
+                  let wasArrayFolded = false;
                   if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
                     try {
                       const rawArrStr = JSON.stringify(targetArray);
@@ -3370,8 +3398,12 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                       if (foldedStr.length < rawArrStr.length) {
                         recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                         targetArray = JSON.parse(foldedStr);
+                        wasArrayFolded = true;
                       }
                     } catch (_) {}
+                  }
+                  if (wasArrayFolded) {
+                    return { ...block, [targetField]: targetArray };
                   }
                   let cleaned = targetArray
                     .filter(part => part !== null && part !== undefined)
@@ -3486,6 +3518,7 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
           } else if (Array.isArray(val)) {
             // If it's a giant array (> maxStructuredItems), fold with SmartCrusher first
             let targetArray = val;
+            let wasArrayFolded = false;
             if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
               try {
                 const rawArrStr = JSON.stringify(targetArray);
@@ -3493,8 +3526,12 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
                 if (foldedStr.length < rawArrStr.length) {
                   recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                   targetArray = JSON.parse(foldedStr);
+                  wasArrayFolded = true;
                 }
               } catch (_) {}
+            }
+            if (wasArrayFolded) {
+              return { ...item, [targetField]: targetArray };
             }
             // Strictly preserve array structure for multimodal/block outputs or strings
             let compactedParts = targetArray

@@ -78,6 +78,8 @@ flowchart TD
 - **DevOps 运维日志去噪 (`cleanDevOpsOutput`)**：清洗 Docker 镜像拉取层状态与 Terraform 刷新噪音。
 
 ### 2. Card 2: Headroom 代码与结构化折叠引擎
+- **源码读取零截断防降智绝对红线**：
+  - 彻底杜绝纯文本源码截断，大模型读取长源码（.js、.py、.go 等）、编译产物与配置文件时 100% 字节级完整保全，消灭反复分段读取的死循环反效果；
 - **依赖锁文件安全折叠 (`foldLockfiles`)**：
   - 自动折叠 `package-lock.json`、`yarn.lock`、`pnpm-lock.yaml`、`Cargo.lock`、`go.sum` 等长达数千行的依赖锁文件；
   - **冲突绝对豁免**：只要检测到 `<<<<<<< HEAD` 等 Git 合并冲突标记，立即 100% 放弃折叠，确保模型代码合并逻辑完好无损。
@@ -88,18 +90,22 @@ flowchart TD
 ### 3. Card 3: Headroom CacheAligner & mcp-compressor 工具定义优化
 - **固定字典序与空白规范化 (`alignToolsSchema`)**：
   - 对挂载的 Tools / Functions 数组按工具名称及参数属性进行字典序严格排序并去除冗余空白；
-  - **锁定 KV Cache**：彻底消除了客户端不同轮次间微调工具顺序导致上游 Prompt Cache 整段失效的问题，上游缓存命中率提升至 80%~90%，输入计费直降。
+  - **锁定 KV Cache**：彻底消除了客户端不同轮次间微调工具顺序导致上游 Prompt Cache 整段失效的问题，上游缓存命中率提升至 80%~90%，输入计费直降；
+  - **真实计量零注水**：当排序后实际减少字符数为 0 时，真实记录 0 字符节省，严禁任何形式的凭空捏造注水。
 - **超大 Schema 深度瘦身 (`slimToolsSchema`)**：
   - 当单次挂载的工具 Schema 总字符数超过门限（默认 15,000 字符）时自动触发；
-  - 递归裁剪描述中的多行 Markdown 样例代码，保留参数名、类型、enum 枚举与核心首句描述，参数选择准确率 100% 保持。
+  - 仅安全剥离三反引号代码块与尾部 `Examples:` / `Usage:` 样例代码，**完整保全 `e.g. /path` 路径示例与所有的类型约束说明**，参数选择准确率 100% 保持，坚决防降智。
 
 ### 4. Card 4: llmtrim Cache-Zone 多轮会话缓存区固化
 - **冻结前置历史轮次 (`sessionCompressionMemo`)**：
   - 在多轮交互中，第 1 到 N-1 轮消息已在上游生成了 KV Cache；
-  - 网关按轮次哈希与消息签名在内存中固化压缩结果，后续轮次直接复用字节级一致的文本，确保上游 100% 命中缓存读取。
+  - 网关按轮次哈希与消息签名在内存中固化压缩结果，后续轮次直接复用字节级一致的文本，确保上游 100% 命中缓存读取；
+  - **跨轮次零重复记账**：第 2~N 轮复用命中时仅累加守护次数（`cacheZoneHits`），不再虚标重复累加节省字数与金额，数据大盘真实可信。
 - **Bounded True LRU 内存防护**：固定上限淘汰，杜绝长期运行内存泄漏。
 
 ### 5. Card 5: Windows PowerShell 优化与平台自适应
+- **捍卫上游 KV Cache 幂等性**：
+  - 默认禁用历史工具调用篡改（`fixHistoricalToolCalls: false`），严禁在后续请求中篡改已经执行过的历史 `tool_calls` 参数，严密捍卫上游 Prompt Cache (KV Cache) 命中率；
 - **Windows PowerShell 命令转义自愈 (`powershell-optimizer.js`)**：
   - **双引号内 `$()` 与 `${}` 本地求值防御**：彻底解决 Windows PowerShell 在双引号字符串内将 `$()` 和 `${}` 提前在本机执行抛出 `The term '...' is not recognized` 的转义地狱，精准状态机自动注入反引号转义为 `` `$(` `` 与 `` `${` ``；
   - **脚本文件注入执行助手 (`wrapInScriptFileExecution`)**：对包含循环、多层嵌套引号或 heredoc 的复杂命令，自动转换为临时 `.ps1` 脚本通过 `@' ... '@` 单引号字面量或 Base64 内存写入执行，并在 `finally` 中安全销毁，彻底消除转义风险；

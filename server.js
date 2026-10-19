@@ -1749,8 +1749,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
   }
 
-  // Apply context and token compression for direct upstream requests
-  if (parsedBody && config.compression && config.compression.enabled !== false) {
+  // Apply context and token compression for direct upstream requests (first attempt only)
+  if (parsedBody && config.compression && config.compression.enabled !== false && (!attemptNumber || attemptNumber <= 1)) {
     try {
       const compOpts = getEffectiveCompressionOptions(config.compression, clientReq);
       if (isResponsesReq) {
@@ -2178,7 +2178,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   proxyReq.end();
 }
 
-function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
+function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedChatPayload = null) {
   triedAccountIds.add(account.id);
   const stat = accountStats.get(account.id);
   if (stat) {
@@ -2207,7 +2207,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   }
 
   const effectiveComp = getEffectiveCompressionOptions(config.compression, clientReq);
-  const chatPayload = codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
+  const chatPayload = precomputedChatPayload || codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
   const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
   const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
@@ -2309,7 +2309,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         clientCloseHandler,
         clientErrorHandler,
         retryFn: (nextAccount) => {
-          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
         },
         errorFallbackFn: (errText) => {
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
@@ -2361,7 +2361,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             clientCloseHandler,
             clientErrorHandler,
             retryFn: (nextAccount) => {
-              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
             }
           });
           if (handled) return;
@@ -2384,10 +2384,10 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
             clientCloseHandler,
             clientErrorHandler,
             retryCurrentAccount: (retrySessionId) => {
-              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId, chatPayload);
             },
             retryNextAccount: (nextAccount) => {
-              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
             },
             fallbackModelFn: (targetFallback) => {
               const healedBody = { ...responsesBody, model: targetFallback };
@@ -2515,10 +2515,10 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         clientCloseHandler,
         clientErrorHandler,
         retryCurrentAccount: (retrySessionId) => {
-          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId, chatPayload);
         },
         retryNextAccount: (nextAccount) => {
-          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
         },
         fallbackModelFn: (targetFallback) => {
           const healedBody = { ...responsesBody, model: targetFallback };
@@ -2550,7 +2550,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   proxyReq.end();
 }
 
-function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null) {
+function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedAnthropicPayload = null) {
   const upstreamUrl = new URL(config.upstream);
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
@@ -2583,7 +2583,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   }
 
   const effectiveComp = getEffectiveCompressionOptions(config.compression, clientReq);
-  const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(responsesBody, effectiveComp, sessionId);
+  const anthropicPayload = precomputedAnthropicPayload || codexAdapter.convertResponsesToAnthropicPayload(responsesBody, effectiveComp, sessionId);
   const reqModel = anthropicPayload.model || 'claude-haiku-5-5';
   const isStream = anthropicPayload.stream !== false;
   const anthropicBody = Buffer.from(JSON.stringify(anthropicPayload), 'utf8');
@@ -2686,7 +2686,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         clientCloseHandler,
         clientErrorHandler,
         retryFn: (nextAccount) => {
-          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
         },
         errorFallbackFn: (errText) => {
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
@@ -2738,7 +2738,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
             clientCloseHandler,
             clientErrorHandler,
             retryFn: (nextAccount) => {
-              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
             }
           });
           if (handled) return;
@@ -2892,10 +2892,10 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         clientCloseHandler,
         clientErrorHandler,
         retryCurrentAccount: (retrySessionId) => {
-          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId);
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber + 1, triedAccountIds, retrySessionId, anthropicPayload);
         },
         retryNextAccount: (nextAccount) => {
-          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId);
+          bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
         },
         fallbackModelFn: (targetFallback) => {
           const healedBody = { ...responsesBody, model: targetFallback };
@@ -4231,7 +4231,7 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.9.0';
+  let pkgVersion = '3.10.0';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -7317,12 +7317,23 @@ function renderDashboardHtml(config) {
                 } else {
                   textEl.innerText = '贡献度: 0% · ~0 Tokens';
                 }
+              } else if (mod === 'cacheZone') {
+                const hits = m.cacheZoneHits || 0;
+                if ((m.savedTokens || 0) > 0) {
+                  textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens' + (hits > 0 ? ' (' + hits + ' 次固化命中)' : '');
+                } else if (hits > 0) {
+                  textEl.innerText = '⚡ 字节级缓存固化守护 (' + hits + ' 次复用命中 · 零重算零抖动)';
+                } else {
+                  textEl.innerText = '贡献度: 0% · ~0 Tokens (待命中)';
+                }
               } else {
                 textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens';
               }
             }
             if (fillEl) {
               if (mod === 'schema' && (m.percentage || 0) === 0 && (m.alignedRounds || 0) > 0) {
+                fillEl.style.width = '100%';
+              } else if (mod === 'cacheZone' && (m.percentage || 0) === 0 && (m.cacheZoneHits || 0) > 0) {
                 fillEl.style.width = '100%';
               } else {
                 fillEl.style.width = Math.min(100, Math.max(0, m.percentage || 0)) + '%';
