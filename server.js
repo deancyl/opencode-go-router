@@ -4296,14 +4296,15 @@ function renderLoginPage() {
   <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
   <style>
     :root {
-      --bg: #0b1120;
-      --card-bg: #1e293b;
-      --border: #334155;
+      --bg: #09090b;
+      --card-bg: #121215;
+      --border: #27272a;
+      --border-hover: #3f3f46;
       --primary: #38bdf8;
       --primary-hover: #0284c7;
-      --text: #f8fafc;
-      --muted: #94a3b8;
-      --danger: #f87171;
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+      --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -4315,54 +4316,59 @@ function renderLoginPage() {
       justify-content: center;
       min-height: 100vh;
       padding: 1.5rem;
+      -webkit-font-smoothing: antialiased;
     }
     .login-card {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 12px;
       padding: 2.5rem 2rem;
       max-width: 440px;
       width: 100%;
-      box-shadow: 0 16px 36px rgba(0,0,0,0.45);
+      box-shadow: 0 16px 36px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.03);
       text-align: center;
     }
     .icon { font-size: 2.8rem; margin-bottom: 1rem; }
-    h2 { font-size: 1.45rem; color: var(--primary); margin-bottom: 0.5rem; }
-    p { font-size: 0.88rem; color: var(--muted); margin-bottom: 1.6rem; line-height: 1.5; }
+    h2 { font-size: 1.35rem; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.01em; }
+    p { font-size: 0.86rem; color: var(--muted); margin-bottom: 1.6rem; line-height: 1.5; }
     .input-group { margin-bottom: 1.2rem; }
     .form-control {
       width: 100%;
-      background: #0b1120;
-      border: 1px solid #334155;
-      color: #fff;
-      padding: 12px 16px;
+      background: #09090b;
+      border: 1px solid var(--border);
+      color: #f4f4f5;
+      padding: 11px 16px;
       border-radius: 8px;
-      font-size: 1rem;
+      font-size: 0.95rem;
       text-align: center;
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    .form-control:focus { border-color: var(--primary); }
+    .form-control:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 1px #38bdf8;
+    }
     .btn {
       width: 100%;
-      background: var(--primary);
-      color: #04101c;
-      border: none;
-      padding: 12px;
+      background: #f4f4f5;
+      color: #09090b;
+      border: 1px solid #f4f4f5;
+      padding: 11px;
       border-radius: 8px;
-      font-size: 1rem;
-      font-weight: 700;
+      font-size: 0.95rem;
+      font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
     }
-    .btn:hover { background: var(--primary-hover); color: #fff; }
+    .btn:hover { background: #ffffff; border-color: #ffffff; color: #000000; box-shadow: 0 1px 8px rgba(255,255,255,0.15); }
+    .btn:active { transform: translateY(1px); }
     .err-msg {
       color: var(--danger);
       font-size: 0.85rem;
       margin-top: 1rem;
       display: none;
-      background: rgba(248, 113, 113, 0.1);
-      border: 1px solid rgba(248, 113, 113, 0.3);
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
       padding: 8px;
       border-radius: 6px;
     }
@@ -4455,7 +4461,7 @@ function renderDashboardHtml(config) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0f172a">
+  <meta name="theme-color" content="#09090b">
   <meta name="color-scheme" content="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4464,29 +4470,42 @@ function renderDashboardHtml(config) {
   <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
   <style>
     :root {
-      --bg: #0b1120;
-      --card-bg: #1e293b;
-      --sidebar-bg: #0f172a;
-      --sidebar-border: #1e293b;
-      --border: #334155;
+      --bg: #09090b;
+      --card-bg: #121215;
+      --card-bg-elevated: #16161a;
+      --sidebar-bg: #0c0c0e;
+      --sidebar-border: #222226;
+      --border: #27272a;
+      --border-subtle: #1f1f23;
+      --border-hover: #3f3f46;
       --primary: #38bdf8;
       --primary-hover: #0284c7;
-      --success: #34d399;
-      --warning: #fbbf24;
-      --danger: #f87171;
-      --text: #f8fafc;
-      --muted: #94a3b8;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f4f4f5;
+      --text-muted: #a1a1aa;
+      --muted: #a1a1aa;
+      --muted-dark: #71717a;
     }
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
       padding: 0;
-      background-color: #0b1120 !important;
+      background-color: #09090b !important;
       color: var(--text);
-      padding: 0;
       line-height: 1.5;
       overflow-x: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
+    /* Sleek Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #09090b; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
     .app-layout {
       display: flex;
       min-height: 100vh;
@@ -4503,16 +4522,16 @@ function renderDashboardHtml(config) {
       display: flex;
       flex-direction: column;
       z-index: 100;
-      transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), left 0.25s ease;
-      box-shadow: 2px 0 12px rgba(0,0,0,0.25);
+      transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1), left 0.22s ease;
+      box-shadow: 1px 0 0 0 var(--sidebar-border);
     }
     .sidebar-header {
-      padding: 16px 14px;
+      padding: 14px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--sidebar-border);
-      min-height: 64px;
+      min-height: 58px;
     }
     .sidebar-brand {
       display: flex;
@@ -4522,10 +4541,9 @@ function renderDashboardHtml(config) {
       text-decoration: none;
     }
     .sidebar-logo {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      box-shadow: 0 0 14px rgba(16,185,129,0.35);
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
       flex-shrink: 0;
     }
     .sidebar-title-box {
@@ -4533,81 +4551,81 @@ function renderDashboardHtml(config) {
       white-space: nowrap;
     }
     .sidebar-title {
-      font-size: 1.05rem;
+      font-size: 0.98rem;
       font-weight: 700;
-      color: #f1f5f9;
+      color: #ffffff;
       line-height: 1.2;
+      letter-spacing: -0.01em;
     }
     .sidebar-subtitle {
-      font-size: 0.72rem;
-      color: var(--primary);
+      font-size: 0.7rem;
+      color: var(--muted);
       font-weight: 500;
     }
     .sidebar-collapse-btn {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: transparent;
+      border: 1px solid var(--border);
       color: var(--muted);
       border-radius: 6px;
       padding: 4px 6px;
       cursor: pointer;
       font-size: 0.8rem;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     .sidebar-collapse-btn:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: #fff;
+      background: #1f1f23;
+      border-color: var(--border-hover);
+      color: #ffffff;
     }
     .sidebar-version-badge {
-      padding: 8px 14px;
+      padding: 6px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: rgba(15, 23, 42, 0.6);
-      border-bottom: 1px solid rgba(51, 65, 85, 0.35);
-      font-size: 0.75rem;
+      background: #09090b;
+      border-bottom: 1px solid var(--sidebar-border);
+      font-size: 0.72rem;
     }
     .sidebar-nav {
       flex: 1;
-      padding: 12px 8px;
+      padding: 10px 8px;
       overflow-y: auto;
       overflow-x: hidden;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 3px;
     }
     .nav-item {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 9px 12px;
-      border-radius: 8px;
-      color: #94a3b8;
+      padding: 8px 12px;
+      border-radius: 6px;
+      color: var(--muted);
       text-decoration: none;
-      font-size: 0.88rem;
+      font-size: 0.85rem;
       font-weight: 500;
-      transition: all 0.18s ease;
+      transition: background 0.15s ease, color 0.15s ease;
       position: relative;
       user-select: none;
     }
     .nav-item:hover {
-      background: rgba(255, 255, 255, 0.06);
-      color: #f1f5f9;
-      transform: translateX(2px);
+      background: #16161a;
+      color: #ffffff;
     }
     .nav-item.active {
-      background: linear-gradient(90deg, rgba(56, 189, 248, 0.18) 0%, rgba(56, 189, 248, 0.05) 100%);
-      color: #38bdf8;
+      background: #18181b;
+      color: #ffffff;
       font-weight: 600;
-      border-left: 3px solid #38bdf8;
-      box-shadow: inset 0 0 12px rgba(56, 189, 248, 0.08);
+      border-left: 2px solid var(--primary);
     }
     .nav-icon {
-      font-size: 1.15rem;
+      font-size: 1.1rem;
       flex-shrink: 0;
-      width: 22px;
+      width: 20px;
       text-align: center;
     }
     .nav-label {
@@ -4617,18 +4635,18 @@ function renderDashboardHtml(config) {
       text-overflow: ellipsis;
     }
     .nav-badge {
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       padding: 1px 6px;
       border-radius: 9999px;
-      background: rgba(56, 189, 248, 0.15);
-      color: #38bdf8;
-      border: 1px solid rgba(56, 189, 248, 0.3);
+      background: #1f1f23;
+      color: #d4d4d8;
+      border: 1px solid var(--border);
       white-space: nowrap;
     }
     .sidebar-footer {
-      padding: 12px 14px;
+      padding: 10px 14px;
       border-top: 1px solid var(--sidebar-border);
-      background: rgba(15, 23, 42, 0.85);
+      background: var(--sidebar-bg);
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -4638,22 +4656,23 @@ function renderDashboardHtml(config) {
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 0.76rem;
+      font-size: 0.74rem;
       color: var(--muted);
       overflow: hidden;
       white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
     .status-indicator {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
-      background: #34d399;
-      box-shadow: 0 0 6px #34d399;
+      background: #10b981;
+      box-shadow: 0 0 6px #10b981;
       flex-shrink: 0;
     }
     .sidebar-logout-btn {
       padding: 2px 8px;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
     }
 
     /* Collapsed Sidebar Mode */
@@ -4670,7 +4689,7 @@ function renderDashboardHtml(config) {
     }
     body.sidebar-collapsed .sidebar-header {
       justify-content: center;
-      padding: 14px 6px;
+      padding: 12px 6px;
     }
     body.sidebar-collapsed .sidebar-collapse-btn .collapse-icon {
       transform: rotate(180deg);
@@ -4693,7 +4712,8 @@ function renderDashboardHtml(config) {
       width: calc(100% - 240px);
       min-height: 100vh;
       padding: 1.5rem 2rem 3rem;
-      transition: margin-left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: margin-left 0.22s cubic-bezier(0.16, 1, 0.3, 1), width 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+      background: #09090b;
     }
     .container { max-width: 1160px; margin: 0 auto; }
 
@@ -4702,8 +4722,8 @@ function renderDashboardHtml(config) {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 1.5rem;
-      padding-bottom: 1rem;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.85rem;
       border-bottom: 1px solid var(--border);
       flex-wrap: wrap;
       gap: 12px;
@@ -4711,50 +4731,170 @@ function renderDashboardHtml(config) {
     .top-bar-left {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
       flex-wrap: wrap;
     }
     .current-route-title {
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: 1.25rem;
+      font-size: 1.15rem;
       font-weight: 700;
-      color: #f1f5f9;
+      color: #ffffff;
+      letter-spacing: -0.01em;
     }
-    .route-icon { font-size: 1.3rem; }
+    .route-icon { font-size: 1.25rem; }
     .top-baseurl-box {
       display: flex;
       align-items: center;
       gap: 6px;
-      background: rgba(15, 23, 42, 0.6);
+      background: #121215;
       border: 1px solid var(--border);
       padding: 3px 10px;
       border-radius: 6px;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
     }
     .top-baseurl-box code {
-      color: var(--primary);
-      font-family: monospace;
+      color: #ffffff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-weight: 500;
     }
     .baseurl-tag { color: var(--muted); }
     .top-bar-right {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       flex-wrap: wrap;
+    }
+
+    /* Dropdown Menu Styles (Minimalist Carbon) */
+    .dropdown-wrapper {
+      position: relative;
+      display: inline-flex;
+    }
+    .dropdown-arrow {
+      display: inline-block;
+      transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .dropdown-wrapper.open .dropdown-arrow {
+      transform: rotate(180deg);
+    }
+    .dropdown-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      background: #16161a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 10px 30px -5px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04);
+      z-index: 250;
+      min-width: 220px;
+      padding: 6px;
+      display: none;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+    .dropdown-menu.show {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      animation: dropdownFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes dropdownFadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .dropdown-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      color: var(--text);
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      transition: background 0.15s ease, color 0.15s ease;
+      font-family: inherit;
+    }
+    .dropdown-item:hover {
+      background: #27272a;
+      color: #ffffff;
+    }
+    .dropdown-item-icon {
+      font-size: 0.95rem;
+      flex-shrink: 0;
+      width: 18px;
+      text-align: center;
+    }
+    .dropdown-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 4px 0;
+    }
+
+    /* Status Pill Bar & Condensed Banner */
+    .banner, .status-capsule-bar {
+      background: rgba(18, 18, 21, 0.7);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 6px 14px;
+      margin-bottom: 1.25rem;
+      font-size: 0.82rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .capsule-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      border-radius: 9999px;
+      padding: 2px 10px;
+      font-size: 0.74rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .status-pill-active {
+      background: rgba(16, 185, 129, 0.08);
+      border-color: rgba(16, 185, 129, 0.25);
+      color: #34d399;
+    }
+    .status-dot-pulse {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
     }
 
     /* View Sections (SPA Transitions) */
     .view-section {
       display: none;
-      animation: fadeInView 0.18s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+      animation: fadeInView 0.16s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
     .view-section.active {
       display: block;
     }
     @keyframes fadeInView {
-      from { opacity: 0; transform: translateY(6px); }
+      from { opacity: 0; transform: translateY(4px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
@@ -4766,7 +4906,7 @@ function renderDashboardHtml(config) {
       left: 0;
       right: 0;
       height: 52px;
-      background: #0f172a;
+      background: #0c0c0e;
       border-bottom: 1px solid var(--border);
       padding: 0 12px;
       align-items: center;
@@ -4775,9 +4915,9 @@ function renderDashboardHtml(config) {
     }
     .hamburger-btn {
       background: transparent;
-      border: 1px solid #334155;
-      color: #f1f5f9;
-      font-size: 1.25rem;
+      border: 1px solid var(--border);
+      color: #f4f4f5;
+      font-size: 1.15rem;
       padding: 4px 10px;
       border-radius: 6px;
       cursor: pointer;
@@ -4787,72 +4927,112 @@ function renderDashboardHtml(config) {
       align-items: center;
       gap: 8px;
       font-weight: 700;
-      color: #f1f5f9;
-      font-size: 1rem;
+      color: #ffffff;
+      font-size: 0.95rem;
     }
-    .mobile-brand img { width: 28px; height: 28px; border-radius: 6px; }
+    .mobile-brand img { width: 26px; height: 26px; border-radius: 6px; }
     .sidebar-overlay {
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.65);
+      background: rgba(0, 0, 0, 0.7);
       z-index: 95;
-      backdrop-filter: blur(2px);
+      backdrop-filter: blur(4px);
     }
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1.25rem;
       border-bottom: 1px solid var(--border);
-      padding-bottom: 1.2rem;
+      padding-bottom: 1rem;
       flex-wrap: wrap;
       gap: 14px;
     }
     .title-group h1 {
       margin: 0;
-      font-size: 1.5rem;
-      color: var(--primary);
+      font-size: 1.35rem;
+      color: #ffffff;
       display: flex;
       align-items: center;
       gap: 10px;
+      letter-spacing: -0.01em;
     }
-    .title-group p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
+    .title-group p { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
     .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .btn {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: var(--primary);
-      color: #04101c;
-      border: 1px solid transparent;
-      padding: 8px 16px;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
-      font-size: 0.88rem;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      user-select: none;
-    }
-    .btn:hover { background: var(--primary-hover); color: #fff; transform: translateY(-1px); }
-    .btn:active { transform: translateY(0); }
-    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
-    .btn-secondary {
-      background: #1e293b;
+      background: #18181b;
       color: var(--text);
-      border-color: #334155;
+      border: 1px solid var(--border);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      font-size: 0.82rem;
+      transition: all 0.15s ease;
+      user-select: none;
+      font-family: inherit;
     }
-    .btn-secondary:hover { background: #334155; border-color: #475569; color: #fff; }
-    .btn-success { background: #065f46; color: #34d399; border-color: #059669; }
-    .btn-success:hover { background: #047857; color: #fff; }
-    .btn-danger { background: #7f1d1d; color: #fca5a5; border-color: #991b1b; }
-    .btn-danger:hover { background: #991b1b; color: #fff; }
-    .btn-sm { padding: 4px 10px; font-size: 0.8rem; border-radius: 6px; }
+    .btn:hover {
+      background: #27272a;
+      border-color: var(--border-hover);
+      color: #ffffff;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary {
+      background: #f4f4f5;
+      color: #09090b;
+      border-color: #f4f4f5;
+      font-weight: 600;
+    }
+    .btn-primary:hover {
+      background: #ffffff;
+      border-color: #ffffff;
+      color: #000000;
+      box-shadow: 0 1px 8px rgba(255, 255, 255, 0.15);
+    }
+    .btn-secondary {
+      background: #18181b;
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .btn-secondary:hover {
+      background: #27272a;
+      border-color: var(--border-hover);
+      color: #ffffff;
+    }
+    .btn-success {
+      background: #064e3b;
+      color: #34d399;
+      border-color: #059669;
+    }
+    .btn-success:hover {
+      background: #047857;
+      color: #ffffff;
+    }
+    .btn-danger {
+      background: #450a0a;
+      color: #fca5a5;
+      border-color: #7f1d1d;
+    }
+    .btn-danger:hover {
+      background: #7f1d1d;
+      color: #ffffff;
+    }
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      border-radius: 6px;
+    }
 
     /* Foolproof Save Dirty State & Micro-interactions */
     .btn-save-dirty {
       background: linear-gradient(135deg, #0284c7 0%, #10b981 100%) !important;
-      color: #fff !important;
+      color: #ffffff !important;
       border-color: rgba(255, 255, 255, 0.4) !important;
       animation: pulseSaveGlow 1.8s infinite ease-in-out;
     }
@@ -4863,46 +5043,50 @@ function renderDashboardHtml(config) {
 
     /* Wizard Hero Button */
     .btn-wizard {
-      background: linear-gradient(135deg, #0284c7 0%, #10b981 100%);
-      color: #ffffff;
-      padding: 10px 22px;
-      font-size: 1rem;
-      border-radius: 9px;
-      font-weight: 700;
-      border: 1px solid rgba(255,255,255,0.25);
-      box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+      background: #18181b;
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      padding: 8px 18px;
+      font-size: 0.92rem;
+      border-radius: 8px;
+      font-weight: 600;
+      transition: all 0.2s ease;
     }
     .btn-wizard:hover {
-      background: linear-gradient(135deg, #0369a1 0%, #059669 100%);
-      box-shadow: 0 0 24px rgba(16, 185, 129, 0.55);
-      color: #fff;
+      background: rgba(56, 189, 248, 0.1);
+      border-color: #38bdf8;
+      color: #ffffff;
+      box-shadow: 0 0 14px rgba(56, 189, 248, 0.25);
     }
 
     .card {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 10px;
       padding: 1.25rem;
-      margin-bottom: 1.5rem;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
-      transition: border-color 0.2s;
+      margin-bottom: 1.25rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .card:hover { border-color: #475569; }
+    .card:hover {
+      border-color: var(--border-hover);
+    }
     .wizard-card {
-      background: linear-gradient(135deg, #131d2e 0%, #0f172a 100%);
-      border: 1px solid rgba(56, 189, 248, 0.35);
-      box-shadow: 0 4px 20px rgba(0,0,0,0.35), 0 0 15px rgba(56, 189, 248, 0.08);
+      background: #121215;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.5);
     }
     .section-title {
-      font-size: 1.15rem;
+      font-size: 1.05rem;
       font-weight: 600;
-      margin: 0 0 0.9rem;
-      color: #e2e8f0;
+      margin: 0 0 0.85rem;
+      color: #ffffff;
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
       gap: 10px;
+      letter-spacing: -0.01em;
     }
     .section-title-left {
       display: flex;
@@ -4911,55 +5095,55 @@ function renderDashboardHtml(config) {
       flex-wrap: wrap;
     }
     .collapse-toggle {
-      font-size: 0.75rem;
+      font-size: 0.74rem;
       color: var(--muted);
       cursor: pointer;
       padding: 2px 8px;
       border-radius: 4px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
       user-select: none;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
     }
-    .collapse-toggle:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+    .collapse-toggle:hover { color: #ffffff; background: #27272a; border-color: var(--border-hover); }
     .badge {
-      padding: 3px 9px;
+      padding: 2px 8px;
       border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
+      font-size: 0.72rem;
+      font-weight: 500;
       display: inline-flex;
       align-items: center;
       gap: 4px;
       white-space: nowrap;
       flex-shrink: 0;
     }
-    .badge-healthy { background: #064e3b; color: var(--success); border: 1px solid #059669; }
-    .badge-cooling { background: #7f1d1d; color: var(--danger); border: 1px solid #dc2626; }
-    .badge-disabled { background: #374151; color: var(--muted); border: 1px solid #4b5563; }
+    .badge-healthy { background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.25); }
+    .badge-cooling { background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); }
+    .badge-disabled { background: rgba(113, 113, 122, 0.1); color: #a1a1aa; border: 1px solid rgba(113, 113, 122, 0.25); }
 
-    /* Plain Tip Box */
+    /* Plain Tip Box (Minimalist Carbon refinement) */
     .plain-tip-box {
-      font-size: 0.8rem;
-      color: #94a3b8;
-      background: rgba(15, 23, 42, 0.6);
-      padding: 8px 12px;
+      font-size: 0.78rem;
+      color: #a1a1aa;
+      background: #101014;
+      padding: 7px 12px;
       border-radius: 6px;
-      border: 1px solid #334155;
+      border: 1px solid var(--border);
       margin-bottom: 12px;
       line-height: 1.45;
     }
+    .plain-tip-box strong { color: #f4f4f5; }
 
     /* Wizard Grid */
     .wizard-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
-      margin-top: 14px;
+      margin-top: 12px;
     }
     .wizard-step {
-      background: #0f172a;
-      border: 1px solid #334155;
+      background: #16161a;
+      border: 1px solid var(--border);
       border-radius: 8px;
       padding: 12px;
       display: flex;
@@ -4967,13 +5151,14 @@ function renderDashboardHtml(config) {
       gap: 6px;
       transition: border-color 0.2s;
     }
-    .wizard-step:hover { border-color: var(--primary); }
+    .wizard-step:hover { border-color: var(--border-hover); }
     .wizard-step-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-weight: 600;
-      font-size: 0.88rem;
+      font-size: 0.86rem;
+      color: #ffffff;
     }
 
     /* Accounts & Forms */
@@ -4983,14 +5168,14 @@ function renderDashboardHtml(config) {
       gap: 1.25rem;
     }
     .account-card {
-      background: #151f32;
-      border: 1px solid #334155;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
       border-radius: 10px;
       padding: 1.2rem;
       position: relative;
       transition: border-color 0.2s;
     }
-    .account-card:hover { border-color: var(--primary); }
+    .account-card:hover { border-color: var(--border-hover); }
     .acc-header {
       display: flex;
       justify-content: space-between;
@@ -5000,7 +5185,7 @@ function renderDashboardHtml(config) {
     .acc-title-input {
       background: transparent;
       border: 1px dashed transparent;
-      color: var(--text);
+      color: #ffffff;
       font-size: 1.05rem;
       font-weight: 600;
       padding: 4px 6px;
@@ -5008,13 +5193,13 @@ function renderDashboardHtml(config) {
       width: 60%;
     }
     .acc-title-input:focus, .acc-title-input:hover {
-      border-color: #475569;
-      background: #0f172a;
+      border-color: var(--border-hover);
+      background: #09090b;
     }
     .form-group { margin-bottom: 0.9rem; }
     .form-group label {
       display: block;
-      font-size: 0.82rem;
+      font-size: 0.8rem;
       color: var(--muted);
       margin-bottom: 4px;
       font-weight: 500;
@@ -5022,38 +5207,39 @@ function renderDashboardHtml(config) {
     .input-wrapper { display: flex; gap: 6px; position: relative; }
     .form-control {
       flex: 1;
-      background: #0b1120;
-      border: 1px solid #334155;
-      color: #e2e8f0;
-      padding: 8px 12px;
+      background: #09090b;
+      border: 1px solid var(--border);
+      color: #f4f4f5;
+      padding: 7px 10px;
       border-radius: 6px;
-      font-size: 0.9rem;
+      font-size: 0.86rem;
       font-family: inherit;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
     .form-control:focus {
       outline: none;
-      border-color: var(--primary);
-      box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 1px #38bdf8;
     }
     .toggle-eye {
-      background: #1e293b;
-      border: 1px solid #334155;
+      background: #18181b;
+      border: 1px solid var(--border);
       color: var(--muted);
       padding: 0 10px;
       border-radius: 6px;
       cursor: pointer;
     }
-    .toggle-eye:hover { color: var(--text); }
+    .toggle-eye:hover { color: var(--text); background: #27272a; }
     .acc-metrics {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
-      background: #0b1120;
-      padding: 10px;
-      border-radius: 8px;
+      background: #09090b;
+      border: 1px solid var(--border-subtle);
+      padding: 10px 12px;
+      border-radius: 6px;
       margin: 1rem 0;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
     }
     .metric-item { display: flex; justify-content: space-between; }
     .metric-label { color: var(--muted); }
@@ -5089,11 +5275,11 @@ function renderDashboardHtml(config) {
       align-items: center;
       flex-wrap: wrap;
       gap: 12px;
-      background: #0f172a;
-      border: 1px solid #334155;
-      padding: 12px 16px;
+      background: #16161a;
+      border: 1px solid var(--border);
+      padding: 10px 14px;
       border-radius: 8px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
     .comp-presets-wrapper {
       display: flex;
@@ -5109,66 +5295,66 @@ function renderDashboardHtml(config) {
       flex-wrap: wrap;
     }
     .preset-btn {
-      background: #1e293b;
-      border: 1px solid #475569;
-      color: #cbd5e1;
+      background: #121215;
+      border: 1px solid var(--border);
+      color: #a1a1aa;
       padding: 4px 10px;
-      border-radius: 20px;
+      border-radius: 6px;
       font-size: 0.78rem;
       cursor: pointer;
       font-weight: 500;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
     }
-    .preset-btn:hover { background: #334155; color: #fff; border-color: var(--primary); }
+    .preset-btn:hover { background: #27272a; color: #fff; border-color: var(--border-hover); }
     .preset-btn.active {
-      background: var(--primary);
-      color: #04101c;
-      border-color: var(--primary);
+      background: #27272a;
+      color: #ffffff;
+      border-color: #3f3f46;
       font-weight: 600;
-      box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+      box-shadow: 0 0 0 1px #52525b;
     }
     .preset-desc-card {
       margin-top: 10px;
       padding: 10px 14px;
-      background: rgba(15, 23, 42, 0.75);
-      border: 1px solid rgba(56, 189, 248, 0.2);
+      background: #121215;
+      border: 1px solid var(--border);
       border-radius: 8px;
       font-size: 0.8rem;
       line-height: 1.5;
-      color: #94a3b8;
+      color: #a1a1aa;
       width: 100%;
     }
     .comp-range-group {
       display: inline-flex;
       align-items: center;
-      background: #0b1329;
-      border: 1px solid #334155;
-      border-radius: 20px;
-      padding: 3px;
-      gap: 3px;
+      background: #121215;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
     }
     .comp-range-btn, .time-range-pill {
       background: transparent;
       border: 1px solid transparent;
-      color: #94a3b8;
+      color: #a1a1aa;
       padding: 4px 11px;
-      border-radius: 16px;
+      border-radius: 4px;
       font-size: 0.76rem;
       cursor: pointer;
       font-weight: 500;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: all 0.15s ease;
       white-space: nowrap;
     }
     .comp-range-btn:hover, .time-range-pill:hover {
       color: #f1f5f9;
-      background: rgba(255, 255, 255, 0.06);
+      background: rgba(255, 255, 255, 0.05);
     }
     .comp-range-btn.active, .time-range-pill.active {
-      background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(52, 211, 153, 0.22));
+      background: #27272a;
       color: #38bdf8;
-      border-color: rgba(56, 189, 248, 0.45);
+      border-color: rgba(56, 189, 248, 0.4);
       font-weight: 600;
-      box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.2);
     }
     .comp-metrics-dashboard {
       display: grid;
@@ -5177,33 +5363,34 @@ function renderDashboardHtml(config) {
       margin-bottom: 16px;
     }
     .comp-metric-card {
-      background: #151f32;
-      border: 1px solid #334155;
-      border-radius: 10px;
+      background: #16161a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 12px 14px;
       position: relative;
       overflow: hidden;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
       transition: border-color 0.2s, transform 0.2s;
     }
-    .comp-metric-card:hover { border-color: #475569; transform: translateY(-1px); }
+    .comp-metric-card:hover { border-color: var(--border-hover); }
     .comp-metric-label { font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
-    .comp-metric-val { font-size: 1.3rem; font-weight: 700; color: var(--primary); line-height: 1.2; }
-    .comp-metric-sub { font-size: 0.72rem; color: #64748b; margin-top: 4px; }
-    .by-model-table tr:hover { background: rgba(255, 255, 255, 0.03); }
+    .comp-metric-val { font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1.2; letter-spacing: -0.02em; }
+    .comp-metric-sub { font-size: 0.72rem; color: #71717a; margin-top: 4px; }
+    .by-model-table tr:hover { background: rgba(255, 255, 255, 0.02); }
     .comp-modules-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
       gap: 1.25rem;
     }
     .comp-module-card {
-      background: #151f32;
-      border: 1px solid #334155;
-      border-radius: 10px;
+      background: #121215;
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 1.2rem;
-      transition: all 0.25s ease;
+      transition: all 0.2s ease;
       position: relative;
     }
+    .comp-module-card:hover { border-color: var(--border-hover); }
     .comp-module-header {
       display: flex;
       justify-content: space-between;
@@ -5211,19 +5398,19 @@ function renderDashboardHtml(config) {
       gap: 10px;
       margin-bottom: 8px;
       padding-bottom: 8px;
-      border-bottom: 1px solid #1e293b;
+      border-bottom: 1px solid var(--border-subtle);
     }
-    .comp-main-switch-label { font-weight: 600; color: #f1f5f9; font-size: 0.92rem; }
+    .comp-main-switch-label { font-weight: 600; color: #ffffff; font-size: 0.92rem; }
     .comp-module-desc { font-size: 0.76rem; color: var(--muted); margin-bottom: 12px; line-height: 1.4; }
     .comp-module-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; text-align: right; }
     .comp-module-contrib { display: flex; flex-direction: column; align-items: flex-end; }
-    .contrib-text { font-size: 0.72rem; color: #94a3b8; white-space: nowrap; }
-    .comp-progress-bar { width: 90px; height: 4px; background: #1e293b; border-radius: 2px; overflow: hidden; margin-top: 3px; }
-    .comp-progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #34d399); border-radius: 2px; transition: width 0.4s ease; }
+    .contrib-text { font-size: 0.72rem; color: #a1a1aa; white-space: nowrap; }
+    .comp-progress-bar { width: 90px; height: 6px; background: #18181b; border: 1px solid #27272a; border-radius: 9999px; overflow: hidden; margin-top: 3px; }
+    .comp-progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #34d399); border-radius: 9999px; box-shadow: 0 0 6px rgba(56, 189, 248, 0.4); transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
     .comp-module-body { display: flex; flex-direction: column; gap: 9px; transition: opacity 0.25s, filter 0.25s; }
     .comp-sub-item { padding: 4px 0; }
-    .sub-tip { font-size: 0.73rem; color: #64748b; margin-left: 22px; line-height: 1.3; }
-    .comp-module-card.module-disabled { border-color: #1e293b; background: #0f172a; }
+    .sub-tip { font-size: 0.73rem; color: #71717a; margin-left: 22px; line-height: 1.35; }
+    .comp-module-card.module-disabled { border-color: #1f1f23; background: #0c0c0e; }
     .comp-module-card.module-disabled .comp-module-body { opacity: 0.42; pointer-events: none; filter: grayscale(80%); }
     .comp-module-card.module-disabled .comp-module-desc { opacity: 0.5; }
     .comp-module-card.module-disabled .comp-module-contrib { opacity: 0.4; }
@@ -5237,49 +5424,47 @@ function renderDashboardHtml(config) {
 
     /* Compression Time-Series Chart Styles */
     .comp-chart-card {
-      background: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 12px;
+      background: #121215;
+      border: 1px solid var(--border);
+      border-radius: 10px;
       padding: 14px 16px;
       margin-bottom: 18px;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.5);
       position: relative;
       transition: border-color 0.2s;
     }
-    .comp-chart-card:hover { border-color: #475569; }
+    .comp-chart-card:hover { border-color: var(--border-hover); }
     .chart-btn-group {
       display: inline-flex;
-      background: #1e293b;
+      background: #09090b;
       padding: 2px;
       border-radius: 6px;
-      border: 1px solid #334155;
+      border: 1px solid var(--border);
     }
     .chart-pill-btn {
       background: transparent;
       border: none;
-      color: #94a3b8;
+      color: #a1a1aa;
       padding: 3px 9px;
       font-size: 0.72rem;
-      border-radius: 5px;
+      border-radius: 4px;
       cursor: pointer;
       font-weight: 500;
       transition: all 0.15s ease;
       white-space: nowrap;
     }
-    .chart-pill-btn:hover { color: #f1f5f9; background: rgba(255, 255, 255, 0.05); }
+    .chart-pill-btn:hover { color: #ffffff; background: rgba(255, 255, 255, 0.05); }
     .chart-pill-btn.active {
-      background: linear-gradient(135deg, rgba(249, 115, 22, 0.25), rgba(234, 179, 8, 0.25));
+      background: #27272a;
       color: #fb923c;
       font-weight: 600;
-      border: 1px solid rgba(249, 115, 22, 0.45);
-      box-shadow: 0 0 8px rgba(249, 115, 22, 0.25);
+      border: 1px solid rgba(249, 115, 22, 0.4);
     }
     .chart-metric-btn.active {
-      background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(52, 211, 153, 0.22));
+      background: #27272a;
       color: #38bdf8;
       font-weight: 600;
-      border: 1px solid rgba(56, 189, 248, 0.45);
-      box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+      border: 1px solid rgba(56, 189, 248, 0.4);
     }
     .chart-svg-root {
       width: 100%;
@@ -5301,41 +5486,27 @@ function renderDashboardHtml(config) {
       position: fixed;
       bottom: 2rem;
       right: 2rem;
-      background: #065f46;
-      color: #fff;
-      padding: 12px 20px;
+      background: #16161a;
+      color: #f4f4f5;
+      padding: 10px 18px;
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.8);
       display: none;
       z-index: 1000;
-      font-size: 0.95rem;
-      font-weight: 600;
-      border: 1px solid #34d399;
+      font-size: 0.88rem;
+      font-weight: 500;
+      border: 1px solid var(--border);
       animation: toastIn 0.2s ease forwards;
     }
     @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* Top Banner */
-    .banner {
-      background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(59, 130, 246, 0.05));
-      border: 1px solid rgba(56, 189, 248, 0.3);
-      padding: 1rem;
-      border-radius: 10px;
-      margin-bottom: 1.5rem;
-      font-size: 0.9rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
     .doctor-box {
-      background: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 1rem;
+      background: #121215;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.9rem;
       margin-top: 0.8rem;
-      font-size: 0.88rem;
+      font-size: 0.86rem;
     }
     .issue-item {
       display: flex;
@@ -5344,18 +5515,19 @@ function renderDashboardHtml(config) {
       padding: 8px 12px;
       margin-bottom: 6px;
       border-radius: 6px;
-      background: #1e293b;
+      background: #16161a;
+      border: 1px solid var(--border-subtle);
     }
-    .issue-high { border-left: 4px solid var(--danger); }
-    .issue-medium { border-left: 4px solid var(--warning); }
-    .issue-low { border-left: 4px solid var(--primary); }
+    .issue-high { border-left: 3px solid var(--danger); }
+    .issue-medium { border-left: 3px solid var(--warning); }
+    .issue-low { border-left: 3px solid var(--primary); }
 
     /* Quota */
     .quota-box {
-      background: #0f172a;
-      border: 1px solid #334155;
+      background: #0d0d10;
+      border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 10px 12px;
+      padding: 10px 14px;
       margin: 12px 0 10px;
       font-size: 0.8rem;
     }
@@ -5365,30 +5537,30 @@ function renderDashboardHtml(config) {
       align-items: center;
       margin-bottom: 8px;
       padding-bottom: 4px;
-      border-bottom: 1px solid #1e293b;
+      border-bottom: 1px solid var(--border-subtle);
       font-weight: 600;
-      color: #cbd5e1;
+      color: #ffffff;
     }
-    .quota-row { margin-bottom: 7px; }
+    .quota-row { margin-bottom: 8px; }
     .quota-row:last-child { margin-bottom: 0; }
     .quota-row-top { display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; margin-bottom: 3px; }
-    .quota-label { color: #94a3b8; display: flex; align-items: center; gap: 4px; }
-    .quota-value { font-weight: 700; }
-    .quota-bar-track { width: 100%; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; margin-bottom: 2px; }
-    .quota-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
-    .quota-bar-ok { background: linear-gradient(90deg, #10b981, #34d399); }
-    .quota-bar-warn { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-    .quota-bar-danger { background: linear-gradient(90deg, #ef4444, #f87171); }
-    .quota-reset-text { font-size: 0.72rem; color: #64748b; text-align: right; }
+    .quota-label { color: #a1a1aa; display: flex; align-items: center; gap: 4px; }
+    .quota-value { font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .quota-bar-track { width: 100%; height: 7px; background: #18181b; border: 1px solid #27272a; border-radius: 9999px; overflow: hidden; margin-bottom: 4px; }
+    .quota-bar-fill { height: 100%; border-radius: 9999px; transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+    .quota-bar-ok { background: linear-gradient(90deg, #059669, #10b981); box-shadow: 0 0 6px rgba(16, 185, 129, 0.4); }
+    .quota-bar-warn { background: linear-gradient(90deg, #d97706, #f59e0b); box-shadow: 0 0 6px rgba(245, 158, 11, 0.4); }
+    .quota-bar-danger { background: linear-gradient(90deg, #dc2626, #ef4444); box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
+    .quota-reset-text { font-size: 0.72rem; color: #71717a; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     .quota-ctrl-bar {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: var(--muted);
-      background: #0b1120;
-      border: 1px solid #334155;
-      padding: 3px 10px;
+      background: #09090b;
+      border: 1px solid var(--border);
+      padding: 3px 8px;
       border-radius: 6px;
     }
     .quota-countdown-badge {
@@ -5396,29 +5568,29 @@ function renderDashboardHtml(config) {
       cursor: pointer;
       font-weight: 600;
       color: var(--primary);
-      font-size: 0.78rem;
-      padding: 2px 8px;
+      font-size: 0.76rem;
+      padding: 1px 6px;
       border-radius: 4px;
       background: rgba(56, 189, 248, 0.1);
       border: 1px solid rgba(56, 189, 248, 0.3);
-      transition: all 0.2s ease;
+      transition: all 0.15s ease;
       user-select: none;
     }
     .quota-countdown-badge:hover { background: rgba(56, 189, 248, 0.2); color: #fff; }
-    .quota-time-tag { font-size: 0.72rem; color: #64748b; margin-left: 6px; font-weight: normal; }
+    .quota-time-tag { font-size: 0.72rem; color: #71717a; margin-left: 6px; font-weight: normal; }
 
     /* Updates Table */
-    .update-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem; }
-    .update-table th, .update-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #334155; }
-    .update-table th { color: #94a3b8; font-weight: 600; background: #1e293b; }
-    .badge-update { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-    .badge-ok { background: rgba(52, 211, 153, 0.2); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.4); }
-    .badge-warn { background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); }
-    .badge-danger { background: rgba(248, 113, 113, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.4); }
-    .alert-box { border-radius: 6px; padding: 10px 14px; margin-top: 10px; font-size: 0.85rem; line-height: 1.5; }
-    .alert-box-warn { background: rgba(251, 191, 36, 0.1); border: 1px solid #fbbf24; color: #fef08a; }
-    .alert-box-danger { background: rgba(248, 113, 113, 0.1); border: 1px solid #f87171; color: #fecaca; }
-    .alert-box-success { background: rgba(52, 211, 153, 0.1); border: 1px solid #34d399; color: #a7f3d0; }
+    .update-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.82rem; }
+    .update-table th, .update-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border-subtle); }
+    .update-table th { color: #a1a1aa; font-weight: 600; background: #16161a; }
+    .badge-update { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    .badge-ok { background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-warn { background: rgba(245, 158, 11, 0.1); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-danger { background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .alert-box { border-radius: 6px; padding: 10px 14px; margin-top: 10px; font-size: 0.82rem; line-height: 1.5; }
+    .alert-box-warn { background: rgba(245, 158, 11, 0.08); border: 1px solid #f59e0b; color: #fef08a; }
+    .alert-box-danger { background: rgba(239, 68, 68, 0.08); border: 1px solid #ef4444; color: #fecaca; }
+    .alert-box-success { background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; color: #a7f3d0; }
 
     /* Responsive */
     @media (max-width: 768px) {
@@ -5426,7 +5598,7 @@ function renderDashboardHtml(config) {
       .app-sidebar {
         left: -270px;
         width: 260px;
-        box-shadow: 4px 0 24px rgba(0,0,0,0.6);
+        box-shadow: 4px 0 24px rgba(0,0,0,0.8);
       }
       .app-sidebar.drawer-open {
         left: 0;
@@ -5448,14 +5620,27 @@ function renderDashboardHtml(config) {
         gap: 6px;
       }
       .top-bar-right .btn {
-        flex: 1 1 calc(50% - 6px);
+        flex: 1 1 auto;
         justify-content: center;
+      }
+      .dropdown-wrapper {
+        width: 100%;
+      }
+      .dropdown-wrapper .btn {
+        width: 100%;
+        justify-content: center;
+      }
+      .dropdown-menu {
+        left: 0;
+        right: 0;
+        width: 100%;
+        min-width: unset;
       }
       .accounts-grid, .comp-modules-grid, .config-grid, .wizard-grid {
         grid-template-columns: 1fr;
       }
       .acc-title-input { width: 85%; }
-      .banner { flex-direction: column; align-items: flex-start; }
+      .banner, .status-capsule-bar { flex-direction: column; align-items: flex-start; }
     }
     @media (max-width: 420px) {
       .top-bar-right .btn { flex: 1 1 100%; }
@@ -5563,28 +5748,52 @@ function renderDashboardHtml(config) {
           </div>
           <div class="top-bar-right header-actions">
             <button id="btn-save-config" class="btn btn-primary btn-sm" onclick="saveConfig()" title="立即将当前账号与系统修改写入磁盘保存">💾 保存配置</button>
-            <button class="btn btn-primary btn-sm" style="background:#0284c7; border-color:#0369a1;" onclick="bindDesktopClients()" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">⚡ 应用至 OpenCode/OpenChamber</button>
-            <button class="btn btn-secondary btn-sm" onclick="refreshAllQuotas(false, true)" title="从官方实时穿透刷新 5小时/周/月限额">📊 刷新配额</button>
-            <button class="btn btn-secondary btn-sm" onclick="checkUpdates()" title="在线检测生态各组件最新版本与兼容性状态">📦 检查更新</button>
-            <button class="btn btn-secondary btn-sm" onclick="runDoctorCheck('system')" title="全面扫描系统运行环境与后台死锁状态">🩺 一键体检</button>
-            <button class="btn btn-secondary btn-sm" onclick="bindCodexQuick()" title="一键将本地网关锁定为 OpenAI Codex 默认配置">🤖 接入 Codex</button>
-            <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank')" class="btn btn-secondary btn-sm" style="color:var(--primary); text-decoration:none;" title="打开 OpenChamber 工作台">💻 OpenChamber ↗</a>
+            <button id="btn-refresh-quotas" class="btn btn-secondary btn-sm" onclick="refreshAllQuotas(false, true)" title="从官方实时穿透刷新 5小时/周/月限额与账号状态">🔄 刷新配额/状态</button>
+            <div class="dropdown-wrapper" id="top-quick-actions-dropdown">
+              <button type="button" class="btn btn-secondary btn-sm dropdown-trigger" id="btn-quick-actions" onclick="toggleQuickActionsMenu(event)" aria-haspopup="true" aria-expanded="false" title="更多快捷工具与接入操作">
+                🚀 快捷操作 <span class="dropdown-arrow" style="font-size:0.7rem; margin-left:2px;">▾</span>
+              </button>
+              <div class="dropdown-menu" id="quick-actions-menu">
+                <button type="button" class="dropdown-item" onclick="bindDesktopClients(); closeQuickActionsMenu();" title="一键将本地网关锁定为 OpenCode 和 OpenChamber 的默认首选模型">
+                  <span class="dropdown-item-icon">⚡</span>
+                  <span>应用至 OpenCode/OpenChamber</span>
+                </button>
+                <button type="button" class="dropdown-item" onclick="bindCodexQuick(); closeQuickActionsMenu();" title="一键将本地网关锁定为 OpenAI Codex 默认配置">
+                  <span class="dropdown-item-icon">🤖</span>
+                  <span>接入 Codex</span>
+                </button>
+                <button type="button" class="dropdown-item" onclick="runDoctorCheck('system'); closeQuickActionsMenu();" title="全面扫描系统运行环境与后台死锁状态">
+                  <span class="dropdown-item-icon">🩺</span>
+                  <span>一键体检</span>
+                </button>
+                <button type="button" class="dropdown-item" onclick="checkUpdates(); closeQuickActionsMenu();" title="在线检测生态各组件最新版本与兼容性状态">
+                  <span class="dropdown-item-icon">📦</span>
+                  <span>检查更新</span>
+                </button>
+                <div class="dropdown-divider"></div>
+                <a href="javascript:void(0)" onclick="window.open('http://' + (window.location.hostname || '127.0.0.1') + ':3000', '_blank'); closeQuickActionsMenu();" class="dropdown-item" style="color:var(--primary); text-decoration:none;" title="打开 OpenChamber 工作台">
+                  <span class="dropdown-item-icon">💻</span>
+                  <span>OpenChamber ↗</span>
+                </a>
+              </div>
+            </div>
           </div>
         </header>
 
         <!-- View Section 1: Overview (#/overview) -->
         <section class="view-section active" id="view-overview">
-          <div class="banner">
-            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; width:100%;">
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span class="pulse-dot" style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#34d399; box-shadow: 0 0 8px #34d399;"></span>
-                <span style="font-size:0.9rem;"><strong>💡 本地服务运作中 (Running):</strong> 支持会话亲和性、429 限频秒级自动漂移与重试。</span>
-              </div>
-              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <span class="badge badge-healthy" style="font-size:0.72rem;">🟢 429 秒级故障转移</span>
-                <span class="badge badge-healthy" style="font-size:0.72rem;">🔒 会话亲和性 (KV Cache)</span>
-                <span class="badge badge-healthy" style="font-size:0.72rem;">⚡ 5 大 Token 优化引擎</span>
-              </div>
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span>本地服务运作中 (127.0.0.1:${config.port})</span>
+              </span>
+              <span class="status-pill">🟢 429 秒级故障转移</span>
+              <span class="status-pill">🔒 会话亲和性 (KV Cache)</span>
+              <span class="status-pill">⚡ 5 大 Token 优化引擎</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:0.75rem; color:var(--muted);">多账号自动负载均衡 &amp; 无感漂移</span>
             </div>
           </div>
 
@@ -5638,7 +5847,7 @@ function renderDashboardHtml(config) {
               </div>
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <!-- 时间段切换 -->
-                <div class="time-range-group" style="display: flex; background: rgba(15,23,42,0.8); border: 1px solid #334155; border-radius: 8px; padding: 2px; gap: 2px;">
+                <div class="time-range-group" style="display: flex; background: #121215; border: 1px solid #27272a; border-radius: 6px; padding: 2px; gap: 2px;">
                   <button type="button" class="time-range-pill" data-range="1h" onclick="switchTimeRange('1h')">1小时</button>
                   <button type="button" class="time-range-pill" data-range="24h" onclick="switchTimeRange('24h')">24小时</button>
                   <button type="button" class="time-range-pill" data-range="7d" onclick="switchTimeRange('7d')">7天</button>
@@ -5664,7 +5873,7 @@ function renderDashboardHtml(config) {
             <div id="overview-chart-viewport" style="width: 100%; height: 210px; position: relative;"></div>
 
             <!-- 交互悬浮 Tooltip 气泡 -->
-            <div id="overview-chart-tooltip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: rgba(15, 23, 42, 0.94); backdrop-filter: blur(8px); border: 1px solid #475569; border-radius: 8px; padding: 8px 12px; font-size: 0.75rem; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.6); transition: opacity 0.1s ease; min-width: 160px;"></div>
+            <div id="overview-chart-tooltip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: rgba(18, 18, 21, 0.96); backdrop-filter: blur(12px); border: 1px solid #27272a; border-radius: 8px; padding: 8px 12px; font-size: 0.75rem; color: #f4f4f5; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04); transition: opacity 0.1s ease; min-width: 160px;"></div>
 
             <!-- 图例区 -->
             <div id="overview-chart-legends" style="display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; font-size: 0.75rem; color: #94a3b8;"></div>
@@ -5739,6 +5948,20 @@ function renderDashboardHtml(config) {
 
         <!-- View Section 2: Token Compression (#/compression) -->
         <section class="view-section" id="view-compression">
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span id="capsule-comp-status">${(compCfg.enabled === false) ? '总开关已关闭' : '5 大压缩引擎全就绪'}</span>
+              </span>
+              <span class="status-pill">🔒 KV Cache 字典序锁定</span>
+              <span class="status-pill">🛡️ 源码与堆栈绝对保真</span>
+              <span class="status-pill">📊 双语动态 Token 测算</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:0.75rem; color:var(--muted);">无损清洗日志与测试刷屏 · 节约 15%~30%</span>
+            </div>
+          </div>
 <!-- 上下文优化与 Token 压缩配置 (Context Compression v3.1.0) -->
     <div class="card ${(compCfg.enabled === false) ? 'comp-master-disabled' : ''}" id="compression-card">
       <div class="section-title">
@@ -5895,7 +6118,7 @@ function renderDashboardHtml(config) {
           </div>
 
           <!-- 交互悬浮 Tooltip 气泡 -->
-          <div id="comp-chart-tooltip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: rgba(15, 23, 42, 0.94); backdrop-filter: blur(8px); border: 1px solid #475569; border-radius: 8px; padding: 8px 12px; font-size: 0.75rem; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.6); transition: opacity 0.1s ease; min-width: 160px;">
+          <div id="comp-chart-tooltip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: rgba(18, 18, 21, 0.96); backdrop-filter: blur(12px); border: 1px solid #27272a; border-radius: 8px; padding: 8px 12px; font-size: 0.75rem; color: #f4f4f5; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04); transition: opacity 0.1s ease; min-width: 160px;">
           </div>
 
           <!-- 图例区 -->
@@ -5908,8 +6131,8 @@ function renderDashboardHtml(config) {
         </div>
 
         <!-- 📊 分模型节约明细抽屉面板 (By Model Breakdown Drawer) -->
-        <div id="by-model-breakdown-drawer" style="display: none; background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #1e293b; padding-bottom: 8px;">
+        <div id="by-model-breakdown-drawer" style="display: none; background: #121215; border: 1px solid #27272a; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #222226; padding-bottom: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 0.92rem; font-weight: 600; color: #f1f5f9;">📊 分模型节约明细 (By Model Breakdown)</span>
               <span id="by-model-count-badge" style="font-size: 0.72rem; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(56,189,248,0.3);">0 款模型</span>
@@ -5919,7 +6142,7 @@ function renderDashboardHtml(config) {
           <div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
             <table class="by-model-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left; min-width: 520px;">
               <thead>
-                <tr style="color: #94a3b8; border-bottom: 1px solid #334155;">
+                <tr style="color: #a1a1aa; border-bottom: 1px solid #27272a;">
                   <th style="padding: 8px 10px;">模型名称 (Model)</th>
                   <th style="padding: 8px 10px; text-align: right;">已处理原字符</th>
                   <th style="padding: 8px 10px; text-align: right;">节约 Tokens</th>
@@ -5928,7 +6151,7 @@ function renderDashboardHtml(config) {
                 </tr>
               </thead>
               <tbody id="by-model-table-body">
-                <tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>
+                <tr><td colspan="5" style="text-align: center; color: #71717a; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>
               </tbody>
             </table>
           </div>
@@ -6225,6 +6448,20 @@ function renderDashboardHtml(config) {
 
         <!-- View Section 3: Clients & Model Dispatch (#/clients) -->
         <section class="view-section" id="view-clients">
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span>38 款全量模型已就绪</span>
+              </span>
+              <span class="status-pill">🔄 Responses 协议桥</span>
+              <span class="status-pill">⏱️ 5 分钟超时与断流自愈</span>
+              <span class="status-pill">💻 OpenChamber / OpenCode 原生支持</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:0.75rem; color:var(--muted);">支持任意 OpenAI API 兼容客户端无缝接驳</span>
+            </div>
+          </div>
 <!-- OpenAI Codex CLI 智能接入与全量模型调度卡片 -->
     <div class="card" id="codex-card">
       <div class="section-title">
@@ -6248,13 +6485,13 @@ function renderDashboardHtml(config) {
         <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; align-items:flex-end;">
           <div class="form-group" style="flex:1; min-width:280px; margin-bottom:0;">
             <label>首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)</label>
-            <select id="codex-model-select" class="form-control" style="background:#0b1120;">
+            <select id="codex-model-select" class="form-control" style="background:#09090b; border-color:#27272a;">
               <!-- 动态生成 38 款模型 -->
             </select>
           </div>
           <div class="form-group" style="width:200px; margin-bottom:0;">
             <label>思考等级 (Reasoning Effort)</label>
-            <select id="codex-effort-select" class="form-control" style="background:#0b1120;">
+            <select id="codex-effort-select" class="form-control" style="background:#09090b; border-color:#27272a;">
               <option value="low">low (极速轻量思考)</option>
               <option value="medium">medium (均衡思考)</option>
               <option value="high" selected>high (深度思考 - 默认推荐)</option>
@@ -6322,6 +6559,20 @@ function renderDashboardHtml(config) {
 
         <!-- View Section 4: Accounts & Quotas (#/accounts) -->
         <section class="view-section" id="view-accounts">
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span>多账号自动负载均衡池</span>
+              </span>
+              <span class="status-pill">⚡ 429 秒级无感漂移</span>
+              <span class="status-pill">⏱️ 官方配额实时穿透轮询</span>
+              <span class="status-pill">🔒 本地安全密钥隔离</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:0.75rem; color:var(--muted);">5h / 周 / 月滑动窗口智能轮换保障</span>
+            </div>
+          </div>
 <!-- 账号配置区域 -->
     <div class="card" id="accounts-card">
       <div class="section-title" style="flex-wrap:wrap; gap:10px;">
@@ -6334,7 +6585,7 @@ function renderDashboardHtml(config) {
           <button class="btn btn-secondary btn-sm" onclick="resetAllCooldowns()" title="解除因 429 限频进入冷却的账号">🔄 重置限频</button>
           <div class="quota-ctrl-bar">
             <span>⏱️ 配额自动刷新:</span>
-            <select id="quota-refresh-interval" class="form-control" style="width:auto; padding:2px 8px; font-size:0.75rem; height:26px; background:#0f172a; border-color:#334155;" onchange="changeQuotaRefreshInterval(this.value)">
+            <select id="quota-refresh-interval" class="form-control" style="width:auto; padding:2px 8px; font-size:0.75rem; height:26px; background:#09090b; border-color:#27272a;" onchange="changeQuotaRefreshInterval(this.value)">
               <option value="0">已关闭</option>
               <option value="15">15 秒</option>
               <option value="30">30 秒</option>
@@ -6362,6 +6613,20 @@ function renderDashboardHtml(config) {
 
         <!-- View Section 5: Doctor & Repair (#/doctor) -->
         <section class="view-section" id="view-doctor">
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span>全链路环境诊断体系</span>
+              </span>
+              <span class="status-pill">🛡️ 100% 离线沙箱 (Air-Gapped)</span>
+              <span class="status-pill">🔧 一键秒级自愈闭环</span>
+              <span class="status-pill">🪟 零黑框进程脱钩</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:0.75rem; color:var(--muted);">杜绝外部云预览泄露与后台僵死互斥锁</span>
+            </div>
+          </div>
 <!-- 系统自检与修复区域 -->
     <div class="card" id="doctor-card">
       <div class="section-title">
@@ -6389,6 +6654,20 @@ function renderDashboardHtml(config) {
 
         <!-- View Section 6: Settings & Updates (#/settings) -->
         <section class="view-section" id="view-settings">
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span>核心网关运行参数 (Port: ${config.port})</span>
+              </span>
+              <span class="status-pill">🌐 CONNECT 隧道代理支持</span>
+              <span class="status-pill">🛡️ 禁止逆向升阶铁律</span>
+              <span class="status-pill">📦 全组件版本热更新</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:0.75rem; color:var(--muted);">支持 127.0.0.1 本地回环与 0.0.0.0 局域网协同</span>
+            </div>
+          </div>
 <!-- 高级策略与网络安全配置 -->
     <div class="card" id="config-card">
       <div class="section-title">
@@ -6629,6 +6908,7 @@ function renderDashboardHtml(config) {
       }
 
       closeSidebarDrawer();
+      closeQuickActionsMenu();
 
       try {
         if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
@@ -6694,6 +6974,50 @@ function renderDashboardHtml(config) {
       const overlay = document.getElementById('sidebar-overlay');
       if (sidebar && sidebar.classList) sidebar.classList.remove('drawer-open');
       if (overlay && overlay.classList) overlay.classList.remove('active');
+    }
+
+    function toggleQuickActionsMenu(event) {
+      if (event) {
+        if (typeof event.stopPropagation === 'function') event.stopPropagation();
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+      }
+      const menu = document.getElementById('quick-actions-menu');
+      const wrapper = document.getElementById('top-quick-actions-dropdown');
+      if (!menu) return;
+      const isOpen = menu.classList.toggle('show');
+      if (wrapper && wrapper.classList) {
+        if (isOpen) wrapper.classList.add('open');
+        else wrapper.classList.remove('open');
+      }
+      const btn = document.getElementById('btn-quick-actions');
+      if (btn && typeof btn.setAttribute === 'function') {
+        btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      }
+    }
+
+    function closeQuickActionsMenu() {
+      const menu = document.getElementById('quick-actions-menu');
+      if (menu && menu.classList) menu.classList.remove('show');
+      const wrapper = document.getElementById('top-quick-actions-dropdown');
+      if (wrapper && wrapper.classList) wrapper.classList.remove('open');
+      const btn = document.getElementById('btn-quick-actions');
+      if (btn && typeof btn.setAttribute === 'function') {
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    }
+
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('click', function(e) {
+        const dropdown = document.getElementById('top-quick-actions-dropdown');
+        if (dropdown && !dropdown.contains(e.target)) {
+          closeQuickActionsMenu();
+        }
+      });
+      window.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' || e.keyCode === 27) {
+          closeQuickActionsMenu();
+        }
+      });
     }
 
     function initSidebarState() {
@@ -7163,7 +7487,7 @@ function renderDashboardHtml(config) {
       if (!viewport) return;
 
       if (!Array.isArray(series) || series.length === 0) {
-        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:0.85rem;">💤 暂无时序数据</div>';
+        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:0.85rem;">💤 暂无时序数据</div>';
         return;
       }
 
@@ -7210,18 +7534,18 @@ function renderDashboardHtml(config) {
       gridLevels.forEach(lvl => {
         const y = padT + chartH * (1 - lvl);
         const tickVal = maxVal * lvl;
-        gridLinesSvg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (padL + chartW) + '" y2="' + y + '" stroke="#1e293b" stroke-width="1" stroke-dasharray="3,3" />' +
-          '<text x="' + (padL - 8) + '" y="' + (y + 3) + '" fill="#64748b" font-size="10" text-anchor="end" font-family="monospace">' + formatYTick(tickVal) + '</text>';
+        gridLinesSvg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (padL + chartW) + '" y2="' + y + '" stroke="#222226" stroke-width="1" stroke-dasharray="3,3" />' +
+          '<text x="' + (padL - 8) + '" y="' + (y + 3) + '" fill="#71717a" font-size="10" text-anchor="end" font-family="monospace">' + formatYTick(tickVal) + '</text>';
       });
 
       const xBaseY = padT + chartH;
-      let xLabelsSvg = '<line x1="' + padL + '" y1="' + xBaseY + '" x2="' + (padL + chartW) + '" y2="' + xBaseY + '" stroke="#334155" stroke-width="1" />';
+      let xLabelsSvg = '<line x1="' + padL + '" y1="' + xBaseY + '" x2="' + (padL + chartW) + '" y2="' + xBaseY + '" stroke="#27272a" stroke-width="1" />';
 
       const step = n <= 8 ? 1 : (n <= 14 ? 2 : 4);
       series.forEach((pt, i) => {
         if (i % step === 0 || i === n - 1) {
           const x = padL + (i + 0.5) * (chartW / n);
-          xLabelsSvg += '<text x="' + x + '" y="' + (xBaseY + 16) + '" fill="#64748b" font-size="9.5" text-anchor="middle" font-family="monospace">' + escapeHtml(pt.label) + '</text>';
+          xLabelsSvg += '<text x="' + x + '" y="' + (xBaseY + 16) + '" fill="#71717a" font-size="9.5" text-anchor="middle" font-family="monospace">' + escapeHtml(pt.label) + '</text>';
         }
       });
 
@@ -7262,7 +7586,7 @@ function renderDashboardHtml(config) {
               contentSvg += '<rect class="chart-bar-rect" data-index="' + i + '" x="' + barX + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="3" ry="3" />';
             }
           } else {
-            contentSvg += '<rect data-index="' + i + '" x="' + barX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#334155" opacity="0.4" rx="1" />';
+            contentSvg += '<rect data-index="' + i + '" x="' + barX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.6" rx="1" />';
           }
         });
       } else {
@@ -7289,7 +7613,7 @@ function renderDashboardHtml(config) {
         }
 
         const areaD = pathD + ' L ' + points[points.length - 1].x + ' ' + xBaseY + ' L ' + points[0].x + ' ' + xBaseY + ' Z';
-        const themeColor = '#f97316';
+        const themeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
         const gradId = 'compAreaGrad_' + cfg.viewportId;
         contentSvg += '<defs>' +
           '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="0" y2="1">' +
@@ -7302,7 +7626,7 @@ function renderDashboardHtml(config) {
 
         points.forEach((p, i) => {
           if (p.val > 0) {
-            contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="' + themeColor + '" stroke="#0f172a" stroke-width="1.8" />';
+            contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="' + themeColor + '" stroke="#121215" stroke-width="1.8" />';
           }
         });
       }
@@ -7310,14 +7634,14 @@ function renderDashboardHtml(config) {
       let emptyOverlaySvg = '';
       if (isAllZero) {
         emptyOverlaySvg = '<g transform="translate(' + (padL + chartW / 2) + ', ' + (padT + chartH / 2) + ')">' +
-          '<rect x="-180" y="-18" width="360" height="36" rx="18" fill="rgba(15,23,42,0.85)" stroke="#334155" stroke-width="1" />' +
-          '<text x="0" y="5" fill="#94a3b8" font-size="11.5" text-anchor="middle">💤 当前时间段内暂无压缩数据，发起对话后将实时呈现时序波形</text>' +
+          '<rect x="-180" y="-18" width="360" height="36" rx="18" fill="rgba(18,18,21,0.9)" stroke="#27272a" stroke-width="1" />' +
+          '<text x="0" y="5" fill="#a1a1aa" font-size="11.5" text-anchor="middle">💤 当前时间段内暂无压缩数据，发起对话后将实时呈现时序波形</text>' +
           '</g>';
       }
 
       const interactiveSvg = '<g id="' + cfg.crosshairGroupId + '" style="display:none;">' +
-        '<line id="' + cfg.crosshairLineId + '" x1="0" y1="' + padT + '" x2="0" y2="' + xBaseY + '" stroke="#38bdf8" stroke-width="1" stroke-dasharray="3,3" />' +
-        '<circle id="' + cfg.hoverDotId + '" cx="0" cy="0" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="2" />' +
+        '<line id="' + cfg.crosshairLineId + '" x1="0" y1="' + padT + '" x2="0" y2="' + xBaseY + '" stroke="' + themeColor + '" stroke-width="1" stroke-dasharray="3,3" />' +
+        '<circle id="' + cfg.hoverDotId + '" cx="0" cy="0" r="5" fill="' + themeColor + '" stroke="#121215" stroke-width="2" />' +
         '</g>' +
         '<rect id="' + cfg.overlayId + '" x="' + padL + '" y="' + padT + '" width="' + chartW + '" height="' + chartH + '" fill="transparent" style="cursor:crosshair;" />';
 
@@ -7361,7 +7685,7 @@ function renderDashboardHtml(config) {
           let modelDetailsHtml = '';
           const mEntries = Object.entries(pt.byModel || {});
           if (mEntries.length > 0) {
-            modelDetailsHtml = '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;">' +
+            modelDetailsHtml = '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #27272a;">' +
               mEntries.map(([m, mData], mIdx) => {
                 const col = getModelColor(m, mIdx);
                 const sTokens = Number(mData.savedTokens || 0).toLocaleString();
@@ -7381,7 +7705,7 @@ function renderDashboardHtml(config) {
 
           tooltipEl.innerHTML = '<div style="font-weight:600;color:#f1f5f9;margin-bottom:4px;display:flex;align-items:center;gap:6px;">' +
             '<span>⏱️ ' + escapeHtml(pt.label) + '</span>' +
-            '<span style="font-size:0.68rem;color:#64748b;font-weight:normal;">(' + escapeHtml(timeLabel) + ')</span>' +
+            '<span style="font-size:0.68rem;color:#71717a;font-weight:normal;">(' + escapeHtml(timeLabel) + ')</span>' +
             '</div>' +
             '<div style="color:#38bdf8;">🪙 节约: ~' + tokenStr + ' Tokens</div>' +
             '<div style="color:#34d399;">💵 费用: ~$' + costStr + ' USD</div>' +
@@ -7497,7 +7821,7 @@ function renderDashboardHtml(config) {
         if (tbody) {
           if (byModelEntries.length === 0) {
             const rangeNote = (data.rangeLabel || (currentCompRange === 'all' ? '全部历史累计' : currentCompRange));
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">' +
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #71717a; padding: 14px 8px;">' +
               (hasData ? '暂无分模型调用数据（发起请求后将实时归集并动态加权测算）' : ('此时间段（' + escapeHtml(rangeNote) + '）内暂无压缩数据')) +
               '</td></tr>';
           } else {
@@ -7509,7 +7833,7 @@ function renderDashboardHtml(config) {
               const rateStr = (rateVal > 0 && rateVal < 0.01) ? rateVal.toFixed(4) : (rateVal % 0.01 !== 0 && rateVal < 1 ? rateVal.toFixed(3) : rateVal.toFixed(2));
               const origStr = Number(mData.originalChars || 0).toLocaleString();
               const tokensStr = Number(mData.savedTokens || 0).toLocaleString();
-              return '<tr style="border-bottom: 1px solid #1e293b; transition: background 0.15s;">' +
+              return '<tr style="border-bottom: 1px solid #222226; transition: background 0.15s;">' +
                 '<td style="padding: 7px 10px; font-weight: 600; color: #e2e8f0; font-family: monospace;">' +
                 '<span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; margin-right: 6px;"></span>' +
                 escapeHtml(m) + '</td>' +
@@ -7579,7 +7903,7 @@ function renderDashboardHtml(config) {
         if (data && data.success) {
           showToast('✔ ' + (data.message || '压缩与 Token 节省统计已清零'));
           const tbody = document.getElementById('by-model-table-body');
-          if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>';
+          if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #71717a; padding: 14px 8px;">暂无分模型调用数据（发起请求后将实时归集并动态加权测算）</td></tr>';
           const badgeEl = document.getElementById('by-model-count-badge');
           if (badgeEl) badgeEl.innerText = '0 款模型';
           const tagEl = document.getElementById('by-model-tag');
@@ -8110,7 +8434,7 @@ function renderDashboardHtml(config) {
         updateWizardStatusBadges();
 
         if (progBox) {
-          progBox.innerHTML += '<div style="margin-top:8px; padding-top:6px; border-top:1px solid #334155; color:var(--success); font-weight:700;">' +
+          progBox.innerHTML += '<div style="margin-top:8px; padding-top:6px; border-top:1px solid #27272a; color:var(--success); font-weight:700;">' +
             '🎉 新手一键全能配置与体检已 100% 达成！系统已处于最佳状态，可直接在 OpenCode、OpenChamber 或终端中畅享高可用智能编程！' +
             '</div>';
         }
@@ -8998,7 +9322,7 @@ function renderDashboardHtml(config) {
         }
 
         if (report.snapshots && report.snapshots.length > 0) {
-          html += '<div style="margin-top:12px; padding-top:8px; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; font-size:0.8rem;">' +
+          html += '<div style="margin-top:12px; padding-top:8px; border-top:1px solid #27272a; display:flex; justify-content:space-between; align-items:center; font-size:0.8rem;">' +
             '<span style="color:var(--muted)">现有可用灾备快照: <strong>' + report.snapshots.length + '</strong> 份（最近备份: ' + new Date(report.snapshots[0].timestamp).toLocaleString() + '）</span>' +
             '<button class="btn btn-secondary btn-sm" onclick="showRollbackModal()">查看快照历史并秒级回滚</button>' +
           '</div>';
@@ -9075,7 +9399,7 @@ function renderDashboardHtml(config) {
         if (data.success) {
           showToast('🎉 组件安全更新流程全部完成！');
           let html = '<div style="color:var(--success); font-weight:600; margin-bottom:8px;">🎉 组件安全升级成功！(已创建快照: ' + (data.snapshotId || '已备份') + ')</div>';
-          html += '<div style="background:#1e293b; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
+          html += '<div style="background:#121215; border:1px solid #27272a; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
           data.logs.forEach(function(l) {
             html += '<div>' + l + '</div>';
           });
@@ -9086,7 +9410,7 @@ function renderDashboardHtml(config) {
         } else {
           let html = '<div style="color:var(--danger); font-weight:600; margin-bottom:8px;">❌ 部分组件更新未完全成功 (已创建快照: ' + (data.snapshotId || '已备份') + ')</div>';
           if (data.logs && data.logs.length) {
-            html += '<div style="background:#1e293b; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
+            html += '<div style="background:#121215; border:1px solid #27272a; padding:10px; border-radius:6px; font-family:monospace; font-size:0.8rem; max-height:200px; overflow-y:auto; margin-bottom:10px;">';
             data.logs.forEach(function(l) {
               html += '<div>' + l + '</div>';
             });
@@ -9167,7 +9491,7 @@ function renderDashboardHtml(config) {
         if (data.success) {
           showToast('🎉 灾备回滚成功！系统已秒级恢复！');
           let html = '<div style="color:var(--success); font-weight:600; margin-bottom:8px;">🎉 灾备回滚成功！系统配置已恢复至 ' + new Date(data.timestamp).toLocaleString() + ' 状态。</div>' +
-          '<div style="background:#1e293b; padding:10px; border-radius:6px; font-size:0.82rem; margin-bottom:10px;">';
+          '<div style="background:#121215; border:1px solid #27272a; padding:10px; border-radius:6px; font-size:0.82rem; margin-bottom:10px;">';
           data.restoredItems.forEach(function(item) {
             html += '<div>✔ 已还原: ' + (item.file || item.action) + ' (' + item.status + ')</div>';
           });
@@ -9262,7 +9586,7 @@ function renderDashboardHtml(config) {
       html += '<div><strong>语言环境:</strong> ' + (loc.healthy ? '<span class="badge badge-healthy">✔ 简体中文已对齐</span>' : '<span class="badge badge-cooling">⚠️ 语言未对齐</span>') + '</div>';
       html += '</div>';
 
-      html += '<div style="font-size:0.85rem; color:#cbd5e1; line-height:1.6; background:rgba(0,0,0,0.25); padding:8px 12px; border-radius:6px; border:1px solid #334155;">';
+      html += '<div style="font-size:0.85rem; color:#f4f4f5; line-height:1.6; background:#121215; padding:8px 12px; border-radius:6px; border:1px solid #27272a;">';
       html += '<div>• <strong>当前模型:</strong> <code style="color:var(--primary); font-family:monospace;">' + (st.currentModel || '未设置') + '</code> | <strong>提供商:</strong> ' + (st.currentProvider || '无') + ' | <strong>思考等级:</strong> ' + (st.currentReasoningEffort || 'high') + '</div>';
       html += '<div>• <strong>配置目录:</strong> <code style="color:var(--muted); font-family:monospace;">' + (st.codexDir || '~/.codex') + '</code></div>';
       html += '<div>• <strong>灾备备份:</strong> ' + (st.hasBackup ? '<span style="color:var(--success);">✔ 原始配置已无损备份 (' + (st.backupInfo && st.backupInfo.isoDate ? st.backupInfo.isoDate : '已备份') + ')，随时可原样还原</span>' : '<span style="color:var(--muted);">初次接入前将自动执行原子备份</span>') + '</div>';
@@ -9442,21 +9766,21 @@ function renderDashboardHtml(config) {
       html += '<button type="button" class="btn btn-secondary btn-sm" style="padding:2px 6px; font-size:0.75rem;" onclick="document.getElementById(\\\'comp-doctor-panel\\\').style.display=\\\'none\\\'">✕ 收起</button>';
       html += '</div></div>';
 
-      // 4 大引擎状态条
+      // 5 大引擎状态条
       html += '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px; margin-bottom:10px;">';
-      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<div style="background:#121215; padding:6px 10px; border-radius:6px; border:1px solid #27272a; font-size:0.8rem;">';
       html += '<strong>1. RTK 终端去噪:</strong> ' + (eng.rtk && eng.rtk.enabled ? '<span style="color:var(--success);">✔ 运行中</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
       html += '</div>';
-      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<div style="background:#121215; padding:6px 10px; border-radius:6px; border:1px solid #27272a; font-size:0.8rem;">';
       html += '<strong>2. Headroom 结构折叠:</strong> ' + (eng.headroom && eng.headroom.enabled ? '<span style="color:var(--success);">✔ 运行中</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
       html += '</div>';
-      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<div style="background:#121215; padding:6px 10px; border-radius:6px; border:1px solid #27272a; font-size:0.8rem;">';
       html += '<strong>3. CacheAligner 优化:</strong> ' + (eng.schema && eng.schema.enabled ? '<span style="color:var(--success);">✔ 门限 ' + (eng.schema.threshold || 15000) + ' 字符</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
       html += '</div>';
-      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<div style="background:#121215; padding:6px 10px; border-radius:6px; border:1px solid #27272a; font-size:0.8rem;">';
       html += '<strong>4. llmtrim Cache-Zone:</strong> ' + (eng.cacheZone && eng.cacheZone.enabled ? '<span style="color:var(--success);">✔ 活跃会话 ' + (eng.cacheZone.activeSessions || 0) + '</span>' : '<span style="color:var(--muted);">旁路关闭</span>');
       html += '</div>';
-      html += '<div style="background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; border:1px solid #334155; font-size:0.8rem;">';
+      html += '<div style="background:#121215; padding:6px 10px; border-radius:6px; border:1px solid #27272a; font-size:0.8rem;">';
       const psStatusText = eng.powershell && eng.powershell.enabled
         ? '<span style="color:var(--success);">✔ ' + (eng.powershell.platform && eng.powershell.platform.isWindows ? 'Windows 原生运行' : 'Linux 旁路休眠') + '</span>'
         : '<span style="color:var(--muted);">旁路关闭</span>';
@@ -9465,7 +9789,7 @@ function renderDashboardHtml(config) {
       html += '</div>';
 
       // 3 大客户端适配保障状态
-      html += '<div style="font-size:0.8rem; background:rgba(30, 41, 59, 0.6); padding:8px 10px; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">';
+      html += '<div style="font-size:0.8rem; background:#121215; padding:8px 10px; border-radius:6px; border:1px solid #27272a; margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">';
       html += '<span>🤖 <strong>Codex CLI / Desktop:</strong> <span style="color:var(--success);">✔ Responses 保真 &amp; PS 转义自愈</span></span>';
       html += '<span>⚡ <strong>OpenCode 2.0+:</strong> <span style="color:var(--success);">✔ Tool Call 连续性 &amp; CLIXML 去噪</span></span>';
       html += '<span>💻 <strong>OpenChamber:</strong> <span style="color:var(--success);">✔ 100% 离线沙箱安全 &amp; 环境自适应</span></span>';
