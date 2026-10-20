@@ -2166,6 +2166,7 @@ function foldStructuredData(text, options = {}, context = {}) {
   }
   // Anti-downgrade compiler errors / tracebacks / stack traces check
   if (
+    RE_ALL_COMPILER_ERRORS.test(text) ||
     text.includes('Traceback (most recent call last):') ||
     text.includes('AssertionError:') ||
     text.includes('TypeError:') ||
@@ -2959,6 +2960,7 @@ function cleanSearchAndTreeOutput(text) {
   if (RE_CONFLICT_MARKERS.test(text)) return text;
   if (text.includes('diff --git ') || text.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(text)) return text;
   if (isMultiLineSourceFileRead(text)) return text;
+  if (isCompilerDiagnosticOrStackTrace(text)) return text;
   const trimmedStart = text.trimStart();
   if (trimmedStart.startsWith('{') || trimmedStart.startsWith('[')) return text;
 
@@ -2972,8 +2974,12 @@ function cleanSearchAndTreeOutput(text) {
     const processedLines = lines.map(line => {
       if (line.length > 550) {
         const t = line.trim();
-        // Never truncate stack traces, error messages, or pure JSON lines
-        if (/^(?:at\s+|File\s+"|Traceback|AssertionError|TypeError|ReferenceError|SyntaxError|RuntimeError|Error:|\[\{|\{")/i.test(t)) {
+        // Never truncate stack traces, error messages, compiler diagnostics, diffs, or pure JSON lines
+        if (
+          isCompilerDiagnosticOrStackTrace(t) ||
+          isSourceDiffOrPatch(t) ||
+          /^(?:at\s+|File\s+"|Traceback|AssertionError|TypeError|ReferenceError|SyntaxError|RuntimeError|Error:|\[\{|\{")/i.test(t)
+        ) {
           return line;
         }
         const spaceCount = (t.match(/ /g) || []).length;
@@ -3666,15 +3672,114 @@ function ensureSafeNonEmptyString(str, fallback = '[Empty output]') {
   return fallback;
 }
 
+// Pre-compiled comprehensive static regexes for compiler errors, diagnostics, and stack traces
+const RE_ALL_COMPILER_ERRORS = /(?:(?:^|\r?\n)\s*(?:[a-zA-Z]:[\\/]|[\w./\\-]+)\s*[:(]\s*\d+\s*(?:[:,\t]\s*\d+)?\s*[:)]\s*(?:fatal\s+)?(?:error|warning|note)\b|error\[E\d+\]|error\s+C\d+:|warning\s+C\d+:|error\s+TS\d+:|\bTS\d{4,5}:|\.\/[\w./\\-]+\.go:\d+:\d+:)/i;
+
+const RE_ALL_STACK_TRACES = /(?:^\s*at\s+(?:[^\r\n]+|[\w$.]+\([\w$.]+\.(?:java|kt|scala|js|ts|mjs|cjs):\d+\))|^\s*File\s+".*",\s+line\s+\d+|Traceback \(most recent call last\):|\b(?:TypeError|ReferenceError|SyntaxError|RangeError|RuntimeError|AssertionError|NullPointerException|Exception in thread|Segmentation fault|BUILD FAILED:)\b|\bpanic(?::|\(|\b)|panicked at\b|goroutine \d+ \[running\]:)/m;
+
+/**
+ * Checks whether a diff header targets any known lockfile (e.g. yarn.lock, Cargo.lock, pubspec.lock, gradle.lockfile).
+ * Routine lockfile diffs without conflict markers are folded by foldLockfiles,
+ * while source code diffs and conflict-bearing lockfiles are 100% exempted.
+ */
+function isLockfileDiff(text) {
+  if (typeof text !== 'string') return false;
+  const firstLines = text.split(/\r?\n/, 6);
+  for (const line of firstLines) {
+    if (line.startsWith('diff --git ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
+      const parts = line.split(/\s+/);
+      for (const p of parts) {
+        const clean = p.replace(/^[ab]\//, '').replace(/^["']|["']$/g, '');
+        const base = clean.split(/[\/\\]/).pop().toLowerCase();
+        if (LOCKFILE_NAMES.has(base)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Detects whether text contains Unified Diff, Git conflict markers, or Codex/OpenCode patch instructions.
+ * Unified diffs and patches must NEVER be folded, compressed, or mutated to ensure zero code degradation.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isSourceDiffOrPatch(text) {
+  if (typeof text !== 'string' || text.length < 18) return false;
+  // Git conflict markers: <<<<<<<, =======, >>>>>>>, ||||||| are 100% exempt (even in lockfiles)
+  if (text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>') || text.includes('|||||||')) {
+    return true;
+  }
+  // Codex / OpenCode patch instructions are 100% exempt
+  if (
+    text.includes('*** Begin Patch') ||
+    text.includes('*** Update File:') ||
+    text.includes('*** Add File:') ||
+    text.includes('*** Delete File:')
+  ) {
+    return true;
+  }
+  // Routine lockfile diffs without conflict markers are folded by foldLockfiles
+  if (isLockfileDiff(text)) {
+    return false;
+  }
+  // Standard unified diff headers & hunk markers for source code
+  if (text.includes('diff --git ') || text.includes('--- a/') || text.includes('+++ b/')) {
+    return true;
+  }
+  if (/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/m.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Detects whether text is an error stack trace or compiler diagnostic output across all major programming ecosystems.
+ * Stack traces, line numbers, and compiler error messages must NEVER be folded or truncated.
+ * Supports: Node/V8, Python, Rust, C/C++ (GCC/Clang/MSVC), TypeScript/ESLint, Go, JVM, and Linux kernel/process crashes.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isCompilerDiagnosticOrStackTrace(text) {
+  if (typeof text !== 'string' || text.length < 10) return false;
+
+  // Fast-path crash & failure keywords
+  if (
+    text.includes('Traceback (most recent call last):') ||
+    text.includes('BUILD FAILED:') ||
+    text.includes('Segmentation fault') ||
+    text.includes('panicked at') ||
+    text.includes('NullPointerException') ||
+    text.includes('Exception in thread')
+  ) {
+    return true;
+  }
+
+  // Compiler diagnostics (Rust, C/C++, MSVC, TS, Go)
+  if (RE_ALL_COMPILER_ERRORS.test(text)) {
+    return true;
+  }
+
+  // Stack traces (Node, Python, Java, Rust/Go panics)
+  if (RE_ALL_STACK_TRACES.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Detects whether a tool output is a multi-line source code file read (e.g. OpenCode <file> block,
- * numbered source lines "00001| ...", or raw source file with >= 8 code statements).
+ * numbered source lines "00001| ...", line-range slices "145: const ...", or raw source file).
  * Exempting source code file reads prevents:
  * 1) Mutating test fixture strings inside source files (e.g. test_router.js)
- * 2) Diluting compressionRatio by adding 500KB+ un-compressible source files to totalOriginalChars
+ * 2) Diluting compressionRatio by adding un-compressible source files to totalOriginalChars
+ * 3) Accidental truncation of long single lines (e.g. long strings, SQL queries) inside code
+ * @param {string} text
+ * @returns {boolean}
  */
 function isMultiLineSourceFileRead(text) {
-  if (typeof text !== 'string' || text.length < 300) return false;
+  if (typeof text !== 'string' || text.length < 50) return false;
   // Strip optional leading Codex / OpenCode shell execution metadata wrapper before checking content
   const bodyText = text.replace(/^(?:(?:Chunk ID|Wall time|Process exited with code|Exit code|Original token count)[^\r\n]*\r?\n)+(?:\s*Output:\s*\r?\n)?/i, '');
   const trimmed = bodyText.trimStart();
@@ -3682,22 +3787,39 @@ function isMultiLineSourceFileRead(text) {
   if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('#< CLIXML')) {
     return false;
   }
-  if (trimmed.startsWith('<file>') || /^\s*0*1\s*[:|\t]\s*(?:\/\*|\/\/|#|import\b|const\b|let\b|var\b|function\b|class\b|package\b|def\b|\[CmdletBinding|param\s*\()/m.test(trimmed)) {
+  // OpenCode <file> tags
+  if (trimmed.startsWith('<file>')) {
+    return true;
+  }
+  // Numbered line output starting with any line number followed by code keywords, comments, or assignments
+  if (/^\s*\d+\s*[:|\t]\s*(?:\/\*|\/\/|#|import\b|export\b|const\b|let\b|var\b|function\b|class\b|package\b|def\b|pub\b|fn\b|using\b|#include\b|\[CmdletBinding|param\s*\(|\$[a-zA-Z_]\w*\s*=|return\b|if\b|for\b)/m.test(trimmed)) {
     return true;
   }
   const sample = bodyText.length > 16000 ? bodyText.slice(0, 16000) : bodyText;
   const lines = sample.split(/\r?\n/);
-  if (lines.length < 10) return false;
+  if (lines.length < 3) return false;
   let codeLines = 0;
   for (let i = 0; i < Math.min(lines.length, 250); i++) {
     const l = lines[i].replace(/^\s*\d+\s*[:|\t]\s*/, '').trim();
     if (!l) continue;
-    if (/^(?:const|let|var|function|async\s+function|class|import|export|def|from\s+[\w.]+\s+import|pub\s+fn|fn\s+\w+|package\s+\w+|#include\s+[<"]|using\s+System|namespace\s+\w+|public\s+(?:class|static|void|async)|private\s+(?:void|static|async)|module\.exports\s*=|assert\.(?:ok|strictEqual|deepStrictEqual)|\[CmdletBinding\(\)\]|param\s*\(|Write-Host\s+|\$[a-zA-Z_]\w*\s*=)\b/.test(l)) {
+    if (/^(?:const|let|var|function|async\s+function|class|import|export|def|from\s+[\w.]+\s+import|pub\s+fn|fn\s+\w+|package\s+\w+|#include\s+[<"]|using\s+System|namespace\s+\w+|public\s+(?:class|static|void|async)|private\s+(?:void|static|async)|module\.exports\s*=|assert\.(?:ok|strictEqual|deepStrictEqual)|\[CmdletBinding\(\)\]|param\s*\(|Write-Host\s+|\$[a-zA-Z_]\w*\s*=|return\b|if\b|else\b|elif\b|for\b|while\b|try\b|catch\b|except\b|finally\b|with\b|(?:[a-zA-Z_]\w*|\$[a-zA-Z_]\w*)\s*=(?!=))\b/.test(l)) {
       codeLines++;
-      if (codeLines >= 6) return true;
+      if (lines.length < 10 && codeLines >= 2) return true;
+      if (lines.length >= 10 && codeLines >= 3) return true;
     }
   }
   return false;
+}
+
+/**
+ * Unified High-Fidelity Shield: Aggregates all anti-downgrade immutability rules.
+ * Immediately returns true if text is source code, diff, patch, compiler error, or stack trace.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isProtectedSourceOrDiagnostic(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return isSourceDiffOrPatch(text) || isCompilerDiagnosticOrStackTrace(text) || isMultiLineSourceFileRead(text);
 }
 
 /**
@@ -4905,5 +5027,8 @@ module.exports = {
   saveStatsToDisk,
   flushStatsToDisk,
   isMultiLineSourceFileRead,
+  isSourceDiffOrPatch,
+  isCompilerDiagnosticOrStackTrace,
+  isProtectedSourceOrDiagnostic,
   normalizeMemoSessionId
 };

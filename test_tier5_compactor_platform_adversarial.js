@@ -219,6 +219,38 @@ FileNotFoundError: [Errno 2] No such file or directory: 'non_existent.js'
     assert.ok(!folded.includes('80 passed tests folded'), 'Failure in middle must split into two independent runs');
   });
 
+  await runAdversarialTest('Redline', '全语系编译器报错诊断 (Rust/C++/MSVC/TS/Go) 与超长诊断行 100% 绝对免死保真', () => {
+    const diagnosticsSamples = [
+      'src/engine/model.cpp:45:12: fatal error: fatal tensor shape mismatch in forward pass: ' + 'A'.repeat(600),
+      'C:\\project\\kernel.cpp(120,5): error C2065: undefined symbol in CUDA device code: ' + 'B'.repeat(600),
+      'error[E0308]: mismatched types in match arm\n  --> src/main.rs:14:5\nexpected struct Point, found tuple: ' + 'C'.repeat(600),
+      'src/index.ts:15:3 - error TS2322: Type string is not assignable to type number with deep generic parameters: ' + 'D'.repeat(600),
+      './main.go:12:2: undefined: fmt.Printlln in package main: ' + 'E'.repeat(600)
+    ];
+
+    for (const sample of diagnosticsSamples) {
+      assert.strictEqual(compactor.isCompilerDiagnosticOrStackTrace(sample), true, 'Sample must be detected as compiler diagnostic');
+      assert.strictEqual(compactor.isProtectedSourceOrDiagnostic(sample), true, 'Sample must be protected by unified shield');
+      const compacted = compactor.compactText(sample, { enabled: true });
+      assert.strictEqual(compacted, sample, 'Compiler diagnostic must be 100% bypassed and never truncated');
+      assert.ok(!compacted.includes('[RTK Search: Minified/long line tail omitted'), 'Must never truncate compiler error lines');
+    }
+  });
+
+  await runAdversarialTest('Redline', '短代码片段与行范围切片 (Line-Range Slices) 统一免死与零膨胀保护', () => {
+    const shortPy = 'def add(a, b):\n    # helper\n    result = a + b\n    return result';
+    const lineRangeSlice = '145: function calculateTotal(items) {\n146:   let sum = 0;\n147:   for (const item of items) {\n148:     sum += item.price;\n149:   }\n150:   return sum;\n151: }';
+    const codexPatch = '*** Begin Patch\n*** Update File: src/main.js\n@@ -10,5 +10,6 @@\n- const old = 1;\n+ const updated = 2;';
+
+    assert.strictEqual(compactor.isMultiLineSourceFileRead(shortPy), true, 'Short Python code must be recognized as source code');
+    assert.strictEqual(compactor.isMultiLineSourceFileRead(lineRangeSlice), true, 'Numbered line range slice must be recognized');
+    assert.strictEqual(compactor.isSourceDiffOrPatch(codexPatch), true, 'Codex patch must be recognized as patch');
+
+    assert.strictEqual(compactor.compactText(shortPy), shortPy, 'Short Python code must remain 100% untouched');
+    assert.strictEqual(compactor.compactText(lineRangeSlice), lineRangeSlice, 'Line range slice must remain 100% untouched');
+    assert.strictEqual(compactor.compactText(codexPatch), codexPatch, 'Codex patch must remain 100% untouched');
+  });
+
   // ============================================================================
   // SECTION 2: SmartCrusher 超长 JSON 数组折叠与嵌入式扫描熔断
   // ============================================================================
