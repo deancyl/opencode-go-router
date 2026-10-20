@@ -249,6 +249,30 @@ if (Test-Path $opencodeConfig) {
         Write-Host "  ✔ opencode-go 已成功绑定 4010 智能网关" -ForegroundColor Green
     }
 
+    # 检测 OpenCode 2.0 原生智能体定义 (Rule 9)
+    $hasAgentGoal = $false
+    $hasAgentGoalVerify = $false
+    try {
+        $parsedJson = $ocContent | ConvertFrom-Json
+        if ($parsedJson.agent -and $parsedJson.agent.goal -and ($parsedJson.agent.goal.mode -eq 'primary' -or $parsedJson.agent.goal.mode -eq 'all')) {
+            $hasAgentGoal = $true
+        }
+        if ($parsedJson.agent -and $parsedJson.agent.PSObject.Properties['goal-verify']) {
+            $hasAgentGoalVerify = $true
+        }
+    } catch {}
+    if (-not ($hasAgentGoal -and $hasAgentGoalVerify)) {
+        Write-Host "  ⚠ opencode.jsonc 缺少 OpenCode 2.0 原生智能体定义 (Rule 9)" -ForegroundColor Yellow
+        $issuesFound.Add([PSCustomObject]@{
+            Id = "opencode_agent_declaration"
+            Title = "opencode.jsonc 缺少 OpenCode 2.0 原生智能体定义 (agent.goal 与 agent['goal-verify'])"
+            Severity = "Medium"
+            FixDesc = "自动补齐 agent.goal (主模式) 与 agent['goal-verify'] (审阅模式) 声明并保护用户定制 Prompt"
+        })
+    } else {
+        Write-Host "  ✔ OpenCode 2.0 原生智能体 (agent.goal 与 goal-verify) 已就绪" -ForegroundColor Green
+    }
+
     # 检测双轨 Schema 镜像对齐 (OpenCode CLI & OpenChamber UI)
     try {
         $escPath = $opencodeConfig.Replace('\', '/')
@@ -917,6 +941,19 @@ foreach ($iss in $issuesFound) {
                 Write-Host "    ✔ 提供商双轨 Schema 已成功镜像并补全 modelID" -ForegroundColor Green
             } catch {
                 Write-Host "    ⚠ 双轨合流失败: $_" -ForegroundColor Red
+            }
+        }
+        "opencode_agent_declaration" {
+            Write-Host " -> 正在补全 OpenCode 2.0 原生智能体声明 (agent.goal / goal-verify)..." -ForegroundColor Yellow
+            try {
+                $updaterScript = Join-Path $PSScriptRoot "updater.js"
+                if (Test-Path $updaterScript) {
+                    $escPath = $opencodeConfig.Replace('\', '/')
+                    node -e "const u = require('./updater'); u.harmonizeOpencodeConfig('$escPath', $routerPort);"
+                    Write-Host "    ✔ OpenCode 2.0 原生智能体声明已补齐并保护定制 Prompt" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    ⚠ 补齐智能体声明失败: $_" -ForegroundColor Red
             }
         }
         "omo_effect_deadlock" {

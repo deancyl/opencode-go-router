@@ -968,9 +968,30 @@ const NATIVE_RESPONSES_MODELS = new Set([
   'gpt-6-luna'
 ]);
 
+// Dynamic pool for models that triggered 404/405/501 or protocol unsupported on upstream /responses
+const nativeResponsesUnsupportedModels = new Set();
+
+function markNativeResponsesUnsupported(modelName) {
+  if (!modelName || typeof modelName !== 'string') return;
+  const clean = modelName.replace(/^opencode-go\//i, '').toLowerCase().trim();
+  nativeResponsesUnsupportedModels.add(clean);
+  nativeResponsesUnsupportedModels.add(modelName.toLowerCase().trim());
+}
+
+function clearNativeResponsesUnsupported() {
+  nativeResponsesUnsupportedModels.clear();
+}
+
+function isNativeResponsesUnsupported(modelName) {
+  if (!modelName || typeof modelName !== 'string') return false;
+  const clean = modelName.replace(/^opencode-go\//i, '').toLowerCase().trim();
+  return nativeResponsesUnsupportedModels.has(clean) || nativeResponsesUnsupportedModels.has(modelName.toLowerCase().trim());
+}
+
 function isNativeResponsesModel(modelName) {
   if (!modelName || typeof modelName !== 'string') return false;
-  const clean = modelName.replace(/^opencode-go\//, '').toLowerCase().trim();
+  const clean = modelName.replace(/^opencode-go\//i, '').toLowerCase().trim();
+  if (isNativeResponsesUnsupported(clean)) return false;
   return NATIVE_RESPONSES_MODELS.has(clean) || clean.includes('luna');
 }
 
@@ -2058,7 +2079,7 @@ function normalizeResponsesUsage(rawUsage, defaultInput = 20, defaultOutput = 20
 /**
  * Translates upstream ChatCompletions SSE stream into compliant OpenAI Responses SSE stream for Codex
  */
-function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null) {
+function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null, reconnectFn = null) {
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -2143,6 +2164,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   let buffer = '';
   let streamFinished = false;
   let upstreamEnded = false;
+  let totalChunks = 0;
+  let hasRetriedReconnect = false;
+  let currentUpstream = upstreamRes;
 
   const buildFinalOutput = () => {
     const finalOutput = [];
@@ -2205,12 +2229,54 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       ? `Upstream stream error: ${err.message}`
       : (isEmpty ? 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).' : 'Upstream stream disconnected unexpectedly before generating output or tool calls.');
 
-    // Rule 33: UI Thinking Spinner Deadlock Self-Healing
-    // When upstream stream disconnects mid-reasoning before emitting any assistant text or tool call,
-    // inject a terminal assistant message item so the client UI releases the thinking spinner cleanly.
-    if (isReasoningOnly) {
+    // Rule 33: Stream Empty-Truncation Graceful Closure & UI Spinner Unlock
+    // Whether isReasoningOnly, isEmpty, or whenever finalOutput has no completed assistant message:
+    // We MUST NOT dispatch bare empty output: [].
+    // We MUST actively inject a compliant assistant message item into the SSE stream:
+    // response.output_item.added -> response.content_part.added -> response.output_item.done
+    // and include it in finalOutput before dispatching response.failed,
+    // safely releasing the UI thinking spinner and thread-writer-locks.
+    const hasAssistantOutput = finalOutput.some(item => item.type === 'message' && item.role === 'assistant');
+    if (!hasAssistantOutput) {
       const healMsgId = 'msg_heal_' + Date.now();
-      const healNotice = `[网关防死锁自愈：${errMsg}]`;
+      const healNotice = `[网关服务提示：上游推理连接异常中断（${errMsg}）。建议重试当前请求或切换备用模型。]`;
+
+      sendEvent('response.output_item.added', {
+        type: 'response.output_item.added',
+        sequence_number: seq++,
+        output_index: outputIndex++,
+        item: {
+          id: healMsgId,
+          type: 'message',
+          status: 'in_progress',
+          role: 'assistant',
+          content: []
+        }
+      });
+
+      sendEvent('response.content_part.added', {
+        type: 'response.content_part.added',
+        sequence_number: seq++,
+        output_index: outputIndex - 1,
+        content_index: 0,
+        item_id: healMsgId,
+        part: { type: 'output_text', text: healNotice, annotations: [], logprobs: [] }
+      });
+
+      sendEvent('response.output_item.done', {
+        type: 'response.output_item.done',
+        sequence_number: seq++,
+        output_index: outputIndex - 1,
+        item: {
+          id: healMsgId,
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+        }
+      });
+
       finalOutput.push({
         id: healMsgId,
         type: 'message',
@@ -2285,10 +2351,33 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   }, 5000);
 
+  const attemptReconnect = (origErr, isExplicit = false) => {
+    if (hasRetriedReconnect || streamFinished || clientRes.writableEnded || clientRes.destroyed) {
+      dispatchStreamError(origErr, isExplicit);
+      return;
+    }
+    hasRetriedReconnect = true;
+    unbindUpstream(currentUpstream);
+    console.log(`[Stream Reconnect] 首字吐出前断流 (0 字节数据)，正在实施毫秒级原位流式透明重连...`);
+    reconnectFn(
+      (newUpstream) => {
+        if (streamFinished || clientRes.writableEnded || clientRes.destroyed) {
+          if (newUpstream && typeof newUpstream.destroy === 'function') newUpstream.destroy();
+          return;
+        }
+        currentUpstream = newUpstream;
+        bindUpstream(newUpstream);
+      },
+      (retryErr) => {
+        dispatchStreamError(retryErr || origErr, isExplicit);
+      }
+    );
+  };
+
   const onCloseHandler = () => {
     cleanup();
-    if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
-      upstreamRes.destroy();
+    if (currentUpstream && typeof currentUpstream.destroy === 'function' && !currentUpstream.destroyed) {
+      currentUpstream.destroy();
     }
   };
   clientRes.once('close', onCloseHandler);
@@ -2297,17 +2386,26 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
     clientRes.removeListener('close', onCloseHandler);
+    unbindUpstream(currentUpstream);
   };
 
-  upstreamRes.on('error', (err) => {
-    dispatchStreamError(err, true);
-  });
-
-  upstreamRes.on('close', () => {
-    if (!streamFinished && !upstreamEnded) {
-      dispatchStreamError(new Error('Premature close of upstream response stream'), false);
+  const onUpstreamError = (err) => {
+    if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect && !streamFinished) {
+      attemptReconnect(err, true);
+    } else {
+      dispatchStreamError(err, true);
     }
-  });
+  };
+
+  const onUpstreamClose = () => {
+    if (!streamFinished && !upstreamEnded) {
+      if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
+        attemptReconnect(new Error('Premature close of upstream response stream before first token'), false);
+      } else {
+        dispatchStreamError(new Error('Premature close of upstream response stream'), false);
+      }
+    }
+  };
 
   const closeReasoning = () => {
     if (reasoningStarted && !reasoningCompleted) {
@@ -2381,7 +2479,8 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   };
 
-  upstreamRes.on('data', chunk => {
+  const onUpstreamData = (chunk) => {
+    totalChunks++;
     lastDataTime = Date.now();
     buffer += chunk.toString('utf8');
     const lines = buffer.split('\n');
@@ -2659,9 +2758,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         }
       } catch (e) {}
     }
-  });
+  };
 
-  upstreamRes.on('end', () => {
+  const onUpstreamEnd = () => {
     upstreamEnded = true;
     if (streamFinished) return;
 
@@ -2779,6 +2878,10 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
 
     if (fullText === '' && toolCallsMap.size === 0) {
+      if (fullReasoning === '' && totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
+        attemptReconnect(new Error('Empty stream before first token'), false);
+        return;
+      }
       dispatchStreamError(null, false);
       return;
     }
@@ -2828,7 +2931,25 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     cleanup();
     clientRes.end();
     if (typeof onFinished === 'function') onFinished();
-  });
+  };
+
+  const bindUpstream = (st) => {
+    if (!st || typeof st.on !== 'function') return;
+    st.on('data', onUpstreamData);
+    st.on('error', onUpstreamError);
+    st.on('close', onUpstreamClose);
+    st.on('end', onUpstreamEnd);
+  };
+
+  const unbindUpstream = (st) => {
+    if (!st || typeof st.removeListener !== 'function') return;
+    st.removeListener('data', onUpstreamData);
+    st.removeListener('error', onUpstreamError);
+    st.removeListener('close', onUpstreamClose);
+    st.removeListener('end', onUpstreamEnd);
+  };
+
+  bindUpstream(currentUpstream);
 }
 
 /**
@@ -2897,6 +3018,8 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
   }
 
   if (output.length === 0) {
+    const healMsgId = 'msg_heal_' + Date.now();
+    const healNotice = '[网关服务提示：上游推理返回空响应。建议重试当前请求或切换备用模型。]';
     return {
       id: respId,
       object: 'response',
@@ -2910,7 +3033,14 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
         code: 'upstream_stream_empty_truncated',
         message: 'Upstream returned an empty response with no content or tool calls.'
       },
-      output: [],
+      output: [{
+        id: healMsgId,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+      }],
       usage: normalizeResponsesUsage(chatJson.usage, 1, 1)
     };
   }
@@ -3156,7 +3286,7 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
 /**
  * Translates upstream Anthropic Messages SSE stream into compliant OpenAI Responses SSE stream for Codex
  */
-function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null) {
+function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null, reconnectFn = null) {
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -3236,6 +3366,9 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   let buffer = '';
   let streamFinished = false;
   let upstreamEnded = false;
+  let totalChunks = 0;
+  let hasRetriedReconnect = false;
+  let currentUpstream = upstreamRes;
 
   const buildFinalOutput = () => {
     const finalOutput = [];
@@ -3368,10 +3501,54 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       ? `Upstream stream error: ${err.message}`
       : (isEmpty ? 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).' : 'Upstream stream disconnected unexpectedly before generating output or tool calls.');
 
-    // Rule 33: UI Thinking Spinner Deadlock Self-Healing
-    if (isReasoningOnly) {
+    // Rule 33: Stream Empty-Truncation Graceful Closure & UI Spinner Unlock
+    // Whether isReasoningOnly, isEmpty, or whenever finalOutput has no completed assistant message:
+    // We MUST NOT dispatch bare empty output: [].
+    // We MUST actively inject a compliant assistant message item into the SSE stream:
+    // response.output_item.added -> response.content_part.added -> response.output_item.done
+    // and include it in finalOutput before dispatching response.failed,
+    // safely releasing the UI thinking spinner and thread-writer-locks.
+    const hasAssistantOutput = finalOutput.some(item => item.type === 'message' && item.role === 'assistant');
+    if (!hasAssistantOutput) {
       const healMsgId = 'msg_heal_' + Date.now();
-      const healNotice = `[网关防死锁自愈：${errMsg}]`;
+      const healNotice = `[网关服务提示：上游推理连接异常中断（${errMsg}）。建议重试当前请求或切换备用模型。]`;
+
+      sendEvent('response.output_item.added', {
+        type: 'response.output_item.added',
+        sequence_number: seq++,
+        output_index: outputIndex++,
+        item: {
+          id: healMsgId,
+          type: 'message',
+          status: 'in_progress',
+          role: 'assistant',
+          content: []
+        }
+      });
+
+      sendEvent('response.content_part.added', {
+        type: 'response.content_part.added',
+        sequence_number: seq++,
+        output_index: outputIndex - 1,
+        content_index: 0,
+        item_id: healMsgId,
+        part: { type: 'output_text', text: healNotice, annotations: [], logprobs: [] }
+      });
+
+      sendEvent('response.output_item.done', {
+        type: 'response.output_item.done',
+        sequence_number: seq++,
+        output_index: outputIndex - 1,
+        item: {
+          id: healMsgId,
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+        }
+      });
+
       finalOutput.push({
         id: healMsgId,
         type: 'message',
@@ -3446,10 +3623,33 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   }, 5000);
 
+  const attemptReconnect = (origErr, isExplicit = false) => {
+    if (hasRetriedReconnect || streamFinished || clientRes.writableEnded || clientRes.destroyed) {
+      dispatchStreamError(origErr, isExplicit);
+      return;
+    }
+    hasRetriedReconnect = true;
+    unbindUpstream(currentUpstream);
+    console.log(`[Stream Reconnect] Anthropic 首字吐出前断流 (0 字节数据)，正在实施毫秒级原位流式透明重连...`);
+    reconnectFn(
+      (newUpstream) => {
+        if (streamFinished || clientRes.writableEnded || clientRes.destroyed) {
+          if (newUpstream && typeof newUpstream.destroy === 'function') newUpstream.destroy();
+          return;
+        }
+        currentUpstream = newUpstream;
+        bindUpstream(newUpstream);
+      },
+      (retryErr) => {
+        dispatchStreamError(retryErr || origErr, isExplicit);
+      }
+    );
+  };
+
   const onCloseHandler = () => {
     cleanup();
-    if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
-      upstreamRes.destroy();
+    if (currentUpstream && typeof currentUpstream.destroy === 'function' && !currentUpstream.destroyed) {
+      currentUpstream.destroy();
     }
   };
   clientRes.once('close', onCloseHandler);
@@ -3458,19 +3658,29 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
     clientRes.removeListener('close', onCloseHandler);
+    unbindUpstream(currentUpstream);
   };
 
-  upstreamRes.on('error', (err) => {
-    dispatchStreamError(err, true);
-  });
-
-  upstreamRes.on('close', () => {
-    if (!streamFinished && !upstreamEnded) {
-      dispatchStreamError(new Error('Premature close of upstream response stream'), false);
+  const onUpstreamError = (err) => {
+    if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect && !streamFinished) {
+      attemptReconnect(err, true);
+    } else {
+      dispatchStreamError(err, true);
     }
-  });
+  };
 
-  upstreamRes.on('data', chunk => {
+  const onUpstreamClose = () => {
+    if (!streamFinished && !upstreamEnded) {
+      if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
+        attemptReconnect(new Error('Premature close of upstream response stream before first token'), false);
+      } else {
+        dispatchStreamError(new Error('Premature close of upstream response stream'), false);
+      }
+    }
+  };
+
+  const onUpstreamData = (chunk) => {
+    totalChunks++;
     lastDataTime = Date.now();
     buffer += chunk.toString('utf8');
     const lines = buffer.split('\n');
@@ -3647,9 +3857,9 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         }
       } catch (e) {}
     }
-  });
+  };
 
-  upstreamRes.on('end', () => {
+  const onUpstreamEnd = () => {
     upstreamEnded = true;
     if (streamFinished) return;
 
@@ -3657,6 +3867,10 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     closeText();
 
     if (fullText === '' && toolCallsMap.size === 0 && fullReasoning === '') {
+      if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
+        attemptReconnect(new Error('Empty stream before first token'), false);
+        return;
+      }
       dispatchStreamError(null, false);
       return;
     }
@@ -3706,7 +3920,25 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     cleanup();
     clientRes.end();
     if (typeof onFinished === 'function') onFinished();
-  });
+  };
+
+  const bindUpstream = (st) => {
+    if (!st || typeof st.on !== 'function') return;
+    st.on('data', onUpstreamData);
+    st.on('error', onUpstreamError);
+    st.on('close', onUpstreamClose);
+    st.on('end', onUpstreamEnd);
+  };
+
+  const unbindUpstream = (st) => {
+    if (!st || typeof st.removeListener !== 'function') return;
+    st.removeListener('data', onUpstreamData);
+    st.removeListener('error', onUpstreamError);
+    st.removeListener('close', onUpstreamClose);
+    st.removeListener('end', onUpstreamEnd);
+  };
+
+  bindUpstream(currentUpstream);
 }
 
 /**
@@ -3761,6 +3993,8 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
   }
 
   if (output.length === 0) {
+    const healMsgId = 'msg_heal_' + Date.now();
+    const healNotice = '[网关服务提示：上游推理返回空响应。建议重试当前请求或切换备用模型。]';
     return {
       id: respId,
       object: 'response',
@@ -3774,7 +4008,14 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
         code: 'upstream_stream_empty_truncated',
         message: 'Upstream returned an empty response with no content or tool calls.'
       },
-      output: [],
+      output: [{
+        id: healMsgId,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+      }],
       usage: normalizeResponsesUsage(anthropicJson.usage, 1, 1)
     };
   }
@@ -5514,6 +5755,10 @@ function repairCodexLocaleAndEnvironment(options = {}) {
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
   NATIVE_RESPONSES_MODELS,
+  nativeResponsesUnsupportedModels,
+  markNativeResponsesUnsupported,
+  clearNativeResponsesUnsupported,
+  isNativeResponsesUnsupported,
   isNativeResponsesModel,
   ANTHROPIC_MODELS,
   MODEL_COMPATIBILITY_ALIASES,

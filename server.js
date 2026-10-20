@@ -1955,8 +1955,9 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
-    // 2. Check if Responses protocol is unsupported on upstream for native models
-    if (isResponsesReq && statusCode === 400 && parsedBody && !clientAborted && !clientRes.destroyed) {
+    // 2. Check if Responses protocol is unsupported on upstream for native models (404, 405, 501, or 400 ModelProtocolUnsupported)
+    const isResponsesProtocolError = isResponsesReq && (statusCode === 404 || statusCode === 405 || statusCode === 501 || statusCode === 400);
+    if (isResponsesProtocolError && parsedBody && !clientAborted && !clientRes.destroyed) {
       const errChunks = [];
       let errBytes = 0;
       upstreamRes.on('data', chunk => {
@@ -1980,12 +1981,27 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
         const errText = Buffer.concat(errChunks).toString('utf8');
-        if (errText.includes('ModelProtocolUnsupported') || errText.includes('does not support /responses')) {
-          console.log(`[Protocol Fallback] Model "${parsedBody.model}" triggered ModelProtocolUnsupported on /responses. Bridging...`);
+        const reqModel = parsedBody && parsedBody.model;
+        const isUnsupported = (
+          statusCode === 404 ||
+          statusCode === 405 ||
+          statusCode === 501 ||
+          errText.includes('ModelProtocolUnsupported') ||
+          errText.includes('does not support /responses') ||
+          errText.includes('Unsupported endpoint') ||
+          errText.includes('unknown endpoint') ||
+          errText.includes('not supported')
+        );
+
+        if (isUnsupported) {
+          console.log(`[Protocol Fallback] Model "${reqModel}" returned ${statusCode} on native /responses. Marking as unsupported and bridging to ChatCompletions...`);
+          if (codexAdapter.markNativeResponsesUnsupported && reqModel) {
+            codexAdapter.markNativeResponsesUnsupported(reqModel);
+          }
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
           if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
-          dispatchResponsesRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
+          bridgeResponsesToChatRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
         } else {
           finishRequest();
           clientRes.removeListener('close', clientCloseHandler);
@@ -2528,9 +2544,32 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     responded = true;
 
     if (isStream) {
+      const reconnectFn = (onSuccess, onFailure) => {
+        try {
+          const retryReq = transport.request(proxyOptions);
+          retryReq.setTimeout(180000, () => {
+            retryReq.destroy(new Error('Reconnect attempt timed out'));
+          });
+          retryReq.once('error', (err) => {
+            onFailure(err);
+          });
+          retryReq.once('response', (retryUpstreamRes) => {
+            currentUpstreamRes = retryUpstreamRes;
+            if (retryUpstreamRes.statusCode === 200) {
+              onSuccess(retryUpstreamRes);
+            } else {
+              onFailure(new Error(`Reconnect upstream returned status ${retryUpstreamRes.statusCode}`));
+            }
+          });
+          retryReq.end(chatBody);
+        } catch (e) {
+          onFailure(e);
+        }
+      };
+
       codexAdapter.bridgeResponsesStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
         finishRequest();
-      }, sessionId);
+      }, sessionId, reconnectFn);
       upstreamRes.on('error', (err) => {
         console.error('[Bridge Stream Error]', err.message);
         finishRequest();
@@ -2919,9 +2958,32 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     responded = true;
 
     if (isStream) {
+      const reconnectFn = (onSuccess, onFailure) => {
+        try {
+          const retryReq = transport.request(proxyOptions);
+          retryReq.setTimeout(180000, () => {
+            retryReq.destroy(new Error('Reconnect attempt timed out'));
+          });
+          retryReq.once('error', (err) => {
+            onFailure(err);
+          });
+          retryReq.once('response', (retryUpstreamRes) => {
+            currentUpstreamRes = retryUpstreamRes;
+            if (retryUpstreamRes.statusCode === 200) {
+              onSuccess(retryUpstreamRes);
+            } else {
+              onFailure(new Error(`Reconnect upstream returned status ${retryUpstreamRes.statusCode}`));
+            }
+          });
+          retryReq.end(anthropicBody);
+        } catch (e) {
+          onFailure(e);
+        }
+      };
+
       codexAdapter.bridgeAnthropicStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
         finishRequest();
-      }, sessionId);
+      }, sessionId, reconnectFn);
       upstreamRes.on('error', (err) => {
         console.error('[Anthropic Stream Error]', err.message);
         finishRequest();
@@ -3447,6 +3509,26 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
           desc: `官方上游支持全量模型目录，当前本地清单存在未同步模型，点击一键修复即可全量补全并增量合并`
         });
       }
+
+      // OpenCode 2.0+ 原生智能体注册核验 (Rule 9)
+      const hasAgentGoal = Boolean(parsed && parsed.agent && parsed.agent.goal && (parsed.agent.goal.mode === 'primary' || parsed.agent.goal.mode === 'all'));
+      const hasAgentGoalVerify = Boolean(parsed && parsed.agent && parsed.agent['goal-verify']);
+      const agentDeclared = hasAgentGoal && hasAgentGoalVerify;
+      report.opencodeConfig.agentDeclaration = {
+        declared: agentDeclared,
+        hasGoal: hasAgentGoal,
+        hasGoalVerify: hasAgentGoalVerify
+      };
+
+      if (!agentDeclared) {
+        report.issues.push({
+          id: 'opencode_agent_declaration',
+          severity: 'medium',
+          title: 'opencode.jsonc 缺少 OpenCode 2.0 原生智能体定义 (Rule 9)',
+          desc: 'OpenCode 2.0 Slash 指令无法直接作为桌面/Web 下拉智能体调度；需在 opencode.jsonc 的 agent 字段中显式声明 agent.goal (主模式) 与 agent[\'goal-verify\'] (审阅模式)，一键修复即可自动补齐并保护定制 Prompt'
+        });
+      }
+
       if (report.opencodeConfig.hasDeadPort3001) {
         report.issues.push({ id: 'dead_port_3001', severity: 'high', title: '检测到旧残留端口 3001', desc: '配置文件中仍有请求指向 3001 导致 ConnectionRefused，可一键重定向至 4010 网关' });
       }
@@ -3817,6 +3899,13 @@ async function executeSystemRepair(options = {}) {
         ? '已自动生成 opencode.jsonc 并绑定 4010 智能网关'
         : `已清洗旧复数 providers 冲突，${syncTag}${migMsg}，保留当前首选模型 (${harmRes.currentModel})`
     });
+    if (harmRes.agentGoalInjected) {
+      results.push({
+        item: 'OpenCode Agent Declaration',
+        success: true,
+        message: '已自动补齐 OpenCode 2.0 原生 agent.goal (主模式) 与 agent[\'goal-verify\'] (审阅模式) 声明，并严格保护用户定制 Prompt'
+      });
+    }
   } catch (e) {
     results.push({ item: 'OpenCode Config', success: false, message: '修复 opencode.jsonc 失败: ' + e.message });
   }

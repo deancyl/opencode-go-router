@@ -557,7 +557,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     data.provider['one-api'].options.apiKey = 'local-router';
   }
 
-  // 3.1 Ensure Native Goal & Verifier Agent Definitions for OpenCode 2.0 & OpenChamber
+  // 3.1 Ensure Native Goal & Verifier Agent Definitions for OpenCode 2.0 & OpenChamber (Rule 9)
   let agentGoalInjected = false;
   if (!data.agent || typeof data.agent !== 'object') {
     data.agent = {};
@@ -570,6 +570,19 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
       prompt: "Execute explicit goals persistently. Use goal tools to track state and checkpoints. Make concrete progress; claim completion only with verification evidence. Report only genuine blockers."
     };
     agentGoalInjected = true;
+  } else {
+    // Strictly preserve user customized prompt if exists
+    if (!data.agent.goal.prompt) {
+      data.agent.goal.prompt = "Execute explicit goals persistently. Use goal tools to track state and checkpoints. Make concrete progress; claim completion only with verification evidence. Report only genuine blockers.";
+      agentGoalInjected = true;
+    }
+    if (!data.agent.goal.mode) {
+      data.agent.goal.mode = "primary";
+      agentGoalInjected = true;
+    }
+    if (!data.agent.goal.description) {
+      data.agent.goal.description = "Execute an explicit user goal with persistent progress and evidence-gated completion.";
+    }
   }
   if (!data.agent['goal-verify']) {
     data.agent['goal-verify'] = {
@@ -578,12 +591,23 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
       hidden: true
     };
     agentGoalInjected = true;
+  } else {
+    if (!data.agent['goal-verify'].mode) {
+      data.agent['goal-verify'].mode = "subagent";
+      agentGoalInjected = true;
+    }
+    if (data.agent['goal-verify'].hidden === undefined) {
+      data.agent['goal-verify'].hidden = true;
+    }
   }
 
-  // 4. Model selection: preserve user's valid choice, default to deepseek-v4.1-flash
+  // 4. Model selection: preserve user's valid choice, support Luna as preferred or fallback default
   let modelPreserved = true;
-  if (!data.model) {
-    data.model = 'opencode-go/deepseek-v4.1-flash';
+  if (options.preferredModel) {
+    data.model = options.preferredModel;
+    modelPreserved = false;
+  } else if (!data.model) {
+    data.model = options.useLuna ? 'opencode-go/gpt-5.6-luna' : 'opencode-go/deepseek-v4.1-flash';
     modelPreserved = false;
   }
 
