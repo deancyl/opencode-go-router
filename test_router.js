@@ -25,14 +25,14 @@ async function runTests() {
   console.log('--- Starting OpenCode Go Router Verification Suite ---');
 
   const prodStatsPath = path.join(__dirname, 'compression-stats.json');
-  const prodStatsBakPath = path.join(__dirname, 'compression-stats.prod.backup.json');
-  if (fs.existsSync(prodStatsPath) && !fs.existsSync(prodStatsBakPath)) {
-    try { fs.copyFileSync(prodStatsPath, prodStatsBakPath); } catch (_) {}
+  const userRuntimeStatsBak = path.join(__dirname, 'compression-stats.user-runtime.bak');
+  if (fs.existsSync(prodStatsPath)) {
+    try { fs.copyFileSync(prodStatsPath, userRuntimeStatsBak); } catch (_) {}
   }
   const prodHistPath = path.join(__dirname, 'compression-history.json');
-  const prodHistBakPath = path.join(__dirname, 'compression-history.prod.backup.json');
-  if (fs.existsSync(prodHistPath) && !fs.existsSync(prodHistBakPath)) {
-    try { fs.copyFileSync(prodHistPath, prodHistBakPath); } catch (_) {}
+  const userRuntimeHistBak = path.join(__dirname, 'compression-history.user-runtime.bak');
+  if (fs.existsSync(prodHistPath)) {
+    try { fs.copyFileSync(prodHistPath, userRuntimeHistBak); } catch (_) {}
   }
 
   const mockPort = await getFreePort();
@@ -6792,7 +6792,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -7038,7 +7038,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7547,7 +7547,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7624,7 +7624,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7635,7 +7635,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 1. Verify package.json declares v3.8.2, v3.8.3, v3.9.0, v3.10.0 or v3.10.1 and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7657,7 +7657,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
@@ -7666,7 +7666,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 1. Verify package.json declares v3.8.3, v3.9.0, v3.10.0 or v3.10.1
     const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
 
     // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
     const routerModule = require('./server');
@@ -7692,7 +7692,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
     // 5. Verify Web UI renders v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro version badge');
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.11.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
@@ -7967,11 +7967,11 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro'), 'Web UI must render version badge');
 
     // 6. Verify package.json declares 3.9.0, 3.10.0 or 3.10.1
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.9.0', '3.10.0', '3.10.1'].includes(pkgJson153.version), 'package.json version must be 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson153.version), 'package.json version must be 3.9.0, 3.10.0 or 3.10.1');
 
     console.log('✓ CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence verified');
 
@@ -8093,11 +8093,11 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 7. Verify package.json declares 3.10.0 or 3.10.1 and Web UI renders badge
     const pkgJson154 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.10.0', '3.10.1'].includes(pkgJson154.version), 'package.json version must be 3.10.0 or 3.10.1');
+    assert.ok(['3.10.0', '3.10.1', '3.11.0'].includes(pkgJson154.version), 'package.json version must be 3.10.0 or 3.10.1');
 
     const uiRes154 = await request('/balancer/ui', { method: 'GET' });
     assert.strictEqual(uiRes154.statusCode, 200);
-    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro'), 'Web UI must render v3.10.0 Pro or v3.10.1 Pro badge');
+    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro'), 'Web UI must render v3.10.0 Pro or v3.10.1 Pro badge');
     assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
 
     console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
@@ -8294,6 +8294,8 @@ $ProgressPreference = 'SilentlyContinue'
       assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'authorization': 'Bearer test-top15-secret-pwd' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Correct Bearer UI password must authorize');
       assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'authorization': 'Bearer key-account-1' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Valid account API key in Authorization header must authorize');
       assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'x-api-key': 'key-account-2' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Valid account API key in x-api-key header must authorize');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'authorization': 'Bearer local-router' }, socket: { remoteAddress: '127.0.0.1' } }), true, 'Loopback request with local-router token must authorize');
+      assert.strictEqual(serverModule.isAuthorized({ url: '/', headers: { 'authorization': 'Bearer local-router' }, socket: { remoteAddress: '192.168.1.100' } }), false, 'LAN request with local-router token must be rejected when uiPassword is set');
     } finally {
       if (origUiPassword155 !== undefined) {
         serverModule.config.uiPassword = origUiPassword155;
@@ -8349,8 +8351,228 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Top 15 Architectural Defect Fixes Fully Verified (Session Affinity, Think Streaming, Contiguity, Fallback Normalization, Atomic Writes, LAN Auth, Air-Gapped DOM XSS, Safe Pkill, SQLite Defense, C# Tray & Scripts)');
 
+    // =========================================================================
+    // [Test 156] v3.11.0 Deep Optimization Verification:
+    // 1. RTK Git Transfer Progress Denoising (cleanGitOutput) & Conflict Exemption
+    // 2. RTK Build & Package Manager Routine Folding (cleanBuildAndPkgOutput) & Error Preservation
+    // 3. llmtrim / DCP Timestamped Runtime Log Deduplication (dedupLogLines) & Code Exemption
+    // 4. Bilingual CJK Token Preservation Across Time Ranges (1h / 24h / 7d) & cacheZoneHits Bucket Tracking
+    // 5. Outer JSON { stdout, stderr, output } Memoization & Retry Idempotency (_isRetryAttempt)
+    // 6. Enhanced Simplified Chinese (zh-CN) Codex Localization & Web UI Shortcuts
+    // =========================================================================
+    console.log('\n--- [Test 156] v3.11.0 Deep Optimization Verification ---');
+
+    // 1. RTK Git Transfer Progress Denoising
+    const gitTransferSample = [
+      'Cloning into \'opencode-go-router\'...',
+      'remote: Enumerating objects: 1420, done.',
+      'remote: Counting objects: 100% (1420/1420), done.',
+      'remote: Compressing objects: 100% (650/650), done.',
+      'Receiving objects: 100% (1420/1420), 4.25 MiB | 11.20 MiB/s, done.',
+      'Resolving deltas: 100% (890/890), completed with 45 local objects.',
+      'From https://github.com/deancyl/opencode-go-router',
+      '   a1b2c3d..e4f5g6h  main -> origin/main'
+    ].join('\n');
+    const cleanedGit = contextCompactor.cleanGitOutput(gitTransferSample);
+    assert.ok(cleanedGit.includes('[Git: 5 object transfer progress lines folded'), 'Git transfer progress lines must be folded');
+    assert.ok(cleanedGit.includes('a1b2c3d..e4f5g6h  main -> origin/main'), 'Git branch ref summary must be preserved');
+
+    // 2. RTK Build & Package Manager Routine Folding
+    const cargoBuildSample = [
+      '   Compiling libc v0.2.155',
+      '   Compiling cfg-if v1.0.0',
+      '   Compiling autocfg v1.3.0',
+      '   Compiling memchr v2.7.2',
+      '   Compiling serde_derive v1.0.203',
+      '   Compiling serde v1.0.203',
+      '   Compiling tokio v1.38.0',
+      'warning: unused variable: `x` at src/main.rs:42:9',
+      '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.12s'
+    ].join('\n');
+    const cleanedCargo = contextCompactor.cleanBuildAndPkgOutput(cargoBuildSample);
+    assert.ok(cleanedCargo.includes('[Build/Pkg: 5 routine dependency/compile lines folded]'), 'Routine Cargo compile lines must fold');
+    assert.ok(cleanedCargo.includes('warning: unused variable: `x` at src/main.rs:42:9'), 'Compiler warnings must be 100% preserved');
+    assert.ok(cleanedCargo.includes('Finished `dev` profile'), 'Final build summary must be preserved');
+
+    // 3. llmtrim / DCP Timestamped Runtime Log Deduplication
+    const repeatedLogs = [
+      '2026-10-19T12:00:01.001Z [INFO] Worker heartbeat poll status=IDLE queue=0',
+      '2026-10-19T12:00:02.002Z [INFO] Worker heartbeat poll status=IDLE queue=0',
+      '2026-10-19T12:00:03.003Z [INFO] Worker heartbeat poll status=IDLE queue=0',
+      '2026-10-19T12:00:04.004Z [INFO] Worker heartbeat poll status=IDLE queue=0',
+      '2026-10-19T12:00:05.005Z [INFO] Worker heartbeat poll status=IDLE queue=0',
+      '2026-10-19T12:00:06.100Z [ERROR] Database connection timeout at pool.js:88:12'
+    ].join('\n');
+    const dedupedLogs = contextCompactor.dedupLogLines(repeatedLogs);
+    assert.ok(dedupedLogs.includes('[llmtrim Log Dedup: Identical log line repeated 4 more times]'), 'Timestamped identical logs must fold');
+    assert.ok(dedupedLogs.includes('[ERROR] Database connection timeout at pool.js:88:12'), 'Error log line must be preserved');
+
+    // 4. Bilingual CJK Token Preservation in 1h/24h/7d & cacheZoneHits Bucket Tracking
+    contextCompactor.resetCompressionStats();
+    const cjkLogSample = [
+      '2026-10-19T12:00:01Z [INFO] 正在轮询集群节点心跳状态：当前队列为空，所有推理通道正常就绪',
+      '2026-10-19T12:00:02Z [INFO] 正在轮询集群节点心跳状态：当前队列为空，所有推理通道正常就绪',
+      '2026-10-19T12:00:03Z [INFO] 正在轮询集群节点心跳状态：当前队列为空，所有推理通道正常就绪',
+      '2026-10-19T12:00:04Z [INFO] 正在轮询集群节点心跳状态：当前队列为空，所有推理通道正常就绪',
+      '2026-10-19T12:00:05Z [INFO] 正在轮询集群节点心跳状态：当前队列为空，所有推理通道正常就绪'
+    ].join('\n');
+    const sess156 = 'session_v311_cjk_156';
+    const cjkComp1 = contextCompactor.compactText(cjkLogSample, { enabled: true, model: 'deepseek-v4.1-flash' }, sess156);
+    const cjkComp2 = contextCompactor.compactText(cjkLogSample, { enabled: true, model: 'deepseek-v4.1-flash' }, sess156);
+    assert.strictEqual(cjkComp1, cjkComp2, 'Turn 2 must hit session memo');
+    const statsAll156 = contextCompactor.getStatsByRange('all');
+    const stats1h156 = contextCompactor.getStatsByRange('1h');
+    assert.strictEqual(stats1h156.savedTokens, statsAll156.savedTokens, '1h range must preserve exact CJK dynamic savedTokens matching all range');
+    assert.strictEqual(stats1h156.modules.cacheZone.cacheZoneHits, 1, '1h range must track cacheZoneHits in time bucket');
+
+    // 5. Retry Idempotency (_isRetryAttempt)
+    const roundsBeforeRetry = contextCompactor.getCompressionStats().modules.schema.alignedRounds;
+    contextCompactor.compactToolsList(sortedTools, { alignToolsSchema: true, _isRetryAttempt: true });
+    const roundsAfterRetry = contextCompactor.getCompressionStats().modules.schema.alignedRounds;
+    assert.strictEqual(roundsAfterRetry, roundsBeforeRetry, 'Failover retry (_isRetryAttempt: true) must NOT double-increment alignedRounds');
+
+    // 6. Enhanced Codex zh-CN Localization & Web UI Shortcuts
+    assert.ok(codexAdapter.CODEX_ZHCN_TRANSLATE_SCRIPT.includes('Git 工作树'), 'CODEX_ZHCN_TRANSLATE_SCRIPT must include Worktree translation');
+    assert.ok(codexAdapter.CODEX_ZHCN_TRANSLATE_SCRIPT.includes('审查代码变更'), 'CODEX_ZHCN_TRANSLATE_SCRIPT must include Review changes translation');
+    const uiRes156 = await request('/balancer/ui', { method: 'GET' });
+    assert.ok(uiRes156.body.includes('toggleAllCompModuleBodies()'), 'Web UI must include 1-click advanced switches collapse toggle');
+    assert.ok(uiRes156.body.includes('v3.11.0 Pro'), 'Web UI must render v3.11.0 Pro version badge');
+    assert.ok(uiRes156.body.includes('.comp-range-btn.active, .time-range-pill.active'), 'Web UI must style .time-range-pill.active buttons');
+    assert.ok(uiRes156.body.includes("const overviewDocBadge = document.getElementById('doctor-overview-badge');"), 'runDoctorCheck must synchronize #doctor-overview-badge');
+
+    // 7. Multi-Line Source Code File Read Exemption & JSON Content-Block Unpacking
+    const sourceCodeReadSample = Array.from({ length: 20 }, (_, idx) => {
+      if (idx === 0) return "const assert = require('node:assert');";
+      if (idx === 1) return "const fs = require('node:fs');";
+      if (idx === 2) return "function testFixture() {";
+      if (idx === 3) return '  const psXml = \'#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><S S="Error">test</S></Objs>\';';
+      if (idx === 19) return "module.exports = { testFixture };";
+      return `  const line${idx} = ${idx};`;
+    }).join('\n');
+    assert.strictEqual(contextCompactor.isMultiLineSourceFileRead(sourceCodeReadSample), true, 'Multi-line source file read must be detected');
+    const origBeforeSrcRead = contextCompactor.getCompressionStats().totalOriginalChars;
+    const srcReadOut = contextCompactor.compactText(sourceCodeReadSample, { enabled: true }, 'sess_src_read_156');
+    assert.strictEqual(srcReadOut, sourceCodeReadSample, 'Multi-line source code file read must be 100% exempt from mutation');
+    assert.strictEqual(contextCompactor.getCompressionStats().totalOriginalChars, origBeforeSrcRead, 'Exempt source code file read must not inflate totalOriginalChars');
+
+    // 8. JSON-Stringified Array Tool Output Unpacking & Retry Session Memo Normalization
+    const jsonWrappedLogs = JSON.stringify([
+      {
+        type: 'input_text',
+        text: [
+          '2026-10-19T13:00:01Z [INFO] Polling status=READY node=worker-1',
+          '2026-10-19T13:00:02Z [INFO] Polling status=READY node=worker-1',
+          '2026-10-19T13:00:03Z [INFO] Polling status=READY node=worker-1',
+          '2026-10-19T13:00:04Z [INFO] Polling status=READY node=worker-1',
+          '2026-10-19T13:00:05Z [INFO] Polling status=READY node=worker-1'
+        ].join('\n')
+      }
+    ]);
+    const unpackedComp1 = contextCompactor.compactText(jsonWrappedLogs, { enabled: true }, 'sess_retry_test-r1792425000');
+    assert.ok(unpackedComp1.includes('[llmtrim Log Dedup: Identical log line repeated 4 more times]'), 'JSON-wrapped input_text array must be unpacked and compressed');
+    const savedBeforeRetryTurn = contextCompactor.getCompressionStats().totalSavedChars;
+    const unpackedComp2 = contextCompactor.compactText(jsonWrappedLogs, { enabled: true }, 'sess_retry_test-r1792425009');
+    assert.strictEqual(unpackedComp2, unpackedComp1, 'Retry session ID (-r<ts>) must hit normalized session memo');
+    assert.strictEqual(contextCompactor.getCompressionStats().totalSavedChars, savedBeforeRetryTurn, 'Normalized retry session ID must not double-count savedChars');
+
+    // 9. RTK Search/Tree Folding (cleanSearchAndTreeOutput) & Minified Grep Line Guard
+    const rgManyMatches = Array.from({ length: 35 }, (_, idx) => `server.js:${100 + idx}:  const item${idx} = processItem(${idx});`).join('\n');
+    const cleanedRg = contextCompactor.cleanSearchAndTreeOutput(rgManyMatches);
+    assert.ok(cleanedRg.includes('intermediate matches in server.js folded'), 'Excessive per-file rg matches (>25) must fold cleanly');
+    assert.ok(cleanedRg.includes('server.js:100:'), 'First rg matches must be preserved with line numbers');
+    assert.ok(cleanedRg.includes('server.js:134:'), 'Last rg matches must be preserved with line numbers');
+
+    const minifiedGrepLine = 'assets/office-preview-engine.js:1:' + 'function(a,b,c){return a+b+c;};'.repeat(30);
+    const cleanedMinified = contextCompactor.cleanSearchAndTreeOutput(minifiedGrepLine);
+    assert.ok(cleanedMinified.includes('[RTK Search: Minified/long line tail omitted'), 'Minified single-line grep match (>550 chars) must be truncated safely');
+
+    // 10. Deterministic System Prompt & <skills_instructions> Compaction (compactSystemPrompt)
+    const sampleSkillsPrompt = '<skills_instructions>\n## Skills\n### Available skills\n' +
+      Array.from({ length: 20 }, (_, i) => `- domain-skill-${i}: Perform comprehensive analysis of domain ${i} workflows. Use this skill whenever the user asks to configure, debug, or inspect domain ${i} pipelines in detail (file: r1/domain-skill-${i}/SKILL.md)`).join('\n') +
+      '\n</skills_instructions>';
+    const compactedSkillsPrompt = contextCompactor.compactSystemPrompt(sampleSkillsPrompt, { enabled: true, cleanDevOpsOutput: true, cacheZoneFreeze: true }, 'sess_sys_156', false);
+    assert.ok(compactedSkillsPrompt.length < sampleSkillsPrompt.length, 'Verbose <skills_instructions> descriptions must be deterministically compacted');
+    assert.ok(compactedSkillsPrompt.includes('(file: r1/domain-skill-0/SKILL.md)') && compactedSkillsPrompt.includes('(file: r1/domain-skill-19/SKILL.md)'), 'All skill names and file paths must be 100% preserved');
+
+    // 11. Top-level cleanCliMetadata & Rule 26 Response-Chain Root Session Reverse Tracing
+    assert.strictEqual(typeof contextCompactor.cleanCliMetadata, 'function', 'cleanCliMetadata must be exported as a top-level transformer');
+    assert.strictEqual(contextCompactor.normalizeCompressibleOrigChars, undefined, 'Artificial denominator manipulator normalizeCompressibleOrigChars must be completely removed');
+    const cliMetaSample = 'Chunk ID: 9a8b7c\nWall time: 0.042 seconds\nProcess exited with code 0\nOriginal token count: 512\nOutput:\nHello Clean World\n\n\n\nDone';
+    const cleanedMeta = contextCompactor.cleanCliMetadata(cliMetaSample);
+    assert.strictEqual(cleanedMeta, 'Hello Clean World\n\nDone', 'cleanCliMetadata must strip Codex wrapper header and collapse 3+ blank lines');
+
+    codexAdapter.recordResponseSession('resp_turn_1', 'session-root-chain-156');
+    codexAdapter.recordResponseSession('resp_turn_2', 'resp_turn_1');
+    const resolvedChainSess = codexAdapter.extractOrDeriveSessionId({ headers: {} }, { previous_response_id: 'resp_turn_2', model: 'deepseek-v4.1-flash' });
+    assert.strictEqual(resolvedChainSess, 'session-root-chain-156', 'Rule 26 must reverse-trace previous_response_id chain back to root sessionId');
+
+    console.log('✓ v3.11.0 Deep Optimization Verification (RTK Git/Build/Log Dedup, Bilingual Range Stats, Retry Idempotency, zh-CN Codex & UI/UX) passed');
+
+    // --- [Test 157] Stream Degeneration Circuit Breaker & Windows Native PowerShell Anchor Verification ---
+    console.log('\n--- [Test 157] Stream Degeneration Circuit Breaker & Windows Native PowerShell Anchor Verification ---');
+    // 1. Model Normalization
+    assert.strictEqual(contextCompactor.normalizeModelName('deepseek-flash'), 'deepseek-v4.1-flash', 'deepseek-flash must normalize to deepseek-v4.1-flash');
+    assert.strictEqual(contextCompactor.normalizeModelName('deepseek-v4-flash'), 'deepseek-v4.1-flash', 'deepseek-v4-flash must normalize to deepseek-v4.1-flash');
+    assert.strictEqual(contextCompactor.normalizeModelName('deepseek-pro'), 'deepseek-v4-pro', 'deepseek-pro must normalize to deepseek-v4-pro');
+
+    // 2. Windows Tool Args Auto-Correction
+    const origPlat = process.platform;
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const rawBashArgs = JSON.stringify({ cmd: 'Get-Process', shell: 'bash' });
+      const fixedArgs = codexAdapter.autoCorrectToolArgs('exec_command', rawBashArgs);
+      assert.strictEqual(JSON.parse(fixedArgs).shell, 'powershell', 'exec_command with bash must auto-correct to powershell on Windows');
+    } finally {
+      Object.defineProperty(process, 'platform', { value: origPlat });
+    }
+
+    // 3. Windows Tool Schema & Prompt Anchor
+    const convPayload = codexAdapter.convertResponsesToChatPayload({
+      model: 'deepseek-v4.1-flash',
+      platform: 'win32',
+      instructions: 'You are Codex.',
+      tools: [{
+        type: 'function',
+        name: 'exec_command',
+        description: 'Runs command',
+        parameters: { properties: { shell: { type: 'string', enum: ['bash', 'powershell'] } } }
+      }],
+      input: [{ type: 'message', role: 'user', content: 'Run check' }]
+    });
+    const convTool = convPayload.tools.find(t => t.function?.name === 'exec_command');
+    assert.strictEqual(convTool.function.parameters.properties.shell.default, 'powershell', 'Default shell must be powershell');
+    assert.ok(convPayload.messages[0].content.includes('Windows Native PowerShell'), 'System instruction must contain Windows Environment Lock');
+
+    // 4. Stream Degeneration Detector Unit & End-to-End Test
+    const dDetector = new codexAdapter.StreamDegenerationDetector({ maxRepeatCount: 4, minPhraseLen: 6 });
+    assert.strictEqual(dDetector.feed('Let me search. ').shouldHalt, false);
+    assert.strictEqual(dDetector.feed('Let me search. ').shouldHalt, false);
+    assert.strictEqual(dDetector.feed('Let me search. ').shouldHalt, false);
+    assert.strictEqual(dDetector.feed('Let me search. ').shouldHalt, true, 'Must halt on 4th consecutive repeat');
+
+    const sseChunks = [];
+    const mockClientStream = {
+      writableEnded: false,
+      writeHead: () => {},
+      write: (c) => sseChunks.push(c),
+      end: () => { mockClientStream.writableEnded = true; },
+      once: () => {},
+      removeListener: () => {}
+    };
+    const mockUp = new (require('events').EventEmitter)();
+    mockUp.destroy = () => { mockUp.destroyed = true; };
+    codexAdapter.bridgeResponsesStream(mockUp, mockClientStream, 'deepseek-v4.1-flash', 'test_degen_157', () => {});
+    mockUp.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"Initial. "}}]}\n\n'));
+    for (let i = 0; i < 5; i++) {
+      mockUp.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"Let me search. "}}]}\n\n'));
+    }
+    assert.strictEqual(mockClientStream.writableEnded, true, 'Stream must end cleanly on degeneration circuit break');
+    assert.strictEqual(mockUp.destroyed, true, 'Upstream stream must be destroyed to prevent token waste');
+    assert.ok(sseChunks.join('').includes('网关智能防御：检测到模型输出产生重复循环'), 'Must emit user-friendly degeneration notice');
+    console.log('✓ Stream Degeneration Circuit Breaker & Windows Native PowerShell Anchor (Test 157) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 155 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 157 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
@@ -8380,19 +8602,24 @@ $ProgressPreference = 'SilentlyContinue'
         }
       }
     } catch (e) {}
-    // Restore production statistics and history from backups
+    // Restore user runtime statistics and history from backups
     try {
-      const prodStatsBak = path.join(__dirname, 'compression-stats.prod.backup.json');
       const prodStatsTarget = path.join(__dirname, 'compression-stats.json');
-      if (fs.existsSync(prodStatsBak)) {
-        fs.copyFileSync(prodStatsBak, prodStatsTarget);
-        fs.copyFileSync(prodStatsBak, `${prodStatsTarget}.bak`);
+      const restoreStatsSrc = fs.existsSync(userRuntimeStatsBak)
+        ? userRuntimeStatsBak
+        : path.join(__dirname, 'compression-stats.prod.backup.json');
+      if (fs.existsSync(restoreStatsSrc)) {
+        fs.copyFileSync(restoreStatsSrc, prodStatsTarget);
+        fs.copyFileSync(restoreStatsSrc, `${prodStatsTarget}.bak`);
       }
-      const prodHistBak = path.join(__dirname, 'compression-history.prod.backup.json');
+      if (fs.existsSync(userRuntimeStatsBak)) {
+        try { fs.unlinkSync(userRuntimeStatsBak); } catch (_) {}
+      }
       const prodHistTarget = path.join(__dirname, 'compression-history.json');
-      if (fs.existsSync(prodHistBak)) {
-        fs.copyFileSync(prodHistBak, prodHistTarget);
-        fs.copyFileSync(prodHistBak, `${prodHistTarget}.bak`);
+      if (fs.existsSync(userRuntimeHistBak)) {
+        fs.copyFileSync(userRuntimeHistBak, prodHistTarget);
+        fs.copyFileSync(userRuntimeHistBak, `${prodHistTarget}.bak`);
+        try { fs.unlinkSync(userRuntimeHistBak); } catch (_) {}
       }
     } catch (e) {
       console.warn('Warning: Failed to restore production stats in teardown:', e.message);

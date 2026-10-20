@@ -1730,6 +1730,76 @@ function extractPatchInput(rawArgs) {
 /**
  * Converts OpenAI Responses API JSON payload to standard OpenAI ChatCompletions JSON payload
  */
+
+/**
+ * Real-time Stream Degeneration & Repetition Loop Detector (Rule 35)
+ * Detects degenerate token loops (e.g. "Let me search. Let me search...") in streaming chunks
+ * and performs millisecond-level circuit breaking to protect user context, UI stability and token quotas.
+ */
+class StreamDegenerationDetector {
+  constructor(options = {}) {
+    this.maxRepeatCount = options.maxRepeatCount || 4;
+    this.minPhraseLen = options.minPhraseLen || 6;
+    this.maxPhraseLen = options.maxPhraseLen || 80;
+    this.recentBuffer = '';
+    this.isTriggered = false;
+    this.triggeredPhrase = '';
+  }
+
+  feed(textChunk) {
+    if (this.isTriggered) return { shouldHalt: true, triggeredPhrase: this.triggeredPhrase };
+    if (!textChunk || typeof textChunk !== 'string') return { shouldHalt: false };
+    this.recentBuffer += textChunk;
+    if (this.recentBuffer.length > 800) {
+      this.recentBuffer = this.recentBuffer.slice(-800);
+    }
+    const buf = this.recentBuffer;
+    const len = buf.length;
+    const maxSearchLen = Math.min(this.maxPhraseLen, Math.floor(len / this.maxRepeatCount));
+    for (let pLen = this.minPhraseLen; pLen <= maxSearchLen; pLen++) {
+      const phrase = buf.slice(len - pLen);
+      // Skip pure whitespace or pure punctuation
+      if (/^\s*$/.test(phrase) || /^[-_=\s\r\n.,;:]+$/.test(phrase)) continue;
+
+      let count = 1;
+      let pos = len - pLen * 2;
+      while (pos >= 0 && buf.slice(pos, pos + pLen) === phrase) {
+        count++;
+        pos -= pLen;
+        if (count >= this.maxRepeatCount) {
+          this.isTriggered = true;
+          this.triggeredPhrase = phrase.trim();
+          return { shouldHalt: true, triggeredPhrase: this.triggeredPhrase };
+        }
+      }
+    }
+    return { shouldHalt: false };
+  }
+}
+
+/**
+ * Windows PowerShell Execution & Tool Call Auto-Correction Barrier
+ * When running on Windows, automatically corrects "shell": "bash" in exec_command arguments to "powershell".
+ */
+function autoCorrectToolArgs(toolName, argsStr) {
+  if (toolName !== 'exec_command' || !argsStr || typeof argsStr !== 'string') {
+    return argsStr;
+  }
+  const isWindows = (process.platform === 'win32');
+  if (!isWindows) return argsStr;
+
+  try {
+    const parsed = JSON.parse(argsStr);
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.shell === 'bash') {
+        parsed.shell = 'powershell';
+        return JSON.stringify(parsed);
+      }
+    }
+  } catch (_) {}
+  return argsStr;
+}
+
 function convertResponsesToChatPayload(body, compressionOptions = null, sessionId = null) {
   const messages = [];
   if (body.instructions && typeof body.instructions === 'string') {
@@ -1873,13 +1943,36 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
     }
   }
 
+  const isWindowsHost = (process.platform === 'win32') ||
+    (typeof body === 'object' && body && (
+      String(body.platform || '').toLowerCase().includes('win') ||
+      String(body.targetPlatform || '').toLowerCase().includes('win')
+    ));
+
   // Tools mapping
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     chatPayload.tools = body.tools.map((t, idx) => {
       const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
-      const description = t.function?.description || t.description || '';
+      let description = t.function?.description || t.description || '';
       const rawParams = extractRawToolParams(t);
       const parameters = normalizeToolParameters(rawParams);
+
+      // Windows PowerShell Environment & Schema Anchor:
+      // Prevent models from mistakenly picking bash and entering "Bash 接管 / 切回 PowerShell" loop
+      if (isWindowsHost && (toolName === 'exec_command' || toolName.includes('shell') || toolName.includes('command'))) {
+        if (!description.includes('PowerShell')) {
+          description += ' (Host environment is Windows NT with native PowerShell 7 / Windows PowerShell. Commands must use PowerShell syntax. Always pass "shell": "powershell")';
+        }
+        if (parameters && parameters.properties && parameters.properties.shell) {
+          parameters.properties.shell.description = (parameters.properties.shell.description || '') +
+            ' (IMPORTANT: The host platform is Windows NT. For all Windows commands, scripts and PowerShell cmdlets, you MUST set "shell": "powershell". NEVER set "shell": "bash" on Windows).';
+          if (Array.isArray(parameters.properties.shell.enum)) {
+            parameters.properties.shell.enum = ['powershell', ...parameters.properties.shell.enum.filter(e => e !== 'powershell')];
+          }
+          parameters.properties.shell.default = 'powershell';
+        }
+      }
+
       return {
         type: 'function',
         function: {
@@ -1889,6 +1982,31 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
         }
       };
     }).filter(t => Boolean(t.function && t.function.name));
+  }
+
+  // Windows Native PowerShell Environment Directive Injection
+  const hasShellTools = Array.isArray(chatPayload.tools) && chatPayload.tools.some(t => {
+    const name = t.function?.name || '';
+    return name === 'exec_command' || name.includes('shell') || name.includes('command');
+  });
+
+  if (isWindowsHost && hasShellTools && Array.isArray(sanitizedMessages)) {
+    const psAnchorNotice = [
+      '<!-- [Host Environment Anchor: Windows Native PowerShell] -->',
+      'The current host environment is Windows NT with native PowerShell 7 / Windows PowerShell (NOT Linux Bash).',
+      'Execution Rule: When calling `exec_command` or running terminal scripts, you MUST ALWAYS explicitly pass "shell": "powershell".',
+      'NEVER pass "shell": "bash" for Windows scripts or native cmdlets.'
+    ].join('\n');
+
+    const firstSysIdx = sanitizedMessages.findIndex(m => m && (m.role === 'system' || m.role === 'developer'));
+    if (firstSysIdx !== -1) {
+      if (typeof sanitizedMessages[firstSysIdx].content === 'string' && !sanitizedMessages[firstSysIdx].content.includes('Windows Native PowerShell')) {
+        sanitizedMessages[firstSysIdx] = {
+          ...sanitizedMessages[firstSysIdx],
+          content: sanitizedMessages[firstSysIdx].content + '\n\n' + psAnchorNotice
+        };
+      }
+    }
   }
 
   // Normalize tool_choice from Responses format { type: "function", name: "..." } to ChatCompletions format
@@ -1940,7 +2058,7 @@ function normalizeResponsesUsage(rawUsage, defaultInput = 20, defaultOutput = 20
 /**
  * Translates upstream ChatCompletions SSE stream into compliant OpenAI Responses SSE stream for Codex
  */
-function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinished) {
+function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null) {
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -1950,6 +2068,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
   let seq = 0;
   const respId = reqId || ('resp_' + Date.now());
+  if (sessionId) {
+    recordResponseSession(respId, sessionId);
+  }
   const sendEvent = (event, data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
     clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -2016,6 +2137,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const itemIdText = 'item_text_' + Date.now();
   let fullReasoning = '';
   let fullText = '';
+  const degenDetector = new StreamDegenerationDetector();
   const toolCallsMap = new Map(); // index -> { id, name, args, outIdx }
   let collectedUsage = null;
   let buffer = '';
@@ -2059,7 +2181,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           type: 'function_call',
           name: rec.name || 'custom_tool',
           call_id: rec.id,
-          arguments: rec.args,
+          arguments: autoCorrectToolArgs(rec.name, rec.args),
           status: 'completed'
         });
       }
@@ -2082,6 +2204,22 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     const errMsg = err?.message
       ? `Upstream stream error: ${err.message}`
       : (isEmpty ? 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).' : 'Upstream stream disconnected unexpectedly before generating output or tool calls.');
+
+    // Rule 33: UI Thinking Spinner Deadlock Self-Healing
+    // When upstream stream disconnects mid-reasoning before emitting any assistant text or tool call,
+    // inject a terminal assistant message item so the client UI releases the thinking spinner cleanly.
+    if (isReasoningOnly) {
+      const healMsgId = 'msg_heal_' + Date.now();
+      const healNotice = `[网关防死锁自愈：${errMsg}]`;
+      finalOutput.push({
+        id: healMsgId,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+      });
+    }
 
     console.error(`[Bridge Stream Error] ${errMsg} on model "${reqModel}". Dispatching response.failed.`);
     sendEvent('response.failed', {
@@ -2389,6 +2527,64 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               part: { type: 'output_text', text: '', annotations: [], logprobs: [] }
             });
           }
+          // Stream Degeneration & Repetition Loop Circuit Breaker (Rule 35)
+          const degenCheck = degenDetector.feed(textChunk);
+          if (degenCheck.shouldHalt) {
+            console.warn(`[Degeneration Guard] 检测到上游模型产生退化死循环 (短语 "${degenCheck.triggeredPhrase}" 重复超限)，正在实施毫秒级安全熔断截断...`);
+            const haltNotice = '\n\n[网关智能防御：检测到模型输出产生重复循环，已自动安全截断以保护上下文与配额]';
+            fullText += haltNotice;
+            sendEvent('response.output_text.delta', {
+              type: 'response.output_text.delta',
+              sequence_number: seq++,
+              output_index: textIndex,
+              content_index: 0,
+              item_id: itemIdText,
+              delta: haltNotice,
+              logprobs: []
+            });
+            closeText();
+            streamFinished = true;
+            if (upstreamRes && typeof upstreamRes.destroy === 'function' && !upstreamRes.destroyed) {
+              upstreamRes.destroy();
+            }
+            const finalOutput = buildFinalOutput();
+            const usageObj = normalizeResponsesUsage(
+              collectedUsage,
+              Math.max(10, Math.round(fullText.length * 0.4)),
+              Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
+            );
+            sendEvent('response.completed', {
+              type: 'response.completed',
+              sequence_number: seq++,
+              response: {
+                id: respId,
+                object: 'response',
+                created_at: Math.floor(Date.now() / 1000),
+                completed_at: Math.floor(Date.now() / 1000),
+                status: 'completed',
+                parallel_tool_calls: true,
+                temperature: 1,
+                top_p: 1,
+                max_output_tokens: null,
+                previous_response_id: null,
+                background: false,
+                truncation: 'disabled',
+                top_logprobs: 0,
+                max_tool_calls: null,
+                prompt_cache_retention: null,
+                model: reqModel,
+                error: null,
+                incomplete_details: null,
+                output: finalOutput,
+                usage: usageObj
+              }
+            });
+            cleanup();
+            clientRes.end();
+            if (typeof onFinished === 'function') onFinished();
+            return;
+          }
+
           fullText += textChunk;
           sendEvent('response.output_text.delta', {
             type: 'response.output_text.delta',
@@ -2565,6 +2761,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           item: { id: rec.id, type: 'custom_tool_call', name: rec.name || 'apply_patch', call_id: rec.id, input: cleanInput, status: 'completed' }
         });
       } else {
+        rec.args = autoCorrectToolArgs(rec.name, rec.args);
         sendEvent('response.function_call_arguments.done', {
           type: 'response.function_call_arguments.done',
           sequence_number: seq++,
@@ -2959,7 +3156,7 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
 /**
  * Translates upstream Anthropic Messages SSE stream into compliant OpenAI Responses SSE stream for Codex
  */
-function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinished) {
+function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null) {
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -2969,6 +3166,9 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
   let seq = 0;
   const respId = reqId || ('resp_' + Date.now());
+  if (sessionId) {
+    recordResponseSession(respId, sessionId);
+  }
   const sendEvent = (event, data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
     clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -3162,10 +3362,25 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     closeText();
     const finalOutput = buildFinalOutput();
     const isEmpty = fullText === '' && toolCallsMap.size === 0 && fullReasoning === '';
-    const errCode = overrideCode || (isEmpty ? 'upstream_stream_empty_truncated' : 'upstream_stream_truncated');
+    const isReasoningOnly = fullText === '' && toolCallsMap.size === 0 && fullReasoning !== '';
+    const errCode = overrideCode || (isEmpty ? 'upstream_stream_empty_truncated' : (isReasoningOnly ? 'upstream_stream_truncated_reasoning_only' : 'upstream_stream_truncated'));
     const errMsg = err?.message
       ? `Upstream stream error: ${err.message}`
       : (isEmpty ? 'Upstream stream disconnected unexpectedly without returning any content (empty stream truncated).' : 'Upstream stream disconnected unexpectedly before generating output or tool calls.');
+
+    // Rule 33: UI Thinking Spinner Deadlock Self-Healing
+    if (isReasoningOnly) {
+      const healMsgId = 'msg_heal_' + Date.now();
+      const healNotice = `[网关防死锁自愈：${errMsg}]`;
+      finalOutput.push({
+        id: healMsgId,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+      });
+    }
 
     console.error(`[Anthropic Stream Error] ${errMsg} on model "${reqModel}". Dispatching response.failed.`);
     sendEvent('response.failed', {
@@ -4429,6 +4644,41 @@ function parseTurnMetadata(val) {
  * 5. previous_response_id, parent_response_id, thread_id, conversation_id, or session_id in payload body
  * 6. Dynamic auto-isolated session ID per connection/turn fallback
  */
+// Rule 26: Response-Chain Root Session Reverse Tracing (bounded LRU map)
+const MAX_RESPONSE_SESSION_MAPPINGS = 5000;
+const responseIdToSessionMap = new Map();
+
+function recordResponseSession(responseId, sessionId) {
+  if (!responseId || typeof responseId !== 'string' || !sessionId || typeof sessionId !== 'string') return;
+  const cleanRespId = responseId.trim();
+  const cleanSessId = sessionId.trim();
+  if (!cleanRespId || !cleanSessId) return;
+  if (responseIdToSessionMap.has(cleanRespId)) {
+    responseIdToSessionMap.delete(cleanRespId);
+  } else if (responseIdToSessionMap.size >= MAX_RESPONSE_SESSION_MAPPINGS) {
+    const oldest = responseIdToSessionMap.keys().next().value;
+    responseIdToSessionMap.delete(oldest);
+  }
+  responseIdToSessionMap.set(cleanRespId, cleanSessId);
+}
+
+function resolveSessionFromPreviousResponse(previousResponseId) {
+  if (!previousResponseId || typeof previousResponseId !== 'string') return null;
+  let cur = previousResponseId.trim();
+  let hops = 0;
+  let resolved = null;
+  while (cur && responseIdToSessionMap.has(cur) && hops < 16) {
+    resolved = responseIdToSessionMap.get(cur);
+    // Refresh LRU order
+    responseIdToSessionMap.delete(cur);
+    responseIdToSessionMap.set(cur, resolved);
+    if (resolved === cur) break;
+    cur = resolved;
+    hops++;
+  }
+  return resolved;
+}
+
 function extractOrDeriveSessionId(req, body) {
   // 1. Explicit x-opencode-session / x-session-id
   const headerSession = req?.headers?.['x-opencode-session'] || req?.headers?.['x-session-id'];
@@ -4440,6 +4690,8 @@ function extractOrDeriveSessionId(req, body) {
   const prevHeader = req?.headers?.['x-previous-response-id'] || req?.headers?.['previous_response_id'] || req?.headers?.['previous-response-id'];
   if (prevHeader && typeof prevHeader === 'string' && prevHeader.trim()) {
     const trimmed = prevHeader.trim();
+    const rootSess = resolveSessionFromPreviousResponse(trimmed);
+    if (rootSess) return rootSess;
     return trimmed.startsWith('session-') ? trimmed : `session-resp-${trimmed}`;
   }
 
@@ -4488,10 +4740,14 @@ function extractOrDeriveSessionId(req, body) {
   if (parsed && typeof parsed === 'object') {
     if (parsed.previous_response_id && typeof parsed.previous_response_id === 'string' && parsed.previous_response_id.trim()) {
       const prevId = parsed.previous_response_id.trim();
+      const rootSess = resolveSessionFromPreviousResponse(prevId);
+      if (rootSess) return rootSess;
       return prevId.startsWith('session-') ? prevId : `session-resp-${prevId}`;
     }
     if (parsed.parent_response_id && typeof parsed.parent_response_id === 'string' && parsed.parent_response_id.trim()) {
       const parentId = parsed.parent_response_id.trim();
+      const rootSess = resolveSessionFromPreviousResponse(parentId);
+      if (rootSess) return rootSess;
       return parentId.startsWith('session-') ? parentId : `session-resp-${parentId}`;
     }
     if (parsed.thread_id && typeof parsed.thread_id === 'string' && parsed.thread_id.trim()) {
@@ -4761,12 +5017,21 @@ const CODEX_ZHCN_TRANSLATE_SCRIPT = `// ==UserScript==
     ["File", "文件"],
     ["Edit", "编辑"],
     ["View", "视图"],
+    ["Window", "窗口"],
     ["Help", "帮助"],
-    ["New chat", "新聊天"],
+    ["New chat", "新建对话"],
+    ["New Chat", "新建对话"],
+    ["New thread", "新建会话"],
+    ["New Thread", "新建会话"],
     ["Scheduled", "定时任务"],
-    ["Plugins", "插件"],
+    ["Plugins", "插件中心"],
+    ["MCP Servers", "MCP 服务"],
+    ["Skills", "技能包"],
     ["Explore", "探索"],
-    ["Projects", "项目"],
+    ["Projects", "项目列表"],
+    ["Workspaces", "工作区"],
+    ["Worktree", "Git 工作树"],
+    ["Worktrees", "Git 工作树"],
     ["New Project...", "新建项目..."],
     ["New Project…", "新建项目…"],
     ["New Project", "新建项目"],
@@ -4776,35 +5041,75 @@ const CODEX_ZHCN_TRANSLATE_SCRIPT = `// ==UserScript==
     ["Close", "关闭"],
     ["Log out", "退出登录"],
     ["Log Out", "退出登录"],
+    ["Sign out", "退出账号"],
     ["Settings", "设置"],
+    ["General", "常规设置"],
+    ["Appearance", "外观主题"],
     ["Preferences", "偏好设置"],
     ["Keyboard Shortcuts", "快捷键"],
     ["Documentation", "官方文档"],
     ["Release Notes", "更新日志"],
     ["Ask for changes", "请求修改"],
-    ["Ask for selection edit", "行内微调"],
+    ["Ask for selection edit", "选中行内微调"],
+    ["Review changes", "审查代码变更"],
+    ["Apply patch", "应用补丁"],
+    ["Apply all", "全部应用"],
     ["Accept", "接受"],
+    ["Accept all", "全部接受"],
     ["Reject", "拒绝"],
+    ["Reject all", "全部拒绝"],
+    ["Approve", "批准执行"],
+    ["Approve once", "仅本次批准"],
+    ["Always approve", "始终批准"],
+    ["Run command", "运行命令"],
     ["Apply", "应用"],
-    ["Discard", "放弃"],
+    ["Discard", "放弃修改"],
+    ["Discard changes", "放弃变更"],
     ["Diff", "差异对比"],
+    ["Unified diff", "统一差异视图"],
+    ["Split diff", "分栏差异视图"],
     ["Revert", "还原"],
     ["Keep", "保留"],
-    ["Reasoning effort", "思考等级"],
+    ["Reasoning effort", "思考深度"],
     ["Reasoning", "思考推导"],
-    ["Temporary chat", "临时聊天"],
+    ["Thought process", "思考过程"],
+    ["Thinking...", "正在深度思考..."],
+    ["Generating...", "正在生成回复..."],
+    ["Running command...", "正在执行终端命令..."],
+    ["Applying patch...", "正在应用代码补丁..."],
+    ["Low", "轻量 (Low)"],
+    ["Medium", "均衡 (Medium)"],
+    ["High", "深度 (High)"],
+    ["Extra High", "极高 (xHigh)"],
+    ["Temporary chat", "临时对话"],
     ["Attach files", "添加附件"],
+    ["Attach image", "添加图片"],
     ["Send message", "发送消息"],
     ["Cancel generation", "停止生成"],
     ["Stop generating", "停止生成"],
+    ["Interrupt", "中断执行"],
     ["Delete", "删除"],
+    ["Archive", "归档"],
+    ["Pin", "置顶"],
+    ["Unpin", "取消置顶"],
+    ["Rename", "重命名"],
+    ["Copy", "复制"],
+    ["Copied!", "已复制！"],
+    ["Copy code", "复制代码"],
     ["Cancel", "取消"],
     ["Save", "保存"],
     ["Export", "导出"],
     ["Confirm", "确认"],
     ["Retry", "重试"],
     ["Model", "模型"],
-    ["API Key", "API 密钥"]
+    ["API Key", "API 密钥"],
+    ["Sandbox", "安全沙箱"],
+    ["Auto-approve", "自动批准"],
+    ["Full access", "完全访问权限"],
+    ["Read-only", "只读模式"],
+    ["Context window", "上下文窗口"],
+    ["Tokens used", "已用 Token"],
+    ["Terminal", "终端输出"]
   ]);
 
   function shouldIgnore(el) {
@@ -4835,6 +5140,10 @@ const CODEX_ZHCN_TRANSLATE_SCRIPT = `// ==UserScript==
       const title = node.getAttribute("title");
       if (title && EXACT_MAP.has(title.trim())) {
         node.setAttribute("title", EXACT_MAP.get(title.trim()));
+      }
+      const placeholder = node.getAttribute("placeholder");
+      if (placeholder && EXACT_MAP.has(placeholder.trim())) {
+        node.setAttribute("placeholder", EXACT_MAP.get(placeholder.trim()));
       }
       for (let child = node.firstChild; child; child = child.nextSibling) {
         if (child.nodeType === Node.TEXT_NODE) translateNode(child);
@@ -5228,6 +5537,9 @@ module.exports = {
   restoreCodexConfig,
   restartCodex,
   extractOrDeriveSessionId,
+  recordResponseSession,
+  resolveSessionFromPreviousResponse,
+  responseIdToSessionMap,
   extractRawToolParams,
   normalizeToolParameters,
   formatUpstreamErrorResponse,
@@ -5251,8 +5563,12 @@ module.exports = {
   alignToolsSchema: contextCompactor.alignToolsSchema,
   slimToolsSchema: contextCompactor.slimToolsSchema,
   cleanDockerOutput: contextCompactor.cleanDockerOutput,
+  cleanGitOutput: contextCompactor.cleanGitOutput,
+  cleanBuildAndPkgOutput: contextCompactor.cleanBuildAndPkgOutput,
+  dedupLogLines: contextCompactor.dedupLogLines,
   cleanTerraformOutput: contextCompactor.cleanTerraformOutput,
   cleanKubectlOutput: contextCompactor.cleanKubectlOutput,
+  CODEX_ZHCN_TRANSLATE_SCRIPT,
   registerTransformer: contextCompactor.registerTransformer,
   unregisterTransformer: contextCompactor.unregisterTransformer,
   runPipeline: contextCompactor.runPipeline,
@@ -5260,5 +5576,7 @@ module.exports = {
   normalizeCompressionOptions: contextCompactor.normalizeCompressionOptions,
   getCompressionStats: contextCompactor.getCompressionStats,
   resetCompressionStats: contextCompactor.resetCompressionStats,
-  COMPRESSION_PRESETS: contextCompactor.COMPRESSION_PRESETS
+  COMPRESSION_PRESETS: contextCompactor.COMPRESSION_PRESETS,
+  StreamDegenerationDetector,
+  autoCorrectToolArgs
 };

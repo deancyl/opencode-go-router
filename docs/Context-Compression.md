@@ -22,7 +22,7 @@ flowchart TD
             ANSI["ANSI 颜色码剥离 (stripAnsi)"]
             ProgBar["\\r 覆盖式进度条清洗 (cleanProgressBars)"]
             PassFold["测试通过项正向折叠 (foldTestPasses)"]
-            DevOps["DevOps 输出折叠 (Docker/Terraform)"]
+            DevOps["DevOps/Git/构建与重复日志折叠 (Docker/K8s/Terraform/Git/Cargo/llmtrim)"]
         end
 
         subgraph Card2["Card 2: Headroom 结构化折叠"]

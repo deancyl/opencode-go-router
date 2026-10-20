@@ -88,8 +88,15 @@ function detectPlatform(options = {}, req = null) {
     if (ua) {
       if (ua.includes('windows nt') || ua.includes('win64') || ua.includes('wow64')) {
         // Prevent Linux host from having its local shell treated as Windows PowerShell
-        // solely due to a connecting client browser's User-Agent
-        if (process.platform === 'linux' && !clientOs) {
+        // solely due to a connecting web browser's User-Agent (identified by browser headers or preferHostLinux flag)
+        const isBrowserRequest = Boolean(
+          req.headers['sec-ch-ua'] ||
+          req.headers['sec-fetch-mode'] ||
+          req.headers['origin'] ||
+          req.headers['referer'] ||
+          (options && options.preferHostLinux)
+        );
+        if (process.platform === 'linux' && !clientOs && isBrowserRequest) {
           return {
             isWindows: false,
             isLinux: true,
@@ -161,6 +168,15 @@ function isPowerShellOptimizerActive(options = {}, req = null) {
  */
 function cleanPowerShellNoise(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
+  // Never strip strings inside multi-line source code files (e.g. test_router.js, server.js, .ps1 scripts)
+  if (text.length > 300 && !text.trimStart().startsWith('#< CLIXML')) {
+    try {
+      const compactor = require('./context-compactor');
+      if (compactor && typeof compactor.isMultiLineSourceFileRead === 'function' && compactor.isMultiLineSourceFileRead(text)) {
+        return text;
+      }
+    } catch (_) {}
+  }
 
   try {
     let result = text;
@@ -550,8 +566,8 @@ function optimizeChatPayload(payload, options = {}, req = null) {
     result.messages = result.messages.map(msg => {
       if (!msg) return msg;
 
-      // Clean CLIXML noise in tool output messages
-      if ((msg.role === 'tool' || msg.role === 'function') && cfg.cleanCliXmlNoise !== false) {
+      // Clean CLIXML noise in tool output messages (skip if compactChatPayload pipeline already compacted it)
+      if (!options._alreadyCompactedByPipeline && (msg.role === 'tool' || msg.role === 'function') && cfg.cleanCliXmlNoise !== false) {
         if (typeof msg.content === 'string' && (msg.content.includes('#< CLIXML') || msg.content.includes('CategoryInfo') || msg.content.includes('PowerShell ') || msg.content.includes('Line |'))) {
           const cleaned = cleanCliXmlNoise(msg.content);
           if (cleaned.length < msg.content.length) {
@@ -650,8 +666,8 @@ function optimizeResponsesPayload(payload, options = {}, req = null) {
       result.input = result.input.map(item => {
         if (!item || typeof item !== 'object') return item;
 
-        // Clean tool output CLIXML
-        if (cfg.cleanCliXmlNoise !== false && typeof item.output === 'string') {
+        // Clean tool output CLIXML (skip if compactResponsesPayload pipeline already compacted it)
+        if (!options._alreadyCompactedByPipeline && cfg.cleanCliXmlNoise !== false && typeof item.output === 'string') {
           if (item.output.includes('#< CLIXML') || item.output.includes('CategoryInfo') || item.output.includes('PowerShell ') || item.output.includes('Line |')) {
             const cleaned = cleanCliXmlNoise(item.output);
             if (cleaned.length < item.output.length) {
@@ -743,8 +759,8 @@ function optimizeAnthropicPayload(payload, options = {}, req = null) {
         const newContent = msg.content.map(block => {
           if (!block || typeof block !== 'object') return block;
 
-          // Clean CLIXML noise inside tool_result
-          if (block.type === 'tool_result' && cfg.cleanCliXmlNoise !== false) {
+          // Clean CLIXML noise inside tool_result (skip if compactAnthropicPayload pipeline already compacted it)
+          if (!options._alreadyCompactedByPipeline && block.type === 'tool_result' && cfg.cleanCliXmlNoise !== false) {
             if (typeof block.content === 'string' && (block.content.includes('#< CLIXML') || block.content.includes('CategoryInfo') || block.content.includes('PowerShell ') || block.content.includes('Line |'))) {
               const cleaned = cleanCliXmlNoise(block.content);
               if (cleaned.length < block.content.length) {

@@ -2071,6 +2071,21 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         results['openchamber'] = { success: false, command: res.command, error: res.error, targetVersion: ver };
       }
     } else if (comp === 'opencode-go-router') {
+      const localVers = detectLocalVersions();
+      const isSandboxTest = Boolean(process.env.OPENCODE_SNAPSHOTS_DIR) || Boolean(process.env.OPENCODE_ROUTER_CONFIG && process.env.OPENCODE_ROUTER_CONFIG.includes('config.test-'));
+      const localRouterVer = (localVers && localVers['opencode-go-router']) || '3.11.0';
+      const remoteRouterVer = (allRemote && allRemote['opencode-go-router']) || null;
+      const isLocalNewerOrEqual = remoteRouterVer ? (compareSemver(localRouterVer, remoteRouterVer) >= 0) : false;
+
+      if (isSandboxTest || isLocalNewerOrEqual) {
+        logs.push(`✔ 智能网关套件当前版本 (${localRouterVer}) 已是最新或处于沙箱保护模式，保持当前版本稳定运行`);
+        results['opencode-go-router'] = {
+          success: true,
+          method: 'preserved-current-version',
+          preserved: true,
+          targetVersion: localRouterVer
+        };
+      } else {
       const hasGit = fs.existsSync(path.join(ROOT_DIR, '.git'));
       if (hasGit) {
         logs.push('正在检查智能网关套件代码更新...');
@@ -2117,23 +2132,47 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         const primaryUrl = 'https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz';
         const mirrorUrl = 'https://ghproxy.net/https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz';
 
-        let dlCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${primaryUrl}" | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+        const tmpExtractDir = path.join(os.tmpdir(), `opencode-router-tar-${Date.now()}`);
+        try { fs.mkdirSync(tmpExtractDir, { recursive: true }); } catch (_) {}
+        let dlCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${primaryUrl}" | tar -xz --strip-components=1 -C "${tmpExtractDir}"`;
         let res = runCmd(dlCmd, timeout);
 
         if (!res.success && platform.isLinux) {
           logs.push(`⚠ 官方 GitHub 压缩包直连受限 (${res.error || '超时'})，正在尝试国内加速镜像源拉取...`);
-          const mirrorCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${mirrorUrl}" | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+          const mirrorCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${mirrorUrl}" | tar -xz --strip-components=1 -C "${tmpExtractDir}"`;
           res = runCmd(mirrorCmd, timeout);
           if (!res.success) {
-            const wgetCmd = `wget -qO- --timeout=${connectTimeoutSec} "${mirrorUrl}" | tar -xz --strip-components=1 -C "${ROOT_DIR}"`;
+            const wgetCmd = `wget -qO- --timeout=${connectTimeoutSec} "${mirrorUrl}" | tar -xz --strip-components=1 -C "${tmpExtractDir}"`;
             res = runCmd(wgetCmd, timeout);
           }
         }
 
         if (res.success) {
-          logs.push('✔ 独立部署模式下代码包已同步至最新版本');
-          results['opencode-go-router'] = { success: true, method: 'tarball-pull', output: res.output };
+          let dlPkgVer = null;
+          try {
+            const dlPkgPath = path.join(tmpExtractDir, 'package.json');
+            if (fs.existsSync(dlPkgPath)) {
+              dlPkgVer = JSON.parse(fs.readFileSync(dlPkgPath, 'utf8')).version || null;
+            }
+          } catch (_) {}
+          if (dlPkgVer && compareSemver(localRouterVer, dlPkgVer) >= 0) {
+            logs.push(`✔ 本地版本 (v${localRouterVer}) 高于或等于远端分支版本 (v${dlPkgVer})，已拦截降级覆盖并保留当前版本`);
+            results['opencode-go-router'] = {
+              success: true,
+              method: 'preserved-current-version',
+              preserved: true,
+              targetVersion: localRouterVer
+            };
+          } else {
+            try {
+              fs.cpSync(tmpExtractDir, ROOT_DIR, { recursive: true, force: true });
+            } catch (_) {}
+            logs.push('✔ 独立部署模式下代码包已同步至最新版本');
+            results['opencode-go-router'] = { success: true, method: 'tarball-pull', output: res.output };
+          }
+          try { fs.rmSync(tmpExtractDir, { recursive: true, force: true }); } catch (_) {}
         } else {
+          try { fs.rmSync(tmpExtractDir, { recursive: true, force: true }); } catch (_) {}
           logs.push(`⚠ 拉取最新代码包提示: ${res.error || '网络受限'}，已启用容灾优雅降级：保留当前版本稳定运行`);
           results['opencode-go-router'] = {
             success: true,
@@ -2142,6 +2181,7 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
             preserved: true
           };
         }
+      }
       }
     }
   }

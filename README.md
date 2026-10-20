@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS%20(fnOS%2CDSM%2CDebian)-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.10.1-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router"><img src="https://img.shields.io/badge/Version-v3.11.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-155%2F155%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-156%2F156%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -473,6 +473,21 @@ powershell -ExecutionPolicy Bypass -File .\status-all.ps1
 - **自动化测试套件扩展 (Test 140)**：
   - 新增 Test 140 专项覆盖 6 大侧边栏 Nav DOM、6 个 View Section DOM、Node VM 路由状态机流转、PE 二进制结构合法性与启动器优先级；
   - 本地 140 项自动化集成测试全部 100% 绿灯全通。
+
+### 🚀 v3.11.0 (当前最新版：压缩中枢深度升级、中英双语全时序精准统计、Codex 简体中文全量汉化、故障转移零句柄泄漏与 156 项全绿)
+- **Token 压缩与上下文优化中枢深度升级（吸收 RTK / llmtrim / DCP / sqz 工业级无损特性）**：
+  - 新增 `cleanGitOutput`（源自 `rtk-ai/rtk` Git Filter）：智能折叠 `git clone/fetch/pull/push` 产生的多行对象传输进度（Enumerating / Counting / Compressing / Receiving / Resolving），100% 保留分支指向、Commit Hash、Diff 与冲突/错误诊断；
+  - 新增 `cleanBuildAndPkgOutput`（源自 `rtk-ai/rtk` 与 `ojuschugh1/sqz` 构建过滤器）：智能折叠 Cargo / Pip / NPM 连续常规依赖下载与编译刷屏（`Downloading` / `Downloaded` / `Compiling` / `Requirement already satisfied`），100% 豁免任何 `warning`、`error`、`panic` 及文件行号报错；
+  - 新增 `dedupLogLines`（源自 `fkiene/llmtrim` 与 `Tarquinen/opencode-dynamic-context-pruning`）：针对带 ISO/Syslog 时间戳或 `[INFO]`/`[DEBUG]` 前缀的连续重复运行日志进行无损归一化折叠（`[llmtrim Log Dedup]`），严格豁免业务源码、Diff 补丁、异常堆栈与 Git 冲突；
+  - 修复分时段（`1h` / `24h` / `7d`）统计大盘与时序图表中 CJK 中文动态分词权重丢失问题（`getStatsByRange` 与 `buildTimeSeries` 完整保留双语加权 `savedTokens`，不再回退至纯英文 `3.8` 均值估算）；
+  - 修复 `cacheZoneHits` 跨重启落盘恢复与分时段桶（`m5` / `h1` / `d1`）追踪，修复嵌套 JSON 字符串 `{ stdout, stderr, output }` 外层 Memo 缓存固化与多账号故障转移重试（`_isRetryAttempt`）时的幂等防重计账；
+  - 增强 `cleanPowerShellOutput` 内容感知能力，Linux 宿主网关在接收包含明确 PowerShell 特征（`#< CLIXML`、`PowerShell 7.`、`FullyQualifiedErrorId`）的工具输出时亦可精准去噪，同时在显式 `targetPlatform: 'linux'` 时严守零干扰旁路；
+- **Codex 简体中文最佳体验增强 (`codex-adapter.js` & `assets/locales/zh-CN.json`)**：
+  - 扩充 `CODEX_ZHCN_TRANSLATE_SCRIPT` 与 `zh-CN.json` 词典至 239+ 项，全面覆盖 2026 新版 Codex Desktop 的 Git 工作树 (`Worktree`)、MCP 服务、技能包 (`Skills`)、补丁审查 (`Apply patch` / `Review changes` / `Approve once`)、安全沙箱与思考过程动态提示，并新增 `placeholder` 属性汉化；
+- **全链路鲁棒性与 Web UI/UX 简洁友好体验提升 (`server.js`)**：
+  - 彻底修复 `handleInvalidApiKeyFailover`、`handleUpstreamGlitchAndFailover` 与 `handleNetworkErrorFailover` 在无可用备用账号回退时的 `clientRes` 监听器解绑闭环，确保极端异常下 0 监听器残留；
+  - Web UI 新增全局快捷键（`Ctrl+S` / `Cmd+S` 一键保存配置、`Alt+1..6` 秒切 6 大功能视图）与压缩中枢 **「🎛️ 收起/展开底层微调项」** 一键精简切换，兼顾新手极简体验与极客深度调优；
+- **全套自动化测试 100% 绿灯全通**：`test_router.js` 扩展至 156 项全通，同时 M1/M2/Tier5/四层并发浸泡压测全部 100% 通过。
 
 ### 🚀 v3.10.1 (全系统 Top 15 核心架构缺陷彻底修复、会话亲和与流式思考分片保真、局域网安全与 155 项全绿回归)
 - **会话亲和与 KV Cache 确定性派生（缺陷 #1、#4）**：

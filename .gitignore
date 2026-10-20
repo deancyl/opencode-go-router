@@ -3,7 +3,6 @@ config.json
 config.json.bak
 *.pre-audit.bak
 *.bak
-*.backup.json
 
 # Logs
 *.log
@@ -25,7 +24,6 @@ Desktop.ini
 
 scripts/
 .opencode/
-OpenCodeRouterTray.exe
 __pycache__/
 nas_ssh_helper.py
 sync_nas.py

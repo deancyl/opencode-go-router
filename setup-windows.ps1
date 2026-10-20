@@ -305,9 +305,13 @@ function Step-SetupRouter {
         }
     }
 
-    # 静默启动原生托盘与路由服务
-    Write-Host "正在启动系统托盘常驻进程与后台智能网关..." -ForegroundColor Yellow
-    Step-Start
+    # 静默启动或平滑重启原生托盘与路由服务（确保覆盖更新后的最新代码立即生效）
+    Write-Host "正在启动/平滑重载系统托盘常驻进程与后台智能网关..." -ForegroundColor Yellow
+    if (Test-PortListening $port) {
+        Step-Restart
+    } else {
+        Step-Start
+    }
     Start-Sleep -Seconds 2
 
     try {

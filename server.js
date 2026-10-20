@@ -1235,16 +1235,16 @@ function handleInvalidApiKeyFailover({
 }) {
   console.warn(`[Router Auth Alert] Account "${account.name}" returned invalid API key: ${errText.slice(0, 160)}`);
   recordCooldown(account.id, 3600000, 'Invalid API Key');
+  finishRequest();
+  clientRes.removeListener('close', clientCloseHandler);
+  if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+    clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+  }
   const nextAccount = selectAccount(sessionId, triedAccountIds);
   if (nextAccount) {
     const stat = accountStats.get(account.id);
     if (stat) stat.failoverCount += 1;
     console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode} (Invalid API Key). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
-    finishRequest();
-    clientRes.removeListener('close', clientCloseHandler);
-    if (clientErrorHandler || clientCloseHandler?.errorHandler) {
-      clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
-    }
     retryFn(nextAccount);
     return true;
   }
@@ -1444,6 +1444,11 @@ function handleUpstreamGlitchAndFailover({
     }
   }
 
+  finishRequest();
+  clientRes.removeListener('close', clientCloseHandler);
+  if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+    clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+  }
   return false;
 }
 
@@ -1542,6 +1547,11 @@ function handleNetworkErrorFailover({
     }
   }
 
+  finishRequest();
+  clientRes.removeListener('close', clientCloseHandler);
+  if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+    clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+  }
   return false;
 }
 
@@ -2283,7 +2293,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
   }
 
-  const effectiveComp = getEffectiveCompressionOptions(config.compression, clientReq);
+  const effectiveComp = {
+    ...getEffectiveCompressionOptions(config.compression, clientReq),
+    model: typeof rawReqModel !== 'undefined' ? rawReqModel : undefined,
+    _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
+  };
   const chatPayload = precomputedChatPayload || codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
   const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
   const isStream = chatPayload.stream === true;
@@ -2516,7 +2530,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     if (isStream) {
       codexAdapter.bridgeResponsesStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
         finishRequest();
-      });
+      }, sessionId);
       upstreamRes.on('error', (err) => {
         console.error('[Bridge Stream Error]', err.message);
         finishRequest();
@@ -2530,6 +2544,9 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         try {
           const chatJson = JSON.parse(Buffer.concat(dataChunks).toString('utf8'));
           const responsesJson = codexAdapter.convertChatResponseToResponses(chatJson, reqModel, responsesBody.id);
+          if (responsesJson && responsesJson.id && sessionId) {
+            codexAdapter.recordResponseSession(responsesJson.id, sessionId);
+          }
           const outBuf = Buffer.from(JSON.stringify(responsesJson), 'utf8');
           const headers = getCorsHeaders(upstreamRes.headers);
           headers['content-type'] = 'application/json; charset=utf-8';
@@ -2666,7 +2683,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     stat.lastUsedAt = Date.now();
   }
 
-  const effectiveComp = getEffectiveCompressionOptions(config.compression, clientReq);
+  const effectiveComp = {
+    ...getEffectiveCompressionOptions(config.compression, clientReq),
+    model: typeof rawReqModel !== 'undefined' ? rawReqModel : undefined,
+    _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
+  };
   const anthropicPayload = precomputedAnthropicPayload || codexAdapter.convertResponsesToAnthropicPayload(responsesBody, effectiveComp, sessionId);
   const reqModel = anthropicPayload.model || 'claude-haiku-5-5';
   const isStream = anthropicPayload.stream !== false;
@@ -2900,7 +2921,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     if (isStream) {
       codexAdapter.bridgeAnthropicStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
         finishRequest();
-      });
+      }, sessionId);
       upstreamRes.on('error', (err) => {
         console.error('[Anthropic Stream Error]', err.message);
         finishRequest();
@@ -2914,6 +2935,9 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         try {
           const anthropicJson = JSON.parse(Buffer.concat(dataChunks).toString('utf8'));
           const responsesJson = codexAdapter.convertAnthropicResponseToResponses(anthropicJson, reqModel, responsesBody.id);
+          if (responsesJson && responsesJson.id && sessionId) {
+            codexAdapter.recordResponseSession(responsesJson.id, sessionId);
+          }
           const outBuf = Buffer.from(JSON.stringify(responsesJson), 'utf8');
           const headers = getCorsHeaders(upstreamRes.headers);
           headers['content-type'] = 'application/json; charset=utf-8';
@@ -3318,7 +3342,7 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
         const jsonMatch = out.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const procState = JSON.parse(jsonMatch[0]);
-          if (procState.HasChamber && !procState.HasWindow) {
+          if (procState.HasChamber && !procState.HasWindow && !report.openchamber.reachable) {
             report.openchamber.ghost = true;
             report.issues.push({
               id: 'openchamber_ghost_process',
@@ -3633,6 +3657,45 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
     }
   } catch (e) {}
 
+  // 8.6 Check Gateway Loopback IPC Authorization Barrier (Anti-401 Provider Deadlock)
+  try {
+    const targetKey = (options && options.apiKey && typeof options.apiKey === 'string' && options.apiKey.trim()) ? options.apiKey.trim() : 'local-router';
+    const loopbackAuthOk = isAuthorized({
+      url: '/v1/models',
+      headers: { authorization: `Bearer ${targetKey}` },
+      socket: { remoteAddress: '127.0.0.1' }
+    });
+    const lanProtectedOk = (!config.uiPassword || !config.uiPassword.trim()) ? true : !isAuthorized({
+      url: '/v1/models',
+      headers: { authorization: `Bearer ${targetKey}` },
+      socket: { remoteAddress: '192.168.1.100' }
+    });
+
+    report.gatewayLoopbackAuth = {
+      healthy: loopbackAuthOk && lanProtectedOk,
+      hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
+      loopbackAuthorized: loopbackAuthOk,
+      lanProtected: lanProtectedOk
+    };
+
+    if (!loopbackAuthOk) {
+      report.issues.push({
+        id: 'gateway_loopback_auth_blocked',
+        severity: 'high',
+        title: '智能网关本地回路鉴权阻断 (OpenCode 访问 401 死锁)',
+        desc: `检测到网关已开启访问密码，但未放行来自 127.0.0.1 回路的 "${targetKey}" 本地密钥，导致 OpenCode 与 OpenChamber 访问报 401 鉴权失败且会话死锁挂起，可一键自动修复放行`
+      });
+    }
+    if (!lanProtectedOk) {
+      report.issues.push({
+        id: 'gateway_lan_protection_bypassed',
+        severity: 'high',
+        title: '智能网关局域网鉴权门禁存在穿透风险 (违反 Rule 28 红线)',
+        desc: `检测到局域网外部客户端能够通过内部密钥 "${targetKey}" 绕过访问密码访问网关，存在配额盗刷风险，可一键自动修复隔离`
+      });
+    }
+  } catch (e) {}
+
   return report;
 }
 
@@ -3772,6 +3835,33 @@ async function executeSystemRepair(options = {}) {
     results.push({ item: 'OpenCode Credential & Daemon Key', success: false, message: '修复 OpenCode 原生凭据异常: ' + credErr.message });
   }
 
+  // 2.2 Verify and Harden Gateway Loopback Auth Barrier
+  try {
+    const targetKey = (options && options.apiKey && typeof options.apiKey === 'string' && options.apiKey.trim()) ? options.apiKey.trim() : 'local-router';
+    if (!config.localApiKey) {
+      config.localApiKey = targetKey;
+      if (fs.existsSync(CONFIG_FILE)) {
+        try {
+          writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+        } catch (_) {}
+      }
+    }
+    const testLoopback = isAuthorized({
+      url: '/v1/models',
+      headers: { authorization: `Bearer ${targetKey}` },
+      socket: { remoteAddress: '127.0.0.1' }
+    });
+    results.push({
+      item: 'Gateway Loopback Auth Barrier',
+      success: testLoopback,
+      message: testLoopback
+        ? '已确保护网关本地回路 IPC 零配置鉴权放行，且严格保持局域网密码门禁 (Rule 28)'
+        : '网关本地回路鉴权未完全通过，已自动注入 localApiKey 保护配置'
+    });
+  } catch (lbErr) {
+    results.push({ item: 'Gateway Loopback Auth Barrier', success: false, message: '修复网关回路鉴权门禁异常: ' + lbErr.message });
+  }
+
   // 2.5 Auto-Patch OMO v2 Compatibility & Clean Deadlocks
   try {
     const updater = require('./updater');
@@ -3865,7 +3955,14 @@ if ($chamberProcs) {
   foreach ($p in $chamberProcs) {
     if ($p.MainWindowHandle -ne 0) { $hasWindow = $true; break }
   }
-  if (-not $hasWindow) {
+  $portReachable = $false
+  try {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $ar = $tcp.BeginConnect("127.0.0.1", 3000, $null, $null)
+    if ($ar.AsyncWaitHandle.WaitOne(400, $false) -and $tcp.Connected) { $portReachable = $true }
+    $tcp.Close()
+  } catch {}
+  if (-not $hasWindow -and -not $portReachable) {
     $chamberProcs | Stop-Process -Force
     $ghostFound = $true
   }
@@ -4120,11 +4217,36 @@ function isAuthorized(req) {
     validApiKeys.add(config.apiKey.trim());
   }
 
+  // Determine if caller is strictly from local loopback (same-machine IPC)
+  const remoteIp = (req && req.socket && req.socket.remoteAddress) || '';
+  const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1' || remoteIp === 'localhost';
+
+  // Helper to validate loopback-only internal token (e.g., 'local-router' used by OpenCode)
+  // Remote/LAN callers cannot use 'local-router' to bypass uiPassword (Rule 28)
+  const isLoopbackToken = (token) => {
+    if (!token || typeof token !== 'string') return false;
+    const trimmed = token.trim();
+    if (trimmed === 'local-router') return isLoopback;
+    if (config.localApiKey && trimmed === config.localApiKey.trim()) return isLoopback;
+    return false;
+  };
+
+  // Rule 28 Protection Symmetry & Codex / OpenCode Desktop Loopback Immunity:
+  // When uiPassword is configured to protect Web Dashboard and LAN exposure, local desktop clients
+  // (Codex Desktop calling /v1/responses or OpenCode calling /v1/*) running on the same loopback host (127.0.0.1)
+  // are automatically authorized for inference calls so they never suffer 401 errors.
+  // Administrative endpoints (/balancer/*) STILL strictly require uiPassword on loopback!
+  // Remote/LAN callers to /v1/* or /balancer/* STILL strictly require uiPassword/apiKey (Rule 28)!
+  const reqUrlStr = (req && req.url) || '';
+  if (isLoopback && (reqUrlStr.startsWith('/v1/') || reqUrlStr === '/v1')) {
+    return true;
+  }
+
   // 1. Authorization header: Bearer <pwd_or_b64_or_key> or Basic <base64>
-  const authHeader = req.headers['authorization'] || '';
+  const authHeader = (req && req.headers && req.headers['authorization']) || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
-    if (token === expected || token === expectedB64 || validApiKeys.has(token)) return true;
+    if (token === expected || token === expectedB64 || validApiKeys.has(token) || isLoopbackToken(token)) return true;
   } else if (authHeader.startsWith('Basic ')) {
     const b64 = authHeader.slice(6).trim();
     if (b64 === expected || b64 === expectedB64) return true;
@@ -4132,13 +4254,13 @@ function isAuthorized(req) {
       const decoded = Buffer.from(b64, 'base64').toString('utf8');
       const parts = decoded.split(':');
       const pass = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
-      if (pass === expected || decoded === expected || validApiKeys.has(pass)) return true;
+      if (pass === expected || decoded === expected || validApiKeys.has(pass) || isLoopbackToken(pass) || isLoopbackToken(decoded)) return true;
     } catch (e) {}
   }
 
   // 2. Custom header: x-ui-password, x-router-auth, or x-api-key
-  const customHeader = (req.headers['x-ui-password'] || req.headers['x-router-auth'] || req.headers['x-api-key'] || '').trim();
-  if (customHeader === expected || customHeader === expectedB64 || validApiKeys.has(customHeader)) return true;
+  const customHeader = (req && req.headers && (req.headers['x-ui-password'] || req.headers['x-router-auth'] || req.headers['x-api-key']) || '').trim();
+  if (customHeader === expected || customHeader === expectedB64 || validApiKeys.has(customHeader) || isLoopbackToken(customHeader)) return true;
 
   // 3. Cookie: router_auth=<pwd_or_b64>
   const cookieHeader = req.headers['cookie'] || '';
@@ -4151,7 +4273,8 @@ function isAuthorized(req) {
   // 4. Query param: ?auth=<pwd_or_b64>
   if (typeof req.url === 'string') {
     try {
-      const parsed = url.parse(req.url, true);
+      const u4177 = new URL(req.url || '/', 'http://localhost');
+      const parsed = { pathname: u4177.pathname, query: Object.fromEntries(u4177.searchParams.entries()), searchParams: u4177.searchParams };
       if (parsed.query && parsed.query.auth) {
         const val = String(parsed.query.auth).trim();
         if (val === expected || val === expectedB64) return true;
@@ -4315,7 +4438,7 @@ function renderLoginPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.10.1';
+  let pkgVersion = '3.11.0';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -4808,6 +4931,8 @@ function renderDashboardHtml(config) {
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
     .badge-healthy { background: #064e3b; color: var(--success); border: 1px solid #059669; }
     .badge-cooling { background: #7f1d1d; color: var(--danger); border: 1px solid #dc2626; }
@@ -5022,7 +5147,7 @@ function renderDashboardHtml(config) {
       padding: 3px;
       gap: 3px;
     }
-    .comp-range-btn {
+    .comp-range-btn, .time-range-pill {
       background: transparent;
       border: 1px solid transparent;
       color: #94a3b8;
@@ -5034,11 +5159,11 @@ function renderDashboardHtml(config) {
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       white-space: nowrap;
     }
-    .comp-range-btn:hover {
+    .comp-range-btn:hover, .time-range-pill:hover {
       color: #f1f5f9;
       background: rgba(255, 255, 255, 0.06);
     }
-    .comp-range-btn.active {
+    .comp-range-btn.active, .time-range-pill.active {
       background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(52, 211, 153, 0.22));
       color: #38bdf8;
       border-color: rgba(56, 189, 248, 0.45);
@@ -5083,15 +5208,16 @@ function renderDashboardHtml(config) {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
+      gap: 10px;
       margin-bottom: 8px;
       padding-bottom: 8px;
       border-bottom: 1px solid #1e293b;
     }
     .comp-main-switch-label { font-weight: 600; color: #f1f5f9; font-size: 0.92rem; }
     .comp-module-desc { font-size: 0.76rem; color: var(--muted); margin-bottom: 12px; line-height: 1.4; }
-    .comp-module-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .comp-module-header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; text-align: right; }
     .comp-module-contrib { display: flex; flex-direction: column; align-items: flex-end; }
-    .contrib-text { font-size: 0.72rem; color: #94a3b8; }
+    .contrib-text { font-size: 0.72rem; color: #94a3b8; white-space: nowrap; }
     .comp-progress-bar { width: 90px; height: 4px; background: #1e293b; border-radius: 2px; overflow: hidden; margin-top: 3px; }
     .comp-progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #34d399); border-radius: 2px; transition: width 0.4s ease; }
     .comp-module-body { display: flex; flex-direction: column; gap: 9px; transition: opacity 0.25s, filter 0.25s; }
@@ -5475,7 +5601,7 @@ function renderDashboardHtml(config) {
             <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('compression')" title="点击查看 Token 压缩大盘与 5 大引擎">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                 <span style="font-size:0.8rem; color:var(--muted);">🪙 Token 优化大盘</span>
-                <span class="badge badge-healthy">实时估算中</span>
+                <span class="badge badge-healthy" id="comp-overview-badge">实时估算中</span>
               </div>
               <div style="font-size:1.3rem; font-weight:700; color:#34d399;" id="stat-saved-tokens-overview">~0 Tokens</div>
               <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;" id="stat-saved-cost-overview">节约费用: ~$0.0000 USD</div>
@@ -5483,7 +5609,7 @@ function renderDashboardHtml(config) {
             <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('doctor')" title="点击查看系统自检与异常修复">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                 <span style="font-size:0.8rem; color:var(--muted);">🩺 全链路健康</span>
-                <span class="badge badge-healthy">🟢 健康</span>
+                <span class="badge badge-healthy" id="doctor-overview-badge">🟢 健康</span>
               </div>
               <div style="font-size:1.3rem; font-weight:700; color:#a78bfa;" id="doctor-overview-val">系统就绪</div>
               <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">CLI、端口、离线安全预览与死锁防御</div>
@@ -5669,6 +5795,7 @@ function renderDashboardHtml(config) {
                 <span class="preset-badge" id="preset-active-badge" style="font-size: 0.75rem; color: var(--primary); padding: 4px 8px; background: rgba(56,189,248,0.1); border-radius: 6px; border: 1px solid rgba(56,189,248,0.3);">
                   当前: ${(compCfg.preset === 'aggressive') ? '🚀 极致省Token档' : (compCfg.preset === 'conservative') ? '🛡️ 保守只去噪档' : (compCfg.preset === 'custom') ? '⚙️ 自定义模式' : '🌟 平衡标准档'}
                 </span>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-comp-advanced" onclick="toggleAllCompModuleBodies()" style="margin-left:auto; font-size:0.75rem; padding:3px 10px;" title="一键收起或展开下方 5 大引擎的底层细粒度开关，保持界面清爽">🎛️ 收起/展开底层微调项</button>
               </div>
             </div>
             <div class="preset-desc-card" id="preset-desc-card">
@@ -5854,9 +5981,9 @@ function renderDashboardHtml(config) {
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-clean-devops" ${(mCfg.rtk && mCfg.rtk.cleanDevOpsOutput !== false && compCfg.cleanDevOpsOutput !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>DevOps 容器与集群编排去噪 (cleanDevOpsOutput)</span>
+                  <span>DevOps / Git / 编译与重复日志去噪 (cleanDevOpsOutput · RTK &amp; llmtrim)</span>
                 </label>
-                <div class="sub-tip">智能折叠 Docker 镜像拉取层状态、Kubectl Pod 健康轮转与 Terraform 资源计划</div>
+                <div class="sub-tip">智能折叠 Docker 镜像层、Kubectl Pod 状态、Terraform 刷新、Git 对象传输进度、Cargo/Pip/NPM 依赖编译刷屏及时间戳重复日志</div>
               </div>
             </div>
           </div>
@@ -6019,8 +6146,10 @@ function renderDashboardHtml(config) {
                 </label>
               </div>
               <div class="comp-module-header-right">
-                <span class="badge ${psIsWin ? 'badge-healthy' : 'badge-disabled'}" id="badge-module-powershell-platform">${psIsWin ? '🟢 Windows 原生运行中' : '🐧 Linux 休眠旁路 (零干扰)'}</span>
-                <span class="badge ${(mCfg.powershell && mCfg.powershell.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-powershell">${(mCfg.powershell && mCfg.powershell.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                <div style="display:flex; align-items:center; gap:6px; flex-wrap:nowrap;">
+                  <span class="badge ${psIsWin ? 'badge-healthy' : 'badge-disabled'}" id="badge-module-powershell-platform">${psIsWin ? '🟢 Windows 原生运行中' : '🐧 Linux 休眠旁路 (零干扰)'}</span>
+                  <span class="badge ${(mCfg.powershell && mCfg.powershell.enabled === false) ? 'badge-disabled' : 'badge-healthy'}" id="badge-module-powershell">${(mCfg.powershell && mCfg.powershell.enabled === false) ? '已停用/旁路' : '运行中'}</span>
+                </div>
                 <div class="comp-module-contrib">
                   <span class="contrib-text" id="contrib-text-powershell">贡献度: 0% · 0 Tokens</span>
                   <div class="comp-progress-bar">
@@ -6294,11 +6423,14 @@ function renderDashboardHtml(config) {
           </div>
           <div class="form-group">
             <label>Web 管理访问密码 (UI Password - 留空无限制)</label>
-            <div class="input-wrapper">
-              <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，局域网共享建议设置" value="${config.uiPassword || ''}" oninput="markConfigDirty()">
-              <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')">👁️</button>
+            <div class="input-wrapper" style="display:flex; gap:8px; align-items:center;">
+              <input type="password" id="cfg-uipassword" class="form-control" placeholder="留空不设防，单机电脑推荐留空" value="${config.uiPassword || ''}" oninput="markConfigDirty()" style="flex:1;">
+              <button type="button" class="toggle-eye" onclick="toggleEye('cfg-uipassword')" title="显示/隐藏密码">👁️</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="clearPassword()" style="white-space:nowrap; padding:5px 10px; font-size:12px;" title="一键清空密码恢复免密">🗑️ 清空密码</button>
             </div>
-            <div class="sub-tip" style="margin-left:0; margin-top:3px;">保护管理面板与密钥安全，留空则免密进入</div>
+            <div class="sub-tip" style="margin-left:0; margin-top:4px; color:#94a3b8; font-size:12px; line-height:1.5;">
+              💡 <strong>【白话说明】</strong>：当前单机电脑（Windows）使用<strong>强烈建议留空</strong>，免密开箱即用。若网关部署在云端/NAS 且开启局域网共享（绑定 <code>0.0.0.0</code>），可在此设置密码防止外部蹭用。无论是否设密，本机上的 Codex 与 OpenCode 均享有本地回路免密通行，绝不报错。
+            </div>
           </div>
           <div class="form-group">
             <label>429 触发后默认冷却时长 (秒)</label>
@@ -7329,10 +7461,14 @@ function renderDashboardHtml(config) {
         }
         const tokensOverviewEl = document.getElementById('stat-saved-tokens-overview');
         const costOverviewEl = document.getElementById('stat-saved-cost-overview');
+        const compOverviewBadge = document.getElementById('comp-overview-badge');
         if (tokensOverviewEl) tokensOverviewEl.innerText = '~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
         if (costOverviewEl) {
           const costVal = Number(stats.savedCostUSD || 0);
           costOverviewEl.innerText = '节约费用: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+        }
+        if (compOverviewBadge) {
+          compOverviewBadge.innerText = hasData ? ('⚡ 压缩率 ' + (stats.compressionRatio || 0) + '%') : '实时估算中';
         }
         if (ratioEl) ratioEl.innerText = (stats.compressionRatio || 0) + '%';
         if (origEl) origEl.innerText = Number(stats.totalOriginalChars || 0).toLocaleString() + ' Chars';
@@ -7397,16 +7533,16 @@ function renderDashboardHtml(config) {
                 if ((m.savedTokens || 0) > 0) {
                   textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens' + roundsText;
                 } else if (m.alignedRounds > 0) {
-                  textEl.innerText = '🔒 KV Cache 前缀已锁定 (' + m.alignedRounds + ' 轮 · ' + (m.alignedToolsCount || 0) + ' 个工具，缓存命中提升 80%~90%)';
+                  textEl.innerText = '🔒 KV Cache 前缀已锁定 (' + m.alignedRounds + ' 轮 · ' + Number(m.alignedToolsCount || 0).toLocaleString() + ' 工具)';
                 } else {
                   textEl.innerText = '贡献度: 0% · ~0 Tokens';
                 }
               } else if (mod === 'cacheZone') {
                 const hits = m.cacheZoneHits || 0;
                 if ((m.savedTokens || 0) > 0) {
-                  textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens' + (hits > 0 ? ' (' + hits + ' 次固化命中)' : '');
+                  textEl.innerText = '贡献度: ' + (m.percentage || 0) + '% · ~' + Number(m.savedTokens || 0).toLocaleString() + ' Tokens' + (hits > 0 ? ' (' + Number(hits).toLocaleString() + ' 次命中)' : '');
                 } else if (hits > 0) {
-                  textEl.innerText = '⚡ 字节级缓存固化守护 (' + hits + ' 次复用命中 · 零重算零抖动)';
+                  textEl.innerText = '⚡ 固化命中 ' + Number(hits).toLocaleString() + ' 次 (零重算零抖动)';
                 } else {
                   textEl.innerText = '贡献度: 0% · ~0 Tokens (待命中)';
                 }
@@ -7587,6 +7723,15 @@ function renderDashboardHtml(config) {
       document.body.removeChild(textArea);
     }
 
+    function clearPassword() {
+      const input = document.getElementById('cfg-uipassword');
+      if (input) {
+        input.value = '';
+        markConfigDirty();
+        showToast('已清空访问密码，点击【💾 保存配置】即可生效为免密模式');
+      }
+    }
+
     function markConfigDirty() {
       const saveBtn = document.getElementById('btn-save-config');
       if (saveBtn && !saveBtn.classList.contains('btn-save-dirty')) {
@@ -7618,6 +7763,35 @@ function renderDashboardHtml(config) {
       toast.style.borderColor = isError ? '#f87171' : '#34d399';
       toast.style.display = 'block';
       setTimeout(() => { toast.style.display = 'none'; }, 3000);
+    }
+
+    var compAdvancedCollapsed = false;
+    function toggleAllCompModuleBodies() {
+      compAdvancedCollapsed = !compAdvancedCollapsed;
+      var ids = ['module-body-rtk', 'module-body-headroom', 'module-body-schema', 'module-body-cacheZone', 'module-body-powershell'];
+      for (var i = 0; i < ids.length; i++) {
+        var el = document.getElementById(ids[i]);
+        if (el) el.style.display = compAdvancedCollapsed ? 'none' : '';
+      }
+      var btn = document.getElementById('btn-toggle-comp-advanced');
+      if (btn) {
+        btn.textContent = compAdvancedCollapsed ? '🎛️ 展开底层微调项 (已精简)' : '🎛️ 收起/展开底层微调项';
+      }
+    }
+
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('keydown', function(e) {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+          e.preventDefault();
+          if (typeof saveConfig === 'function') saveConfig();
+        } else if (e.altKey && !e.ctrlKey && !e.metaKey) {
+          var tabMap = { '1': 'overview', '2': 'compression', '3': 'clients', '4': 'accounts', '5': 'doctor', '6': 'settings' };
+          if (tabMap[e.key] && typeof switchTab === 'function') {
+            e.preventDefault();
+            switchTab(tabMap[e.key]);
+          }
+        }
+      });
     }
 
     function toggleCardCollapse(bodyId, triggerElem) {
@@ -8257,6 +8431,10 @@ function renderDashboardHtml(config) {
       const doctorBadge = document.getElementById('doctor-status-badge');
       const wizDocBadge = document.getElementById('wizard-status-doctor');
       const wizDocDesc = document.getElementById('wizard-desc-doctor');
+      const overviewDocBadge = document.getElementById('doctor-overview-badge');
+      const overviewDocVal = document.getElementById('doctor-overview-val');
+      const navDocBadge = document.getElementById('nav-badge-doctor');
+      const wizGlobalBadge = document.getElementById('wizard-global-badge');
       box.innerHTML = '<span style="color:var(--primary)">⏳ 正在执行系统环境全链路自检...</span>';
       try {
         const res = await fetch('/balancer/api/doctor?scope=' + encodeURIComponent(scope), { headers: apiHeaders() });
@@ -8271,6 +8449,7 @@ function renderDashboardHtml(config) {
             <span><strong>双轨 Schema:</strong> \${doc.dualTrackSchema ? (doc.dualTrackSchema.healthy ? '<span style="color:var(--success)">✔ 镜像正常</span>' : '<span style="color:var(--warning)">⚠ 缺失规范</span>') : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>提供商接口:</strong> \${doc.openchamberProbe && doc.openchamberProbe.integration ? (doc.openchamberProbe.integration.status === 'healthy' ? '<span style="color:var(--success)">✔ ' + doc.openchamberProbe.integration.latencyMs + 'ms' + (doc.openchamberProbe.integration.authRequired ? ' (鉴权)' : '') + '</span>' : (doc.openchamberProbe.integration.status === 'deadlocked' ? '<span style="color:var(--danger)">❌ 死锁挂死</span>' : (doc.openchamberProbe.integration.status === 'unreachable' ? '<span style="color:var(--muted)">未连接</span>' : '<span style="color:var(--warning)">⚠ ' + (doc.openchamberProbe.integration.error || doc.openchamberProbe.integration.status) + '</span>'))) : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>/boost 指令:</strong> \${doc.commands.boostMdExists ? '<span style="color:var(--success)">✔ 已就绪</span>' : '<span style="color:var(--muted)">未安装</span>'}</span>
+            <span><strong>回路互通门禁:</strong> \${doc.gatewayLoopbackAuth ? (doc.gatewayLoopbackAuth.healthy ? '<span style="color:var(--success)">✔ 守卫正常</span>' : '<span style="color:var(--danger)">❌ 存在阻断</span>') : '<span style="color:var(--muted)">-</span>'}</span>
             <span><strong>模型自愈屏障:</strong> <span style="color:var(--success)">✔ 异构节点防护</span></span>
           </div>
         \`;
@@ -8279,6 +8458,9 @@ function renderDashboardHtml(config) {
           if (doctorBadge) { doctorBadge.className = 'badge badge-healthy'; doctorBadge.innerText = '🟢 全链路健康'; }
           if (wizDocBadge) { wizDocBadge.className = 'badge badge-healthy'; wizDocBadge.innerText = '🟢 全链路健康'; }
           if (wizDocDesc) { wizDocDesc.innerText = 'CLI、端口、离线预览沙箱与指令集均运行良好'; }
+          if (overviewDocBadge) { overviewDocBadge.className = 'badge badge-healthy'; overviewDocBadge.innerText = '🟢 健康'; }
+          if (overviewDocVal) { overviewDocVal.style.color = '#60a5fa'; overviewDocVal.innerText = '系统就绪'; }
+          if (navDocBadge) { navDocBadge.innerText = '健康'; }
         } else {
           html += '<div style="margin-top:8px;"><strong>发现 ' + doc.issues.length + ' 个系统待修复/可优化项：</strong></div>';
           let hasHigh = false;
@@ -8303,6 +8485,21 @@ function renderDashboardHtml(config) {
           }
           if (wizDocDesc) {
             wizDocDesc.innerText = '发现 ' + doc.issues.length + ' 项可优化/修复项，点击【一键自动修复】即可秒级自愈';
+          }
+          if (overviewDocBadge) {
+            overviewDocBadge.className = hasHigh ? 'badge badge-cooling' : 'badge badge-healthy';
+            overviewDocBadge.innerText = hasHigh ? '🔴 待修复 (' + doc.issues.length + ')' : '🟡 待优化 (' + doc.issues.length + ')';
+          }
+          if (overviewDocVal) {
+            overviewDocVal.style.color = hasHigh ? 'var(--danger)' : 'var(--warning)';
+            overviewDocVal.innerText = hasHigh ? (doc.issues.length + ' 项待修复') : (doc.issues.length + ' 项可优化');
+          }
+          if (navDocBadge) {
+            navDocBadge.innerText = hasHigh ? ('待修复(' + doc.issues.length + ')') : ('待优化(' + doc.issues.length + ')');
+          }
+          if (wizGlobalBadge && hasHigh) {
+            wizGlobalBadge.className = 'badge badge-cooling';
+            wizGlobalBadge.innerText = '🔴 待修复 (' + doc.issues.length + ' 项异常)';
           }
         }
         if (doc.codexIssues && doc.codexIssues.length > 0) {
@@ -9481,7 +9678,8 @@ const server = http.createServer((req, res) => {
     }
   });
 
-  const reqUrl = url.parse(req.url, true);
+  const u9568 = new URL(req.url || '/', 'http://localhost');
+  const reqUrl = { pathname: u9568.pathname, query: Object.fromEntries(u9568.searchParams.entries()), searchParams: u9568.searchParams, search: u9568.search };
 
   // Global CORS preflight (OPTIONS)
   if (req.method === 'OPTIONS') {
@@ -9716,13 +9914,16 @@ const server = http.createServer((req, res) => {
               preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
               modules: mergedModules
             };
-            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
-                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
+            for (const k of ['stripAnsi', 'cleanCliMetadata', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'cleanGitOutput', 'cleanBuildAndPkgOutput',
+                            'cleanSearchAndTreeOutput', 'dedupLogLines', 'foldLockfiles', 'foldStructuredData',
+                            'maxStructuredItems', 'structuredHeadCount', 'structuredTailCount',
                             'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
                             'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
                             'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns',
-                            'autoDetectPlatform', 'cleanCliXmlNoise', 'fixQuoteEscaping', 'fixCurlAlias',
-                            'fixTrailingSlash', 'fixAndOperator', 'fixLineContinuation', 'injectPowerShellGuard']) {
+                            'autoDetectPlatform', 'cleanCliXmlNoise', 'cleanPowerShell7Noise', 'fixQuoteEscaping', 'fixCurlAlias',
+                            'fixTrailingSlash', 'fixAndOperator', 'fixLineContinuation', 'fixSubexpressionEscaping',
+                            'scriptFileInjectionHelper', 'injectPowerShellGuard']) {
               if (payload.compression[k] !== undefined) {
                 toNormalize[k] = payload.compression[k];
               }
@@ -9792,13 +9993,16 @@ const server = http.createServer((req, res) => {
               preset: payload.compression.preset !== undefined ? payload.compression.preset : prevComp.preset,
               modules: mergedModules || undefined
             };
-            for (const k of ['stripAnsi', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
-                            'cleanKubectlOutput', 'cleanTerraformOutput', 'foldLockfiles', 'foldStructuredData', 'maxStructuredItems',
+            for (const k of ['stripAnsi', 'cleanCliMetadata', 'cleanProgressBars', 'cleanDevOpsOutput', 'cleanDockerOutput',
+                            'cleanKubectlOutput', 'cleanTerraformOutput', 'cleanGitOutput', 'cleanBuildAndPkgOutput',
+                            'cleanSearchAndTreeOutput', 'dedupLogLines', 'foldLockfiles', 'foldStructuredData',
+                            'maxStructuredItems', 'structuredHeadCount', 'structuredTailCount',
                             'exemptMergeConflicts', 'protectSourceDiffs', 'foldTestPasses',
                             'alignToolsSchema', 'slimToolsSchema', 'schemaCharThreshold',
                             'cacheZoneFreeze', 'trueLruRetention', 'customTestPassPatterns',
-                            'autoDetectPlatform', 'cleanCliXmlNoise', 'fixQuoteEscaping', 'fixCurlAlias',
-                            'fixTrailingSlash', 'fixAndOperator', 'fixLineContinuation', 'injectPowerShellGuard']) {
+                            'autoDetectPlatform', 'cleanCliXmlNoise', 'cleanPowerShell7Noise', 'fixQuoteEscaping', 'fixCurlAlias',
+                            'fixTrailingSlash', 'fixAndOperator', 'fixLineContinuation', 'fixSubexpressionEscaping',
+                            'scriptFileInjectionHelper', 'injectPowerShellGuard']) {
               if (payload.compression[k] !== undefined) {
                 toNormalize[k] = payload.compression[k];
               } else if (prevComp[k] !== undefined) {
@@ -10492,7 +10696,8 @@ $ghost
       res.end(renderLoginPage());
       return;
     }
-    const parsed = url.parse(req.url, true);
+    const u10579 = new URL(req.url || '/', 'http://localhost');
+    const parsed = { pathname: u10579.pathname, query: Object.fromEntries(u10579.searchParams.entries()), searchParams: u10579.searchParams };
     const headers = {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
@@ -10503,8 +10708,17 @@ $ghost
       const token = Buffer.from(config.uiPassword.trim()).toString('base64');
       headers['Set-Cookie'] = `router_auth=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax`;
     }
-    res.writeHead(200, headers);
-    res.end(renderDashboardHtml(config));
+    try {
+      const html = renderDashboardHtml(config);
+      res.writeHead(200, headers);
+      res.end(html);
+    } catch (err) {
+      console.error('[Dashboard Render Error]', err);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      }
+      res.end('Dashboard Render Error: ' + (err && err.message ? err.message : String(err)));
+    }
     return;
   }
 

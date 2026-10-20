@@ -37,6 +37,9 @@ const DEFAULT_COMPRESSION_CONFIG = {
   cleanDockerOutput: true,
   cleanTerraformOutput: true,
   cleanKubectlOutput: true,
+  cleanGitOutput: true,
+  cleanBuildAndPkgOutput: true,
+  dedupLogLines: true,
   cleanDevOpsOutput: true,
   foldLockfiles: true,
   foldStructuredData: true,
@@ -445,6 +448,11 @@ function normalizeCompressionOptions(input = {}) {
   result.cleanDockerOutput = rtkActive ? (input.cleanDockerOutput !== undefined ? Boolean(input.cleanDockerOutput) : devopsVal) : false;
   result.cleanKubectlOutput = rtkActive ? (input.cleanKubectlOutput !== undefined ? Boolean(input.cleanKubectlOutput) : devopsVal) : false;
   result.cleanTerraformOutput = rtkActive ? (input.cleanTerraformOutput !== undefined ? Boolean(input.cleanTerraformOutput) : devopsVal) : false;
+  result.cleanCliMetadata = rtkActive ? (input.cleanCliMetadata !== undefined ? Boolean(input.cleanCliMetadata) : devopsVal) : false;
+  result.cleanGitOutput = rtkActive ? (input.cleanGitOutput !== undefined ? Boolean(input.cleanGitOutput) : devopsVal) : false;
+  result.cleanBuildAndPkgOutput = rtkActive ? (input.cleanBuildAndPkgOutput !== undefined ? Boolean(input.cleanBuildAndPkgOutput) : devopsVal) : false;
+  result.cleanSearchAndTreeOutput = rtkActive ? (input.cleanSearchAndTreeOutput !== undefined ? Boolean(input.cleanSearchAndTreeOutput) : devopsVal) : false;
+  result.dedupLogLines = rtkActive ? (input.dedupLogLines !== undefined ? Boolean(input.dedupLogLines) : devopsVal) : false;
 
   result.foldLockfiles = headroomActive ? result.modules.headroom.foldLockfiles : false;
   result.foldStructuredData = headroomActive ? result.modules.headroom.foldStructuredData : false;
@@ -589,6 +597,18 @@ function pruneByModelEntriesIfNeeded() {
   }
 }
 
+const CANONICAL_MODEL_ALIASES = {
+  'deepseek-flash': 'deepseek-v4.1-flash',
+  'deepseek-v4-flash': 'deepseek-v4.1-flash',
+  'deepseek_flash': 'deepseek-v4.1-flash',
+  'deepseek-pro': 'deepseek-v4-pro',
+  'deepseek_pro': 'deepseek-v4-pro',
+  'deepseek-v4.0-pro': 'deepseek-v4-pro',
+  'deepseek-v4-chat': 'deepseek-v4.1-flash',
+  'kimi-k2.5': 'kimi-k2.7-code',
+  'glm-4-flash': 'glm-4.7-flash'
+};
+
 function normalizeModelName(rawModel) {
   if (!rawModel || typeof rawModel !== 'string') return null;
   let clean = rawModel.trim().toLowerCase();
@@ -605,6 +625,16 @@ function normalizeModelName(rawModel) {
   }
   if (clean.includes('?')) {
     clean = clean.split('?')[0].trim();
+  }
+  if (CANONICAL_MODEL_ALIASES[clean]) {
+    return CANONICAL_MODEL_ALIASES[clean];
+  }
+  // Regex canonical alignment for deepseek flash & pro family
+  if (/^deepseek[-_.]*(?:v[0-9.]*[-_.]*)?flash$/.test(clean)) {
+    return 'deepseek-v4.1-flash';
+  }
+  if (/^deepseek[-_.]*(?:v[0-9.]*[-_.]*)?pro$/.test(clean)) {
+    return 'deepseek-v4-pro';
   }
   return clean || null;
 }
@@ -851,7 +881,7 @@ function createEmptyBucket(startTime, endTime) {
       rtk: { savedChars: 0, savedTokens: 0 },
       headroom: { savedChars: 0, savedTokens: 0 },
       schema: { savedChars: 0, savedTokens: 0, alignedRounds: 0, alignedToolsCount: 0 },
-      cacheZone: { savedChars: 0, savedTokens: 0 },
+      cacheZone: { savedChars: 0, savedTokens: 0, cacheZoneHits: 0 },
       powershell: { savedChars: 0, savedTokens: 0 }
     },
     byModel: {}
@@ -955,14 +985,21 @@ function recordBucketSchemaAlignment(tier, ts, rounds = 1, toolsCount = 0) {
   bucket.modules.schema.alignedToolsCount += toolsCount;
 }
 
+function recordBucketCacheZoneHit(tier, ts, hits = 1) {
+  const bucket = getOrCreateBucket(tier, ts);
+  if (!bucket || !bucket.modules || !bucket.modules.cacheZone) return;
+  bucket.modules.cacheZone.cacheZoneHits = (Number(bucket.modules.cacheZone.cacheZoneHits) || 0) + hits;
+}
+
 function computeDerivedStats(stats) {
   const modulesSum = Object.values(stats.modules || {}).reduce((sum, m) => sum + (Number(m.savedChars) || 0), 0);
   const diffSavedChars = Math.max(0, (Number(stats.totalOriginalChars) || 0) - (Number(stats.totalCompressedChars) || 0));
-  const totalSavedChars = Math.max(diffSavedChars, modulesSum);
+  const totalSavedChars = Math.max(diffSavedChars, modulesSum, Number(stats.totalSavedChars) || 0);
   stats.totalSavedChars = totalSavedChars;
-  if ((Number(stats.totalOriginalChars) || 0) < totalSavedChars) {
+  if (stats.totalOriginalChars < totalSavedChars) {
     stats.totalOriginalChars = totalSavedChars;
   }
+  stats.totalCompressedChars = Math.max(0, stats.totalOriginalChars - totalSavedChars);
 
   // Modules token calculation & percentage
   let modulesTokenSum = 0;
@@ -990,7 +1027,7 @@ function computeDerivedStats(stats) {
   for (const [m, data] of Object.entries(stats.byModel)) {
     if (!data || typeof data !== 'object') continue;
     data.savedChars = Number(data.savedChars) || 0;
-    data.originalChars = Number(data.originalChars) || 0;
+    data.originalChars = Math.max(data.savedChars, Number(data.originalChars) || 0);
     if (data.savedTokens === undefined || data.savedTokens === null || data.savedTokens === 0) {
       data.savedTokens = estimateTokens(data.savedChars);
     }
@@ -1018,6 +1055,48 @@ function computeDerivedStats(stats) {
 function saveStatsToDisk() {
   try {
     pruneExpiredBuckets();
+
+    // Canonical Self-Healing Migration: coalesce aliases (e.g. deepseek-flash -> deepseek-v4.1-flash) in loaded stats and history
+    if (compressionStats && compressionStats.byModel) {
+      for (const [rawModelKey, data] of Object.entries(compressionStats.byModel)) {
+        const canonical = normalizeModelName(rawModelKey);
+        if (canonical && canonical !== rawModelKey) {
+          const target = compressionStats.byModel[canonical] || {
+            savedChars: 0, savedTokens: 0, savedCostUSD: 0, originalChars: 0, ratePer1M: getModelRate(canonical)
+          };
+          target.savedChars += (data.savedChars || 0);
+          target.savedTokens += (data.savedTokens || 0);
+          target.savedCostUSD = Number((target.savedCostUSD + (data.savedCostUSD || 0)).toFixed(7));
+          target.originalChars += (data.originalChars || 0);
+          compressionStats.byModel[canonical] = target;
+          delete compressionStats.byModel[rawModelKey];
+        }
+      }
+    }
+    if (compressionHistory && compressionHistory.buckets) {
+      for (const bucketList of Object.values(compressionHistory.buckets)) {
+        if (Array.isArray(bucketList)) {
+          for (const b of bucketList) {
+            if (b && b.byModel && typeof b.byModel === 'object') {
+              for (const [rawModelKey, data] of Object.entries(b.byModel)) {
+                const canonical = normalizeModelName(rawModelKey);
+                if (canonical && canonical !== rawModelKey) {
+                  const target = b.byModel[canonical] || {
+                    savedChars: 0, savedTokens: 0, savedCostUSD: 0, originalChars: 0, ratePer1M: getModelRate(canonical)
+                  };
+                  target.savedChars += (data.savedChars || 0);
+                  target.savedTokens += (data.savedTokens || 0);
+                  target.savedCostUSD = Number((target.savedCostUSD + (data.savedCostUSD || 0)).toFixed(7));
+                  target.originalChars += (data.originalChars || 0);
+                  b.byModel[canonical] = target;
+                  delete b.byModel[rawModelKey];
+                }
+              }
+            }
+          }
+        }
+      }
+    }
     compressionHistory.all = compressionStats;
     compressionHistory.lastResetAt = compressionStats.lastResetAt;
     compressionHistory.updatedAt = new Date().toISOString();
@@ -1165,17 +1244,34 @@ function loadStatsFromDisk() {
         compressionRatio: Number(sourceStats.compressionRatio) || 0,
         byModel: loadedByModel,
         modules: {
-          rtk: { savedChars: (sourceStats.modules && sourceStats.modules.rtk && sourceStats.modules.rtk.savedChars) || 0, savedTokens: 0, percentage: 0 },
-          headroom: { savedChars: (sourceStats.modules && sourceStats.modules.headroom && sourceStats.modules.headroom.savedChars) || 0, savedTokens: 0, percentage: 0 },
+          rtk: {
+            savedChars: (sourceStats.modules && sourceStats.modules.rtk && sourceStats.modules.rtk.savedChars) || 0,
+            savedTokens: (sourceStats.modules && sourceStats.modules.rtk && sourceStats.modules.rtk.savedTokens) || 0,
+            percentage: 0
+          },
+          headroom: {
+            savedChars: (sourceStats.modules && sourceStats.modules.headroom && sourceStats.modules.headroom.savedChars) || 0,
+            savedTokens: (sourceStats.modules && sourceStats.modules.headroom && sourceStats.modules.headroom.savedTokens) || 0,
+            percentage: 0
+          },
           schema: {
             savedChars: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.savedChars) || 0,
-            savedTokens: 0,
+            savedTokens: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.savedTokens) || 0,
             percentage: 0,
             alignedRounds: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.alignedRounds) || 0,
             alignedToolsCount: (sourceStats.modules && sourceStats.modules.schema && sourceStats.modules.schema.alignedToolsCount) || 0
           },
-          cacheZone: { savedChars: (sourceStats.modules && sourceStats.modules.cacheZone && sourceStats.modules.cacheZone.savedChars) || 0, savedTokens: 0, percentage: 0 },
-          powershell: { savedChars: (sourceStats.modules && sourceStats.modules.powershell && sourceStats.modules.powershell.savedChars) || 0, savedTokens: 0, percentage: 0 }
+          cacheZone: {
+            savedChars: (sourceStats.modules && sourceStats.modules.cacheZone && sourceStats.modules.cacheZone.savedChars) || 0,
+            savedTokens: (sourceStats.modules && sourceStats.modules.cacheZone && sourceStats.modules.cacheZone.savedTokens) || 0,
+            percentage: 0,
+            cacheZoneHits: (sourceStats.modules && sourceStats.modules.cacheZone && sourceStats.modules.cacheZone.cacheZoneHits) || 0
+          },
+          powershell: {
+            savedChars: (sourceStats.modules && sourceStats.modules.powershell && sourceStats.modules.powershell.savedChars) || 0,
+            savedTokens: (sourceStats.modules && sourceStats.modules.powershell && sourceStats.modules.powershell.savedTokens) || 0,
+            percentage: 0
+          }
         },
         lastResetAt: sourceStats.lastResetAt || (loadedHistory && loadedHistory.lastResetAt) || new Date().toISOString(),
         updatedAt: sourceStats.updatedAt || (loadedHistory && loadedHistory.updatedAt) || new Date().toISOString()
@@ -1379,12 +1475,14 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     const label = formatTimeSeriesLabel(slotTime, normRange);
 
     if (existing) {
-      const origChars = Number(existing.totalOriginalChars) || 0;
-      const compChars = Number(existing.totalCompressedChars) || 0;
+      const rawOrigChars = Number(existing.totalOriginalChars) || 0;
+      const rawCompChars = Number(existing.totalCompressedChars) || 0;
       let savedChars = Number(existing.totalSavedChars) || 0;
       const modSum = Object.values(existing.modules || {}).reduce((s, m) => s + (Number(m.savedChars) || 0), 0);
-      savedChars = Math.max(savedChars, origChars - compChars, modSum);
-      const savedTokens = estimateTokens(savedChars);
+      const modTokSum = Object.values(existing.modules || {}).reduce((s, m) => s + (Number(m.savedTokens) || 0), 0);
+      savedChars = Math.max(savedChars, rawOrigChars - rawCompChars, modSum);
+      const origChars = Math.max(savedChars, rawOrigChars);
+      const savedTokens = Math.max(Number(existing.savedTokens) || 0, modTokSum, estimateTokens(savedChars));
 
       const byModelData = {};
       let modelCostSum = 0;
@@ -1393,15 +1491,20 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
         for (const [m, mInfo] of Object.entries(existing.byModel)) {
           if (!mInfo) continue;
           const cleanM = normalizeModelName(m) || m;
-          const sTokens = estimateTokens(Number(mInfo.savedChars) || 0);
+          const sTokens = Math.max(Number(mInfo.savedTokens) || 0, estimateTokens(Number(mInfo.savedChars) || 0));
           const rate = getModelRate(cleanM);
           const sCost = Number(((sTokens / 1000000) * rate).toFixed(7));
-          byModelData[cleanM] = {
-            savedChars: Number(mInfo.savedChars) || 0,
-            savedTokens: sTokens,
-            savedCostUSD: sCost,
-            ratePer1M: rate
-          };
+          if (!byModelData[cleanM]) {
+            byModelData[cleanM] = {
+              savedChars: 0,
+              savedTokens: 0,
+              savedCostUSD: 0,
+              ratePer1M: rate
+            };
+          }
+          byModelData[cleanM].savedChars += (Number(mInfo.savedChars) || 0);
+          byModelData[cleanM].savedTokens += sTokens;
+          byModelData[cleanM].savedCostUSD = Number((byModelData[cleanM].savedCostUSD + sCost).toFixed(7));
           modelCostSum += sCost;
           modelTokensSum += sTokens;
         }
@@ -1492,7 +1595,7 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
     headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
     schema: { savedChars: 0, savedTokens: 0, percentage: 0, alignedRounds: 0, alignedToolsCount: 0 },
-    cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0 },
+    cacheZone: { savedChars: 0, savedTokens: 0, percentage: 0, cacheZoneHits: 0 },
     powershell: { savedChars: 0, savedTokens: 0, percentage: 0 }
   };
   const byModel = {};
@@ -1505,9 +1608,12 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
       if (b.modules && b.modules[modKey]) {
         modules[modKey].savedChars += (Number(b.modules[modKey].savedChars) || 0);
+        modules[modKey].savedTokens += (Number(b.modules[modKey].savedTokens) || 0);
         if (modKey === 'schema') {
           modules.schema.alignedRounds += (Number(b.modules.schema.alignedRounds) || 0);
           modules.schema.alignedToolsCount += (Number(b.modules.schema.alignedToolsCount) || 0);
+        } else if (modKey === 'cacheZone') {
+          modules.cacheZone.cacheZoneHits += (Number(b.modules.cacheZone.cacheZoneHits) || 0);
         }
       }
     }
@@ -1526,6 +1632,7 @@ function getStatsByRange(range = 'all', now = Date.now()) {
           };
         }
         byModel[cleanM].savedChars += (Number(mData.savedChars) || 0);
+        byModel[cleanM].savedTokens += (Number(mData.savedTokens) || 0);
         byModel[cleanM].originalChars += (Number(mData.originalChars) || 0);
       }
     }
@@ -1537,12 +1644,38 @@ function getStatsByRange(range = 'all', now = Date.now()) {
   if (totalOriginalChars < totalSavedChars) {
     totalOriginalChars = totalSavedChars;
   }
-  const savedTokens = estimateTokens(totalSavedChars);
+  totalCompressedChars = Math.max(0, totalOriginalChars - totalSavedChars);
+
+  // If legacy buckets from v3.10.1 did not store per-bucket cacheZoneHits, proportionally attribute from global cacheZoneHits
+  if (modules.cacheZone.cacheZoneHits === 0 && matching.length > 0 && compressionStats.modules && compressionStats.modules.cacheZone && compressionStats.modules.cacheZone.cacheZoneHits > 0) {
+    const globalHits = Number(compressionStats.modules.cacheZone.cacheZoneHits) || 0;
+    const globalRounds = (compressionStats.modules.schema && Number(compressionStats.modules.schema.alignedRounds)) || 0;
+    if (globalRounds > 0 && modules.schema.alignedRounds > 0) {
+      const ratio = Math.min(1, modules.schema.alignedRounds / globalRounds);
+      modules.cacheZone.cacheZoneHits = Math.max(1, Math.round(globalHits * ratio));
+    } else if (totalSavedChars > 0 && (compressionStats.totalSavedChars || 0) > 0) {
+      const ratio = Math.min(1, totalSavedChars / compressionStats.totalSavedChars);
+      modules.cacheZone.cacheZoneHits = Math.max(1, Math.round(globalHits * ratio));
+    }
+  }
+
+  let modulesTokenSum = 0;
+  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
+    const mod = modules[modKey];
+    mod.savedTokens = Math.max(Number(mod.savedTokens) || 0, estimateTokens(mod.savedChars));
+    modulesTokenSum += mod.savedTokens;
+    mod.percentage = totalSavedChars > 0
+      ? Number(((mod.savedChars / totalSavedChars) * 100).toFixed(1))
+      : 0;
+  }
+
+  const savedTokens = Math.max(modulesTokenSum, estimateTokens(totalSavedChars));
 
   let modelTokensSum = 0;
   let modelCostSum = 0;
   for (const [m, data] of Object.entries(byModel)) {
-    data.savedTokens = estimateTokens(data.savedChars);
+    data.originalChars = Math.max(data.savedChars, Number(data.originalChars) || 0);
+    data.savedTokens = Math.max(Number(data.savedTokens) || 0, estimateTokens(data.savedChars));
     const officialRate = getModelRate(m);
     data.ratePer1M = officialRate;
     data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
@@ -1557,14 +1690,6 @@ function getStatsByRange(range = 'all', now = Date.now()) {
   const compressionRatio = totalOriginalChars > 0
     ? Number(((totalSavedChars / totalOriginalChars) * 100).toFixed(1))
     : 0;
-
-  for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
-    const mod = modules[modKey];
-    mod.savedTokens = estimateTokens(mod.savedChars);
-    mod.percentage = totalSavedChars > 0
-      ? Number(((mod.savedChars / totalSavedChars) * 100).toFixed(1))
-      : 0;
-  }
 
   const timeSeries = buildTimeSeries(normRange, matching, now);
 
@@ -1596,6 +1721,7 @@ function resetCompressionStats() {
   }
   try {
     sessionCompressionMemo.clear();
+    globalCompressionMemo.clear();
   } catch (_) {}
 
   const nowIso = new Date().toISOString();
@@ -2137,17 +2263,42 @@ function foldStructuredData(text, options = {}, context = {}) {
       return val;
     };
 
+    // Helper: Compact JSON serialization that preserves top-level line breaks while minifying deep leaf indentation
+    const serializeCompactJson = (val, isIndented, rawLen) => {
+      if (!isIndented) return JSON.stringify(val);
+      if (rawLen < 800) return JSON.stringify(val, null, 2);
+      if (Array.isArray(val)) {
+        const items = val.map(item => JSON.stringify(item));
+        return '[\n  ' + items.join(',\n  ') + '\n]';
+      }
+      if (val && typeof val === 'object') {
+        const entries = Object.entries(val).map(([k, v]) => JSON.stringify(k) + ': ' + JSON.stringify(v));
+        return '{\n  ' + entries.join(',\n  ') + '\n}';
+      }
+      return JSON.stringify(val);
+    };
+
     // Case 1: Entire text is JSON (trimmed starts with [ or {)
     const trimmed = text.trim();
     if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
       try {
         const parsed = JSON.parse(trimmed);
         const folded = processValue(parsed, 0);
+        const isIndented = trimmed.includes('\n  ') || trimmed.includes('\n\t') || trimmed.startsWith('[\n') || trimmed.startsWith('{\n');
         if (wasFolded) {
-          const isIndented = trimmed.includes('\n  ') || trimmed.includes('\n\t') || trimmed.startsWith('[\n') || trimmed.startsWith('{\n');
           const leadingWs = text.match(/^\s*/)[0];
           const trailingWs = text.match(/\s*$/)[0];
-          return leadingWs + (isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded)) + trailingWs;
+          return leadingWs + serializeCompactJson(folded, isIndented, trimmed.length) + trailingWs;
+        }
+        // SmartCrusher v2: For large multi-line pretty-printed JSON (>= 1200 chars, >= 25 lines),
+        // compact deep multi-space indentation losslessly (preserving 100% of keys and values)
+        if (context && context.isPipeline && !Array.isArray(parsed) && isIndented && trimmed.length >= 1200 && trimmed.split(/\r?\n/).length >= 25) {
+          const compactOut = serializeCompactJson(parsed, true, trimmed.length);
+          if (compactOut.length + 100 < trimmed.length) {
+            const leadingWs = text.match(/^\s*/)[0];
+            const trailingWs = text.match(/\s*$/)[0];
+            return leadingWs + compactOut + trailingWs;
+          }
         }
       } catch (_) {}
     }
@@ -2163,11 +2314,18 @@ function foldStructuredData(text, options = {}, context = {}) {
             wasFolded = false;
             const parsed = JSON.parse(innerTrimmed);
             const folded = processValue(parsed, 0);
+            const isIndented = innerTrimmed.includes('\n  ') || innerTrimmed.includes('\n\t');
             if (wasFolded) {
               anyBlockFolded = true;
-              const isIndented = innerTrimmed.includes('\n  ') || innerTrimmed.includes('\n\t');
-              const stringified = isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded);
+              const stringified = serializeCompactJson(folded, isIndented, innerTrimmed.length);
               return prefix + stringified + suffix;
+            }
+            if (context && context.isPipeline && !Array.isArray(parsed) && isIndented && innerTrimmed.length >= 1200 && innerTrimmed.split(/\r?\n/).length >= 25) {
+              const compactOut = serializeCompactJson(parsed, true, innerTrimmed.length);
+              if (compactOut.length + 100 < innerTrimmed.length) {
+                anyBlockFolded = true;
+                return prefix + compactOut + suffix;
+              }
             }
           } catch (_) {}
         }
@@ -2176,36 +2334,38 @@ function foldStructuredData(text, options = {}, context = {}) {
       if (anyBlockFolded) return replaced;
     }
 
-    // Case 3: Raw JSON array or object embedded in descriptive text
-    const candidateStarts = [];
-    const scanLimit = Math.min(text.length, 2000);
-    for (let i = 0; i < scanLimit; i++) {
-      if (text[i] === '[' || text[i] === '{') {
-        candidateStarts.push({ char: text[i], idx: i });
-      }
-    }
-    let parseAttempts = 0;
-    const MAX_PARSE_ATTEMPTS = 3;
-    for (const { char, idx } of candidateStarts) {
-      if (parseAttempts >= MAX_PARSE_ATTEMPTS) break;
-      const closeChar = char === '[' ? ']' : '}';
-      const endIdx = text.lastIndexOf(closeChar);
-      if (endIdx > idx + 100) {
-        const candidate = text.substring(idx, endIdx + 1);
-        if (!looksLikeJsonStructure(candidate, char)) {
-          continue;
+    // Case 3: Raw JSON array or object embedded in descriptive text (only when not a multi-line source code file)
+    if (!isMultiLineSourceFileRead(text)) {
+      const candidateStarts = [];
+      const scanLimit = Math.min(text.length, 2000);
+      for (let i = 0; i < scanLimit; i++) {
+        if (text[i] === '[' || text[i] === '{') {
+          candidateStarts.push({ char: text[i], idx: i });
         }
-        parseAttempts++;
-        try {
-          wasFolded = false;
-          const parsed = JSON.parse(candidate);
-          const folded = processValue(parsed, 0);
-          if (wasFolded) {
-            const isIndented = candidate.includes('\n  ') || candidate.includes('\n\t') || candidate.startsWith('[\n') || candidate.startsWith('{\n');
-            const stringified = isIndented ? JSON.stringify(folded, null, 2) : JSON.stringify(folded);
-            return text.substring(0, idx) + stringified + text.substring(endIdx + 1);
+      }
+      let parseAttempts = 0;
+      const MAX_PARSE_ATTEMPTS = 3;
+      for (const { char, idx } of candidateStarts) {
+        if (parseAttempts >= MAX_PARSE_ATTEMPTS) break;
+        const closeChar = char === '[' ? ']' : '}';
+        const endIdx = text.lastIndexOf(closeChar);
+        if (endIdx > idx + 100) {
+          const candidate = text.substring(idx, endIdx + 1);
+          if (!looksLikeJsonStructure(candidate, char)) {
+            continue;
           }
-        } catch (_) {}
+          parseAttempts++;
+          try {
+            wasFolded = false;
+            const parsed = JSON.parse(candidate);
+            const folded = processValue(parsed, 0);
+            if (wasFolded) {
+              const isIndented = candidate.includes('\n  ') || candidate.includes('\n\t') || candidate.startsWith('[\n') || candidate.startsWith('{\n');
+              const stringified = serializeCompactJson(folded, isIndented, candidate.length);
+              return text.substring(0, idx) + stringified + text.substring(endIdx + 1);
+            }
+          } catch (_) {}
+        }
       }
     }
 
@@ -2593,21 +2753,431 @@ function getRegisteredTransformers() {
   return Array.from(transformersRegistry.values()).sort((a, b) => a.priority - b.priority);
 }
 
+/**
+ * Clean repetitive Git transfer progress output (from rtk-ai/rtk Git Filter).
+ * Folds runs of 3+ object transfer progress lines (Enumerating, Counting, Compressing,
+ * Receiving, Resolving deltas, Unpacking, Updating files) while 100% preserving commit hashes,
+ * branch refs, URLs, diffs, conflicts, and errors.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanGitOutput(text) {
+  if (typeof text !== 'string' || text.length < 80) return text;
+  if (
+    !text.includes('Enumerating objects:') &&
+    !text.includes('Counting objects:') &&
+    !text.includes('Compressing objects:') &&
+    !text.includes('Receiving objects:') &&
+    !text.includes('Resolving deltas:') &&
+    !text.includes('Unpacking objects:')
+  ) {
+    return text;
+  }
+  if (RE_CONFLICT_MARKERS.test(text)) return text;
+
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    let gitRun = [];
+    let folded = false;
+
+    const isGitTransferLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (/(?:error|fatal|conflict|warning|rejected|failed)/i.test(trimmed)) return false;
+      return /^(?:remote:\s*)?(?:Enumerating objects|Counting objects|Compressing objects|Receiving objects|Resolving deltas|Unpacking objects|Writing objects|Updating files):\s+\d+%?/i.test(trimmed) ||
+             /^remote:\s*Total\s+\d+\s+\(delta\s+\d+\)/i.test(trimmed);
+    };
+
+    const flushRun = () => {
+      if (gitRun.length >= 3) {
+        result.push(`[Git: ${gitRun.length} object transfer progress lines folded (Enumerating / Counting / Compressing / Resolving)]`);
+        folded = true;
+      } else {
+        result.push(...gitRun);
+      }
+      gitRun = [];
+    };
+
+    for (const line of lines) {
+      if (isGitTransferLine(line)) {
+        gitRun.push(line);
+      } else {
+        flushRun();
+        result.push(line);
+      }
+    }
+    flushRun();
+
+    return folded ? result.join(newline) : text;
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanGitOutput error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Clean routine package manager & compiler dependency fetch/compile lines
+ * (from rtk-ai/rtk & ojuschugh1/sqz Cargo/Pip/NPM Filter).
+ * Folds runs of 5+ consecutive routine dependency lines (Downloading, Downloaded,
+ * Compiling <crate> vX.Y.Z, Requirement already satisfied, Using cached) while
+ * 100% preserving warnings, errors, stack traces, and final build summaries.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanBuildAndPkgOutput(text) {
+  if (typeof text !== 'string' || text.length < 160) return text;
+  if (
+    !text.includes('Compiling ') &&
+    !text.includes('Downloaded ') &&
+    !text.includes('Downloading ') &&
+    !text.includes('Requirement already satisfied:')
+  ) {
+    return text;
+  }
+  if (RE_CONFLICT_MARKERS.test(text)) return text;
+
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    const result = [];
+    let pkgRun = [];
+    let folded = false;
+
+    const isRoutinePkgLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (/(?:error|warn|fail|fatal|panic|exception|traceback|conflict|deprecated|vulnerability)/i.test(trimmed)) return false;
+      // Cargo routine lines
+      if (/^(?:Downloading|Downloaded|Compiling|Checking|Locking)\s+[\w.-]+\s+v\d+\.\d+/i.test(trimmed)) return true;
+      // Pip routine lines
+      if (/^Requirement already satisfied:\s+\S+\s+in\s+\S+/i.test(trimmed)) return true;
+      if (/^Using cached\s+[\w.-]+\.(?:whl|tar\.gz)/i.test(trimmed)) return true;
+      return false;
+    };
+
+    const flushRun = () => {
+      if (pkgRun.length >= 5) {
+        result.push(pkgRun[0]);
+        result.push(`  ... [Build/Pkg: ${pkgRun.length - 2} routine dependency/compile lines folded] ...`);
+        result.push(pkgRun[pkgRun.length - 1]);
+        folded = true;
+      } else {
+        result.push(...pkgRun);
+      }
+      pkgRun = [];
+    };
+
+    for (const line of lines) {
+      if (isRoutinePkgLine(line)) {
+        pkgRun.push(line);
+      } else {
+        flushRun();
+        result.push(line);
+      }
+    }
+    flushRun();
+
+    return folded ? result.join(newline) : text;
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanBuildAndPkgOutput error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Top-level independent CLI execution metadata cleaner (cleanCliMetadata).
+ * Strips Codex / OpenCode shell execution wrapper boilerplate (Chunk ID, Wall time,
+ * Original token count, Process exited with code 0, Output: header) across ALL tool commands
+ * while 100% preserving non-zero exit codes, error diagnostics, and source code reads.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanCliMetadata(text) {
+  if (typeof text !== 'string' || text.length < 24) return text;
+  if (RE_CONFLICT_MARKERS.test(text)) return text;
+  if (isMultiLineSourceFileRead(text)) return text;
+
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    let out = text;
+    let modified = false;
+
+    const lines = out.split(/\r?\n/);
+    const filtered = [];
+    let inHeader = true;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (inHeader && i < 10) {
+        if (/^(?:Chunk ID:\s*[a-f0-9_-]+|Wall time:\s*\d+(?:\.\d+)?\s*seconds?|Original token count:\s*\d+|Process exited with code 0|Exit code:\s*0|Output:)$/i.test(trimmed)) {
+          modified = true;
+          if (/^Output:$/i.test(trimmed)) {
+            inHeader = false;
+          }
+          continue;
+        }
+        if (trimmed.length > 0 && !/^(?:Process exited with code|Exit code:)/i.test(trimmed)) {
+          inHeader = false;
+        }
+      }
+      filtered.push(line);
+    }
+
+    if (modified) {
+      out = filtered.join(newline);
+    }
+
+    if (/(?:\r?\n[ \t]*){3,}/.test(out)) {
+      const collapsed = out.replace(/(?:\r?\n[ \t]*){3,}/g, newline + newline);
+      if (collapsed.length < out.length) {
+        out = collapsed;
+        modified = true;
+      }
+    }
+
+    return modified && out.trim().length > 0 ? out : text;
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanCliMetadata error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Clean and fold high-density search results (ripgrep rg, grep, Select-String),
+ * minified single-line asset matches, and large file/directory listings (rg --files, find, Get-ChildItem).
+ * 100% preserves source code reads, stack traces, compiler errors, diffs, and merge conflicts.
+ * @param {string} text
+ * @returns {string}
+ */
+function cleanSearchAndTreeOutput(text) {
+  if (typeof text !== 'string' || text.length < 350) return text;
+  if (RE_CONFLICT_MARKERS.test(text)) return text;
+  if (text.includes('diff --git ') || text.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(text)) return text;
+  if (isMultiLineSourceFileRead(text)) return text;
+  const trimmedStart = text.trimStart();
+  if (trimmedStart.startsWith('{') || trimmedStart.startsWith('[')) return text;
+
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    let modified = false;
+
+    // 1. Truncate giant single-line minified JS/CSS/SVG/base64 grep matches (> 550 chars on a single line)
+    const processedLines = lines.map(line => {
+      if (line.length > 550) {
+        const t = line.trim();
+        // Never truncate stack traces, error messages, or pure JSON lines
+        if (/^(?:at\s+|File\s+"|Traceback|AssertionError|TypeError|ReferenceError|SyntaxError|RuntimeError|Error:|\[\{|\{")/i.test(t)) {
+          return line;
+        }
+        const spaceCount = (t.match(/ /g) || []).length;
+        const isMinifiedOrAsset = (spaceCount / t.length < 0.05) ||
+          t.includes(';function(') ||
+          t.includes(',function(') ||
+          t.includes('data:image/') ||
+          t.includes('<svg ') ||
+          t.includes('webpack') ||
+          /^[\w./\\-]+:\d+:/.test(t);
+        if (isMinifiedOrAsset) {
+          modified = true;
+          const omitted = line.length - 220;
+          return line.slice(0, 220) + ` ... [RTK Search: Minified/long line tail omitted (${omitted} chars)]`;
+        }
+      }
+      return line;
+    });
+
+    // 2. Fold excessive per-file rg/grep matches (> 25 matches in the exact same file)
+    const rgLineRegex = /^([a-zA-Z0-9_.\\/-]+\.[a-zA-Z0-9]{1,8}):(\d+)[:\-](.*)$/;
+    let currentFile = null;
+    let fileMatches = [];
+    const afterRgFold = [];
+
+    const flushFileMatches = () => {
+      if (fileMatches.length > 25) {
+        const head = fileMatches.slice(0, 14);
+        const tail = fileMatches.slice(-4);
+        const omitted = fileMatches.length - head.length - tail.length;
+        afterRgFold.push(...head);
+        afterRgFold.push(`  ... [RTK Search: ${omitted} intermediate matches in ${currentFile} folded (first 14 & last 4 preserved)] ...`);
+        afterRgFold.push(...tail);
+        modified = true;
+      } else if (fileMatches.length > 0) {
+        afterRgFold.push(...fileMatches);
+      }
+      fileMatches = [];
+      currentFile = null;
+    };
+
+    for (const line of processedLines) {
+      const m = rgLineRegex.exec(line.trim());
+      if (m && !line.trim().startsWith('at ')) {
+        const fName = m[1];
+        if (currentFile === fName) {
+          fileMatches.push(line);
+        } else {
+          flushFileMatches();
+          currentFile = fName;
+          fileMatches.push(line);
+        }
+      } else {
+        flushFileMatches();
+        afterRgFold.push(line);
+      }
+    }
+    flushFileMatches();
+
+    // 3. Fold large file-list / directory enumeration outputs (rg --files, find, Get-ChildItem > 55 consecutive file paths)
+    const isFilePathLine = (line) => {
+      const t = line.trim();
+      if (!t || t.length > 260) return false;
+      if (/(?:error|warn|fail|exception|traceback|assert)/i.test(t)) return false;
+      // PowerShell Get-ChildItem row: Mode LastWriteTime Length Name
+      if (/^[d-][arhs-]{4,5}\s+\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}/i.test(t)) return true;
+      // Pure relative or absolute file path without spaces (or typical path with extension)
+      if (/^(?:[a-zA-Z]:[\\/]|\.{0,2}[\\/]|[a-zA-Z0-9_.-]+[\\/])[a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]{1,8}$/.test(t)) return true;
+      return false;
+    };
+
+    const finalLines = [];
+    let pathRun = [];
+    const flushPathRun = () => {
+      if (pathRun.length > 55) {
+        const head = pathRun.slice(0, 25);
+        const tail = pathRun.slice(-10);
+        const omitted = pathRun.length - head.length - tail.length;
+        finalLines.push(...head);
+        finalLines.push(`  ... [RTK Tree: ${omitted} intermediate file entries folded (first 25 & last 10 preserved)] ...`);
+        finalLines.push(...tail);
+        modified = true;
+      } else if (pathRun.length > 0) {
+        finalLines.push(...pathRun);
+      }
+      pathRun = [];
+    };
+
+    for (const line of afterRgFold) {
+      if (isFilePathLine(line)) {
+        pathRun.push(line);
+      } else {
+        flushPathRun();
+        finalLines.push(line);
+      }
+    }
+    flushPathRun();
+
+    return modified ? finalLines.join(newline) : text;
+  } catch (err) {
+    console.warn('[ContextCompactor] cleanSearchAndTreeOutput error, bypassing:', err.message);
+    return text;
+  }
+}
+
+/**
+ * Deduplicate consecutive identical runtime log lines (from fkiene/llmtrim & DCP).
+ * Only folds lines matching explicit runtime log patterns (ISO/syslog timestamp or [INFO]/[DEBUG] prefix)
+ * when repeated >= 4 times consecutively. 100% exempts source code, diffs, stack traces, and merge conflicts.
+ * @param {string} text
+ * @returns {string}
+ */
+function dedupLogLines(text) {
+  if (typeof text !== 'string' || text.length < 160) return text;
+  if (RE_CONFLICT_MARKERS.test(text)) return text;
+
+  try {
+    const isCrlf = text.includes('\r\n');
+    const newline = isCrlf ? '\r\n' : '\n';
+    const lines = text.split(/\r?\n/);
+    if (lines.length < 4) return text;
+
+    const normalizeLogTemplate = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.length < 12) return null;
+      // Never fold stack traces, diffs, code fences, or error headers
+      if (/^(?:at\s+|File\s+"|Traceback|\+\+\+|---|@@|[+\-!<>]|```|error|fatal|panic|AssertionError)/i.test(trimmed)) {
+        return null;
+      }
+      // Must start with a timestamp or explicit log level tag to qualify as a runtime log line
+      const hasLogPrefix = /^(?:\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\]?|\[?\d{2}:\d{2}:\d{2}(?:\.\d+)?\]?|\[(?:INFO|DEBUG|TRACE|NOTICE|LOG)\]|(?:INFO|DEBUG|TRACE|NOTICE):\s)/i.test(trimmed);
+      if (!hasLogPrefix) return null;
+      return trimmed
+        .replace(/^\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\]?\s*/, '')
+        .replace(/^\[?\d{2}:\d{2}:\d{2}(?:\.\d+)?\]?\s*/, '');
+    };
+
+    const result = [];
+    let currentTemplate = null;
+    let currentGroup = [];
+    let folded = false;
+
+    const flushGroup = () => {
+      if (currentGroup.length >= 4) {
+        result.push(currentGroup[0]);
+        result.push(`  ... [llmtrim Log Dedup: Identical log line repeated ${currentGroup.length - 1} more times]`);
+        folded = true;
+      } else if (currentGroup.length > 0) {
+        result.push(...currentGroup);
+      }
+      currentGroup = [];
+      currentTemplate = null;
+    };
+
+    for (const line of lines) {
+      const tpl = normalizeLogTemplate(line);
+      if (tpl !== null && tpl === currentTemplate) {
+        currentGroup.push(line);
+      } else {
+        flushGroup();
+        if (tpl !== null) {
+          currentTemplate = tpl;
+          currentGroup.push(line);
+        } else {
+          result.push(line);
+        }
+      }
+    }
+    flushGroup();
+
+    return folded ? result.join(newline) : text;
+  } catch (err) {
+    console.warn('[ContextCompactor] dedupLogLines error, bypassing:', err.message);
+    return text;
+  }
+}
+
 // Register built-in transformers in standard priority order
 registerTransformer('stripAnsi', (text) => stripAnsi(text), { priority: 10, enabledByDefault: true });
+registerTransformer('cleanCliMetadata', (text) => cleanCliMetadata(text), { priority: 15, enabledByDefault: true });
 registerTransformer('cleanProgressBars', (text) => cleanProgressBars(text), { priority: 20, enabledByDefault: true });
 registerTransformer('cleanPowerShellOutput', (text, opts, ctx) => {
   try {
     const psOpt = require('./powershell-optimizer');
-    if (psOpt.isPowerShellOptimizerActive(opts, ctx && ctx.req)) {
-      return psOpt.cleanPowerShellNoise(text);
+    const explicitTarget = opts && (opts.targetPlatform || opts.platform);
+    const hasExplicitPsNoise = typeof text === 'string' && (
+      text.includes('#< CLIXML') ||
+      text.includes('PowerShell 7.') ||
+      text.includes('Windows PowerShell') ||
+      text.includes('FullyQualifiedErrorId')
+    );
+    if (psOpt.isPowerShellOptimizerActive(opts, ctx && ctx.req) || (explicitTarget !== 'linux' && opts.cleanPowerShellOutput !== false && hasExplicitPsNoise)) {
+      return psOpt.cleanPowerShellNoise(text, opts);
     }
   } catch (_) {}
   return text;
 }, { priority: 25, enabledByDefault: true });
 registerTransformer('cleanDockerOutput', (text) => cleanDockerOutput(text), { priority: 30, enabledByDefault: true });
+registerTransformer('cleanGitOutput', (text) => cleanGitOutput(text), { priority: 32, enabledByDefault: true });
 registerTransformer('cleanKubectlOutput', (text) => cleanKubectlOutput(text), { priority: 35, enabledByDefault: true });
+registerTransformer('cleanBuildAndPkgOutput', (text) => cleanBuildAndPkgOutput(text), { priority: 38, enabledByDefault: true });
+registerTransformer('cleanSearchAndTreeOutput', (text) => cleanSearchAndTreeOutput(text), { priority: 39, enabledByDefault: true });
 registerTransformer('cleanTerraformOutput', (text) => cleanTerraformOutput(text), { priority: 40, enabledByDefault: true });
+registerTransformer('dedupLogLines', (text) => dedupLogLines(text), { priority: 45, enabledByDefault: true });
 registerTransformer('foldLockfiles', (text, opts) => foldLockfiles(text, opts), { priority: 50, enabledByDefault: true });
 registerTransformer('foldStructuredData', (text, opts, ctx) => foldStructuredData(text, opts, ctx), { priority: 52, enabledByDefault: true });
 registerTransformer('foldTestPasses', (text, opts) => foldTestPasses(text, opts), { priority: 60, enabledByDefault: true });
@@ -2731,8 +3301,10 @@ function slimDescription(desc) {
     let text = desc;
     // 1. Strip markdown code blocks (e.g. verbose multi-line code examples)
     text = text.replace(/```[\s\S]*?```/g, '');
-    // 2. Strip trailing example sections (Examples:, Usage:, Sample:) only if description remains meaningful
-    const strippedExamples = text.replace(/(?:\r?\n)+\s*(?:Examples?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '').trim();
+    // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...") while preserving trailing safety rules
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
+    // 3. Strip trailing example sections at the end of description
+    const strippedExamples = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '').trim();
     if (strippedExamples && strippedExamples.length >= 1) {
       text = strippedExamples;
     }
@@ -2861,7 +3433,23 @@ function slimToolsSchema(tools, threshold = 15000, knownLength = -1) {
       }
     }
     if (rawLen <= limit) {
-      return tools;
+      // Even when total tools JSON is below threshold (e.g. Codex 10 tools = 9,380 chars < 15,000),
+      // safely strip multi-line example blocks from individual oversized tool descriptions (>= 600 chars)
+      // while leaving normal concise tools (< 600 chars, e.g. Test 91) 100% untouched.
+      let anyOversizedToolSlimmed = false;
+      const selectivelySlimmed = tools.map(t => {
+        if (!t || typeof t !== 'object') return t;
+        const fnDesc = (t.function && typeof t.function.description === 'string') ? t.function.description : '';
+        const topDesc = (typeof t.description === 'string') ? t.description : '';
+        const maxDescLen = Math.max(fnDesc.length, topDesc.length);
+        if (maxDescLen >= 600 && (/(?:Examples?|Usage|Sample)/i.test(fnDesc || topDesc) || (fnDesc || topDesc).includes('```'))) {
+          const slimmed = slimToolItem(t);
+          anyOversizedToolSlimmed = true;
+          return slimmed;
+        }
+        return t;
+      });
+      return anyOversizedToolSlimmed ? selectivelySlimmed : tools;
     }
     return tools.map(t => slimToolItem(t));
   } catch (err) {
@@ -2912,7 +3500,7 @@ function compactToolsList(tools, opts = {}) {
 
     let deltaChars = Math.max(0, initialLen - finalLen);
 
-    if (opts.alignToolsSchema) {
+    if (opts.alignToolsSchema && !opts._isRetryAttempt) {
       if (!compressionStats.modules.schema.alignedRounds) {
         compressionStats.modules.schema.alignedRounds = 0;
       }
@@ -2922,9 +3510,10 @@ function compactToolsList(tools, opts = {}) {
       }
       compressionStats.modules.schema.alignedToolsCount += tools.length;
 
-      recordBucketSchemaAlignment('m5', Date.now(), 1, tools.length);
-      recordBucketSchemaAlignment('h1', Date.now(), 1, tools.length);
-      recordBucketSchemaAlignment('d1', Date.now(), 1, tools.length);
+      const alignTs = Date.now();
+      recordBucketSchemaAlignment('m5', alignTs, 1, tools.length);
+      recordBucketSchemaAlignment('h1', alignTs, 1, tools.length);
+      recordBucketSchemaAlignment('d1', alignTs, 1, tools.length);
 
       // ANTI-INFLATION REDLINE:
       // When schema was already sorted and minified (deltaChars === 0), do NOT fabricate
@@ -2932,9 +3521,18 @@ function compactToolsList(tools, opts = {}) {
       // KV Cache lock contribution without phantom number inflation.
     }
 
-    if (deltaChars > 0) {
-      const modelName = normalizeModelName(opts.model || null);
-      recordSavings('schema', deltaChars, Math.max(initialLen, deltaChars), modelName);
+    if (deltaChars > 0 && !opts._isRetryAttempt) {
+      const schemaHash = `schema_${hashContent(rawStr)}_${opts.schemaCharThreshold || 15000}`;
+      if (!globalCompressionMemo.has(schemaHash)) {
+        if (globalCompressionMemo.size >= MAX_GLOBAL_MEMO_KEYS) {
+          const oldestG = globalCompressionMemo.keys().next().value;
+          globalCompressionMemo.delete(oldestG);
+        }
+        globalCompressionMemo.set(schemaHash, finalLen);
+        const modelName = normalizeModelName(opts.model || null);
+        const dynamicSchemaTokens = Math.max(0, estimateTokens(rawStr) - estimateTokens(finalStr));
+        recordSavings('schema', deltaChars, Math.max(initialLen, deltaChars), modelName, Date.now(), dynamicSchemaTokens);
+      }
     }
 
     return { tools: current, savedChars: deltaChars, initialLen };
@@ -2956,6 +3554,13 @@ function hashContent(text) {
 
 const MAX_MEMO_SESSIONS = 500;
 const MAX_MEMO_KEYS_PER_SESSION = 200;
+const MAX_GLOBAL_MEMO_KEYS = 2000;
+const globalCompressionMemo = new Map();
+
+function normalizeMemoSessionId(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') return null;
+  return sessionId.trim().replace(/(?:-r\d+)+$/g, '');
+}
 
 /**
  * Derives dynamic options signature from all registered transformers and custom options.
@@ -2976,47 +3581,77 @@ function getOptionsSignature(opts) {
 }
 
 function getMemo(sessionId, cacheKey) {
-  if (!sessionId) return null;
-  const sMap = sessionCompressionMemo.get(sessionId);
-  if (!sMap) return null;
-  const val = sMap.get(cacheKey);
-  if (val !== undefined) {
-    // True LRU refresh within session
-    sMap.delete(cacheKey);
-    sMap.set(cacheKey, val);
-    // True LRU refresh for session itself
-    sessionCompressionMemo.delete(sessionId);
-    sessionCompressionMemo.set(sessionId, sMap);
-    return val;
+  const normSid = normalizeMemoSessionId(sessionId);
+  if (!normSid) return null;
+  const sMap = sessionCompressionMemo.get(normSid);
+  if (sMap) {
+    const val = sMap.get(cacheKey);
+    if (val !== undefined) {
+      // True LRU refresh within session
+      sMap.delete(cacheKey);
+      sMap.set(cacheKey, val);
+      // True LRU refresh for session itself
+      sessionCompressionMemo.delete(normSid);
+      sessionCompressionMemo.set(normSid, sMap);
+      return val;
+    }
+  }
+  // Cross-turn / sub-agent fallback: if the exact content hash + options signature
+  // was already compressed in an active proxy session, reuse the exact byte stream
+  if (globalCompressionMemo.has(cacheKey)) {
+    const gVal = globalCompressionMemo.get(cacheKey);
+    globalCompressionMemo.delete(cacheKey);
+    globalCompressionMemo.set(cacheKey, gVal);
+    setMemo(normSid, cacheKey, gVal);
+    return gVal;
   }
   return null;
 }
 
 function setMemo(sessionId, cacheKey, compressed) {
-  if (!sessionId) return;
-  let sMap = sessionCompressionMemo.get(sessionId);
+  const normSid = normalizeMemoSessionId(sessionId);
+  if (!normSid) return;
+  let sMap = sessionCompressionMemo.get(normSid);
   if (!sMap) {
     if (sessionCompressionMemo.size >= MAX_MEMO_SESSIONS) {
       const oldestSession = sessionCompressionMemo.keys().next().value;
       sessionCompressionMemo.delete(oldestSession);
     }
     sMap = new Map();
-    sessionCompressionMemo.set(sessionId, sMap);
+    sessionCompressionMemo.set(normSid, sMap);
   } else {
     // Refresh session order in memo
-    sessionCompressionMemo.delete(sessionId);
-    sessionCompressionMemo.set(sessionId, sMap);
+    sessionCompressionMemo.delete(normSid);
+    sessionCompressionMemo.set(normSid, sMap);
   }
   if (sMap.size >= MAX_MEMO_KEYS_PER_SESSION) {
     const oldestKey = sMap.keys().next().value;
     sMap.delete(oldestKey);
   }
   sMap.set(cacheKey, compressed);
+
+  if (globalCompressionMemo.size >= MAX_GLOBAL_MEMO_KEYS && !globalCompressionMemo.has(cacheKey)) {
+    const oldestGlobal = globalCompressionMemo.keys().next().value;
+    globalCompressionMemo.delete(oldestGlobal);
+  }
+  globalCompressionMemo.delete(cacheKey);
+  globalCompressionMemo.set(cacheKey, compressed);
 }
 
 function clearSessionMemo(sessionId) {
   if (sessionId) {
+    const normSid = normalizeMemoSessionId(sessionId);
+    const sMap = sessionCompressionMemo.get(normSid) || sessionCompressionMemo.get(sessionId);
+    if (sMap) {
+      for (const k of sMap.keys()) {
+        globalCompressionMemo.delete(k);
+      }
+    }
+    sessionCompressionMemo.delete(normSid);
     sessionCompressionMemo.delete(sessionId);
+  } else {
+    sessionCompressionMemo.clear();
+    globalCompressionMemo.clear();
   }
 }
 
@@ -3029,6 +3664,123 @@ function ensureSafeNonEmptyString(str, fallback = '[Empty output]') {
     return str.trim().length > 0 ? str : fallback;
   }
   return fallback;
+}
+
+/**
+ * Detects whether a tool output is a multi-line source code file read (e.g. OpenCode <file> block,
+ * numbered source lines "00001| ...", or raw source file with >= 8 code statements).
+ * Exempting source code file reads prevents:
+ * 1) Mutating test fixture strings inside source files (e.g. test_router.js)
+ * 2) Diluting compressionRatio by adding 500KB+ un-compressible source files to totalOriginalChars
+ */
+function isMultiLineSourceFileRead(text) {
+  if (typeof text !== 'string' || text.length < 300) return false;
+  // Strip optional leading Codex / OpenCode shell execution metadata wrapper before checking content
+  const bodyText = text.replace(/^(?:(?:Chunk ID|Wall time|Process exited with code|Exit code|Original token count)[^\r\n]*\r?\n)+(?:\s*Output:\s*\r?\n)?/i, '');
+  const trimmed = bodyText.trimStart();
+  // Never exempt pure JSON objects/arrays or CLIXML error payloads
+  if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('#< CLIXML')) {
+    return false;
+  }
+  if (trimmed.startsWith('<file>') || /^\s*0*1\s*[:|\t]\s*(?:\/\*|\/\/|#|import\b|const\b|let\b|var\b|function\b|class\b|package\b|def\b|\[CmdletBinding|param\s*\()/m.test(trimmed)) {
+    return true;
+  }
+  const sample = bodyText.length > 16000 ? bodyText.slice(0, 16000) : bodyText;
+  const lines = sample.split(/\r?\n/);
+  if (lines.length < 10) return false;
+  let codeLines = 0;
+  for (let i = 0; i < Math.min(lines.length, 250); i++) {
+    const l = lines[i].replace(/^\s*\d+\s*[:|\t]\s*/, '').trim();
+    if (!l) continue;
+    if (/^(?:const|let|var|function|async\s+function|class|import|export|def|from\s+[\w.]+\s+import|pub\s+fn|fn\s+\w+|package\s+\w+|#include\s+[<"]|using\s+System|namespace\s+\w+|public\s+(?:class|static|void|async)|private\s+(?:void|static|async)|module\.exports\s*=|assert\.(?:ok|strictEqual|deepStrictEqual)|\[CmdletBinding\(\)\]|param\s*\(|Write-Host\s+|\$[a-zA-Z_]\w*\s*=)\b/.test(l)) {
+      codeLines++;
+      if (codeLines >= 6) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Deterministically compacts verbose boilerplate in system/developer instructions:
+ * 1) Compacts verbose multi-clause descriptions in <skills_instructions> while 100% preserving skill names, triggers, and (file: ...) paths.
+ * 2) Removes verbatim duplicate bullet lines and excessive blank-line padding in system prompts.
+ * Memoized via sessionCompressionMemo / globalCompressionMemo so savings are credited once per session and Prompt KV Cache stays 100% locked.
+ */
+function compactSystemPrompt(text, opts = {}, sessionId = null, hasMultiAgentOverride = false) {
+  if (typeof text !== 'string' || text.length < 1200) return text;
+  if (!opts || !opts.enabled || opts.cleanDevOpsOutput === false) return text;
+
+  try {
+    const cacheKey = `sys_${hashContent(text)}_${hasMultiAgentOverride ? 1 : 0}`;
+    if (opts.cacheZoneFreeze) {
+      const cached = getMemo(sessionId || 'global_sys', cacheKey);
+      if (cached !== null) {
+        if (!opts._isRetryAttempt) {
+          compressionStats.modules.cacheZone.cacheZoneHits = (compressionStats.modules.cacheZone.cacheZoneHits || 0) + 1;
+          const hitTs = Date.now();
+          recordBucketCacheZoneHit('m5', hitTs, 1);
+          recordBucketCacheZoneHit('h1', hitTs, 1);
+          recordBucketCacheZoneHit('d1', hitTs, 1);
+          persistStatsThrottled();
+        }
+        return cached;
+      }
+    }
+
+    let out = text;
+
+    // 1. If <multi_agent_mode> explicitly disables earlier multi-agent delegation instructions,
+    // compact the contradicted 2,189-char multi-agent tutorial message down to its core workspace rule
+    if (hasMultiAgentOverride && out.includes('You are `/root`, the primary agent in a team of agents') && out.includes('spawn_agent')) {
+      out = 'You are `/root`, the primary agent. All agents share the same container, filesystem, and current working directory.';
+    }
+
+    // 2. Compact <skills_instructions> verbose descriptions (safety threshold: 120 chars) while preserving 100% of skill names & file paths
+    if (out.includes('<skills_instructions>') && out.includes('### Available skills')) {
+      out = out.replace(/^(-\s+[a-zA-Z0-9_:-]+:\s+)([^\r\n]+?)(\s*\(file:\s*[^)]+\))\s*$/gm, (full, prefix, desc, filePart) => {
+        if (desc.length <= 120) return full;
+        const firstSentence = desc.split(/\.\s+|\s+—\s+|;\s+/)[0].trim();
+        const shortDesc = firstSentence.length >= 35 && firstSentence.length <= 120 ? firstSentence : desc.slice(0, 120).trim();
+        return `${prefix}${shortDesc}${filePart}`;
+      });
+    }
+
+    // 3. Deduplicate identical bullet lines in large system instructions (> 4,000 chars) and collapse 3+ blank lines
+    if (out.length > 4000) {
+      const seenBullets = new Set();
+      const lines = out.split(/\r?\n/);
+      const dedupedLines = [];
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith('- ') && t.length > 60) {
+          if (seenBullets.has(t)) continue;
+          seenBullets.add(t);
+        }
+        dedupedLines.push(line);
+      }
+      out = dedupedLines.join('\n').replace(/(?:\r?\n[ \t]*){3,}/g, '\n\n');
+    }
+
+    const saved = text.length - out.length;
+    if (saved > 0) {
+      if (opts.cacheZoneFreeze) {
+        setMemo(sessionId || 'global_sys', cacheKey, out);
+      }
+      if (!opts._isRetryAttempt) {
+        const modelName = normalizeModelName(opts.model || null);
+        const savedTok = Math.max(0, estimateTokens(text) - estimateTokens(out));
+        recordSavings('rtk', saved, text.length, modelName, Date.now(), savedTok);
+      }
+      return out;
+    }
+
+    if (opts.cacheZoneFreeze) {
+      setMemo(sessionId || 'global_sys', cacheKey, text);
+    }
+    return text;
+  } catch (_) {
+    return text;
+  }
 }
 
 /**
@@ -3053,10 +3805,17 @@ function compactText(text, options = {}, sessionId = null) {
       cacheKey = `${hash}_${optsSig}`;
       const cached = getMemo(sessionId, cacheKey);
       if (cached !== null) {
-        if (!compressionStats.modules.cacheZone.cacheZoneHits) {
-          compressionStats.modules.cacheZone.cacheZoneHits = 0;
+        if (!opts._isRetryAttempt) {
+          if (!compressionStats.modules.cacheZone.cacheZoneHits) {
+            compressionStats.modules.cacheZone.cacheZoneHits = 0;
+          }
+          compressionStats.modules.cacheZone.cacheZoneHits += 1;
+          const hitTs = Date.now();
+          recordBucketCacheZoneHit('m5', hitTs, 1);
+          recordBucketCacheZoneHit('h1', hitTs, 1);
+          recordBucketCacheZoneHit('d1', hitTs, 1);
+          persistStatsThrottled();
         }
-        compressionStats.modules.cacheZone.cacheZoneHits += 1;
         // ANTI-INFLATION & ACCURACY REDLINE:
         // Do not re-accumulate historical savings on every turn into cacheZone.
         // Original character savings were already credited to RTK / Headroom / PowerShell in Turn 1.
@@ -3065,16 +3824,57 @@ function compactText(text, options = {}, sessionId = null) {
       }
     }
 
-    // Unpack stringified JSON terminal objects { stdout, stderr, output } if present
+    // Anti-Downgrade & Accuracy Shield: Exempt multi-line source code file reads
+    if (opts.protectSourceDiffs !== false && isMultiLineSourceFileRead(text)) {
+      if (opts.cacheZoneFreeze && sessionId && cacheKey) {
+        setMemo(sessionId, cacheKey, text);
+      }
+      return text;
+    }
+
+    // Unpack stringified JSON content-block arrays [{"type":"input_text"|"text","text":"..."}] (from Codex sanitizeToolOutput)
+    if (text.startsWith('[{') && text.endsWith('}]') && (text.includes('"text"') || text.includes('"output"') || text.includes('"content"'))) {
+      try {
+        const parsedArr = JSON.parse(text);
+        if (Array.isArray(parsedArr) && parsedArr.length > 0 && parsedArr.length <= (opts.maxStructuredItems || 50)) {
+          let arrMod = false;
+          for (const item of parsedArr) {
+            if (item && typeof item === 'object') {
+              for (const k of ['text', 'output', 'content']) {
+                if (typeof item[k] === 'string' && item[k].length > 0) {
+                  const comp = compactText(item[k], options, null);
+                  if (comp !== item[k]) {
+                    item[k] = comp;
+                    arrMod = true;
+                  }
+                }
+              }
+            }
+          }
+          if (arrMod) {
+            const reSerializedArr = JSON.stringify(parsedArr);
+            if (reSerializedArr.length < text.length) {
+              if (opts.cacheZoneFreeze && sessionId && cacheKey) {
+                setMemo(sessionId, cacheKey, reSerializedArr);
+              }
+              return reSerializedArr;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Unpack stringified JSON terminal objects { stdout, stderr, output, text, content } if present
     // so RTK and PowerShell denoising work inside stringified JSON outputs
-    if (text.startsWith('{') && text.endsWith('}') && (text.includes('"stdout"') || text.includes('"output"') || text.includes('"stderr"'))) {
+    if (text.startsWith('{') && text.endsWith('}') && (text.includes('"stdout"') || text.includes('"output"') || text.includes('"stderr"') || text.includes('"text"') || text.includes('"content"'))) {
       try {
         const parsed = JSON.parse(text);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           let mod = false;
-          for (const k of ['stdout', 'stderr', 'output']) {
+          // Pass null sessionId to inner field calls so outer JSON string owns the single session memo entry
+          for (const k of ['stdout', 'stderr', 'output', 'text', 'content']) {
             if (typeof parsed[k] === 'string' && parsed[k].length > 0) {
-              const comp = compactText(parsed[k], options, sessionId);
+              const comp = compactText(parsed[k], options, null);
               if (comp !== parsed[k]) {
                 parsed[k] = comp;
                 mod = true;
@@ -3082,8 +3882,22 @@ function compactText(text, options = {}, sessionId = null) {
             }
           }
           if (mod) {
-            const reSerialized = JSON.stringify(parsed);
+            let reSerialized = JSON.stringify(parsed);
+            if (opts.foldStructuredData) {
+              try {
+                const folded = foldStructuredData(reSerialized, opts);
+                if (typeof folded === 'string' && folded.length < reSerialized.length) {
+                  const diffChars = reSerialized.length - folded.length;
+                  const diffTokens = Math.max(0, estimateTokens(reSerialized) - estimateTokens(folded));
+                  recordSavings('headroom', diffChars, reSerialized.length, normalizeModelName(opts.model || null), Date.now(), diffTokens);
+                  reSerialized = folded;
+                }
+              } catch (_) {}
+            }
             if (reSerialized.length < text.length) {
+              if (opts.cacheZoneFreeze && sessionId && cacheKey) {
+                setMemo(sessionId, cacheKey, reSerialized);
+              }
               return reSerialized;
             }
           }
@@ -3109,6 +3923,9 @@ function compactText(text, options = {}, sessionId = null) {
                           result.includes('[Lockfile diff folded:') ||
                           result.includes('[SmartCrusher:') ||
                           result.includes('[Headroom SmartCrusher:') ||
+                          result.includes('[Git:') ||
+                          result.includes('[Build/Pkg:') ||
+                          result.includes('[llmtrim Log Dedup:') ||
                           result.includes('[Empty terminal output]');
     if (result.length >= text.length && !hasFoldMarker) {
       result = text;
@@ -3119,7 +3936,7 @@ function compactText(text, options = {}, sessionId = null) {
     }
 
     const totalSaved = text.length - result.length;
-    if (totalSaved > 0) {
+    if (totalSaved > 0 && !opts._isRetryAttempt) {
       const origLen = text.length;
       const compLen = result.length;
       compressionStats.totalOriginalChars += origLen;
@@ -3252,8 +4069,26 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
     }
 
     if (Array.isArray(result.messages)) {
+      const hasMultiAgentOverride = result.messages.some(
+        m => m && (m.role === 'system' || m.role === 'developer') && typeof m.content === 'string' && m.content.includes('<multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies')
+      );
       result.messages = result.messages.map(msg => {
         if (!msg) return msg;
+        if ((msg.role === 'system' || msg.role === 'developer') && typeof msg.content === 'string' && msg.content.length >= 1200) {
+          const compSys = compactSystemPrompt(msg.content, compOpts, sessionId, hasMultiAgentOverride);
+          if (compSys !== msg.content) {
+            return { ...msg, content: compSys };
+          }
+          return msg;
+        }
+        if (msg.role === 'user' && typeof msg.content === 'string' && msg.content.startsWith('[Tool Output: ') && msg.content.endsWith(']')) {
+          const innerToolText = msg.content.slice(14, -1);
+          const compInner = compactText(innerToolText, compOpts, sessionId);
+          if (compInner !== innerToolText) {
+            return { ...msg, content: `[Tool Output: ${ensureSafeNonEmptyString(compInner)}]` };
+          }
+          return msg;
+        }
         if (msg.role === 'tool' || msg.role === 'function') {
           const hasContent = msg.content !== undefined;
           const hasOutput = msg.output !== undefined;
@@ -3330,7 +4165,7 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
     try {
       const psOpt = require('./powershell-optimizer');
       if (psOpt.isPowerShellOptimizerActive(compOpts)) {
-        finalResult = psOpt.optimizeChatPayload(finalResult, compOpts);
+        finalResult = psOpt.optimizeChatPayload(finalResult, { ...compOpts, _alreadyCompactedByPipeline: true });
       }
     } catch (_) {}
     return finalResult;
@@ -3457,7 +4292,7 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
     try {
       const psOpt = require('./powershell-optimizer');
       if (psOpt.isPowerShellOptimizerActive(compOpts)) {
-        finalResult = psOpt.optimizeAnthropicPayload(finalResult, compOpts);
+        finalResult = psOpt.optimizeAnthropicPayload(finalResult, { ...compOpts, _alreadyCompactedByPipeline: true });
       }
     } catch (_) {}
     return finalResult;
@@ -3493,9 +4328,23 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
       result.tools = compactToolsList(result.tools, compOpts).tools;
     }
 
+    if (typeof result.instructions === 'string' && result.instructions.length >= 1200) {
+      result.instructions = compactSystemPrompt(result.instructions, compOpts, sessionId, false);
+    }
+
     if (Array.isArray(result.input)) {
+      const hasMultiAgentOverride = result.input.some(
+        it => it && (it.role === 'system' || it.role === 'developer') && typeof it.content === 'string' && it.content.includes('<multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies')
+      );
       result.input = result.input.map(item => {
         if (!item) return item;
+        if ((item.role === 'system' || item.role === 'developer') && typeof item.content === 'string' && item.content.length >= 1200) {
+          const compSys = compactSystemPrompt(item.content, compOpts, sessionId, hasMultiAgentOverride);
+          if (compSys !== item.content) {
+            return { ...item, content: compSys };
+          }
+          return item;
+        }
         const hasOutput = item.output !== undefined;
         const hasContent = item.content !== undefined;
         const isToolOutput = item.type === 'function_call_output' ||
@@ -3616,7 +4465,7 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
     try {
       const psOpt = require('./powershell-optimizer');
       if (psOpt.isPowerShellOptimizerActive(compOpts)) {
-        finalResult = psOpt.optimizeResponsesPayload(finalResult, compOpts);
+        finalResult = psOpt.optimizeResponsesPayload(finalResult, { ...compOpts, _alreadyCompactedByPipeline: true });
       }
     } catch (_) {}
     return finalResult;
@@ -4008,6 +4857,12 @@ module.exports = {
   stripAnsi,
   cleanProgressBars,
   cleanDockerOutput,
+  cleanCliMetadata,
+  cleanGitOutput,
+  cleanBuildAndPkgOutput,
+  cleanSearchAndTreeOutput,
+  compactSystemPrompt,
+  dedupLogLines,
   cleanTerraformOutput,
   cleanKubectlOutput,
   foldLockfiles,
@@ -4048,5 +4903,7 @@ module.exports = {
   HISTORY_BAK_FILE,
   loadStatsFromDisk,
   saveStatsToDisk,
-  flushStatsToDisk
+  flushStatsToDisk,
+  isMultiLineSourceFileRead,
+  normalizeMemoSessionId
 };
