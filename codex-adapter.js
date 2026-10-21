@@ -1996,6 +1996,63 @@ function autoCorrectToolArgs(toolName, argsStr) {
   return argsStr;
 }
 
+const COMFYUI_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'mcp__comfyui__generate_image',
+      description: '调用本地 ComfyUI 图像智能体工业级工作流生成高质量真实图片。支持真人写实、二次元、国风厚涂、极速抽卡、唯美壁纸等多种风格，成片以 Markdown 格式优雅渲染展示。',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description: '画面英文或中文正向提示词 (例如: "1girl, cinematic lighting, 8k uhd, photorealistic, elegant smile")'
+          },
+          workflow: {
+            type: 'string',
+            description: '指定工作流编号或风格标签 (例如: "01" 或 "真人写实", "04" 或 "极速抽卡", "06" 或 "二次元吉卜力", "16" 或 "唯美风光壁纸"；留空则采用最佳画质)'
+          },
+          negative: {
+            type: 'string',
+            description: '负向屏蔽词 (可选)'
+          },
+          width: {
+            type: 'integer',
+            description: '自定义画幅宽度 (可选)'
+          },
+          height: {
+            type: 'integer',
+            description: '自定义画幅高度 (可选)'
+          },
+          seed: {
+            type: 'integer',
+            description: '随机种子 (可选)'
+          }
+        },
+        required: ['prompt']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mcp__comfyui__interrogate_image',
+      description: '分析反推图片中的提示词、风格与关键特征 (支持本地 ComfyUI WD14 深度反推或网关视觉多模态大模型透明兜底)',
+      parameters: {
+        type: 'object',
+        properties: {
+          image_path: {
+            type: 'string',
+            description: '本地图片绝对文件路径或 Base64 编码图片数据'
+          }
+        },
+        required: ['image_path']
+      }
+    }
+  }
+];
+
 function convertResponsesToChatPayload(body, compressionOptions = null, sessionId = null) {
   const messages = [];
   if (body.instructions && typeof body.instructions === 'string') {
@@ -2147,7 +2204,20 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
 
   // Tools mapping
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    chatPayload.tools = body.tools.map((t, idx) => {
+    const rawTools = body.tools;
+    const hasToolSearch = rawTools.some(t => {
+      const name = t.function?.name || t.name;
+      return name === 'tool_search';
+    });
+
+    chatPayload.tools = rawTools
+      .filter(t => {
+        const name = t.function?.name || t.name;
+        // Filter out tool_search if present: Codex Desktop does not execute tool_search
+        // for custom providers, causing dropped tool calls and model fallback to scripts.
+        return name !== 'tool_search';
+      })
+      .map((t, idx) => {
       const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       let description = t.function?.description || t.description || '';
       const rawParams = extractRawToolParams(t);
@@ -2178,6 +2248,16 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
         }
       };
     }).filter(t => Boolean(t.function && t.function.name));
+
+    // When tool_search was present (indicating Codex deferred tool mode) or if explicitly requested,
+    // inject ComfyUI tools upfront so the model can call them directly without failing on deferred search.
+    const hasGenerateImage = chatPayload.tools.some(t => {
+      const name = t.function?.name || t.name;
+      return name === 'mcp__comfyui__generate_image' || name === 'generate_image';
+    });
+    if ((hasToolSearch || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasGenerateImage) {
+      chatPayload.tools.push(...COMFYUI_TOOLS);
+    }
   }
 
   // Windows Native PowerShell Environment Directive Injection
@@ -2880,7 +2960,12 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             if (!toolCallsMap.has(idx)) {
               const tcOutIdx = outputIndex++;
               const callId = tc.id || `call_${Date.now()}_${idx}`;
-              const funcName = tc.function?.name || '';
+              let funcName = tc.function?.name || '';
+              if (funcName === 'generate_image' || funcName === 'image_gen') {
+                funcName = 'mcp__comfyui__generate_image';
+              } else if (funcName === 'interrogate_image') {
+                funcName = 'mcp__comfyui__interrogate_image';
+              }
               const isCustomTool = (funcName === 'apply_patch');
               const rec = {
                 id: callId,
@@ -2909,7 +2994,13 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
             const rec = toolCallsMap.get(idx);
             if (tc.function?.name && !rec.name) {
-              rec.name = tc.function.name;
+              let fName = tc.function.name;
+              if (fName === 'generate_image' || fName === 'image_gen') {
+                fName = 'mcp__comfyui__generate_image';
+              } else if (fName === 'interrogate_image') {
+                fName = 'mcp__comfyui__interrogate_image';
+              }
+              rec.name = fName;
               if (rec.name === 'apply_patch') {
                 rec.isCustomTool = true;
               }
@@ -3305,7 +3396,12 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
 
   if (Array.isArray(msg.tool_calls)) {
     for (const tc of msg.tool_calls) {
-      const toolName = tc.function?.name || '';
+      let toolName = tc.function?.name || '';
+      if (toolName === 'generate_image' || toolName === 'image_gen') {
+        toolName = 'mcp__comfyui__generate_image';
+      } else if (toolName === 'interrogate_image') {
+        toolName = 'mcp__comfyui__interrogate_image';
+      }
       const rawArgs = tc.function?.arguments || '{}';
       if (toolName === 'apply_patch') {
         const cleanInput = extractPatchInput(rawArgs);
@@ -3571,7 +3667,17 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
   if (body.top_p !== undefined) payload.top_p = body.top_p;
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    payload.tools = body.tools.map((t, idx) => {
+    const hasToolSearch = body.tools.some(t => {
+      const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null);
+      return name === 'tool_search';
+    });
+
+    payload.tools = body.tools
+      .filter(t => {
+        const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null);
+        return name !== 'tool_search';
+      })
+      .map((t, idx) => {
       const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       const description = t.function?.description || t.description || '';
       const rawParams = extractRawToolParams(t);
@@ -3582,6 +3688,19 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
         input_schema: inputSchema
       };
     }).filter(t => Boolean(t.name));
+
+    const hasAnthropicGenerateImage = payload.tools.some(t => {
+      return t.name === 'mcp__comfyui__generate_image' || t.name === 'generate_image';
+    });
+    if ((hasToolSearch || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasAnthropicGenerateImage) {
+      for (const ct of COMFYUI_TOOLS) {
+        payload.tools.push({
+          name: ct.function.name,
+          description: ct.function.description,
+          input_schema: ct.function.parameters
+        });
+      }
+    }
   }
 
   if (compressionOptions && compressionOptions.enabled !== false) {
@@ -4061,7 +4180,12 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             const bIdx = parsed.index ?? outputIndex;
             const tcOutIdx = outputIndex++;
             const callId = cb.id || `call_${Date.now()}_${bIdx}`;
-            const funcName = cb.name || 'custom_tool';
+            let funcName = cb.name || 'custom_tool';
+            if (funcName === 'generate_image' || funcName === 'image_gen') {
+              funcName = 'mcp__comfyui__generate_image';
+            } else if (funcName === 'interrogate_image') {
+              funcName = 'mcp__comfyui__interrogate_image';
+            }
             const isCustomTool = (funcName === 'apply_patch');
             const rec = { id: callId, name: funcName, args: '', outIdx: tcOutIdx, isCustomTool };
             toolCallsMap.set(bIdx, rec);
@@ -4280,8 +4404,14 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
           content: [{ type: 'reasoning_text', text: c.thinking || '' }]
         });
       } else if (c.type === 'tool_use') {
+        let toolName = c.name || 'custom_tool';
+        if (toolName === 'generate_image' || toolName === 'image_gen') {
+          toolName = 'mcp__comfyui__generate_image';
+        } else if (toolName === 'interrogate_image') {
+          toolName = 'mcp__comfyui__interrogate_image';
+        }
         const rawArgs = typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {});
-        if (c.name === 'apply_patch' || c.isCustomTool) {
+        if (toolName === 'apply_patch' || c.isCustomTool) {
           const cleanInput = extractPatchInput(rawArgs);
           output.push({
             id: c.id || `call_${Date.now()}`,
@@ -4295,7 +4425,7 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
           output.push({
             id: c.id || `call_${Date.now()}`,
             type: 'function_call',
-            name: c.name || 'custom_tool',
+            name: toolName,
             call_id: c.id || '',
             arguments: rawArgs,
             status: 'completed'
@@ -6027,7 +6157,7 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       '2. 严禁计划中途早熟停机：若在回复中制定了多步骤任务规划（例如 Step 1/N 到 Step N/N），必须严格自主推进并执行完毕，严禁中途（如 Step 2/N）无故停机交还控制权。\n' +
       '3. 遇到执行报错或脚本异常时，必须自主分析错误原因并调用工具尝试替代方案解决，严禁输出半截话、未闭合括号或未闭合反引号直接终止。\n' +
       '4. 回复必须保持语法结构与代码块完整闭合。\n' +
-      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（generate_image 与 interrogate_image）。必须优先调用 generate_image 工具生成真实图片，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
+      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（mcp__comfyui__generate_image 与 mcp__comfyui__interrogate_image，或 generate_image）。必须优先直接调用 mcp__comfyui__generate_image 工具生成真实图片，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
 
     if (fs.existsSync(catalogPath)) {
       const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));

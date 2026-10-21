@@ -27,6 +27,13 @@ const adapter = new ComfyUIAdapter({
   rootDir: __dirname
 });
 
+function logMcp(level, msg, data = null) {
+  try {
+    const logLine = `[${new Date().toISOString()}] [${level}] ${msg}${data ? ' ' + (typeof data === 'string' ? data : JSON.stringify(data)) : ''}\n`;
+    fs.appendFileSync(path.join(__dirname, 'mcp-comfyui.log'), logLine, 'utf8');
+  } catch (_) {}
+}
+
 const TOOLS_MANIFEST = [
   {
     name: 'generate_image',
@@ -83,13 +90,18 @@ function sendJson(msg) {
 }
 
 async function handleToolCall(name, args = {}) {
-  if (name === 'generate_image') {
+  const normalizedName = (name || '').replace(/^mcp__[a-zA-Z0-9_-]+__/, '');
+  logMcp('INFO', `handleToolCall received: rawName="${name}", normalizedName="${normalizedName}"`, args);
+
+  if (normalizedName === 'generate_image' || name === 'generate_image') {
     const { prompt, workflow, negative, width, height, seed } = args;
     if (!prompt) {
+      logMcp('WARN', 'generate_image failed: prompt is empty');
       return { isError: true, content: [{ type: 'text', text: '错误: 生图提示词 (prompt) 不能为空。' }] };
     }
 
     try {
+      logMcp('INFO', `Executing generation with prompt="${prompt}", workflow="${workflow || 'auto'}"`);
       const res = await adapter.executeGeneration({
         prompt,
         workflow: workflow || 'auto',
@@ -109,6 +121,7 @@ async function handleToolCall(name, args = {}) {
         `> 💾 **本地保存**：[${res.filename}](${imageUrl}) (${(res.sizeBytes / 1024).toFixed(1)} KB)`
       ].filter(Boolean).join('\n');
 
+      logMcp('INFO', `Generation succeeded: filename="${res.filename}", size=${res.sizeBytes}`);
       return {
         isError: false,
         content: [
@@ -116,6 +129,7 @@ async function handleToolCall(name, args = {}) {
         ]
       };
     } catch (err) {
+      logMcp('ERROR', `Generation failed: ${err.message}`);
       return {
         isError: true,
         content: [
@@ -128,13 +142,15 @@ async function handleToolCall(name, args = {}) {
     }
   }
 
-  if (name === 'interrogate_image') {
+  if (normalizedName === 'interrogate_image' || name === 'interrogate_image') {
     const { image_path } = args;
     if (!image_path) {
+      logMcp('WARN', 'interrogate_image failed: image_path is empty');
       return { isError: true, content: [{ type: 'text', text: '错误: 图片路径或数据不能为空。' }] };
     }
 
     try {
+      logMcp('INFO', `Interrogating image: "${image_path}"`);
       const res = await adapter.interrogateImage(image_path);
       const text = [
         `### 🔍 图片反推提示词结果 (${res.source === 'comfyui_wf03' ? 'ComfyUI WD14 深度反推' : '网关视觉多模态大模型'})`,
@@ -146,11 +162,13 @@ async function handleToolCall(name, args = {}) {
         '💡 您可以直接复制上方提示词，或调用 `generate_image` 基于此提示词创作新图。'
       ].join('\n');
 
+      logMcp('INFO', 'Interrogation succeeded');
       return {
         isError: false,
         content: [{ type: 'text', text }]
       };
     } catch (err) {
+      logMcp('ERROR', `Interrogation failed: ${err.message}`);
       return {
         isError: true,
         content: [{ type: 'text', text: `❌ 图片反推失败: ${err.message}` }]
@@ -158,6 +176,7 @@ async function handleToolCall(name, args = {}) {
     }
   }
 
+  logMcp('WARN', `Unknown tool called: "${name}" (normalized: "${normalizedName}")`);
   return {
     isError: true,
     content: [{ type: 'text', text: `未知工具名称: ${name}` }]
@@ -189,6 +208,7 @@ rl.on('line', async line => {
 
     // 1. Initialize
     if (method === 'initialize') {
+      logMcp('INFO', 'Received MCP initialize request', params);
       sendJson({
         jsonrpc: '2.0',
         id,
@@ -208,6 +228,7 @@ rl.on('line', async line => {
 
     // 2. Notifications/initialized
     if (method === 'notifications/initialized' || method === 'initialized') {
+      logMcp('INFO', 'Received MCP initialized notification');
       return; // No response needed for notifications
     }
 
@@ -219,6 +240,7 @@ rl.on('line', async line => {
 
     // 4. Tools/list
     if (method === 'tools/list') {
+      logMcp('INFO', `Received MCP tools/list request (returning ${TOOLS_MANIFEST.length} tools)`);
       sendJson({
         jsonrpc: '2.0',
         id,
@@ -233,6 +255,7 @@ rl.on('line', async line => {
     if (method === 'tools/call') {
       const toolName = params?.name;
       const toolArgs = params?.arguments || {};
+      logMcp('INFO', `Received MCP tools/call request for "${toolName}"`, toolArgs);
       const toolResult = await handleToolCall(toolName, toolArgs);
       sendJson({
         jsonrpc: '2.0',

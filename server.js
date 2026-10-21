@@ -5593,7 +5593,103 @@ function renderDashboardHtml(config) {
     .comp-progress-bar { width: 90px; height: 6px; background: #18181b; border: 1px solid #27272a; border-radius: 9999px; overflow: hidden; margin-top: 3px; }
     .comp-progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #34d399); border-radius: 9999px; box-shadow: 0 0 6px rgba(56, 189, 248, 0.4); transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
     .comp-module-body { display: flex; flex-direction: column; gap: 9px; transition: opacity 0.25s, filter 0.25s; }
-    .comp-sub-item { padding: 4px 0; }
+    .comp-sub-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid rgba(255, 255, 255, 0.035);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .comp-sub-item:hover {
+      background: rgba(255, 255, 255, 0.035);
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+    .comp-sub-item .switch-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      user-select: none;
+      color: #e2e8f0;
+      flex: 1;
+      margin-bottom: 0;
+    }
+    .comp-sub-item .switch-label span {
+      font-weight: 500;
+    }
+    .info-tooltip-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .info-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 17px;
+      height: 17px;
+      border-radius: 50%;
+      background: #27272a;
+      border: 1px solid #3f3f46;
+      color: #a1a1aa;
+      font-size: 0.7rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-weight: 600;
+      cursor: help;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      line-height: 1;
+      user-select: none;
+    }
+    .info-icon:hover {
+      background: rgba(56, 189, 248, 0.2);
+      border-color: #38bdf8;
+      color: #38bdf8;
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.35);
+      transform: scale(1.1);
+    }
+    .info-tooltip-bubble {
+      visibility: hidden;
+      opacity: 0;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      right: -6px;
+      width: 280px;
+      padding: 9px 12px;
+      background: rgba(15, 15, 18, 0.98);
+      backdrop-filter: blur(14px);
+      border: 1px solid #3f3f46;
+      border-radius: 8px;
+      color: #cbd5e1;
+      font-size: 0.73rem;
+      line-height: 1.45;
+      font-style: normal;
+      box-shadow: 0 12px 28px -4px rgba(0,0,0,0.88), 0 0 0 1px rgba(255,255,255,0.06);
+      pointer-events: none;
+      z-index: 100;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+      white-space: normal;
+      text-align: left;
+    }
+    .info-tooltip-bubble::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      right: 10px;
+      border-width: 5px;
+      border-style: solid;
+      border-color: #3f3f46 transparent transparent transparent;
+    }
+    .info-tooltip-wrap:hover .info-tooltip-bubble {
+      visibility: visible;
+      opacity: 1;
+      transform: translateY(-2px);
+    }
     .sub-tip { font-size: 0.73rem; color: #71717a; margin-left: 22px; line-height: 1.35; }
     .comp-module-card.module-disabled { border-color: #1f1f23; background: #0c0c0e; }
     .comp-module-card.module-disabled .comp-module-body { opacity: 0.42; pointer-events: none; filter: grayscale(80%); }
@@ -6269,7 +6365,7 @@ function renderDashboardHtml(config) {
           </div>
           <div class="comp-metric-card">
             <div class="comp-metric-label">
-              <span>📉 综合平均压缩率</span>
+              <span>📉 综合平均压缩率 (文本)</span>
             </div>
             <div class="comp-metric-val" id="stat-compression-ratio" style="color: #a78bfa;">0.0%</div>
             <div class="comp-metric-sub" id="stat-saved-chars-sub">已节约 0 字符</div>
@@ -6381,30 +6477,54 @@ function renderDashboardHtml(config) {
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-strip-ansi" ${(mCfg.rtk && mCfg.rtk.stripAnsi !== false && compCfg.stripAnsi !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>ANSI 颜色与控制字符剥离 (stripAnsi)</span>
+                  <span>ANSI 颜色与控制符剥离</span>
                 </label>
-                <div class="sub-tip">剥离 ANSI 颜色代码、文本样式、光标控制指令及 OSC 终端标题</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">ANSI 颜色与控制符剥离 (stripAnsi)</div>
+                    剥离终端输出中的 ANSI 颜色代码、文本加粗高亮样式、光标控制指令及 OSC 终端标题，消除终端排版产生的冗余 Token。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-clean-progress" ${(mCfg.rtk && mCfg.rtk.cleanProgressBars !== false && compCfg.cleanProgressBars !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>\\r 覆盖式终端进度条去噪 (cleanProgressBars)</span>
+                  <span>终端进度条去噪 (\r 覆写抹除)</span>
                 </label>
-                <div class="sub-tip">抹除回车符覆盖刷屏，严格保全 Windows CRLF (\\r\\n) 换行结构</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">进度条去噪 (cleanProgressBars)</div>
+                    抹除回车符 (\r) 覆盖刷屏，仅保留最终完成状态，严格保全 Windows CRLF (\r\n) 换行结构。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-fold-tests" ${(mCfg.rtk && mCfg.rtk.foldTestPasses !== false && compCfg.foldTestPasses !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>单元/集成测试正向通过项折叠 (foldTestPasses)</span>
+                  <span>测试正向通过项折叠</span>
                 </label>
-                <div class="sub-tip">折叠海量成功用例 (✓/PASS/ok)，错误用例与异常堆栈 100% 完整保留</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">测试通过折叠 (foldTestPasses)</div>
+                    折叠海量成功用例 (✓/PASS/ok)，错误用例、异常堆栈与断言失败 100% 完整保留免死。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-clean-devops" ${(mCfg.rtk && mCfg.rtk.cleanDevOpsOutput !== false && compCfg.cleanDevOpsOutput !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>DevOps / Git / 编译与重复日志去噪 (cleanDevOpsOutput · RTK &amp; llmtrim)</span>
+                  <span>DevOps 与构建重复日志去噪</span>
                 </label>
-                <div class="sub-tip">智能折叠 Docker 镜像层、Kubectl Pod 状态、Terraform 刷新、Git 对象传输进度、Cargo/Pip/NPM 依赖编译刷屏及时间戳重复日志</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">DevOps 日志去噪 (cleanDevOpsOutput)</div>
+                    智能折叠 Docker 镜像层、Kubectl Pod 状态、Terraform 刷新、Git 对象传输进度、Cargo/Pip/NPM 依赖编译刷屏及时间戳重复日志。
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -6433,30 +6553,54 @@ function renderDashboardHtml(config) {
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-fold-lockfiles" ${(mCfg.headroom && mCfg.headroom.foldLockfiles !== false && compCfg.foldLockfiles !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>依赖锁定文件 Diff 安全折叠 (foldLockfiles)</span>
+                  <span>依赖锁定文件 Diff 安全折叠</span>
                 </label>
-                <div class="sub-tip">折叠 package-lock/yarn/pnpm/Cargo/uv 等超大锁定文件，节省海量 Token</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">锁定文件折叠 (foldLockfiles)</div>
+                    折叠 package-lock/yarn/pnpm/Cargo/uv 等超大锁定文件，节省数万至数十万 Token。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
-                <label class="switch-label" title="开启后，当工具输出或命令行返回超长同构 JSON 数组（如超过 50 项的巨型文件列表、大数据库查询结果）时，自动提取保留首尾样本并插入结构摘要，大幅节约 Token">
+                <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-fold-structured" ${(mCfg.headroom && mCfg.headroom.foldStructuredData !== false && compCfg.foldStructuredData !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>超长同构 JSON 数组采样折叠 (SmartCrusher / foldStructuredData)</span>
+                  <span>超长同构 JSON 数组智能采样</span>
                 </label>
-                <div class="sub-tip" title="保留结构 + 首尾样本（前 5 项与后 3 项），中间冗余项智能采样折叠，遇报错堆栈与冲突标记 100% 绝对豁免">针对工具返回超过 50 项的超长同构 JSON 数组（巨型文件列表、大数据库查询结果等）进行安全智能摘要采样（保留结构 + 首尾样本），在不影响推理的情况下大幅提升日常开发中的 Token 节省率</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">JSON 数组采样 (SmartCrusher / foldStructuredData)</div>
+                    针对工具返回超过 50 项的超长同构 JSON 数组（巨型文件列表、大数据库查询结果等）进行安全智能摘要采样（保留结构 + 首尾样本），在不影响推理的情况下大幅提升开发中的 Token 节省率。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-exempt-conflicts" ${(mCfg.headroom && mCfg.headroom.exemptMergeConflicts !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>Git 合并冲突绝对豁免防御 (exemptMergeConflicts)</span>
+                  <span>Git 合并冲突绝对豁免防御</span>
                 </label>
-                <div class="sub-tip">严格检测 &lt;&lt;&lt;&lt;&lt;&lt;&lt; / ||||||| / ======= 标记，发生冲突时 100% 放弃折叠</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">冲突绝对豁免 (exemptMergeConflicts)</div>
+                    严格检测 &lt;&lt;&lt;&lt;&lt;&lt;&lt; / ||||||| / ======= 标记，发生合并冲突时 100% 放弃折叠，确保解决冲突绝对安全。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-protect-diffs" ${(mCfg.headroom && mCfg.headroom.protectSourceDiffs !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>源码阅读行号保真保护 (protectSourceDiffs)</span>
+                  <span>源码行号与补丁高保真保护</span>
                 </label>
-                <div class="sub-tip">严禁对业务代码文件做抽稀，确保 apply_patch 与补丁定位绝对精准</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">源码行号保真 (protectSourceDiffs)</div>
+                    严禁对业务代码文件做抽稀，确保 apply_patch 与补丁定位绝对精准。
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -6482,38 +6626,56 @@ function renderDashboardHtml(config) {
             </div>
             <div class="comp-module-desc">规范化模型上下文中的 Tools 与 MCP Schema 定义，极大化提高上游 Prompt KV 命中率。</div>
             <div class="comp-module-body" id="module-body-schema">
-              <div class="kv-cache-banner" style="margin: 0 0 12px 0; padding: 10px 14px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.22); border-radius: 8px; font-size: 0.82rem; color: #93c5fd; display: flex; flex-direction: column; gap: 4px;">
-                <div style="font-weight: 600; display: flex; align-items: center; gap: 6px;">
-                  <span>🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)</span>
-                </div>
-                <div style="font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">
-                  <strong>为何字符无损却省账单？</strong>字典序对齐（alignToolsSchema）虽然不删减工具字符数，但能将 Tools / MCP Schema 的键值序列规范化为全局唯一且恒定的字节流，使 Anthropic / OpenAI 等上游推理集群稳定命中前缀 Prompt 缓存，输入费率直降 80%~90%，首字响应延迟降低 50%+。
-                </div>
+              <div class="kv-cache-banner" style="margin: 0 0 8px 0; padding: 8px 12px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.22); border-radius: 8px; font-size: 0.78rem; color: #93c5fd; display: flex; align-items: center; justify-content: space-between;">
+                <span>🔒 KV Cache 前缀已锁定 (上游 80%~90% 缓存命中，输入费率直降)</span>
+                <span class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">KV Cache 原理</div>
+                    字典序对齐虽然不删减工具字符数，但能将 Tools / MCP Schema 键值序列规范化为全局恒定字节流，使 Anthropic / OpenAI 等上游集群稳定命中前缀缓存。
+                  </div>
+                </span>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-align-schema" ${(mCfg.schema && mCfg.schema.alignToolsSchema !== false && compCfg.alignToolsSchema !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>工具 Schema 参数字典序对齐 (alignToolsSchema)</span>
+                  <span>工具参数字典序对齐 (KV 锁定)</span>
                 </label>
-                <div class="sub-tip">参数键名与 required 列表严格字典序排序，保证字节流恒定并锁定 KV Cache</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">参数字典序对齐 (alignToolsSchema)</div>
+                    参数键名与 required 列表严格字典序排序，保证字节流恒定并锁定 KV Cache。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-slim-schema" ${(mCfg.schema && mCfg.schema.slimToolsSchema !== false && compCfg.slimToolsSchema !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>超大 Tools / MCP Schema 智能瘦身 (slimToolsSchema)</span>
+                  <span>超大 MCP Schema 描述瘦身</span>
                 </label>
-                <div class="sub-tip">裁剪多行 Markdown 冗余描述与臃肿示例，100% 保全类型、参数名与枚举</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">Schema 描述瘦身 (slimToolsSchema)</div>
+                    裁剪多行 Markdown 冗余描述与臃肿示例，100% 保全类型、参数名与枚举。
+                  </div>
+                </div>
               </div>
-              <div class="comp-sub-item" style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 500;">瘦身触发字符阈值 (schemaCharThreshold)</span>
-                  <div class="sub-tip">当 tools 总序列化长度超过该字符阈值时自动触发深度瘦身</div>
-                  <div class="sub-tip" style="margin-top: 4px; color: #38bdf8; font-size: 0.78rem; font-weight: 500;">💡 瘦身门限当前为 15,000 字符（仅挂载大型/多 MCP 服务时触发）</div>
-                  <div class="sub-tip" style="margin-top: 2px; color: #94a3b8; font-size: 0.78rem;">💡 门限引导：tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀，享受上游极速缓存命中与零损耗；仅在超巨型 tools &gt; 15,000 字符时自动触发 Schema 深度瘦身削减冗余描述。</div>
+              <div class="comp-sub-item">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 500;">瘦身触发字符阈值</span>
+                  <div class="info-tooltip-wrap">
+                    <span class="info-icon">i</span>
+                    <div class="info-tooltip-bubble">
+                      <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">门限阈值 (schemaCharThreshold)</div>
+                      tools &lt; 15,000 字符时保持原样并锁定 KV Cache 前缀，享受上游极速缓存命中与零损耗；仅在超巨型 tools &gt; 15,000 字符时自动触发 Schema 深度瘦身削减冗余描述。
+                    </div>
+                  </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
-                  <input type="number" id="cfg-comp-threshold" class="form-control" style="width: 100px; text-align: right; padding: 4px 8px; font-size: 0.85rem;" value="${(mCfg.schema && mCfg.schema.schemaCharThreshold) || compCfg.schemaCharThreshold || 15000}" min="1000" step="1000" onchange="handleSubOptionChange()">
-                  <span style="font-size: 0.8rem; color: var(--muted);">字符</span>
+                  <input type="number" id="cfg-comp-threshold" class="form-control" style="width: 85px; text-align: right; padding: 3px 6px; font-size: 0.82rem;" value="${(mCfg.schema && mCfg.schema.schemaCharThreshold) || compCfg.schemaCharThreshold || 15000}" min="1000" step="1000" onchange="handleSubOptionChange()">
+                  <span style="font-size: 0.78rem; color: var(--muted);">字符</span>
                 </div>
               </div>
             </div>
@@ -6543,16 +6705,28 @@ function renderDashboardHtml(config) {
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-cache-freeze" ${(mCfg.cacheZone && mCfg.cacheZone.cacheZoneFreeze !== false && compCfg.cacheZoneFreeze !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>历史轮次前缀字节级冻结 (cacheZoneFreeze)</span>
+                  <span>历史轮次前缀字节级冻结</span>
                 </label>
-                <div class="sub-tip">单次压缩结果基于 Session ID 与 SHA256 哈希字节固化，防止多轮重复消耗</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">历史轮次前缀冻结 (cacheZoneFreeze)</div>
+                    单次压缩结果基于 Session ID 与 SHA256 哈希字节固化，防止多轮重复消耗。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-true-lru" ${(mCfg.cacheZone && mCfg.cacheZone.trueLruRetention !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>真 LRU 缓存热度淘汰与双重边界守护 (trueLruRetention)</span>
+                  <span>真 LRU 缓存淘汰与边界守护</span>
                 </label>
-                <div class="sub-tip">双重上限限制 (最多 500 会话 / 每会话 200 键)，访问时自动提权热度，杜绝内存泄漏</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">真 LRU 淘汰守护 (trueLruRetention)</div>
+                    双重上限限制 (最多 500 会话 / 每会话 200 键)，访问时自动提权热度，杜绝内存泄漏。
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -6584,58 +6758,106 @@ function renderDashboardHtml(config) {
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-autodetect" ${(mCfg.powershell && mCfg.powershell.autoDetectPlatform !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>环境自适应与休眠旁路 (autoDetectPlatform)</span>
+                  <span>跨平台环境自适应与休眠</span>
                 </label>
-                <div class="sub-tip">自动探测操作系统（Windows 激活 / Linux NAS 保持零开销休眠旁路），亦可通过请求头自适应</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">环境自适应 (autoDetectPlatform)</div>
+                    自动探测操作系统（Windows 激活 / Linux NAS 保持零开销休眠旁路），亦可通过请求头自适应。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-clixml" ${(mCfg.powershell && mCfg.powershell.cleanCliXmlNoise !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>PowerShell CLIXML 报错去噪与 Hex 转义解码 (cleanCliXmlNoise)</span>
+                  <span>CLIXML 报错去噪与 Hex 解码</span>
                 </label>
-                <div class="sub-tip">剥离 #&lt; CLIXML 标签与冗长 CategoryInfo 堆栈，解码 _x000D__x000A_，削减 70%~90% 报错重试 Token 浪费</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">CLIXML 去噪 (cleanCliXmlNoise)</div>
+                    剥离 #&lt; CLIXML 标签与冗长 CategoryInfo 堆栈，解码 _x000D__x000A_，削减 70%~90% 报错重试 Token 浪费。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-trailing-slash" ${(mCfg.powershell && mCfg.powershell.fixTrailingSlash !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>路径末尾反斜杠防吞噬引号 (fixTrailingSlash)</span>
+                  <span>路径末尾反斜杠防吞噬引号</span>
                 </label>
-                <div class="sub-tip">自愈 Windows CRT CommandLineToArgvW 陷阱：自动将 &quot;C:\dir\&quot; 转换为 &quot;C:\dir\\&quot; 彻底防止闭合引号被吃掉</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">末尾反斜杠自愈 (fixTrailingSlash)</div>
+                    自愈 Windows CRT CommandLineToArgvW 陷阱：自动将 &quot;C:\dir\&quot; 转换为 &quot;C:\dir\\&quot; 彻底防止闭合引号被吃掉。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-curl-alias" ${(mCfg.powershell && mCfg.powershell.fixCurlAlias !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>PowerShell 5.1 curl / wget 别名陷阱规避 (fixCurlAlias)</span>
+                  <span>PowerShell curl 别名规避</span>
                 </label>
-                <div class="sub-tip">规避 Windows 自带 PowerShell 将 curl 别名至 Invoke-WebRequest 导致的参数崩溃，自动映射为 curl.exe</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">curl 别名规避 (fixCurlAlias)</div>
+                    规避 Windows 自带 PowerShell 将 curl 别名至 Invoke-WebRequest 导致的参数崩溃，自动映射为 curl.exe。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-and-operator" ${(mCfg.powershell && mCfg.powershell.fixAndOperator !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>PowerShell 5.1 连词符兼容性自愈 (fixAndOperator)</span>
+                  <span>PowerShell 5.1 && 语法自愈</span>
                 </label>
-                <div class="sub-tip">将 PowerShell 5.1 不支持的 &amp;&amp; 语法自愈为 ; if ($?) { ... }，消除致命语法解析错误中断</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">&amp;&amp; 连词符自愈 (fixAndOperator)</div>
+                    将 PowerShell 5.1 不支持的 &amp;&amp; 语法自愈为 ; if ($?) { ... }，消除致命语法解析错误中断。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-line-continuation" ${(mCfg.powershell && mCfg.powershell.fixLineContinuation !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>多行续行符修正 (fixLineContinuation)</span>
+                  <span>多行反引号续行符修正</span>
                 </label>
-                <div class="sub-tip">将 Bash 风格的多行末尾续行反斜杠 (\) 转换为 PowerShell 原生反引号 (\`) 续行</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">续行符修正 (fixLineContinuation)</div>
+                    将 Bash 风格的多行末尾续行反斜杠 (\) 转换为 PowerShell 原生反引号 (&#96;) 续行。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-subexpression" ${(mCfg.powershell && mCfg.powershell.fixSubexpressionEscaping !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>PowerShell 双引号子表达式反引号转义防御 (fixSubexpressionEscaping)</span>
+                  <span>双引号 $() 子表达式转义保护</span>
                 </label>
-                <div class="sub-tip">自愈 Windows PowerShell 双引号内 &#36;() / &#36;{} 被本机提前求值陷阱，自动转义为 &#96;&#36;( 与 &#96;&#36;{，保障目标命令完整传递</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">子表达式转义保护 (fixSubexpressionEscaping)</div>
+                    自愈 Windows PowerShell 双引号内 &#36;() / &#36;{} 被本机提前求值陷阱，自动转义为 &#96;&#36;( 与 &#96;&#36;{，保障目标命令完整传递。
+                  </div>
+                </div>
               </div>
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-ps-guard-directive" ${(mCfg.powershell && mCfg.powershell.injectPowerShellGuard !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>Windows 前置防踩坑指令屏障 (injectPowerShellGuard)</span>
+                  <span>PowerShell 环境锚点指令注入</span>
                 </label>
-                <div class="sub-tip">在 system / instructions 中轻量注入 PowerShell 规范指南，从源头消灭 Agent 试错循环与降智风险</div>
+                <div class="info-tooltip-wrap">
+                  <span class="info-icon">i</span>
+                  <div class="info-tooltip-bubble">
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">环境锚点指令屏障 (injectPowerShellGuard)</div>
+                    在 system / instructions 中轻量注入 PowerShell 规范指南，从源头消灭 Agent 试错循环与降智风险。
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -7829,11 +8051,13 @@ function renderDashboardHtml(config) {
         const legendsEl = document.getElementById(legendsId);
         if (legendsEl) {
           const activeThemeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
-          const trackLegend = '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;margin-right:8px;padding-right:8px;border-right:1px solid #27272a;">' +
-            '<span style="display:inline-block;width:9px;height:9px;background:#64748b;border-radius:2px;"></span>' +
-            '<span style="color:#94a3b8;font-weight:500;">处理消耗</span>' +
-            '<span style="display:inline-block;width:9px;height:9px;background:' + activeThemeColor + ';border-radius:2px;margin-left:6px;"></span>' +
-            '<span style="color:' + activeThemeColor + ';font-weight:500;">压缩节约</span>' +
+          const trackLegend = '<div style="display:flex;align-items:center;gap:8px;font-size:0.75rem;margin-right:8px;padding-right:8px;border-right:1px solid #27272a;">' +
+            '<span style="display:inline-block;width:9px;height:9px;background:#52525b;border-radius:2px;"></span>' +
+            '<span style="color:#94a3b8;font-weight:500;">原本消耗 (左柱灰)</span>' +
+            '<span style="display:inline-block;width:9px;height:9px;background:#f59e0b;border-radius:2px;margin-left:4px;"></span>' +
+            '<span style="color:#f59e0b;font-weight:500;">实际使用 (右柱黄)</span>' +
+            '<span style="display:inline-block;width:9px;height:9px;background:rgba(56,189,248,0.22);border:1px dashed #38bdf8;border-radius:2px;margin-left:4px;"></span>' +
+            '<span style="color:#38bdf8;font-weight:500;">智能节约 (虚线帽)</span>' +
             '</div>';
           legendsEl.innerHTML = trackLegend + activeModels.map((m, idx) => {
             const color = getModelColor(m, idx);
@@ -7875,7 +8099,7 @@ function renderDashboardHtml(config) {
       if (!viewport) return;
 
       const themeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
-      const consumedColor = '#64748b';
+      const consumedColor = '#52525b';
 
       if (!Array.isArray(series) || series.length === 0) {
         viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:0.85rem;">💤 暂无时序数据</div>';
@@ -7896,7 +8120,7 @@ function renderDashboardHtml(config) {
         return Number(pt.consumedTokens || 0);
       };
 
-      const rawMax = Math.max(...series.map(pt => Math.max(getSavedVal(pt), getConsumedVal(pt))), 0);
+      const rawMax = Math.max(...series.map(pt => getConsumedVal(pt) + getSavedVal(pt)), 0);
       const isAllZero = rawMax === 0;
 
       let maxVal = rawMax;
@@ -7956,46 +8180,41 @@ function renderDashboardHtml(config) {
         series.forEach((pt, i) => {
           const sVal = getSavedVal(pt);
           const cVal = getConsumedVal(pt);
+          const origVal = cVal + sVal;
           const xCenter = padL + (i + 0.5) * slotW;
-          const cBarX = xCenter - barW - 1.5;
-          const sBarX = xCenter + 1.5;
+          const origBarX = xCenter - barW - 1.5;
+          const actBarX = xCenter + 1.5;
 
-          // 1) Consumed Bar (处理消耗 - 灰蓝色)
-          if (cVal > 0) {
-            const cH = Math.max(2, (cVal / maxVal) * chartH);
-            const cY = xBaseY - cH;
-            contentSvg += '<rect class="chart-bar-rect chart-bar-consumed" data-index="' + i + '" x="' + cBarX + '" y="' + cY + '" width="' + barW + '" height="' + cH + '" fill="' + consumedColor + '" opacity="0.85" rx="2" />';
+          // 1) 原本总消耗柱 (左柱 - 中性炭灰)
+          if (origVal > 0) {
+            const origH = Math.max(2, (origVal / maxVal) * chartH);
+            const origY = xBaseY - origH;
+            contentSvg += '<rect class="chart-bar-rect chart-bar-consumed" data-index="' + i + '" x="' + origBarX + '" y="' + origY + '" width="' + barW + '" height="' + origH + '" fill="' + consumedColor + '" opacity="0.85" rx="2" />';
           } else {
-            contentSvg += '<rect data-index="' + i + '" x="' + cBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
+            contentSvg += '<rect data-index="' + i + '" x="' + origBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
           }
 
-          // 2) Saved Bar (压缩节约 - 主题色 / 分模型色)
-          if (sVal > 0) {
+          // 2) 实际使用柱 + 顶部虚线节约帽 (右柱)
+          if (origVal > 0) {
             const modelEntries = Object.entries(pt.byModel || {});
-            if (modelEntries.length > 1) {
-              let currentY = xBaseY;
-              modelEntries.forEach(([m, mData], mIdx) => {
-                let mVal = 0;
-                if (currentChartMetric === 'cost') mVal = Number(mData.savedCostUSD || 0);
-                else if (currentChartMetric === 'chars') mVal = Number(mData.savedChars || 0);
-                else mVal = Number(mData.savedTokens || 0);
+            const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : (modelEntries.length > 1 ? getModelColor(modelEntries[0][0], 0) : '#f59e0b');
 
-                if (mVal > 0) {
-                  const segH = Math.max(1.5, (mVal / maxVal) * chartH);
-                  const segY = currentY - segH;
-                  const color = getModelColor(m, mIdx);
-                  contentSvg += '<rect class="chart-bar-rect chart-bar-saved" data-index="' + i + '" x="' + sBarX + '" y="' + segY + '" width="' + barW + '" height="' + segH + '" fill="' + color + '" rx="2" />';
-                  currentY = segY;
-                }
-              });
-            } else {
-              const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : themeColor;
+            // 右柱实心下半截：实际处理消耗 (cVal)
+            if (cVal > 0) {
+              const cH = Math.max(2, (cVal / maxVal) * chartH);
+              const cY = xBaseY - cH;
+              contentSvg += '<rect class="chart-bar-rect chart-bar-actual" data-index="' + i + '" x="' + actBarX + '" y="' + cY + '" width="' + barW + '" height="' + cH + '" fill="' + color + '" rx="2" ry="2" />';
+            }
+
+            // 右柱虚线上半截：智能压缩节约 (sVal)
+            if (sVal > 0) {
               const sH = Math.max(2, (sVal / maxVal) * chartH);
-              const sY = xBaseY - sH;
-              contentSvg += '<rect class="chart-bar-rect chart-bar-saved" data-index="' + i + '" x="' + sBarX + '" y="' + sY + '" width="' + barW + '" height="' + sH + '" fill="' + color + '" rx="2" ry="2" />';
+              const cH = cVal > 0 ? (cVal / maxVal) * chartH : 0;
+              const sY = xBaseY - cH - sH;
+              contentSvg += '<rect class="chart-bar-rect chart-bar-saved" data-index="' + i + '" x="' + actBarX + '" y="' + sY + '" width="' + barW + '" height="' + sH + '" fill="rgba(56, 189, 248, 0.22)" stroke="#38bdf8" stroke-width="1" stroke-dasharray="2,2" rx="2" ry="2" />';
             }
           } else {
-            contentSvg += '<rect data-index="' + i + '" x="' + sBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
+            contentSvg += '<rect data-index="' + i + '" x="' + actBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
           }
         });
       } else {
@@ -8142,15 +8361,19 @@ function renderDashboardHtml(config) {
             '</div>' +
             '<div style="display:flex;flex-direction:column;gap:3px;font-size:0.74rem;">' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#94a3b8;">' +
-            '<span>📉 实际处理消耗:</span>' +
-            '<span style="font-family:monospace;color:#cbd5e1;">~' + cTokens.toLocaleString() + ' T ($' + cCost.toFixed(5) + ')</span>' +
+            '<span>📊 原本总需求 (未压缩):</span>' +
+            '<span style="font-family:monospace;color:#94a3b8;">~' + totalTokens.toLocaleString() + ' T</span>' +
+            '</div>' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;color:#f59e0b;font-weight:500;">' +
+            '<span>⚡ 实际处理消耗 (压缩后):</span>' +
+            '<span style="font-family:monospace;color:#f59e0b;">~' + cTokens.toLocaleString() + ' T ($' + cCost.toFixed(5) + ')</span>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#38bdf8;font-weight:500;">' +
-            '<span>⚡ 智能压缩节约:</span>' +
+            '<span>✂️ 智能压缩节约 (虚线砍掉):</span>' +
             '<span style="font-family:monospace;color:#38bdf8;">~' + sTokens.toLocaleString() + ' T ($' + sCost.toFixed(5) + ')</span>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#34d399;font-size:0.72rem;border-top:1px dashed #27272a;padding-top:3px;margin-top:2px;">' +
-            '<span>📈 动态节约率:</span>' +
+            '<span>📈 动态节约率 (实省比例):</span>' +
             '<span style="font-family:monospace;font-weight:600;color:#34d399;">' + ratioStr + '</span>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#71717a;font-size:0.7rem;">' +

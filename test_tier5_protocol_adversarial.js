@@ -274,6 +274,51 @@ async function runTier5AdversarialSuite() {
     assert.ok(bareErr.error.message.includes('Service is under maintenance'));
   });
 
+  await test('1.11 ComfyUI Upfront Tool Injection: tool_search is filtered and ComfyUI tools injected', () => {
+    const mockBodyWithToolSearch = {
+      model: 'deepseek-v4.1-flash',
+      input: [{ role: 'user', content: '生成一张苹果的图片' }],
+      tools: [
+        { type: 'function', function: { name: 'exec_command', description: 'Execute shell' } },
+        { type: 'function', function: { name: 'tool_search', description: 'Search deferred tools' } }
+      ]
+    };
+    const chat = codexAdapter.convertResponsesToChatPayload(mockBodyWithToolSearch);
+    assert.strictEqual(chat.tools.some(t => t.function.name === 'tool_search'), false, 'tool_search must be removed');
+    assert.strictEqual(chat.tools.some(t => t.function.name === 'mcp__comfyui__generate_image'), true, 'mcp__comfyui__generate_image must be injected');
+    assert.strictEqual(chat.tools.some(t => t.function.name === 'mcp__comfyui__interrogate_image'), true, 'mcp__comfyui__interrogate_image must be injected');
+
+    const anthropic = codexAdapter.convertResponsesToAnthropicPayload(mockBodyWithToolSearch);
+    assert.strictEqual(anthropic.tools.some(t => t.name === 'tool_search'), false, 'tool_search must be removed from Anthropic payload');
+    assert.strictEqual(anthropic.tools.some(t => t.name === 'mcp__comfyui__generate_image'), true, 'mcp__comfyui__generate_image must be injected into Anthropic payload');
+  });
+
+  await test('1.12 Bidirectional Tool Alias Shimming: generate_image maps to mcp__comfyui__generate_image', () => {
+    const mockChatResp = {
+      id: 'chatcmpl-test-tool-alias',
+      choices: [{
+        message: {
+          role: 'assistant',
+          tool_calls: [
+            { id: 'call_1', function: { name: 'generate_image', arguments: '{"prompt":"a fresh apple"}' } },
+            { id: 'call_2', function: { name: 'interrogate_image', arguments: '{"image_path":"apple.png"}' } }
+          ]
+        }
+      }]
+    };
+    const converted = codexAdapter.convertChatResponseToResponses(mockChatResp, 'deepseek-v4.1-flash', 'resp_1');
+    assert.strictEqual(converted.output[0].name, 'mcp__comfyui__generate_image', 'generate_image shimmed to mcp__comfyui__generate_image');
+    assert.strictEqual(converted.output[1].name, 'mcp__comfyui__interrogate_image', 'interrogate_image shimmed to mcp__comfyui__interrogate_image');
+
+    const mockAnthropicResp = {
+      content: [
+        { type: 'tool_use', id: 'call_3', name: 'image_gen', input: { prompt: 'apple' } }
+      ]
+    };
+    const convertedAnthropic = codexAdapter.convertAnthropicResponseToResponses(mockAnthropicResp, 'claude-haiku-5-5', 'resp_2');
+    assert.strictEqual(convertedAnthropic.output[0].name, 'mcp__comfyui__generate_image', 'image_gen shimmed to mcp__comfyui__generate_image');
+  });
+
   // -------------------------------------------------------------
   // SECTION 2: Integration White-Box Adversarial Gateway Testing
   // -------------------------------------------------------------
