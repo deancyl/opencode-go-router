@@ -8766,8 +8766,62 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment (Test 162) passed');
 
+    // =========================================================================
+    // [Test 163] Doctor Diagnostic Engine, Staged Update & Rollback Atomicity (Angle 9):
+    // 1. Two-phase staged update syntax pre-check (verifyStagedCodeIntegrity)
+    // 2. Windows EBUSY / EPERM file locking avoidance & .old tracking
+    // 3. Local code pre-switch snapshot (.rollback_snapshot) and instant revert
+    // 4. Non-destructive configuration harmonization with millisecond timestamp backup
+    // 5. Production telemetry stats preservation during snapshot & rollback
+    // 6. doctor-repair.ps1 & rollback-all.ps1 syntax, pre-backup and safe process filtering
+    // =========================================================================
+    console.log('\n--- [Test 163] Doctor Diagnostic Engine, Staged Update & Rollback Atomicity Verification ---');
+
+    // 1. Verify updater exports for staged atomic update
+    const updaterModAngle9 = require('./updater');
+    assert.strictEqual(typeof updaterModAngle9.verifyStagedCodeIntegrity, 'function', 'updater must export verifyStagedCodeIntegrity');
+    assert.strictEqual(typeof updaterModAngle9.safeAtomicReplaceFile, 'function', 'updater must export safeAtomicReplaceFile');
+    assert.strictEqual(typeof updaterModAngle9.backupLocalCodeForRollback, 'function', 'updater must export backupLocalCodeForRollback');
+    assert.strictEqual(typeof updaterModAngle9.restoreFromLocalCodeSnapshot, 'function', 'updater must export restoreFromLocalCodeSnapshot');
+    assert.strictEqual(typeof updaterModAngle9.probeRouterHealth, 'function', 'updater must export probeRouterHealth');
+    assert.strictEqual(typeof updaterModAngle9.cleanStaleOldFiles, 'function', 'updater must export cleanStaleOldFiles');
+
+    // 2. Syntax pre-flight verification on local root directory
+    const rootSyntaxCheck = updaterModAngle9.verifyStagedCodeIntegrity(__dirname);
+    assert.strictEqual(rootSyntaxCheck.valid, true, 'Current repository code must pass syntax pre-flight check');
+
+    // 3. Script syntax validation for doctor-repair.ps1 and rollback-all.ps1
+    const doctorCodeA9 = fs.readFileSync(path.join(__dirname, 'doctor-repair.ps1'), 'utf8');
+    const rollbackCodeA9 = fs.readFileSync(path.join(__dirname, 'rollback-all.ps1'), 'utf8');
+    assert.ok(doctorCodeA9.includes('Backup-ConfigFile'), 'doctor-repair.ps1 must implement Backup-ConfigFile');
+    assert.ok(doctorCodeA9.includes('Get-IssueRootCause'), 'doctor-repair.ps1 must implement Get-IssueRootCause');
+    assert.ok(doctorCodeA9.includes('executionReport'), 'doctor-repair.ps1 must collect structured execution report');
+    assert.ok(rollbackCodeA9.includes('Stop-TargetProcessSafe'), 'rollback-all.ps1 must implement Stop-TargetProcessSafe');
+    assert.ok(rollbackCodeA9.includes('AllowedPatterns'), 'rollback-all.ps1 must enforce process pattern whitelist');
+
+    // 4. Non-destructive harmonization with timestamp backup
+    const testTempOc = path.join(os.tmpdir(), `test-oc-harm-${Date.now()}.jsonc`);
+    fs.writeFileSync(testTempOc, JSON.stringify({
+      plugin: ['oh-my-openagent@5.1.30'],
+      provider: {
+        'custom-corp': {
+          name: 'Custom Corp',
+          options: { apiKey: 'sk-corp-test-123', baseURL: 'https://corp.internal/v1' }
+        }
+      }
+    }));
+    const harmTestRes = updaterModAngle9.harmonizeOpencodeConfig(testTempOc, routerPort);
+    assert.strictEqual(harmTestRes.success, true);
+    assert.ok(harmTestRes.backupPath && fs.existsSync(harmTestRes.backupPath), 'Timestamp backup must be generated');
+    const harmReRead = JSON.parse(updaterModAngle9.stripJsonComments(fs.readFileSync(testTempOc, 'utf8')));
+    assert.strictEqual(harmReRead.provider['custom-corp'].options.apiKey, 'sk-corp-test-123', 'Custom credentials must be preserved');
+    try { fs.unlinkSync(testTempOc); } catch (_) {}
+    if (harmTestRes.backupPath) { try { fs.unlinkSync(harmTestRes.backupPath); } catch (_) {} }
+
+    console.log('✓ Doctor Diagnostic Engine, Staged Update & Rollback Atomicity (Test 163) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 162 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 163 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

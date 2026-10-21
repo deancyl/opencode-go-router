@@ -43,3 +43,27 @@
 - **Linux 终端**：通过向导菜单选择回滚操作。
 
 所有配置将在毫秒内字节级还原，并将自动重新挂载 Office 离线预览补丁。
+
+---
+
+## ⚡ 两阶段暂存与事务级原子更新 (Angle 9)
+
+针对下载中断、网络断流、Windows 文件锁占用（EBUSY）与语法损坏等边界条件，网关实现了 **五阶段事务级更新防御机制**：
+
+1. **Stage 1: 暂存隔离拉取 (Staging Isolation)**：
+   - 严禁在主目录或目标运行目录直接边下载边解压覆盖；
+   - 更新包统一拉取解压至暂存沙箱目录 `.update_staging/`；
+2. **Stage 2: 完整性与静态语法先验 (Pre-Flight Syntax Check)**：
+   - 严格核验 `package.json` 的有效性；
+   - 对核心执行入口（`server.js`、`updater.js` 等）执行 `node -c` 语法静态预检；
+   - 若包损坏或语法检查未通过，立即清理暂存区，目标工作区保持 100% 零修改，杜绝半更新损坏；
+3. **Stage 3: 就地核心代码灾备快照 (Pre-Switch Snapshot)**：
+   - 覆盖前对本地当前关键运行代码生成 `.rollback_snapshot/` 就地快照；
+4. **Stage 4: 多进程互斥安全文件替换 (Lock-Avoidance Safe Sync)**：
+   - 针对 Windows 下正在运行的 `.exe` 或 `.dll` 句柄占用（`EBUSY` / `EPERM`），自动执行安全重命名避让（`.old.<timestamp>`）并写入新文件；
+   - 替换过程若遭遇未知 I/O 异常，自动触发原地秒级原子自愈回滚；
+5. **Stage 5: 启动健康自检探针与自动熔断回滚 (Health Probe & Auto-Rollback)**：
+   - 更新后对 `/health` 端点进行探测自检；
+   - 若服务启动失败或响应超时，自动触发熔断回滚，秒级退回上一稳定版本；
+6. **生产统计数据零丢失保护 (Telemetry Data Guard)**：
+   - `compression-history.json`、`compression-stats.json` 等生产遥测历史获得独立保护；回滚时若当前数据完好，绝不盲目覆写倒退，确保节省统计零丢失。

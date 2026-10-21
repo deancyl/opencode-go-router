@@ -56,6 +56,14 @@ flowchart LR
 - **病症**：OpenCode 发送消息时报错 `Upstream request failed: Invalid credential`，因原生 SQLite 凭据库与用户配置脱节；
 - **自愈**：原生利用 Node.js `node:sqlite` 同步写入 `opencode.db` 的 `credential` 表与 `auth.json`，在 Linux NAS 自动配置 `opencode-server.service` 环境变量并平滑重启，在 Windows 端持久化写入当前用户环境变量 `OPENCODE_API_KEY`；100% 完整保护既有第三方凭据。
 
+### 7. 事务级事前灾备备份留痕与非破坏性合并 (Angle 9)
+- **红线**：严禁在修复损坏或轻微格式问题的 JSON/JSONC/TOML 配置文件时，未经备份就直接用默认模板覆盖用户已有内容（如 API Key 与路由规则）；
+- **自愈机制**：
+  1. **毫秒级时间戳备份**：所有修改在写入前必须自动生成独立时间戳副本（如 `opencode.jsonc.bak.<yyyyMMdd_HHmmss_fff>`）；
+  2. **非破坏性深层合流**：自动识别并保留第三方 provider、自定义 baseURL、用户自选默认模型及所有定制参数；
+  3. **端口释放特征白名单**：核验进程命令行（`node`、`electron`、`opencode`、`openchamber`、`server.js` 等），杜绝误杀用户第三方进程；
+  4. **四元组结构化诊断报告**：自愈执行后格式化输出：`[异常项 (Issue)] | [根因说明 (Root Cause)] | [已执行修复动作 (Action Taken)] | [灾备快照点 (Snapshot)]`。
+
 ---
 
 ## 💻 调起体检与自愈的方法

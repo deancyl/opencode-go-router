@@ -1,7 +1,10 @@
-# OpenCode 系统一键回滚脚本 (支持最新灾备快照与初始状态秒级恢复)
+# OpenCode 系统一键回滚脚本 (支持最新灾备快照、历史快照选择与初始状态秒级恢复 - Angle 9)
 [CmdletBinding()]
 param(
-    [string]$SnapshotId = ""
+    [string]$SnapshotId = "",
+    [switch]$ListSnapshots,
+    [switch]$RestoreProductionStats,
+    [switch]$DryRun
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -13,6 +16,43 @@ Write-Host "==========================================================" -Foregro
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 $updaterJs = Join-Path $scriptDir "updater.js"
 
+# 进程特征白名单安全终止函数 (免死红线守护)
+function Stop-TargetProcessSafe {
+    param(
+        [int]$Port,
+        [string[]]$AllowedPatterns = @("*node*", "*electron*", "*openchamber*", "*opencode*", "*server.js*", "*OpenCodeRouter*")
+    )
+    $conns = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+    if (-not $conns) { return }
+    $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($p in $pids) {
+        if ($p -le 4) { continue }
+        try {
+            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+            if (-not $proc) { continue }
+            $procName = $proc.ProcessName
+            $cmdLine = ""
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $p" -ErrorAction SilentlyContinue).CommandLine
+            } catch {}
+            $full = "$procName $cmdLine"
+            $isTarget = $false
+            foreach ($pat in $AllowedPatterns) {
+                if ($full -like $pat) {
+                    $isTarget = $true
+                    break
+                }
+            }
+            if ($isTarget) {
+                Write-Host "      ✔ 端口 $($Port): 安全终止生态进程 [$procName (PID: $p)]" -ForegroundColor Green
+                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Host "      ⚠ 端口 $($Port) 占用进程未匹配生态特征 [$procName (PID: $p)]，启动免死保护跳过强杀" -ForegroundColor Yellow
+            }
+        } catch {}
+    }
+}
+
 # 1. 优先尝试使用 updater.js 的现代快照系统
 if (Test-Path $updaterJs) {
     try {
@@ -20,6 +60,18 @@ if (Test-Path $updaterJs) {
         if ($snapshotsRaw) {
             $snapshots = $snapshotsRaw | ConvertFrom-Json
             if ($snapshots -and $snapshots.Count -gt 0) {
+                if ($ListSnapshots) {
+                    Write-Host " 📋 检测到以下可用灾备快照点 (共 $($snapshots.Count) 个):" -ForegroundColor Cyan
+                    $i = 1
+                    foreach ($s in $snapshots) {
+                        Write-Host "   [$i] ID: $($s.id) | 时间: $($s.timestamp)" -ForegroundColor White
+                        Write-Host "       原因: $($s.reason) | 文件数: $($s.files.Count)" -ForegroundColor DarkGray
+                        $i++
+                    }
+                    Write-Host "==========================================================" -ForegroundColor Red
+                    exit 0
+                }
+
                 $targetSnap = if ($SnapshotId) {
                     $snapshots | Where-Object { $_.id -eq $SnapshotId } | Select-Object -First 1
                 } else {
@@ -27,24 +79,42 @@ if (Test-Path $updaterJs) {
                 }
 
                 if ($targetSnap) {
-                    Write-Host "[1/3] 检测到灾备快照: $($targetSnap.id)" -ForegroundColor Cyan
+                    Write-Host "[1/3] 锁定目标灾备快照: $($targetSnap.id)" -ForegroundColor Cyan
                     Write-Host "      备份时间: $($targetSnap.timestamp) | 原因: $($targetSnap.reason)" -ForegroundColor DarkGray
-                    Write-Host "[2/3] 正在秒级复原配置与生态环境..." -ForegroundColor Yellow
+                    Write-Host "      包含配置文件: $($targetSnap.files -join ', ')" -ForegroundColor DarkGray
+                    
+                    if ($DryRun) {
+                        Write-Host "`n[DRY RUN] 试运行模式：快照验证有效，未执行实际回滚写入操作。" -ForegroundColor Yellow
+                        exit 0
+                    }
 
-                    $rbCmd = if ($SnapshotId) { "node `"$updaterJs`" rollback `"$SnapshotId`"" } else { "node `"$updaterJs`" rollback" }
+                    Write-Host "[2/3] 正在秒级复原配置与生态环境 (原子文件恢复)..." -ForegroundColor Yellow
+
+                    $rbCmd = if ($SnapshotId) {
+                        "node `"$updaterJs`" rollback `"$SnapshotId`""
+                    } else {
+                        "node `"$updaterJs`" rollback"
+                    }
                     $rbResultRaw = Invoke-Expression $rbCmd
                     $rbResult = $rbResultRaw | ConvertFrom-Json
 
                     if ($rbResult -and $rbResult.success) {
                         Write-Host "[3/3] 回滚恢复成功！" -ForegroundColor Green
                         Write-Host "----------------------------------------------------------" -ForegroundColor DarkGray
+                        Write-Host " 📋 结构化快照恢复清单 (Snapshot Restored Items):" -ForegroundColor White
                         foreach ($it in $rbResult.restoredItems) {
-                            Write-Host "  ✔ 已还原: $($it.file)$($it.action) ($($it.status))" -ForegroundColor Green
+                            $statusColor = if ($it.status -eq 'restored') { "Green" } elseif ($it.status -like "*preserved*") { "Cyan" } else { "Yellow" }
+                            Write-Host "  ✔ 文件/动作: $($it.file)$($it.action) -> 状态: $($it.status)" -ForegroundColor $statusColor
                         }
-                        Write-Host "系统配置已恢复至快照记录点！" -ForegroundColor Green
+                        Write-Host "`n系统配置与生态组件已完整还原至快照点 [$($targetSnap.id)]！" -ForegroundColor Green
+                        Write-Host "生产统计账本与关键历史已获得安全防护与对齐。" -ForegroundColor White
                         Write-Host "==========================================================" -ForegroundColor Red
                         exit 0
+                    } else {
+                        Write-Host "  ⚠ 现代快照恢复返回异常: $($rbResult.error)" -ForegroundColor Yellow
                     }
+                } else {
+                    Write-Host "❌ 错误: 未在快照库中找到指定快照 ID [$SnapshotId]！" -ForegroundColor Red
                 }
             }
         }
@@ -64,21 +134,16 @@ if (-not (Test-Path $backupDir)) {
 
 Write-Host "正在从传统初始备份恢复: $backupDir..." -ForegroundColor Yellow
 
-# 停止服务
-Write-Host "[1/4] 正在停止相关后台服务..." -ForegroundColor Yellow
+if ($DryRun) {
+    Write-Host "`n[DRY RUN] 试运行模式：传统备份目录存在，未执行覆盖操作。" -ForegroundColor Yellow
+    exit 0
+}
+
+# 停止服务 (严格核验进程特征白名单)
+Write-Host "[1/4] 正在安全停止相关后台服务 (特征核验)..." -ForegroundColor Yellow
 try { openchamber stop } catch {}
-$chamberConns = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
-if ($chamberConns) {
-    foreach ($conn in $chamberConns) {
-        try { Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue } catch {}
-    }
-}
-$routerConns = Get-NetTCPConnection -LocalPort 4010 -ErrorAction SilentlyContinue
-if ($routerConns) {
-    foreach ($conn in $routerConns) {
-        try { Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue } catch {}
-    }
-}
+Stop-TargetProcessSafe -Port 3000
+Stop-TargetProcessSafe -Port 4010
 
 # 还原 ~/.config/opencode
 Write-Host "[2/4] 正在还原 OpenCode 原始配置文件 (~/.config/opencode)..." -ForegroundColor Yellow
