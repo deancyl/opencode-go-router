@@ -6586,13 +6586,13 @@ function renderDashboardHtml(config) {
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-fold-structured" ${(mCfg.headroom && mCfg.headroom.foldStructuredData !== false && compCfg.foldStructuredData !== false) ? 'checked' : ''} onchange="handleSubOptionChange()">
-                  <span>超长同构 JSON 数组智能采样</span>
+                  <span>超长同构 JSON 数组采样折叠 (SmartCrusher / foldStructuredData)</span>
                 </label>
                 <div class="info-tooltip-wrap">
                   <span class="info-icon">i</span>
                   <div class="info-tooltip-bubble">
-                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">JSON 数组采样 (SmartCrusher / foldStructuredData)</div>
-                    针对工具返回超过 50 项的超长同构 JSON 数组（巨型文件列表、大数据库查询结果等）进行安全智能摘要采样（保留结构 + 首尾样本），在不影响推理的情况下大幅提升开发中的 Token 节省率。
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">超长同构 JSON 数组采样折叠 (SmartCrusher / foldStructuredData)</div>
+                    针对工具返回超过 50 项的超长同构 JSON 数组（巨型文件列表、大数据库查询结果等）进行安全智能摘要采样（保留结构 + 首尾样本），在不影响推理的情况下大幅提升开发中的 Token 节省率，遇报错堆栈与冲突标记 100% 绝对豁免。
                   </div>
                 </div>
               </div>
@@ -6647,12 +6647,13 @@ function renderDashboardHtml(config) {
             <div class="comp-module-desc">规范化模型上下文中的 Tools 与 MCP Schema 定义，极大化提高上游 Prompt KV 命中率。</div>
             <div class="comp-module-body" id="module-body-schema">
               <div class="kv-cache-banner" style="margin: 0 0 8px 0; padding: 8px 12px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.22); border-radius: 8px; font-size: 0.78rem; color: #93c5fd; display: flex; align-items: center; justify-content: space-between;">
-                <span>🔒 KV Cache 前缀已锁定 (上游 80%~90% 缓存命中，输入费率直降)</span>
+                <span>🔒 KV Cache 前缀已锁定 (提升上游 80%~90% 缓存命中，字符无损)</span>
                 <span class="info-tooltip-wrap">
                   <span class="info-icon">i</span>
                   <div class="info-tooltip-bubble">
-                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">KV Cache 原理</div>
-                    字典序对齐虽然不删减工具字符数，但能将 Tools / MCP Schema 键值序列规范化为全局恒定字节流，使 Anthropic / OpenAI 等上游集群稳定命中前缀缓存。
+                    <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">为何字符无损却省账单？</div>
+                    字典序对齐虽然不删减工具字符数，但能将 Tools / MCP Schema 键值序列规范化为全局唯一且恒定的字节流，使 Anthropic / OpenAI 等上游推理集群稳定命中前缀 Prompt 缓存，直接享受 80%~90% 输入费率折扣。<br>
+                    💡 瘦身门限当前为 15,000 字符（仅挂载大型/多 MCP 服务时触发）
                   </div>
                 </span>
               </div>

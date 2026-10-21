@@ -2053,6 +2053,29 @@ const COMFYUI_TOOLS = [
   }
 ];
 
+/**
+ * 确定性识别 Codex Desktop 延迟工具发现探针 (tool_search / Tool discovery)
+ * 支持识别有名 tool_search 以及 Codex Desktop 注入的无名 (# Tool discovery / BM25) 工具对象
+ */
+function isDeferredToolSearch(t) {
+  if (!t || typeof t !== 'object') return false;
+  const name = (t.function?.name || t.name || '').trim();
+  if (name === 'tool_search' || name.toLowerCase().includes('tool_search')) return true;
+  const desc = (t.function?.description || t.description || '').trim();
+  if (desc) {
+    const lower = desc.toLowerCase();
+    if (
+      lower.includes('# tool discovery') ||
+      lower.includes('searches over deferred tool') ||
+      lower.includes('deferred tool metadata with bm25') ||
+      (lower.includes('tool_search') && (lower.includes('deferred') || lower.includes('search')))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function convertResponsesToChatPayload(body, compressionOptions = null, sessionId = null) {
   const messages = [];
   if (body.instructions && typeof body.instructions === 'string') {
@@ -2205,18 +2228,10 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
   // Tools mapping
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     const rawTools = body.tools;
-    const hasToolSearch = rawTools.some(t => {
-      const name = t.function?.name || t.name;
-      return name === 'tool_search';
-    });
+    const hasToolSearch = rawTools.some(isDeferredToolSearch);
 
     chatPayload.tools = rawTools
-      .filter(t => {
-        const name = t.function?.name || t.name;
-        // Filter out tool_search if present: Codex Desktop does not execute tool_search
-        // for custom providers, causing dropped tool calls and model fallback to scripts.
-        return name !== 'tool_search';
-      })
+      .filter(t => !isDeferredToolSearch(t))
       .map((t, idx) => {
       const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       let description = t.function?.description || t.description || '';
@@ -2255,7 +2270,19 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
       const name = t.function?.name || t.name;
       return name === 'mcp__comfyui__generate_image' || name === 'generate_image';
     });
-    if ((hasToolSearch || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasGenerateImage) {
+    const isVisualIntent = (() => {
+      const inputList = Array.isArray(body.input) ? body.input : [body.input];
+      const text = inputList.map(item => {
+        if (typeof item === 'string') return item;
+        if (item && Array.isArray(item.content)) {
+          return item.content.map(c => c?.text || '').join(' ');
+        }
+        return item?.content || '';
+      }).join(' ');
+      return /(?:生成|画|制作|绘制).*(?:图|照|壁纸|插画)|反推.*(?:图|词)|(?:generate|create|draw).*(?:image|picture|photo)|(?:text.*to.*image)/i.test(text);
+    })();
+
+    if ((hasToolSearch || isVisualIntent || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasGenerateImage) {
       chatPayload.tools.push(...COMFYUI_TOOLS);
     }
   }
@@ -3667,16 +3694,10 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
   if (body.top_p !== undefined) payload.top_p = body.top_p;
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    const hasToolSearch = body.tools.some(t => {
-      const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null);
-      return name === 'tool_search';
-    });
+    const hasToolSearch = body.tools.some(isDeferredToolSearch);
 
     payload.tools = body.tools
-      .filter(t => {
-        const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null);
-        return name !== 'tool_search';
-      })
+      .filter(t => !isDeferredToolSearch(t))
       .map((t, idx) => {
       const name = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       const description = t.function?.description || t.description || '';
@@ -3692,7 +3713,19 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
     const hasAnthropicGenerateImage = payload.tools.some(t => {
       return t.name === 'mcp__comfyui__generate_image' || t.name === 'generate_image';
     });
-    if ((hasToolSearch || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasAnthropicGenerateImage) {
+    const isVisualIntent = (() => {
+      const inputList = Array.isArray(body.input) ? body.input : [body.input];
+      const text = inputList.map(item => {
+        if (typeof item === 'string') return item;
+        if (item && Array.isArray(item.content)) {
+          return item.content.map(c => c?.text || '').join(' ');
+        }
+        return item?.content || '';
+      }).join(' ');
+      return /(?:生成|画|制作|绘制).*(?:图|照|壁纸|插画)|反推.*(?:图|词)|(?:generate|create|draw).*(?:image|picture|photo)|(?:text.*to.*image)/i.test(text);
+    })();
+
+    if ((hasToolSearch || isVisualIntent || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasAnthropicGenerateImage) {
       for (const ct of COMFYUI_TOOLS) {
         payload.tools.push({
           name: ct.function.name,

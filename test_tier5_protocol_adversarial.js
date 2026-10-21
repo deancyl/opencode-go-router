@@ -291,6 +291,25 @@ async function runTier5AdversarialSuite() {
     const anthropic = codexAdapter.convertResponsesToAnthropicPayload(mockBodyWithToolSearch);
     assert.strictEqual(anthropic.tools.some(t => t.name === 'tool_search'), false, 'tool_search must be removed from Anthropic payload');
     assert.strictEqual(anthropic.tools.some(t => t.name === 'mcp__comfyui__generate_image'), true, 'mcp__comfyui__generate_image must be injected into Anthropic payload');
+
+    // Test real-world anonymous # Tool discovery payload from Codex Desktop (function.name is undefined)
+    const mockCodexAnonymousDiscovery = {
+      model: 'deepseek-v4.1-flash',
+      input: [{ role: 'user', content: '生成一张苹果的图片' }],
+      tools: [
+        { type: 'function', function: { name: 'exec_command', description: 'Execute shell' } },
+        {
+          type: 'function',
+          function: {
+            description: '# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search...',
+            parameters: { type: 'object', properties: { query: { type: 'string' } } }
+          }
+        }
+      ]
+    };
+    const chatAnon = codexAdapter.convertResponsesToChatPayload(mockCodexAnonymousDiscovery);
+    assert.strictEqual(chatAnon.tools.some(t => (t.function?.description || '').includes('# Tool discovery')), false, 'Anonymous Tool discovery must be filtered');
+    assert.strictEqual(chatAnon.tools.some(t => t.function?.name === 'mcp__comfyui__generate_image'), true, 'ComfyUI must be injected when anonymous discovery tool present');
   });
 
   await test('1.12 Bidirectional Tool Alias Shimming: generate_image maps to mcp__comfyui__generate_image', () => {
