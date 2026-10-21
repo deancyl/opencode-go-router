@@ -5081,6 +5081,11 @@ function renderLoginPage() {
   </style>
 </head>
 <body>
+  <!-- Non-intrusive Gateway Offline Reconnection Banner -->
+  <div id="gateway-connection-banner" class="connection-banner" role="alert" aria-live="assertive" style="display:none;">
+    <span class="conn-dot"></span>
+    <span id="gateway-connection-text">⚠️ 与智能网关通信中断，正在尝试重新连接 (第 1 次重试)...</span>
+  </div>
   <div class="login-card">
     <img src="/assets/logo.png" alt="OpenCode Gateway Logo" style="width: 72px; height: 72px; border-radius: 16px; box-shadow: 0 0 24px rgba(16,185,129,0.35); margin-bottom: 1.2rem;">
     <h2>OpenCode 智能路由网关</h2>
@@ -5206,9 +5211,80 @@ function renderDashboardHtml(config) {
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
     }
-    /* High-Precision Tabular Numbers & Spinner */
-    .stat-val, .kpi-num, .metric-val, .metric-num, .badge, table td, .stat-badge, .quota-val, .acc-title-input {
+    /* High-Precision Tabular Numbers & Zero-Jitter UI */
+    .stat-val, .kpi-num, .metric-val, .metric-num, .badge, table td, table th,
+    .stat-badge, .quota-val, .acc-title-input, .time-range-pill, .chart-pill-btn,
+    .quota-time-tag, .baseurl-tag, #lbl-baseurl, .sidebar-port-label,
+    .chart-svg-root text, #overview-chart-summary-badge, #chart-summary-badge {
       font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+    /* WCAG AA Accessibility Focus Rings */
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    a:focus-visible,
+    .btn:focus-visible,
+    .time-range-pill:focus-visible,
+    .chart-pill-btn:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+    /* Long Text Truncation Safeguard */
+    .truncate-text {
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .acc-title-input {
+      text-overflow: ellipsis;
+    }
+    /* Non-intrusive Top Connection Banner */
+    .connection-banner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 7px 16px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #ffffff;
+      background: rgba(220, 38, 38, 0.96);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+      transform: translateY(-100%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .connection-banner.visible {
+      transform: translateY(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .connection-banner.reconnected {
+      background: rgba(16, 185, 129, 0.96);
+    }
+    .connection-banner .conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ffffff;
+      animation: pulse-dot 1.2s infinite ease-in-out;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
     }
     .card, .stat-card, .account-card, .top-bar-left, .top-bar-right, .header-actions {
       min-width: 0;
@@ -6465,6 +6541,11 @@ function renderDashboardHtml(config) {
   </style>
 </head>
 <body>
+  <!-- Non-intrusive Gateway Offline Reconnection Banner -->
+  <div id="gateway-connection-banner" class="connection-banner" role="alert" aria-live="assertive" style="display:none;">
+    <span class="conn-dot"></span>
+    <span id="gateway-connection-text">⚠️ 与智能网关通信中断，正在尝试重新连接 (第 1 次重试)...</span>
+  </div>
   <!-- Mobile Header Bar (shown only < 768px) -->
   <header class="mobile-header">
     <button type="button" class="hamburger-btn" onclick="toggleSidebarDrawer()" title="打开菜单">☰</button>
@@ -8569,10 +8650,41 @@ function renderDashboardHtml(config) {
       renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
     }
 
+    const MAX_CHART_RING_BUFFER = 60;
+    function sanitizeTimeSeries(rawSeries) {
+      if (!Array.isArray(rawSeries)) return [];
+      const sorted = rawSeries.slice().sort((a, b) => {
+        const tA = (a && a.time) ? new Date(a.time).getTime() : 0;
+        const tB = (b && b.time) ? new Date(b.time).getTime() : 0;
+        return tA - tB;
+      });
+      if (sorted.length > MAX_CHART_RING_BUFFER) {
+        return sorted.slice(sorted.length - MAX_CHART_RING_BUFFER);
+      }
+      return sorted;
+    }
+
+    let chartRafId = null;
+    function scheduleChartRender() {
+      if (document.hidden) return;
+      if (chartRafId) return;
+      chartRafId = requestAnimationFrame(() => {
+        chartRafId = null;
+        executeChartRender();
+      });
+    }
+
     function renderCompressionTimeSeriesChart(series = [], range = 'all', stats = {}) {
-      cachedTimeSeriesData = series;
+      cachedTimeSeriesData = sanitizeTimeSeries(series);
       cachedTimeSeriesRange = range;
       cachedTimeSeriesStats = stats;
+      scheduleChartRender();
+    }
+
+    function executeChartRender() {
+      const series = cachedTimeSeriesData;
+      const range = cachedTimeSeriesRange;
+      const stats = cachedTimeSeriesStats || {};
 
       // 1. 同步更新所有摘要标签 (Summary Badges) - 显式突出动态节约率
       ['chart-summary-badge', 'overview-chart-summary-badge'].forEach(badgeId => {
@@ -8624,7 +8736,7 @@ function renderDashboardHtml(config) {
             const color = getModelColor(m, idx);
             return '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;">' +
               '<span style="display:inline-block;width:9px;height:9px;background:' + color + ';border-radius:2px;"></span>' +
-              '<span style="font-family:monospace;color:#cbd5e1;">' + escapeHtml(m) + '</span>' +
+              '<span style="font-family:monospace;color:#cbd5e1;" class="truncate-text" title="' + escapeHtml(m) + '">' + escapeHtml(m) + '</span>' +
               '</div>';
           }).join('');
         }
@@ -8663,7 +8775,7 @@ function renderDashboardHtml(config) {
       const consumedColor = '#52525b';
 
       if (!Array.isArray(series) || series.length === 0) {
-        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:0.85rem;">💤 暂无时序数据</div>';
+        viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:0.85rem;"><span style="margin-right:6px;">💤</span> 暂无时序数据（发起对话后将实时呈现时序波形）</div>';
         return;
       }
 
@@ -8898,7 +9010,7 @@ function renderDashboardHtml(config) {
                 const sTokens = Number(mData.savedTokens || 0).toLocaleString();
                 const sCost = Number(mData.savedCostUSD || 0).toFixed(6);
                 return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:0.72rem;margin-top:2px;">' +
-                  '<span><span style="color:' + col + ';">■</span> ' + escapeHtml(m) + '</span>' +
+                  '<span><span style="color:' + col + ';">■</span> <span class="truncate-text" style="max-width:140px;" title="' + escapeHtml(m) + '">' + escapeHtml(m) + '</span></span>' +
                   '<span style="color:#cbd5e1;font-family:monospace;">~' + sTokens + 'T ($' + sCost + ')</span>' +
                   '</div>';
               }).join('') +
@@ -9015,14 +9127,57 @@ function renderDashboardHtml(config) {
       return switchCompRange(range);
     }
 
+    // ==========================================
+    // Gateway Offline & Auto-Reconnection Banner
+    // ==========================================
+    let consecutiveConnectionFailures = 0;
+    let isShowingOfflineBanner = false;
+
+    function handleConnectionFailure(err) {
+      consecutiveConnectionFailures++;
+      const banner = document.getElementById('gateway-connection-banner');
+      const textEl = document.getElementById('gateway-connection-text');
+      if (banner && textEl && consecutiveConnectionFailures >= 2) {
+        banner.style.display = 'flex';
+        banner.classList.remove('reconnected');
+        banner.classList.add('visible');
+        textEl.innerText = '⚠️ 与智能网关通信中断，正在尝试重新连接 (第 ' + consecutiveConnectionFailures + ' 次重试)...';
+        isShowingOfflineBanner = true;
+      }
+    }
+
+    function handleConnectionSuccess() {
+      if (isShowingOfflineBanner) {
+        const banner = document.getElementById('gateway-connection-banner');
+        const textEl = document.getElementById('gateway-connection-text');
+        if (banner && textEl) {
+          banner.classList.add('reconnected');
+          textEl.innerText = '🟢 已重新连接到智能网关';
+          setTimeout(() => {
+            banner.classList.remove('visible');
+            setTimeout(() => {
+              banner.style.display = 'none';
+              banner.classList.remove('reconnected');
+            }, 300);
+          }, 1500);
+        }
+        isShowingOfflineBanner = false;
+      }
+      consecutiveConnectionFailures = 0;
+    }
+
     async function fetchCompressionStats() {
       if (document.hidden) return;
       try {
         const queryParam = currentCompRange ? '?range=' + encodeURIComponent(currentCompRange) : '';
         const res = await fetch('/balancer/api/compression/stats' + queryParam, { headers: apiHeaders() });
-        if (!res.ok) return;
+        if (!res.ok) {
+          handleConnectionFailure(new Error('HTTP ' + res.status));
+          return;
+        }
         const data = await res.json();
         if (!data || !data.stats) return;
+        handleConnectionSuccess();
         const stats = data.stats;
         const hasData = (stats.totalOriginalChars || 0) > 0 || (stats.totalSavedChars || 0) > 0;
 
@@ -9173,7 +9328,9 @@ function renderDashboardHtml(config) {
         // Update Time-Series Trend & Distribution Chart
         const seriesData = data.timeSeries || stats.timeSeries || [];
         renderCompressionTimeSeriesChart(seriesData, data.range || currentCompRange, stats);
-      } catch (e) {}
+      } catch (e) {
+        handleConnectionFailure(e);
+      }
     }
 
     async function handleResetCompressionStats() {
@@ -9841,13 +9998,20 @@ function renderDashboardHtml(config) {
     async function fetchStatus() {
       try {
         const res = await fetch('/status');
+        if (!res.ok) {
+          handleConnectionFailure(new Error('HTTP ' + res.status));
+          return;
+        }
         const data = await res.json();
         for (const acc of data.accounts) {
           liveStats[acc.id] = acc;
         }
         updateMetricsUI();
         updateWizardStatusBadges();
-      } catch (e) {}
+        handleConnectionSuccess();
+      } catch (e) {
+        handleConnectionFailure(e);
+      }
     }
 
     function renderAccounts() {
@@ -11238,10 +11402,18 @@ function renderDashboardHtml(config) {
       if (!document.hidden) {
         fetchStatus();
         fetchCompressionStats();
+        if (typeof scheduleChartRender === 'function' && cachedTimeSeriesData && cachedTimeSeriesData.length > 0) {
+          scheduleChartRender();
+        }
         if (quotaRefreshInterval > 0 && quotaCountdown <= 3) {
           quotaCountdown = quotaRefreshInterval;
           updateQuotaCountdownBadge();
           refreshAllQuotas(true, false);
+        }
+      } else {
+        if (typeof chartRafId !== 'undefined' && chartRafId) {
+          cancelAnimationFrame(chartRafId);
+          chartRafId = null;
         }
       }
     });
@@ -12304,21 +12476,52 @@ $ghost
     return;
   }
 
-  // Static Assets (Favicon & High-Def Logo)
-  if (reqUrl.pathname === '/favicon.ico' || reqUrl.pathname === '/assets/router.ico') {
-    const icoPath = path.join(__dirname, 'assets', 'router.ico');
-    if (fs.existsSync(icoPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/x-icon', 'Cache-Control': 'public, max-age=86400' });
-      fs.createReadStream(icoPath).pipe(res);
+  // Static Assets Handler (Hardened Sandbox & MIME Dispatch)
+  const rawUrlPath = (req.url || '').split('?')[0];
+  if (rawUrlPath.startsWith('/assets/') || reqUrl.pathname.startsWith('/assets/') || reqUrl.pathname === '/favicon.ico') {
+    const rawSubPath = reqUrl.pathname === '/favicon.ico' ? 'router.ico' : (
+      rawUrlPath.startsWith('/assets/') ? rawUrlPath.slice('/assets/'.length) : reqUrl.pathname.slice('/assets/'.length)
+    );
+    let decodedSubPath = '';
+    try {
+      decodedSubPath = decodeURIComponent(rawSubPath);
+    } catch (_) {
+      decodedSubPath = rawSubPath;
+    }
+
+    const assetsBaseDir = path.resolve(path.join(__dirname, 'assets'));
+    const safeTarget = path.resolve(path.join(assetsBaseDir, decodedSubPath));
+
+    if (!safeTarget.startsWith(assetsBaseDir)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'Access denied: Path traversal prohibited' }));
       return;
     }
-  }
 
-  if (reqUrl.pathname === '/assets/logo.png') {
-    const pngPath = path.join(__dirname, 'assets', 'logo.png');
-    if (fs.existsSync(pngPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
-      fs.createReadStream(pngPath).pipe(res);
+    if (fs.existsSync(safeTarget) && fs.statSync(safeTarget).isFile()) {
+      const ext = path.extname(safeTarget).toLowerCase();
+      const mimeTypes = {
+        '.ico': 'image/x-icon',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+        '.json': 'application/json; charset=utf-8',
+        '.js': 'application/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.html': 'text/html; charset=utf-8'
+      };
+      const contentType = mimeTypes[ext] || 'application/octet-stream';
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': ext === '.json' ? 'no-cache' : 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*'
+      });
+      fs.createReadStream(safeTarget).pipe(res);
+      return;
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'Asset not found' }));
       return;
     }
   }

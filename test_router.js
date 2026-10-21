@@ -8685,8 +8685,40 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox (Test 160) passed');
 
+    // --- [Test 161] Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security ---
+    console.log('\n--- [Test 161] Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security ---');
+
+    // 1. Static asset serving over HTTP with MIME and sandbox checks
+    const zhAssetRes = await request('/assets/locales/zh-CN.json');
+    assert.strictEqual(zhAssetRes.statusCode, 200, 'zh-CN.json must return 200');
+    assert.ok(zhAssetRes.headers['content-type'].includes('application/json'), 'zh-CN.json must have JSON content-type');
+    const zhParsed = JSON.parse(zhAssetRes.body);
+    assert.strictEqual(Object.keys(zhParsed).length, 239, 'zh-CN.json must have 239 keys');
+
+    const enAssetRes = await request('/assets/locales/en-US.json');
+    assert.strictEqual(enAssetRes.statusCode, 200, 'en-US.json must return 200');
+    assert.ok(enAssetRes.headers['content-type'].includes('application/json'), 'en-US.json must have JSON content-type');
+    const enParsed = JSON.parse(enAssetRes.body);
+    assert.strictEqual(Object.keys(enParsed).length, 239, 'en-US.json must have 239 keys');
+
+    // Path traversal defense over HTTP
+    const traversalRes = await request('/assets/../server.js');
+    assert.strictEqual(traversalRes.statusCode, 403, 'Path traversal must be rejected with 403');
+
+    // 2. Dashboard UI features verification
+    const dashRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(dashRes.statusCode, 200, 'Dashboard UI must load with 200');
+    assert.ok(dashRes.body.includes('gateway-connection-banner'), 'UI must include gateway-connection-banner');
+    assert.ok(dashRes.body.includes('font-variant-numeric: tabular-nums;'), 'UI must include tabular-nums styling');
+    assert.ok(dashRes.body.includes('focus-visible'), 'UI must include focus-visible focus rings');
+    assert.ok(dashRes.body.includes('MAX_CHART_RING_BUFFER = 60'), 'UI must enforce 60-point ring buffer');
+    assert.ok(dashRes.body.includes('scheduleChartRender'), 'UI must implement RAF scheduleChartRender batching');
+    assert.ok(dashRes.body.includes('truncate-text'), 'UI must include text truncation utility');
+
+    console.log('✓ Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security (Test 161) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 160 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 161 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();
