@@ -6355,6 +6355,20 @@ function renderDashboardHtml(config) {
             <div class="comp-metric-val" id="stat-saved-tokens">~0 Tokens</div>
             <div class="comp-metric-sub" id="stat-saved-tokens-sub">基于中英双语动态模型 (~1.25 中文 / ~3.8 英文代码 字符/Token)</div>
           </div>
+          <div class="comp-metric-card" style="border-color: rgba(56, 189, 248, 0.35); background: linear-gradient(180deg, rgba(56, 189, 248, 0.04) 0%, rgba(22, 22, 26, 0.95) 100%);">
+            <div class="comp-metric-label" style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="color: #38bdf8; font-weight: 600;">📈 Token 动态节约率 (实省)</span>
+              <span class="info-tooltip-wrap">
+                <span class="info-icon">i</span>
+                <div class="info-tooltip-bubble">
+                  <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">Token 动态节约率 (实省比例)</div>
+                  账单省钱率 = 智能节约 Token ÷ (实际处理消耗 + 智能节约 Token)。原本需消耗 23.8 万 Token，网关智能去噪砍掉 11 万，实际仅发往模型 12.7 万，净省 46.4% 账单！
+                </div>
+              </span>
+            </div>
+            <div class="comp-metric-val" id="stat-dynamic-savings-ratio" style="color: #38bdf8;">0.0%</div>
+            <div class="comp-metric-sub" id="stat-dynamic-savings-sub">原本总需求: 0 T · 相当于打 10 折</div>
+          </div>
           <div class="comp-metric-card" id="card-saved-cost" style="cursor: pointer;" onclick="toggleByModelDrawer()" title="点击展开/收起分模型节约明细">
             <div class="comp-metric-label" style="display: flex; justify-content: space-between; align-items: center;">
               <span>💵 累计节约费用预估 (USD)</span>
@@ -6364,8 +6378,15 @@ function renderDashboardHtml(config) {
             <div class="comp-metric-sub" id="stat-saved-cost-sub">基于各模型官方实时费率动态加权测算</div>
           </div>
           <div class="comp-metric-card">
-            <div class="comp-metric-label">
-              <span>📉 综合平均压缩率 (文本)</span>
+            <div class="comp-metric-label" style="display: flex; justify-content: space-between; align-items: center;">
+              <span>📉 综合文本压缩率</span>
+              <span class="info-tooltip-wrap">
+                <span class="info-icon">i</span>
+                <div class="info-tooltip-bubble">
+                  <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">文本体积压缩率 (字符裁剪)</div>
+                  送入压缩引擎的原始文本数据（终端回显、锁定文件、JSON 数组等）的体积裁剪率。不包含免死的用户指令与 System Prompt。
+                </div>
+              </span>
             </div>
             <div class="comp-metric-val" id="stat-compression-ratio" style="color: #a78bfa;">0.0%</div>
             <div class="comp-metric-sub" id="stat-saved-chars-sub">已节约 0 字符</div>
@@ -6378,7 +6399,6 @@ function renderDashboardHtml(config) {
             <div class="comp-metric-sub" id="stat-compressed-chars-sub">压缩后: 0 字符</div>
           </div>
         </div>
-
         <!-- 📈 实时节省趋势与时序分布图表 (Time-Series Chart) -->
         <div class="comp-chart-card" id="comp-chart-card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
@@ -8017,17 +8037,21 @@ function renderDashboardHtml(config) {
       cachedTimeSeriesRange = range;
       cachedTimeSeriesStats = stats;
 
-      // 1. 同步更新所有摘要标签 (Summary Badges)
+      // 1. 同步更新所有摘要标签 (Summary Badges) - 显式突出动态节约率
       ['chart-summary-badge', 'overview-chart-summary-badge'].forEach(badgeId => {
         const badge = document.getElementById(badgeId);
         if (badge && stats) {
+          const sTokens = Number(stats.savedTokens || 0);
+          const cTokens = Number(stats.consumedTokens || 0);
+          const totalT = sTokens + cTokens;
+          const ratio = totalT > 0 ? ((sTokens / totalT) * 100).toFixed(1) + '%' : (sTokens > 0 ? '100%' : '0%');
           if (currentChartMetric === 'cost') {
             const costVal = Number(stats.savedCostUSD || 0);
-            badge.innerText = '总节约: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+            badge.innerText = '总节约: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD · 动态节约率: ' + ratio;
           } else if (currentChartMetric === 'chars') {
-            badge.innerText = '总节约: ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符';
+            badge.innerText = '总节约: ' + Number(stats.totalSavedChars || 0).toLocaleString() + ' 字符 · 动态节约率: ' + ratio;
           } else {
-            badge.innerText = '总节约: ~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+            badge.innerText = '总节约: ~' + sTokens.toLocaleString() + ' Tokens · 动态节约率: ' + ratio;
           }
         }
       });
@@ -8472,7 +8496,33 @@ function renderDashboardHtml(config) {
         const savedCharsSub = document.getElementById('stat-saved-chars-sub');
         const compCharsSub = document.getElementById('stat-compressed-chars-sub');
 
-        if (tokensEl) tokensEl.innerText = '~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+        const savedTokens = Number(stats.savedTokens || 0);
+        const consumedTokens = Number(stats.consumedTokens || 0);
+        const totalTokens = savedTokens + consumedTokens;
+        const dynamicSavingsRatio = totalTokens > 0
+          ? Number(((savedTokens / totalTokens) * 100).toFixed(1))
+          : (savedTokens > 0 ? 100.0 : 0.0);
+        const discountRate = dynamicSavingsRatio > 0
+          ? ((100 - dynamicSavingsRatio) / 10).toFixed(1)
+          : '10';
+
+        if (tokensEl) tokensEl.innerText = '~' + savedTokens.toLocaleString() + ' Tokens';
+        const savedTokensSub = document.getElementById('stat-saved-tokens-sub');
+        if (savedTokensSub) {
+          savedTokensSub.innerText = hasData
+            ? ('实际处理消耗 ~' + consumedTokens.toLocaleString() + ' T · 原本需求 ~' + totalTokens.toLocaleString() + ' T')
+            : '基于中英双语动态模型 (~1.25 中文 / ~3.8 英文代码 字符/Token)';
+        }
+
+        const dynRatioEl = document.getElementById('stat-dynamic-savings-ratio');
+        const dynRatioSub = document.getElementById('stat-dynamic-savings-sub');
+        if (dynRatioEl) dynRatioEl.innerText = dynamicSavingsRatio.toFixed(1) + '%';
+        if (dynRatioSub) {
+          dynRatioSub.innerText = hasData
+            ? ('原本需求 ~' + totalTokens.toLocaleString() + ' T · 相当于打 ' + discountRate + ' 折')
+            : (currentCompRange === 'all' ? '原本总需求: 0 T · 相当于打 10 折' : '此时间段内暂无数据');
+        }
+
         if (costEl) {
           const costVal = Number(stats.savedCostUSD || 0);
           costEl.innerText = '~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
@@ -8480,13 +8530,13 @@ function renderDashboardHtml(config) {
         const tokensOverviewEl = document.getElementById('stat-saved-tokens-overview');
         const costOverviewEl = document.getElementById('stat-saved-cost-overview');
         const compOverviewBadge = document.getElementById('comp-overview-badge');
-        if (tokensOverviewEl) tokensOverviewEl.innerText = '~' + Number(stats.savedTokens || 0).toLocaleString() + ' Tokens';
+        if (tokensOverviewEl) tokensOverviewEl.innerText = '~' + savedTokens.toLocaleString() + ' Tokens';
         if (costOverviewEl) {
           const costVal = Number(stats.savedCostUSD || 0);
-          costOverviewEl.innerText = '节约费用: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD';
+          costOverviewEl.innerText = '节约费用: ~$' + (costVal < 0.0001 && costVal > 0 ? costVal.toFixed(6) : costVal.toFixed(4)) + ' USD · 实省 ' + dynamicSavingsRatio.toFixed(1) + '%';
         }
         if (compOverviewBadge) {
-          compOverviewBadge.innerText = hasData ? ('⚡ 压缩率 ' + (stats.compressionRatio || 0) + '%') : '实时估算中';
+          compOverviewBadge.innerText = hasData ? ('⚡ 实省 ' + dynamicSavingsRatio.toFixed(1) + '%') : '实时估算中';
         }
         if (ratioEl) ratioEl.innerText = (stats.compressionRatio || 0) + '%';
         if (origEl) origEl.innerText = Number(stats.totalOriginalChars || 0).toLocaleString() + ' Chars';
