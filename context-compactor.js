@@ -813,6 +813,7 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
  */
 function estimateTokens(input) {
   if (typeof input === 'number') {
+    if (!Number.isFinite(input) || isNaN(input) || input <= 0) return 0;
     return Math.round(input / 3.8);
   }
   if (typeof input !== 'string' || input.length === 0) {
@@ -941,9 +942,10 @@ function pruneExpiredBuckets(now = Date.now()) {
 function getOrCreateBucket(tier, ts, now = Date.now()) {
   const def = BUCKET_DEFINITIONS[tier];
   if (!def) return null;
-  if (ts < now - def.maxAgeMs) return null;
+  const safeTs = (typeof ts === 'number' && Number.isFinite(ts) && !isNaN(ts)) ? ts : now;
+  if (safeTs < now - def.maxAgeMs) return null;
 
-  const start = Math.floor(ts / def.intervalMs) * def.intervalMs;
+  const start = Math.floor(safeTs / def.intervalMs) * def.intervalMs;
   const end = start + def.intervalMs;
 
   let list = compressionHistory.buckets[tier];

@@ -9347,6 +9347,20 @@ function renderDashboardHtml(config) {
       const container = document.getElementById('accounts-container');
       container.innerHTML = '';
 
+      if (!currentConfig.accounts || currentConfig.accounts.length === 0) {
+        container.innerHTML = \`
+          <div style="grid-column: 1 / -1; padding: 40px 20px; text-align: center; border: 1px dashed var(--border); border-radius: 12px; background: rgba(255, 255, 255, 0.02); color: var(--text-muted);">
+            <div style="font-size: 32px; margin-bottom: 12px; opacity: 0.7;">📭</div>
+            <div style="font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 6px;">暂未配置任何订阅账号</div>
+            <div style="font-size: 13px; line-height: 1.5; margin-bottom: 18px;">配置主账号与备用账号后，网关可实现跨账号负载均衡与 429 智能故障转移。</div>
+            <button type="button" class="btn btn-primary" onclick="addAccountCard()" style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 18px; font-size: 13px;">
+              <span>➕</span> 立即添加第一个账号
+            </button>
+          </div>
+        \`;
+        return;
+      }
+
       currentConfig.accounts.forEach((acc, index) => {
         const stat = liveStats[acc.id] || {};
         let badgeClass = 'badge-disabled';
@@ -11245,8 +11259,11 @@ const server = http.createServer((req, res) => {
         if (payload.host !== undefined && String(payload.host).trim()) {
           newConfig.host = String(payload.host).trim();
         }
-        if (payload.port !== undefined && Number(payload.port) > 0) {
-          newConfig.port = Number(payload.port);
+        if (payload.port !== undefined) {
+          const p = parseInt(payload.port, 10);
+          if (Number.isInteger(p) && p >= 1 && p <= 65535) {
+            newConfig.port = p;
+          }
         }
         if (payload.uiPassword !== undefined) {
           newConfig.uiPassword = String(payload.uiPassword).trim();
@@ -12105,7 +12122,17 @@ $ghost
       res.end();
       return;
     }
-    fs.createReadStream(targetFilePath).pipe(res);
+    const fileStream = fs.createReadStream(targetFilePath);
+    fileStream.on('error', (err) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+      }
+      res.end('Error streaming file');
+    });
+    res.on('close', () => {
+      fileStream.destroy();
+    });
+    fileStream.pipe(res);
     return;
   }
 

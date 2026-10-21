@@ -124,10 +124,17 @@ class ComfyUIAdapter {
 
     // Candidate server URLs in priority order
     const targets = [];
-    if (this.config.comfyui?.host) targets.push(this.config.comfyui.host.replace(/\/+$/, ''));
-    if (process.env.COMFYUI_HOST) targets.push(process.env.COMFYUI_HOST.replace(/\/+$/, ''));
+    if (this.config.comfyui?.host) {
+      const u = this._normalizeUrl(this.config.comfyui.host);
+      if (u) targets.push(u);
+    }
+    if (process.env.COMFYUI_HOST) {
+      const u = this._normalizeUrl(process.env.COMFYUI_HOST);
+      if (u) targets.push(u);
+    }
     for (const t of DEFAULT_SNIFF_TARGETS) {
-      if (!targets.includes(t)) targets.push(t);
+      const norm = this._normalizeUrl(t);
+      if (!targets.includes(norm)) targets.push(norm);
     }
 
     for (const targetUrl of targets) {
@@ -680,8 +687,9 @@ class ComfyUIAdapter {
         Buffer.from(footer, 'utf8')
       ]);
 
-      const u = new URL(`${serverUrl}/upload/image`);
-      const req = http.request({
+      const u = new URL(`${this._normalizeUrl(serverUrl)}/upload/image`);
+      const mod = u.protocol === 'https:' ? https : http;
+      const req = mod.request({
         hostname: u.hostname,
         port: u.port,
         path: u.pathname,
@@ -726,10 +734,19 @@ class ComfyUIAdapter {
     return null;
   }
 
+  _normalizeUrl(url) {
+    if (!url) return '';
+    let trimmed = String(url).trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(trimmed)) {
+      trimmed = 'http://' + trimmed;
+    }
+    return trimmed;
+  }
+
   // HTTP Helper Methods
   _httpGetJson(targetUrl, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
-      const u = new URL(targetUrl);
+      const u = new URL(this._normalizeUrl(targetUrl));
       const mod = u.protocol === 'https:' ? https : http;
       const req = mod.get({
         hostname: u.hostname,
@@ -761,7 +778,7 @@ class ComfyUIAdapter {
 
   _httpGetBuffer(targetUrl, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
-      const u = new URL(targetUrl);
+      const u = new URL(this._normalizeUrl(targetUrl));
       const mod = u.protocol === 'https:' ? https : http;
       const req = mod.get({
         hostname: u.hostname,
@@ -789,7 +806,7 @@ class ComfyUIAdapter {
 
   _httpPostJson(targetUrl, body, timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
-      const u = new URL(targetUrl);
+      const u = new URL(this._normalizeUrl(targetUrl));
       const mod = u.protocol === 'https:' ? https : http;
       const payload = Buffer.from(JSON.stringify(body), 'utf8');
 
