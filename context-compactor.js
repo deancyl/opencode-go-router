@@ -828,14 +828,14 @@ const HISTORY_BAK_FILE = `${HISTORY_FILE}.bak`;
 const BUCKET_DEFINITIONS = {
   m5: { intervalMs: 5 * 60 * 1000, maxBuckets: 12, maxAgeMs: 60 * 60 * 1000 },
   h1: { intervalMs: 60 * 60 * 1000, maxBuckets: 24, maxAgeMs: 24 * 60 * 60 * 1000 },
-  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 7, maxAgeMs: 7 * 24 * 60 * 60 * 1000 }
+  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 30, maxAgeMs: 30 * 24 * 60 * 60 * 1000 }
 };
 
 const RANGE_CONFIG = {
   '1h': { tier: 'm5', windowMs: 60 * 60 * 1000, label: '过去 1 小时' },
   '24h': { tier: 'h1', windowMs: 24 * 60 * 60 * 1000, label: '过去 24 小时' },
   '7d': { tier: 'd1', windowMs: 7 * 24 * 60 * 60 * 1000, label: '过去 7 天' },
-  'all': { tier: null, windowMs: Infinity, label: '全部历史累计' }
+  'all': { tier: 'd1', windowMs: 30 * 24 * 60 * 60 * 1000, label: '全部历史累计' }
 };
 
 let compressionStats = {
@@ -844,6 +844,8 @@ let compressionStats = {
   totalSavedChars: 0,
   savedTokens: 0,
   savedCostUSD: 0,
+  consumedTokens: 0,
+  consumedCostUSD: 0,
   compressionRatio: 0,
   byModel: {},
   modules: {
@@ -877,6 +879,8 @@ function createEmptyBucket(startTime, endTime) {
     totalSavedChars: 0,
     savedTokens: 0,
     savedCostUSD: 0,
+    consumedTokens: 0,
+    consumedCostUSD: 0,
     modules: {
       rtk: { savedChars: 0, savedTokens: 0 },
       headroom: { savedChars: 0, savedTokens: 0 },
@@ -943,10 +947,13 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
   const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
     ? customSavedTokens
     : estimateTokens(validSaved);
+  const validOrigTokens = estimateTokens(validOrig);
 
   bucket.totalOriginalChars += validOrig;
   bucket.totalCompressedChars += (validOrig - validSaved);
   bucket.totalSavedChars += validSaved;
+  bucket.savedTokens = (bucket.savedTokens || 0) + validTokens;
+  bucket.consumedTokens = (bucket.consumedTokens || 0) + validOrigTokens;
 
   if (moduleName && bucket.modules && bucket.modules[moduleName]) {
     bucket.modules[moduleName].savedChars += validSaved;
@@ -963,6 +970,8 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
           savedTokens: 0,
           savedCostUSD: 0,
           originalChars: 0,
+          consumedTokens: 0,
+          consumedCostUSD: 0,
           ratePer1M: getModelRate(model)
         };
       }
@@ -970,10 +979,36 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
       mEntry.savedChars += validSaved;
       mEntry.originalChars += validOrig;
       mEntry.savedTokens = (mEntry.savedTokens || 0) + validTokens;
+      mEntry.consumedTokens = (mEntry.consumedTokens || 0) + validOrigTokens;
       mEntry.ratePer1M = getModelRate(model);
       mEntry.savedCostUSD = Number(((mEntry.savedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
+      mEntry.consumedCostUSD = Number(((mEntry.consumedTokens / 1000000) * mEntry.ratePer1M).toFixed(7));
     }
   }
+
+  let bucketModelTokensSum = 0;
+  let bucketModelCostSum = 0;
+  let bucketModelConsumedTokensSum = 0;
+  let bucketModelConsumedCostSum = 0;
+
+  if (bucket.byModel && typeof bucket.byModel === 'object') {
+    for (const mEntry of Object.values(bucket.byModel)) {
+      if (mEntry && typeof mEntry === 'object') {
+        bucketModelTokensSum += (mEntry.savedTokens || 0);
+        bucketModelCostSum += (mEntry.savedCostUSD || 0);
+        bucketModelConsumedTokensSum += (mEntry.consumedTokens || 0);
+        bucketModelConsumedCostSum += (mEntry.consumedCostUSD || 0);
+      }
+    }
+  }
+
+  const unassignedTokens = Math.max(0, bucket.savedTokens - bucketModelTokensSum);
+  const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
+  bucket.savedCostUSD = Number((bucketModelCostSum + unassignedCost).toFixed(7));
+
+  const unassignedConsumed = Math.max(0, bucket.consumedTokens - bucketModelConsumedTokensSum);
+  const unassignedConsumedCost = (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
+  bucket.consumedCostUSD = Number((bucketModelConsumedCostSum + unassignedConsumedCost).toFixed(7));
 }
 
 function recordBucketSchemaAlignment(tier, ts, rounds = 1, toolsCount = 0) {
@@ -1044,6 +1079,24 @@ function computeDerivedStats(stats) {
   const unassignedTokens = Math.max(0, stats.savedTokens - modelTokensSum);
   const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
   stats.savedCostUSD = Number((modelCostSum + unassignedCost).toFixed(6));
+
+  // Compute overall consumedTokens & consumedCostUSD
+  let modelConsumedTokensSum = 0;
+  let modelConsumedCostSum = 0;
+  for (const [m, data] of Object.entries(stats.byModel)) {
+    if (!data || typeof data !== 'object') continue;
+    if (data.consumedTokens === undefined || data.consumedTokens === null || data.consumedTokens === 0) {
+      data.consumedTokens = estimateTokens(data.originalChars || 0);
+    }
+    data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    modelConsumedTokensSum += data.consumedTokens;
+    modelConsumedCostSum += data.consumedCostUSD;
+  }
+  const totalOrigTokens = estimateTokens(stats.totalOriginalChars);
+  stats.consumedTokens = Math.max(totalOrigTokens, modelConsumedTokensSum, stats.savedTokens);
+  const unassignedConsumed = Math.max(0, stats.consumedTokens - modelConsumedTokensSum);
+  const unassignedConsumedCost = (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
+  stats.consumedCostUSD = Number((modelConsumedCostSum + unassignedConsumedCost).toFixed(6));
 
   stats.compressionRatio = stats.totalOriginalChars > 0
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
@@ -1295,6 +1348,31 @@ function loadStatsFromDisk() {
       compressionHistory.lastResetAt = histBak.lastResetAt || compressionStats.lastResetAt;
     }
     compressionHistory.all = compressionStats;
+    if (compressionHistory.buckets && typeof compressionHistory.buckets === 'object') {
+      for (const bucketList of Object.values(compressionHistory.buckets)) {
+        if (Array.isArray(bucketList)) {
+          for (const b of bucketList) {
+            if (b && typeof b === 'object') {
+              const origChars = Number(b.totalOriginalChars) || 0;
+              const savedChars = Number(b.totalSavedChars) || 0;
+              const modTokSum = Object.values(b.modules || {}).reduce((s, m) => s + (Number(m.savedTokens) || 0), 0);
+              if (!b.savedTokens || b.savedTokens === 0) {
+                b.savedTokens = Math.max(modTokSum, estimateTokens(savedChars));
+              }
+              if (!b.consumedTokens || b.consumedTokens === 0) {
+                b.consumedTokens = Math.max(estimateTokens(origChars), b.savedTokens);
+              }
+              if (!b.savedCostUSD || b.savedCostUSD === 0) {
+                b.savedCostUSD = Number(((b.savedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(7));
+              }
+              if (!b.consumedCostUSD || b.consumedCostUSD === 0) {
+                b.consumedCostUSD = Number(((b.consumedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(7));
+              }
+            }
+          }
+        }
+      }
+    }
     pruneExpiredBuckets();
 
     // Auto self-healing write-back if primary file is missing or was corrupted
@@ -1436,6 +1514,64 @@ function formatTimeSeriesLabel(ts, range) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function mergeBuckets(target, source) {
+  if (!target) return JSON.parse(JSON.stringify(source));
+  target.totalOriginalChars = (Number(target.totalOriginalChars) || 0) + (Number(source.totalOriginalChars) || 0);
+  target.totalCompressedChars = (Number(target.totalCompressedChars) || 0) + (Number(source.totalCompressedChars) || 0);
+  target.totalSavedChars = (Number(target.totalSavedChars) || 0) + (Number(source.totalSavedChars) || 0);
+  target.savedTokens = (Number(target.savedTokens) || 0) + (Number(source.savedTokens) || 0);
+  target.savedCostUSD = Number(((Number(target.savedCostUSD) || 0) + (Number(source.savedCostUSD) || 0)).toFixed(7));
+  target.consumedTokens = (Number(target.consumedTokens) || 0) + (Number(source.consumedTokens) || 0);
+  target.consumedCostUSD = Number(((Number(target.consumedCostUSD) || 0) + (Number(source.consumedCostUSD) || 0)).toFixed(7));
+
+  if (source.modules && typeof source.modules === 'object') {
+    if (!target.modules) target.modules = {};
+    for (const [modKey, modVal] of Object.entries(source.modules)) {
+      if (!modVal) continue;
+      if (!target.modules[modKey]) {
+        target.modules[modKey] = { savedChars: 0, savedTokens: 0 };
+      }
+      target.modules[modKey].savedChars = (Number(target.modules[modKey].savedChars) || 0) + (Number(modVal.savedChars) || 0);
+      target.modules[modKey].savedTokens = (Number(target.modules[modKey].savedTokens) || 0) + (Number(modVal.savedTokens) || 0);
+      if (modKey === 'schema') {
+        target.modules.schema.alignedRounds = (Number(target.modules.schema.alignedRounds) || 0) + (Number(modVal.alignedRounds) || 0);
+        target.modules.schema.alignedToolsCount = (Number(target.modules.schema.alignedToolsCount) || 0) + (Number(modVal.alignedToolsCount) || 0);
+      } else if (modKey === 'cacheZone') {
+        target.modules.cacheZone.cacheZoneHits = (Number(target.modules.cacheZone.cacheZoneHits) || 0) + (Number(modVal.cacheZoneHits) || 0);
+      }
+    }
+  }
+
+  if (source.byModel && typeof source.byModel === 'object') {
+    if (!target.byModel) target.byModel = {};
+    for (const [m, mData] of Object.entries(source.byModel)) {
+      if (!mData) continue;
+      const cleanM = normalizeModelName(m) || m;
+      if (!target.byModel[cleanM]) {
+        target.byModel[cleanM] = {
+          savedChars: 0,
+          savedTokens: 0,
+          savedCostUSD: 0,
+          originalChars: 0,
+          consumedTokens: 0,
+          consumedCostUSD: 0,
+          ratePer1M: mData.ratePer1M || getModelRate(cleanM)
+        };
+      }
+      const tEntry = target.byModel[cleanM];
+      tEntry.savedChars = (Number(tEntry.savedChars) || 0) + (Number(mData.savedChars) || 0);
+      tEntry.savedTokens = (Number(tEntry.savedTokens) || 0) + (Number(mData.savedTokens) || 0);
+      tEntry.originalChars = (Number(tEntry.originalChars) || 0) + (Number(mData.originalChars) || 0);
+      tEntry.consumedTokens = (Number(tEntry.consumedTokens) || 0) + (Number(mData.consumedTokens) || 0);
+      tEntry.ratePer1M = mData.ratePer1M || getModelRate(cleanM);
+      tEntry.savedCostUSD = Number(((Number(tEntry.savedCostUSD) || 0) + (Number(mData.savedCostUSD) || 0)).toFixed(7));
+      tEntry.consumedCostUSD = Number(((Number(tEntry.consumedCostUSD) || 0) + (Number(mData.consumedCostUSD) || 0)).toFixed(7));
+    }
+  }
+
+  return target;
+}
+
 function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
   const normRange = (range && typeof range === 'string' && RANGE_CONFIG[range.toLowerCase()]) ? range.toLowerCase() : 'all';
   const series = [];
@@ -1453,9 +1589,20 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     intervalMs = 24 * 60 * 60 * 1000; // 1 day intervals
     count = 7;
   } else {
-    // 'all' tier: provide daily slots (7 days window)
+    // 'all' tier: provide daily slots with dynamic history span (up to 30 days, min 7 days)
     intervalMs = 24 * 60 * 60 * 1000;
-    count = 7;
+    let daysSpan = 14;
+    if (Array.isArray(matchingBuckets) && matchingBuckets.length > 0) {
+      const validStarts = matchingBuckets.map(b => b && b.startTime).filter(t => typeof t === 'number' && t > 0);
+      if (validStarts.length > 0) {
+        const earliest = Math.min(...validStarts);
+        if (earliest < now) {
+          const diffDays = Math.ceil((now - earliest) / intervalMs) + 1;
+          daysSpan = Math.min(30, Math.max(7, diffDays));
+        }
+      }
+    }
+    count = daysSpan;
   }
 
   const currentSlot = Math.floor(now / intervalMs) * intervalMs;
@@ -1464,7 +1611,11 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     for (const b of matchingBuckets) {
       if (b && typeof b.startTime === 'number') {
         const slotKey = Math.floor(b.startTime / intervalMs) * intervalMs;
-        bucketMap.set(slotKey, b);
+        if (bucketMap.has(slotKey)) {
+          mergeBuckets(bucketMap.get(slotKey), b);
+        } else {
+          bucketMap.set(slotKey, JSON.parse(JSON.stringify(b)));
+        }
       }
     }
   }
@@ -1483,67 +1634,96 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
       savedChars = Math.max(savedChars, rawOrigChars - rawCompChars, modSum);
       const origChars = Math.max(savedChars, rawOrigChars);
       const savedTokens = Math.max(Number(existing.savedTokens) || 0, modTokSum, estimateTokens(savedChars));
+      const consumedTokens = Math.max(Number(existing.consumedTokens) || 0, estimateTokens(origChars), savedTokens);
 
       const byModelData = {};
       let modelCostSum = 0;
       let modelTokensSum = 0;
+      let modelConsumedCostSum = 0;
+      let modelConsumedTokensSum = 0;
+
       if (existing.byModel && typeof existing.byModel === 'object') {
         for (const [m, mInfo] of Object.entries(existing.byModel)) {
           if (!mInfo) continue;
           const cleanM = normalizeModelName(m) || m;
           const sTokens = Math.max(Number(mInfo.savedTokens) || 0, estimateTokens(Number(mInfo.savedChars) || 0));
-          const rate = getModelRate(cleanM);
+          const mOrigChars = Math.max(Number(mInfo.originalChars) || 0, Number(mInfo.savedChars) || 0);
+          const cTokens = Math.max(Number(mInfo.consumedTokens) || 0, estimateTokens(mOrigChars), sTokens);
+          const rate = mInfo.ratePer1M || getModelRate(cleanM);
           const sCost = Number(((sTokens / 1000000) * rate).toFixed(7));
+          const cCost = Number(((cTokens / 1000000) * rate).toFixed(7));
+
           if (!byModelData[cleanM]) {
             byModelData[cleanM] = {
               savedChars: 0,
               savedTokens: 0,
               savedCostUSD: 0,
+              originalChars: 0,
+              consumedTokens: 0,
+              consumedCostUSD: 0,
               ratePer1M: rate
             };
           }
           byModelData[cleanM].savedChars += (Number(mInfo.savedChars) || 0);
           byModelData[cleanM].savedTokens += sTokens;
           byModelData[cleanM].savedCostUSD = Number((byModelData[cleanM].savedCostUSD + sCost).toFixed(7));
+          byModelData[cleanM].originalChars += mOrigChars;
+          byModelData[cleanM].consumedTokens += cTokens;
+          byModelData[cleanM].consumedCostUSD = Number((byModelData[cleanM].consumedCostUSD + cCost).toFixed(7));
+
           modelCostSum += sCost;
           modelTokensSum += sTokens;
+          modelConsumedCostSum += cCost;
+          modelConsumedTokensSum += cTokens;
         }
       }
       const unassignedTokens = Math.max(0, savedTokens - modelTokensSum);
       const savedCostUSD = Number((modelCostSum + (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
 
+      const unassignedConsumed = Math.max(0, consumedTokens - modelConsumedTokensSum);
+      const consumedCostUSD = Number((modelConsumedCostSum + (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
+
       series.push({
         time: slotTime,
         label,
+        consumedTokens,
+        consumedCostUSD,
         savedTokens,
         savedCostUSD,
         savedChars,
         originalChars: origChars,
+        consumedChars: origChars,
         byModel: byModelData
       });
     } else {
       series.push({
         time: slotTime,
         label,
+        consumedTokens: 0,
+        consumedCostUSD: 0,
         savedTokens: 0,
         savedCostUSD: 0,
         savedChars: 0,
         originalChars: 0,
+        consumedChars: 0,
         byModel: {}
       });
     }
   }
 
-  // If in 'all' mode and all buckets are 0 but global stats have savings, inject into the latest point
+  // If in 'all' mode and all buckets are 0 but global stats have savings or consumed, inject into latest point
   if (normRange === 'all') {
-    const allZero = series.every(p => p.savedTokens === 0);
-    if (allZero && (compressionStats.savedTokens > 0 || compressionStats.totalSavedChars > 0)) {
+    const allZero = series.every(p => p.savedTokens === 0 && p.consumedTokens === 0);
+    if (allZero && (compressionStats.savedTokens > 0 || compressionStats.totalSavedChars > 0 || compressionStats.totalOriginalChars > 0)) {
       const lastPoint = series[series.length - 1];
       if (lastPoint) {
+        lastPoint.consumedTokens = compressionStats.consumedTokens || estimateTokens(compressionStats.totalOriginalChars);
+        lastPoint.consumedCostUSD = compressionStats.consumedCostUSD || Number(((lastPoint.consumedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
         lastPoint.savedTokens = compressionStats.savedTokens;
         lastPoint.savedCostUSD = compressionStats.savedCostUSD;
         lastPoint.savedChars = compressionStats.totalSavedChars;
         lastPoint.originalChars = compressionStats.totalOriginalChars;
+        lastPoint.consumedChars = compressionStats.totalOriginalChars;
         lastPoint.byModel = JSON.parse(JSON.stringify(compressionStats.byModel || {}));
       }
     }
@@ -1568,6 +1748,8 @@ function getStatsByRange(range = 'all', now = Date.now()) {
       totalSavedChars: base.totalSavedChars,
       savedTokens: base.savedTokens,
       savedCostUSD: base.savedCostUSD,
+      consumedTokens: base.consumedTokens || estimateTokens(base.totalOriginalChars),
+      consumedCostUSD: base.consumedCostUSD || Number((((base.consumedTokens || estimateTokens(base.totalOriginalChars)) / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6)),
       compressionRatio: base.compressionRatio,
       modules: {
         rtk: { ...base.modules.rtk },
@@ -1687,6 +1869,18 @@ function getStatsByRange(range = 'all', now = Date.now()) {
   const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
   const savedCostUSD = Number((modelCostSum + unassignedCost).toFixed(6));
 
+  let modelConsumedTokensSum = 0;
+  let modelConsumedCostSum = 0;
+  for (const [m, data] of Object.entries(byModel)) {
+    data.consumedTokens = Math.max(Number(data.consumedTokens) || 0, estimateTokens(data.originalChars || 0));
+    data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    modelConsumedTokensSum += data.consumedTokens;
+    modelConsumedCostSum += data.consumedCostUSD;
+  }
+  const consumedTokens = Math.max(estimateTokens(totalOriginalChars), modelConsumedTokensSum, savedTokens);
+  const unassignedConsumed = Math.max(0, consumedTokens - modelConsumedTokensSum);
+  const consumedCostUSD = Number((modelConsumedCostSum + (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
+
   const compressionRatio = totalOriginalChars > 0
     ? Number(((totalSavedChars / totalOriginalChars) * 100).toFixed(1))
     : 0;
@@ -1701,6 +1895,8 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     totalSavedChars,
     savedTokens,
     savedCostUSD,
+    consumedTokens,
+    consumedCostUSD,
     compressionRatio,
     modules,
     byModel,

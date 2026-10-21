@@ -1229,6 +1229,103 @@ function pruneResponsesPayload(body) {
     let input = body.input.slice();
     const totalItems = input.length;
 
+    // 0. Historical Image Base64 Pruning (Rule 5 & Rule 33)
+    // In long sessions with frequent view_image / PDF inspections, Base64 image payload can exceed 15MB (80%+ of tokens).
+    // Find all items with image Base64 data. Prune images that are older than 2 turns ago (>2 turns before session end)
+    // or older than the last 2 image items into lightweight verified placeholders.
+    const imageItemIndices = [];
+    for (let i = 0; i < totalItems; i++) {
+      const it = input[i];
+      if (!it || typeof it !== 'object') continue;
+      const str = typeof it.output === 'string' ? it.output : (it.output ? JSON.stringify(it.output) : '');
+      const contentStr = typeof it.content === 'string' ? it.content : (Array.isArray(it.content) ? JSON.stringify(it.content) : '');
+      if (str.includes('data:image/') || str.includes(';base64,') || str.includes('input_image') || contentStr.includes('data:image/') || contentStr.includes(';base64,') || contentStr.includes('input_image')) {
+        imageItemIndices.push(i);
+      }
+    }
+
+    const pruneImgSet = new Set();
+    const recentTurnCutoff = Math.max(0, totalItems - 4);
+    for (let pos = 0; pos < imageItemIndices.length; pos++) {
+      const idx = imageItemIndices[pos];
+      const isAncientTurn = idx < recentTurnCutoff;
+      const isOlderThanLast2Images = pos < imageItemIndices.length - 2;
+      if (isAncientTurn || isOlderThanLast2Images) {
+        pruneImgSet.add(idx);
+      }
+    }
+
+    if (pruneImgSet.size > 0) {
+      let historicalImgCount = 0;
+      for (const idx of pruneImgSet) {
+        const item = input[idx];
+        if (!item || typeof item !== 'object') continue;
+        historicalImgCount++;
+
+        let pageLabel = `image-${historicalImgCount}.png`;
+        let callItem = null;
+        if (item.call_id) {
+          for (let j = idx - 1; j >= 0; j--) {
+            if (input[j] && input[j].call_id === item.call_id && (input[j].arguments || input[j].input)) {
+              callItem = input[j];
+              break;
+            }
+          }
+        }
+        if (!callItem && idx > 0) callItem = input[idx - 1];
+        if (callItem) {
+          const argsStr = typeof callItem.arguments === 'string' ? callItem.arguments : (callItem.arguments ? JSON.stringify(callItem.arguments) : (typeof callItem.input === 'string' ? callItem.input : ''));
+          const m = argsStr.match(/["'](?:path|file|name|image_path|file_path)["']\s*:\s*["']([^"']+)["']/);
+          if (m) pageLabel = m[1].replace(/.*[/\\]/, '');
+        }
+
+        const isToolOutput = item.type === 'function_call_output' ||
+          item.type === 'custom_tool_call_output' ||
+          (item.type && item.type.endsWith('_output')) ||
+          (item.call_id && item.output !== undefined);
+
+        if (isToolOutput && item.output) {
+          const outStr = typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
+          const origLen = outStr.length;
+          const placeholder = `[Historical Image Verified: ${pageLabel}]`;
+          input[idx] = { ...item, output: placeholder };
+          modified = true;
+          try {
+            const contextCompactor = require('./context-compactor');
+            contextCompactor.recordSavings('headroom', Math.max(0, origLen - placeholder.length), origLen, (body && body.model) || null);
+          } catch (_) {}
+        } else if (item.type === 'message' && Array.isArray(item.content)) {
+          let contentModified = false;
+          let origContentLen = 0;
+          let newContentLen = 0;
+          const newContent = item.content.map(part => {
+            if (!part || typeof part !== 'object') return part;
+            const partStr = JSON.stringify(part);
+            origContentLen += partStr.length;
+            const isImg = part.type === 'input_image' || part.type === 'image_url' || part.type === 'image' ||
+              (typeof part.image_url === 'string' && part.image_url.startsWith('data:image')) ||
+              (part.image_url && typeof part.image_url.url === 'string' && part.image_url.url.startsWith('data:image'));
+            if (isImg) {
+              contentModified = true;
+              const rep = { type: 'text', text: `[Historical Image Verified: ${pageLabel}]` };
+              newContentLen += JSON.stringify(rep).length;
+              return rep;
+            }
+            newContentLen += partStr.length;
+            return part;
+          });
+          if (contentModified) {
+            input[idx] = { ...item, content: newContent };
+            modified = true;
+            try {
+              const contextCompactor = require('./context-compactor');
+              contextCompactor.recordSavings('headroom', Math.max(0, origContentLen - newContentLen), origContentLen, (body && body.model) || null);
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
     // 1. Compress giant tool outputs (> 2000 chars) and giant message content (> 6000 chars)
     for (let i = 0; i < totalItems; i++) {
       const item = input[i];
@@ -2950,6 +3047,144 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   };
 
   bindUpstream(currentUpstream);
+}
+
+/**
+ * Rule 33: Stream Empty-Truncation Graceful Closure & UI Spinner Unlock
+ * Proactively pushes compliant OpenAI Responses SSE frames to the client when upstream fails or times out:
+ * response.created -> response.in_progress -> response.output_item.added -> response.content_part.added -> response.output_item.done -> response.failed
+ * Safely unlocks Codex UI thinking spinner and releases thread-writer-locks.
+ */
+function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId = null) {
+  if (!clientRes || clientRes.writableEnded || clientRes.destroyed) return;
+
+  const respId = reqId || ('resp_' + Date.now());
+  const model = reqModel || 'deepseek-v4.1-flash';
+  const errMsg = err?.message ? err.message : String(err || 'Upstream connection timed out or closed unexpectedly');
+
+  if (sessionId) {
+    recordResponseSession(respId, sessionId);
+  }
+
+  // 1. Ensure SSE response headers are sent
+  if (!clientRes.headersSent) {
+    clientRes.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+  }
+
+  const sendEvent = (event, data) => {
+    if (clientRes.writableEnded || clientRes.destroyed) return;
+    try {
+      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {}
+  };
+
+  let seq = 0;
+
+  // 2. Initial created & in_progress frames
+  sendEvent('response.created', {
+    type: 'response.created',
+    sequence_number: seq++,
+    response: {
+      id: respId,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      completed_at: null,
+      status: 'in_progress',
+      parallel_tool_calls: true,
+      model: model,
+      output: [],
+      tools: []
+    }
+  });
+
+  sendEvent('response.in_progress', {
+    type: 'response.in_progress',
+    sequence_number: seq++,
+    response: {
+      id: respId,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      completed_at: null,
+      status: 'in_progress',
+      model: model
+    }
+  });
+
+  // 3. Injected compliant assistant error message block to close UI spinner
+  const healMsgId = 'msg_heal_' + Date.now();
+  const healNotice = `[智能网关服务提示：上游推理连接异常中断（${errMsg}）。网关已安全闭环会话状态并释放任务锁，建议重试当前任务或切换备用模型。]`;
+
+  sendEvent('response.output_item.added', {
+    type: 'response.output_item.added',
+    sequence_number: seq++,
+    output_index: 0,
+    item: {
+      id: healMsgId,
+      type: 'message',
+      status: 'in_progress',
+      role: 'assistant',
+      content: []
+    }
+  });
+
+  sendEvent('response.content_part.added', {
+    type: 'response.content_part.added',
+    sequence_number: seq++,
+    output_index: 0,
+    content_index: 0,
+    item_id: healMsgId,
+    part: { type: 'output_text', text: healNotice, annotations: [], logprobs: [] }
+  });
+
+  sendEvent('response.output_item.done', {
+    type: 'response.output_item.done',
+    sequence_number: seq++,
+    output_index: 0,
+    item: {
+      id: healMsgId,
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      phase: 'final_answer',
+      content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+    }
+  });
+
+  // 4. Concluding response.failed frame
+  sendEvent('response.failed', {
+    type: 'response.failed',
+    sequence_number: seq++,
+    response: {
+      id: respId,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      completed_at: Math.floor(Date.now() / 1000),
+      status: 'failed',
+      model: model,
+      error: {
+        type: 'server_error',
+        code: errMsg.toLowerCase().includes('timeout') ? 'gateway_timeout' : 'upstream_stream_truncated',
+        message: errMsg
+      },
+      output: [{
+        id: healMsgId,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
+      }]
+    }
+  });
+
+  try {
+    clientRes.end();
+  } catch (_) {}
 }
 
 /**
@@ -5469,12 +5704,14 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   let hasConfig = fs.existsSync(configPath);
   let missingDesktopLocale = false;
   let hasInvalidModelSlug = false;
+  let missingComfyUiMcp = false;
   let currentModel = null;
 
   if (hasConfig) {
     try {
       const raw = fs.readFileSync(configPath, 'utf8');
       const mLocale = raw.match(/localeOverride\s*=\s*["']([^"']+)["']/);
+      missingComfyUiMcp = !raw.includes('[mcp_servers.comfyui]');
       if (!mLocale || mLocale[1] !== 'zh-CN') {
         missingDesktopLocale = true;
       }
@@ -5564,6 +5801,9 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   if (hasCodexPlusPortConflict) {
     issues.push('Codex++ 汉化注入工具默认侦听 4010 端口与本地智能网关冲突，导致汉化插件闪退');
   }
+  if (missingComfyUiMcp) {
+    issues.push('config.toml 尚未挂载 ComfyUI 图像智能体 (mcp-comfyui.js)，一键修复即可激活原生生图与反推工具');
+  }
   if (missingCodexPlusZhScript) {
     issues.push('Codex++ 界面汉化脚本存在语法错误或匹配失效，一键修复即可自动升级为最新高保真汉化补丁');
   }
@@ -5577,6 +5817,7 @@ function checkCodexLocaleAndEnvironment(options = {}) {
     missingModelInstructions,
     hasCodexPlusPortConflict,
     missingCodexPlusZhScript,
+    missingComfyUiMcp,
     issues
   };
 }
@@ -5614,6 +5855,14 @@ function repairCodexLocaleAndEnvironment(options = {}) {
         raw = raw.replace(/^\s*model\s*=\s*["'][^"']+["']/m, 'model = "deepseek-v4.1-flash"');
         changed = true;
         messages.push('已校准 config.toml 中非标准模型名为合法 Slug "deepseek-v4.1-flash"');
+      }
+
+      // Ensure ComfyUI MCP Server is registered for Codex Desktop
+      const mcpScript = path.join(__dirname, 'mcp-comfyui.js').replace(/\\/g, '\\\\');
+      if (!raw.includes('[mcp_servers.comfyui]')) {
+        raw += `\n[mcp_servers.comfyui]\ncommand = "node"\nargs = ["${mcpScript}"]\n`;
+        changed = true;
+        messages.push('已为 Codex Desktop 自动注册 ComfyUI 图像智能体 (mcp-comfyui.js)');
       }
 
       if (changed) {
@@ -5823,5 +6072,6 @@ module.exports = {
   resetCompressionStats: contextCompactor.resetCompressionStats,
   COMPRESSION_PRESETS: contextCompactor.COMPRESSION_PRESETS,
   StreamDegenerationDetector,
-  autoCorrectToolArgs
+  autoCorrectToolArgs,
+  dispatchResponsesStreamError
 };

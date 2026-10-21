@@ -29,6 +29,7 @@ const { execSync, exec, spawn } = require('node:child_process');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
 const powershellOptimizer = require('./powershell-optimizer');
+const { ComfyUIAdapter } = require('./comfyui-adapter');
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
@@ -92,7 +93,13 @@ const DEFAULT_CONFIG = {
       enabled: true
     }
   ],
-  compression: contextCompactor.DEFAULT_COMPRESSION_CONFIG
+  compression: contextCompactor.DEFAULT_COMPRESSION_CONFIG,
+  comfyui: {
+    enabled: true,
+    host: 'http://127.0.0.1:8284',
+    workflowsDir: '',
+    timeoutSec: 180
+  }
 };
 
 const DEFAULT_OMO_CONFIG = {
@@ -200,6 +207,7 @@ function loadConfig() {
   }
 }
 loadConfig();
+const comfyuiAdapter = new ComfyUIAdapter({ rootDir: __dirname, config });
 
 /**
  * Zero-dependency native HTTP CONNECT tunnel forward proxy agent for Node.js 18+
@@ -1794,6 +1802,18 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
   if (isResponsesReq && parsedBody) {
+    const hasBase64Image = reqBody && (reqBody.includes(';base64,') || reqBody.includes('data:image/'));
+    if (Array.isArray(parsedBody.input) && (parsedBody.input.length > 12 || hasBase64Image || (reqBody && reqBody.length > 100000))) {
+      try {
+        const pruneRes = codexAdapter.pruneResponsesPayload(parsedBody);
+        if (pruneRes && pruneRes.modified) {
+          parsedBody = pruneRes;
+          reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+        }
+      } catch (err) {
+        console.warn('[Prune Responses] Pre-flight pruning failed safely:', err.message);
+      }
+    }
     const reqModel = parsedBody.model || 'deepseek-v4.1-flash';
     if (codexAdapter.ANTHROPIC_MODELS && codexAdapter.ANTHROPIC_MODELS.has(reqModel)) {
       bridgeResponsesToAnthropicRequest(clientReq, clientRes, parsedBody, account, attemptNumber, triedAccountIds, sessionId);
@@ -2120,7 +2140,14 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
         if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
-        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+        const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
+        const isStream = parsedBody ? parsedBody.stream === true : Boolean(clientReq.headers && clientReq.headers.accept && clientReq.headers.accept.includes('text/event-stream'));
+        if (isResponsesReq && isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          const reqModel = parsedBody?.model || 'deepseek-v4.1-flash';
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, parsedBody?.id, errText || `Upstream returned status ${statusCode}`, sessionId);
+        } else {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+        }
       });
       return;
     }
@@ -2159,7 +2186,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       } catch (_) {}
       finishRequest();
       if (!clientRes.writableEnded && !clientRes.destroyed) {
-        if (clientRes.headersSent) {
+        const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
+        const isStream = parsedBody ? parsedBody.stream === true : Boolean(clientReq.headers && clientReq.headers.accept && clientReq.headers.accept.includes('text/event-stream'));
+        if (isResponsesReq && isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          const reqModel = parsedBody?.model || 'deepseek-v4.1-flash';
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, parsedBody?.id, err, sessionId);
+        } else if (clientRes.headersSent) {
           try {
             clientRes.write(`event: error\ndata: ${JSON.stringify({ error: { message: 'Upstream stream terminated prematurely: ' + err.message, type: 'upstream_stream_error' } })}\n\n`);
           } catch (_) {}
@@ -2183,7 +2215,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
         finishRequest();
         const err = new Error('Upstream stream closed prematurely before completion');
-        if (clientRes.headersSent) {
+        const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
+        const isStream = parsedBody ? parsedBody.stream === true : Boolean(clientReq.headers && clientReq.headers.accept && clientReq.headers.accept.includes('text/event-stream'));
+        if (isResponsesReq && isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          const reqModel = parsedBody?.model || 'deepseek-v4.1-flash';
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, parsedBody?.id, err, sessionId);
+        } else if (clientRes.headersSent) {
           try {
             clientRes.write(`event: error\ndata: ${JSON.stringify({ error: { message: err.message, type: 'upstream_stream_error' } })}\n\n`);
           } catch (_) {}
@@ -2249,24 +2286,31 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
     if (!responded) {
       responded = true;
-      const isTimeout = err.message && err.message.includes('Gateway Timeout');
-      const errCode = isTimeout ? 504 : 502;
-      const errPayload = JSON.stringify({
-        error: {
-          message: `Proxy error reaching upstream: ${err.message}`,
-          type: isTimeout ? 'router_gateway_timeout' : 'router_proxy_error',
-          code: errCode
-        }
-      });
-      if (clientRes.headersSent) {
-        if (!clientRes.writableEnded) clientRes.end(errPayload);
+      const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
+      const isStream = parsedBody ? parsedBody.stream === true : Boolean(clientReq.headers && clientReq.headers.accept && clientReq.headers.accept.includes('text/event-stream'));
+      if (isResponsesReq && isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+        const reqModel = parsedBody?.model || 'deepseek-v4.1-flash';
+        codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, parsedBody?.id, err, sessionId);
       } else {
-        clientRes.writeHead(errCode, {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': '*'
+        const isTimeout = err.message && err.message.includes('Gateway Timeout');
+        const errCode = isTimeout ? 504 : 502;
+        const errPayload = JSON.stringify({
+          error: {
+            message: `Proxy error reaching upstream: ${err.message}`,
+            type: isTimeout ? 'router_gateway_timeout' : 'router_proxy_error',
+            code: errCode
+          }
         });
-        clientRes.end(errPayload);
+        if (clientRes.headersSent) {
+          if (!clientRes.writableEnded) clientRes.end(errPayload);
+        } else {
+          clientRes.writeHead(errCode, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': '*'
+          });
+          clientRes.end(errPayload);
+        }
       }
     } else {
       if (!clientRes.writableEnded) {
@@ -2306,6 +2350,20 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
         responsesBody = { ...responsesBody, model: cachedFallback };
       }
+    }
+  }
+
+  // Pre-flight check & pruning for oversized responses payload (Rule 5 & Rule 33)
+  if (!precomputedChatPayload && responsesBody && Array.isArray(responsesBody.input) && !responsesBody.modified) {
+    const shouldPrune = responsesBody.input.length > 12 ||
+      (responsesBody.input.length > 3 && responsesBody.input.some(it => it && ((typeof it.output === 'string' && (it.output.length > 2000 || it.output.includes(';base64,'))) || (typeof it.content === 'string' && it.content.length > 5000))));
+    if (shouldPrune) {
+      try {
+        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody);
+        if (pruneRes && pruneRes.modified) {
+          responsesBody = pruneRes;
+        }
+      } catch (_) {}
     }
   }
 
@@ -2446,7 +2504,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
         if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
-        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+        if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, responsesBody ? responsesBody.id : null, err, sessionId);
+        } else {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+        }
       });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
@@ -2531,7 +2593,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
         if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
-        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+        if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, responsesBody ? responsesBody.id : null, errText || `Upstream returned status ${statusCode}`, sessionId);
+        } else {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+        }
       });
       return;
     }
@@ -2670,18 +2736,22 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
     if (!responded) {
       responded = true;
-      const errPayload = JSON.stringify({
-        error: {
-          message: `Bridge proxy error: ${err.message}`,
-          type: 'router_bridge_error',
-          code: 502
-        }
-      });
-      if (clientRes.headersSent) {
-        if (!clientRes.writableEnded) clientRes.end(errPayload);
+      if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+        codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, responsesBody ? responsesBody.id : null, err, sessionId);
       } else {
-        clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        clientRes.end(errPayload);
+        const errPayload = JSON.stringify({
+          error: {
+            message: `Bridge proxy error: ${err.message}`,
+            type: 'router_bridge_error',
+            code: 502
+          }
+        });
+        if (clientRes.headersSent) {
+          if (!clientRes.writableEnded) clientRes.end(errPayload);
+        } else {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          clientRes.end(errPayload);
+        }
       }
     }
   });
@@ -2720,6 +2790,20 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     stat.activeRequests += 1;
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
+  }
+
+  // Pre-flight check & pruning for oversized responses payload (Rule 5 & Rule 33)
+  if (!precomputedAnthropicPayload && responsesBody && Array.isArray(responsesBody.input) && !responsesBody.modified) {
+    const shouldPrune = responsesBody.input.length > 12 ||
+      (responsesBody.input.length > 3 && responsesBody.input.some(it => it && ((typeof it.output === 'string' && (it.output.length > 2000 || it.output.includes(';base64,'))) || (typeof it.content === 'string' && it.content.length > 5000))));
+    if (shouldPrune) {
+      try {
+        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody);
+        if (pruneRes && pruneRes.modified) {
+          responsesBody = pruneRes;
+        }
+      } catch (_) {}
+    }
   }
 
   const effectiveComp = {
@@ -2860,7 +2944,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
         if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
-        sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+        if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, responsesBody ? responsesBody.id : null, err, sessionId);
+        } else {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, `Upstream error: ${err.message}`);
+        }
       });
       upstreamRes.on('end', () => {
         if (clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
@@ -2945,7 +3033,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         finishRequest();
         clientRes.removeListener('close', clientCloseHandler);
         if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
-        sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+        if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, responsesBody ? responsesBody.id : null, errText || `Upstream returned status ${statusCode}`, sessionId);
+        } else {
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
+        }
       });
       return;
     }
@@ -3084,18 +3176,22 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
     if (!responded) {
       responded = true;
-      const errPayload = JSON.stringify({
-        error: {
-          message: `Anthropic proxy error: ${err.message}`,
-          type: 'router_anthropic_error',
-          code: 502
-        }
-      });
-      if (clientRes.headersSent) {
-        if (!clientRes.writableEnded) clientRes.end(errPayload);
+      if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+        codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, responsesBody ? responsesBody.id : null, err, sessionId);
       } else {
-        clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        clientRes.end(errPayload);
+        const errPayload = JSON.stringify({
+          error: {
+            message: `Anthropic proxy error: ${err.message}`,
+            type: 'router_anthropic_error',
+            code: 502
+          }
+        });
+        if (clientRes.headersSent) {
+          if (!clientRes.writableEnded) clientRes.end(errPayload);
+        } else {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          clientRes.end(errPayload);
+        }
       }
     }
   });
@@ -5928,7 +6024,7 @@ function renderDashboardHtml(config) {
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 0.95rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 6px;">
                   <span id="overview-chart-type-icon">📊</span>
-                  <span>实时节省趋势与时序分布</span>
+                  <span>消耗与节约分布趋势</span>
                 </span>
                 <span id="overview-chart-summary-badge" style="font-size: 0.72rem; color: #10b981; background: rgba(16,185,129,0.12); padding: 2px 7px; border-radius: 5px; border: 1px solid rgba(16,185,129,0.3);">
                   时序就绪
@@ -7004,6 +7100,14 @@ function renderDashboardHtml(config) {
           localStorage.setItem('opencode_router_last_tab', tabId);
         }
       } catch (e) {}
+
+      if ((tabId === 'compression' || tabId === 'overview') && typeof cachedTimeSeriesData !== 'undefined' && cachedTimeSeriesData && cachedTimeSeriesData.length > 0) {
+        setTimeout(function() {
+          if (typeof renderCompressionTimeSeriesChart === 'function') {
+            renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
+          }
+        }, 60);
+      }
     }
 
     function getHashTab() {
@@ -7536,7 +7640,14 @@ function renderDashboardHtml(config) {
       ['comp-chart-legends', 'overview-chart-legends'].forEach(legendsId => {
         const legendsEl = document.getElementById(legendsId);
         if (legendsEl) {
-          legendsEl.innerHTML = activeModels.map((m, idx) => {
+          const activeThemeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
+          const trackLegend = '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;margin-right:8px;padding-right:8px;border-right:1px solid #27272a;">' +
+            '<span style="display:inline-block;width:9px;height:9px;background:#64748b;border-radius:2px;"></span>' +
+            '<span style="color:#94a3b8;font-weight:500;">处理消耗</span>' +
+            '<span style="display:inline-block;width:9px;height:9px;background:' + activeThemeColor + ';border-radius:2px;margin-left:6px;"></span>' +
+            '<span style="color:' + activeThemeColor + ';font-weight:500;">压缩节约</span>' +
+            '</div>';
+          legendsEl.innerHTML = trackLegend + activeModels.map((m, idx) => {
             const color = getModelColor(m, idx);
             return '<div style="display:flex;align-items:center;gap:6px;font-size:0.75rem;">' +
               '<span style="display:inline-block;width:9px;height:9px;background:' + color + ';border-radius:2px;"></span>' +
@@ -7575,20 +7686,29 @@ function renderDashboardHtml(config) {
       const viewport = document.getElementById(cfg.viewportId);
       if (!viewport) return;
 
+      const themeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
+      const consumedColor = '#64748b';
+
       if (!Array.isArray(series) || series.length === 0) {
         viewport.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:0.85rem;">💤 暂无时序数据</div>';
         return;
       }
 
-      const getValue = (pt) => {
+      const getSavedVal = (pt) => {
         if (!pt) return 0;
         if (currentChartMetric === 'cost') return Number(pt.savedCostUSD || 0);
         if (currentChartMetric === 'chars') return Number(pt.savedChars || 0);
         return Number(pt.savedTokens || 0);
       };
 
-      const values = series.map(getValue);
-      const rawMax = Math.max(...values, 0);
+      const getConsumedVal = (pt) => {
+        if (!pt) return 0;
+        if (currentChartMetric === 'cost') return Number(pt.consumedCostUSD || 0);
+        if (currentChartMetric === 'chars') return Number(pt.consumedChars || pt.originalChars || (pt.savedChars ? Math.round(pt.savedChars * 1.5) : 0));
+        return Number(pt.consumedTokens || 0);
+      };
+
+      const rawMax = Math.max(...series.map(pt => Math.max(getSavedVal(pt), getConsumedVal(pt))), 0);
       const isAllZero = rawMax === 0;
 
       let maxVal = rawMax;
@@ -7598,7 +7718,8 @@ function renderDashboardHtml(config) {
         maxVal = maxVal * 1.15;
       }
 
-      const svgW = 800;
+      const viewportRect = viewport.getBoundingClientRect ? viewport.getBoundingClientRect() : null;
+      const svgW = Math.max(600, Math.round((viewportRect && viewportRect.width) || 800));
       const svgH = 200;
       const padL = currentChartMetric === 'cost' ? 68 : 55;
       const padR = 20;
@@ -7642,17 +7763,26 @@ function renderDashboardHtml(config) {
 
       if (currentChartMode === 'bar') {
         const slotW = chartW / n;
-        const barW = Math.max(4, Math.min(24, slotW * 0.6));
+        const barW = Math.max(3, Math.min(14, slotW * 0.36));
 
         series.forEach((pt, i) => {
-          const totalVal = getValue(pt);
+          const sVal = getSavedVal(pt);
+          const cVal = getConsumedVal(pt);
           const xCenter = padL + (i + 0.5) * slotW;
-          const barX = xCenter - barW / 2;
+          const cBarX = xCenter - barW - 1.5;
+          const sBarX = xCenter + 1.5;
 
-          if (totalVal > 0) {
-            const barH = Math.max(3, (totalVal / maxVal) * chartH);
-            const barY = xBaseY - barH;
+          // 1) Consumed Bar (处理消耗 - 灰蓝色)
+          if (cVal > 0) {
+            const cH = Math.max(2, (cVal / maxVal) * chartH);
+            const cY = xBaseY - cH;
+            contentSvg += '<rect class="chart-bar-rect chart-bar-consumed" data-index="' + i + '" x="' + cBarX + '" y="' + cY + '" width="' + barW + '" height="' + cH + '" fill="' + consumedColor + '" opacity="0.85" rx="2" />';
+          } else {
+            contentSvg += '<rect data-index="' + i + '" x="' + cBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
+          }
 
+          // 2) Saved Bar (压缩节约 - 主题色 / 分模型色)
+          if (sVal > 0) {
             const modelEntries = Object.entries(pt.byModel || {});
             if (modelEntries.length > 1) {
               let currentY = xBaseY;
@@ -7666,43 +7796,57 @@ function renderDashboardHtml(config) {
                   const segH = Math.max(1.5, (mVal / maxVal) * chartH);
                   const segY = currentY - segH;
                   const color = getModelColor(m, mIdx);
-                  contentSvg += '<rect class="chart-bar-rect" data-index="' + i + '" x="' + barX + '" y="' + segY + '" width="' + barW + '" height="' + segH + '" fill="' + color + '" rx="2" />';
+                  contentSvg += '<rect class="chart-bar-rect chart-bar-saved" data-index="' + i + '" x="' + sBarX + '" y="' + segY + '" width="' + barW + '" height="' + segH + '" fill="' + color + '" rx="2" />';
                   currentY = segY;
                 }
               });
             } else {
-              const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : MODEL_PALETTE['default'];
-              contentSvg += '<rect class="chart-bar-rect" data-index="' + i + '" x="' + barX + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="3" ry="3" />';
+              const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : themeColor;
+              const sH = Math.max(2, (sVal / maxVal) * chartH);
+              const sY = xBaseY - sH;
+              contentSvg += '<rect class="chart-bar-rect chart-bar-saved" data-index="' + i + '" x="' + sBarX + '" y="' + sY + '" width="' + barW + '" height="' + sH + '" fill="' + color + '" rx="2" ry="2" />';
             }
           } else {
-            contentSvg += '<rect data-index="' + i + '" x="' + barX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.6" rx="1" />';
+            contentSvg += '<rect data-index="' + i + '" x="' + sBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
           }
         });
       } else {
-        const points = series.map((pt, i) => {
-          const val = getValue(pt);
+        const savedPoints = series.map((pt, i) => {
+          const val = getSavedVal(pt);
           const x = padL + (i + 0.5) * (chartW / n);
           const y = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
           return { x, y, val };
         });
 
-        let pathD = 'M ' + points[0].x + ' ' + points[0].y;
-        for (let i = 0; i < points.length - 1; i++) {
-          const p0 = i > 0 ? points[i - 1] : points[i];
-          const p1 = points[i];
-          const p2 = points[i + 1];
-          const p3 = i < points.length - 2 ? points[i + 2] : p2;
+        const consumedPoints = series.map((pt, i) => {
+          const val = getConsumedVal(pt);
+          const x = padL + (i + 0.5) * (chartW / n);
+          const y = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
+          return { x, y, val };
+        });
 
-          const cp1x = p1.x + (p2.x - p0.x) / 6;
-          const cp1y = p1.y + (p2.y - p0.y) / 6;
-          const cp2x = p2.x - (p3.x - p1.x) / 6;
-          const cp2y = p2.y - (p3.y - p1.y) / 6;
+        const buildSmoothPath = (pts) => {
+          if (!pts || pts.length === 0) return '';
+          if (pts.length === 1) return 'M ' + (pts[0].x - 8) + ' ' + pts[0].y + ' L ' + (pts[0].x + 8) + ' ' + pts[0].y;
+          let pathD = 'M ' + pts[0].x + ' ' + pts[0].y;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = i > 0 ? pts[i - 1] : pts[i];
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const p3 = i < pts.length - 2 ? pts[i + 2] : p2;
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            const cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            const cp2y = p2.y - (p3.y - p1.y) / 6;
+            pathD += ' C ' + cp1x.toFixed(1) + ' ' + cp1y.toFixed(1) + ', ' + cp2x.toFixed(1) + ' ' + cp2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
+          }
+          return pathD;
+        };
 
-          pathD += ' C ' + cp1x.toFixed(1) + ' ' + cp1y.toFixed(1) + ', ' + cp2x.toFixed(1) + ' ' + cp2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
-        }
+        const consumedPathD = buildSmoothPath(consumedPoints);
+        const savedPathD = buildSmoothPath(savedPoints);
+        const savedAreaD = savedPathD + ' L ' + savedPoints[savedPoints.length - 1].x + ' ' + xBaseY + ' L ' + savedPoints[0].x + ' ' + xBaseY + ' Z';
 
-        const areaD = pathD + ' L ' + points[points.length - 1].x + ' ' + xBaseY + ' L ' + points[0].x + ' ' + xBaseY + ' Z';
-        const themeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
         const gradId = 'compAreaGrad_' + cfg.viewportId;
         contentSvg += '<defs>' +
           '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="0" y2="1">' +
@@ -7710,10 +7854,16 @@ function renderDashboardHtml(config) {
           '<stop offset="100%" stop-color="' + themeColor + '" stop-opacity="0.02"/>' +
           '</linearGradient>' +
           '</defs>' +
-          '<path d="' + areaD + '" fill="url(#' + gradId + ')" />' +
-          '<path d="' + pathD + '" fill="none" stroke="' + themeColor + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />';
+          '<path d="' + consumedPathD + '" fill="none" stroke="' + consumedColor + '" stroke-width="1.8" stroke-dasharray="4,3" stroke-linecap="round" stroke-linejoin="round" opacity="0.75" />' +
+          '<path d="' + savedAreaD + '" fill="url(#' + gradId + ')" />' +
+          '<path d="' + savedPathD + '" fill="none" stroke="' + themeColor + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />';
 
-        points.forEach((p, i) => {
+        consumedPoints.forEach(p => {
+          if (p.val > 0) {
+            contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="2.8" fill="' + consumedColor + '" stroke="#121215" stroke-width="1.5" />';
+          }
+        });
+        savedPoints.forEach(p => {
           if (p.val > 0) {
             contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="' + themeColor + '" stroke="#121215" stroke-width="1.8" />';
           }
@@ -7734,7 +7884,7 @@ function renderDashboardHtml(config) {
         '</g>' +
         '<rect id="' + cfg.overlayId + '" x="' + padL + '" y="' + padT + '" width="' + chartW + '" height="' + chartH + '" fill="transparent" style="cursor:crosshair;" />';
 
-      viewport.innerHTML = '<svg class="chart-svg-root" viewBox="0 0 ' + svgW + ' ' + svgH + '" preserveAspectRatio="none">' +
+      viewport.innerHTML = '<svg class="chart-svg-root" viewBox="0 0 ' + svgW + ' ' + svgH + '" style="width:100%;height:100%;display:block;">' +
         gridLinesSvg +
         xLabelsSvg +
         contentSvg +
@@ -7758,8 +7908,8 @@ function renderDashboardHtml(config) {
 
           const slotW = chartW / n;
           const xPos = padL + (idx + 0.5) * slotW;
-          const val = getValue(pt);
-          const yPos = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
+          const sVal = getSavedVal(pt);
+          const yPos = isAllZero ? xBaseY : (xBaseY - (sVal / maxVal) * chartH);
 
           crosshairGroup.style.display = 'block';
           if (crosshairLine) {
@@ -7788,28 +7938,61 @@ function renderDashboardHtml(config) {
           }
 
           const timeLabel = new Date(pt.time).toLocaleString('zh-CN', { hour12: false });
-          const tokenStr = Number(pt.savedTokens || 0).toLocaleString();
-          const costStr = Number(pt.savedCostUSD || 0).toFixed(6);
-          const charsStr = Number(pt.savedChars || 0).toLocaleString();
+          const sTokens = Number(pt.savedTokens || 0);
+          const cTokens = Number(pt.consumedTokens || 0);
+          const sCost = Number(pt.savedCostUSD || 0);
+          const cCost = Number(pt.consumedCostUSD || 0);
+          const sChars = Number(pt.savedChars || 0);
+          const origChars = Number(pt.originalChars || pt.consumedChars || (sChars + Math.round(cTokens * 3.8)));
 
-          tooltipEl.innerHTML = '<div style="font-weight:600;color:#f1f5f9;margin-bottom:4px;display:flex;align-items:center;gap:6px;">' +
+          const totalTokens = cTokens + sTokens;
+          const ratioStr = totalTokens > 0 ? ((sTokens / totalTokens) * 100).toFixed(1) + '%' : (sTokens > 0 ? '100%' : '0%');
+
+          tooltipEl.innerHTML = '<div style="font-weight:600;color:#f1f5f9;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
             '<span>⏱️ ' + escapeHtml(pt.label) + '</span>' +
             '<span style="font-size:0.68rem;color:#71717a;font-weight:normal;">(' + escapeHtml(timeLabel) + ')</span>' +
             '</div>' +
-            '<div style="color:#38bdf8;">🪙 节约: ~' + tokenStr + ' Tokens</div>' +
-            '<div style="color:#34d399;">💵 费用: ~$' + costStr + ' USD</div>' +
-            '<div style="color:#cbd5e1;">📝 字符: ' + charsStr + ' Chars</div>' +
+            '<div style="display:flex;flex-direction:column;gap:3px;font-size:0.74rem;">' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;color:#94a3b8;">' +
+            '<span>📉 实际处理消耗:</span>' +
+            '<span style="font-family:monospace;color:#cbd5e1;">~' + cTokens.toLocaleString() + ' T ($' + cCost.toFixed(5) + ')</span>' +
+            '</div>' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;color:#38bdf8;font-weight:500;">' +
+            '<span>⚡ 智能压缩节约:</span>' +
+            '<span style="font-family:monospace;color:#38bdf8;">~' + sTokens.toLocaleString() + ' T ($' + sCost.toFixed(5) + ')</span>' +
+            '</div>' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;color:#34d399;font-size:0.72rem;border-top:1px dashed #27272a;padding-top:3px;margin-top:2px;">' +
+            '<span>📈 动态节约率:</span>' +
+            '<span style="font-family:monospace;font-weight:600;color:#34d399;">' + ratioStr + '</span>' +
+            '</div>' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;color:#71717a;font-size:0.7rem;">' +
+            '<span>📝 处理字符数:</span>' +
+            '<span style="font-family:monospace;">~' + origChars.toLocaleString() + ' chars (节约 ' + sChars.toLocaleString() + ')</span>' +
+            '</div>' +
+            '</div>' +
             modelDetailsHtml;
 
           tooltipEl.style.display = 'block';
 
-          const card = viewport.closest('.comp-chart-card');
+          const card = (viewport.closest && viewport.closest('.comp-chart-card')) || viewport.parentElement;
           if (card) {
             const cardRect = card.getBoundingClientRect();
             const screenX = e.clientX - cardRect.left;
             const screenY = e.clientY - cardRect.top;
-            tooltipEl.style.left = Math.max(90, Math.min(cardRect.width - 90, screenX)) + 'px';
-            tooltipEl.style.top = Math.max(10, screenY - 14) + 'px';
+            const tooltipW = tooltipEl.offsetWidth || 220;
+            const tooltipH = tooltipEl.offsetHeight || 140;
+
+            // 自适应水平定位：默认右侧 +16px，若右侧溢出则翻转至左侧 -tooltipW - 16px，避免遮挡光标
+            let targetX = screenX + 16;
+            if (targetX + tooltipW > cardRect.width - 12) {
+              targetX = Math.max(10, screenX - tooltipW - 16);
+            }
+
+            // 自适应垂直定位：垂直居中偏上，限制在卡片安全可视区域内
+            let targetY = Math.max(10, Math.min(cardRect.height - tooltipH - 10, screenY - Math.round(tooltipH / 2)));
+
+            tooltipEl.style.left = targetX + 'px';
+            tooltipEl.style.top = targetY + 'px';
           }
         });
 
@@ -7819,6 +8002,17 @@ function renderDashboardHtml(config) {
         });
       }
     }
+
+    let compChartResizeTimer = null;
+    window.addEventListener('resize', function() {
+      if (compChartResizeTimer) clearTimeout(compChartResizeTimer);
+      compChartResizeTimer = setTimeout(function() {
+        if (cachedTimeSeriesData && cachedTimeSeriesData.length > 0) {
+          renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
+        }
+      }, 150);
+    });
+
 
     let currentCompRange = 'all';
 
@@ -11053,6 +11247,7 @@ $ghost
       payload.routerPort = payload.routerPort || config.port;
       updater.applyUpdates(payload.components || null, payload).then((results) => {
         loadConfig();
+
         syncAccountStats();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(results, null, 2));
@@ -11076,6 +11271,7 @@ $ghost
         }
         const results = updater.rollbackSnapshot(payload.snapshotId || null, payload);
         loadConfig();
+
         syncAccountStats();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(results, null, 2));
@@ -11101,6 +11297,209 @@ $ghost
     return;
   }
 
+
+  // Static Media Server for Generated Artifacts (Air-Gapped, No CORS / Protocol Issues for OpenChamber & Web)
+  if (reqUrl.pathname.startsWith('/artifacts/images/') && (req.method === 'GET' || req.method === 'HEAD')) {
+    const rawFilename = reqUrl.pathname.slice('/artifacts/images/'.length);
+    const safeFilename = path.basename(decodeURIComponent(rawFilename));
+    const targetFilePath = path.join(__dirname, 'artifacts', 'images', safeFilename);
+    const safeBaseDir = path.join(__dirname, 'artifacts', 'images');
+
+    // Strict boundary defense against path traversal attacks (Rule 5 & Air-Gapped Safety)
+    if (!targetFilePath.startsWith(safeBaseDir) || safeFilename.includes('..')) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Forbidden: Path traversal detected' }));
+      return;
+    }
+
+    if (!fs.existsSync(targetFilePath)) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Image not found' }));
+      return;
+    }
+
+    const ext = path.extname(safeFilename).toLowerCase();
+    const mimeTypes = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif'
+    };
+    const cType = mimeTypes[ext] || 'application/octet-stream';
+
+    const stat = fs.statSync(targetFilePath);
+    res.writeHead(200, {
+      'Content-Type': cType,
+      'Content-Length': stat.size,
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=86400, immutable'
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    fs.createReadStream(targetFilePath).pipe(res);
+    return;
+  }
+
+  // ComfyUI Status API (/balancer/api/comfyui/status)
+  if (reqUrl.pathname === '/balancer/api/comfyui/status' && req.method === 'GET') {
+    const force = reqUrl.query?.force === 'true' || reqUrl.query?.force === '1';
+    comfyuiAdapter.detectServer(force).then(status => {
+      const wfs = comfyuiAdapter.manifest || {};
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({
+        success: true,
+        status,
+        workflowsCount: Object.keys(wfs).length,
+        workflows: Object.entries(wfs).map(([id, meta]) => ({
+          id,
+          name: meta.name,
+          description: meta.description,
+          tags: meta.style_tags || []
+        }))
+      }));
+    }).catch(err => {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    });
+    return;
+  }
+
+  // Standard OpenAI Image Generation Endpoint (/v1/images/generations & /images/generations)
+  if ((reqUrl.pathname === '/v1/images/generations' || reqUrl.pathname === '/images/generations') && req.method === 'POST') {
+    readInternalBody(req, res).then(async buf => {
+      if (!buf) return;
+      let body = {};
+      try {
+        body = JSON.parse(buf.toString('utf8'));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON payload: ' + e.message, type: 'invalid_request_error' } }));
+        return;
+      }
+
+      const prompt = body.prompt;
+      if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: { message: 'Missing required parameter: prompt', type: 'invalid_request_error', param: 'prompt' } }));
+        return;
+      }
+
+      // Check ComfyUI server status
+      const snInfo = await comfyuiAdapter.detectServer();
+      if (!snInfo.isOnline) {
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          error: {
+            message: 'ComfyUI 图像生成外挂未就绪。请确认本地服务已启动 (8284/8188) 或在网关控制台配置远端服务器。',
+            type: 'comfyui_offline',
+            code: 'comfyui_not_connected'
+          }
+        }));
+        return;
+      }
+
+      try {
+        let reqWidth = undefined;
+        let reqHeight = undefined;
+        if (typeof body.size === 'string' && body.size.includes('x')) {
+          const parts = body.size.split('x').map(s => parseInt(s.trim(), 10));
+          if (!isNaN(parts[0]) && !isNaN(parts[1])) {
+            reqWidth = parts[0];
+            reqHeight = parts[1];
+          }
+        }
+
+        const genResult = await comfyuiAdapter.executeGeneration({
+          prompt: prompt.trim(),
+          workflow: body.model || body.workflow || 'auto',
+          negative: body.negative,
+          width: reqWidth,
+          height: reqHeight,
+          seed: body.seed
+        });
+
+        const host = req.headers.host || ("127.0.0.1:" + config.port);
+        const imageUrl = "http://" + host + genResult.url;
+        const responseFormat = body.response_format || 'url';
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({
+          created: Math.floor(Date.now() / 1000),
+          data: [
+            responseFormat === 'b64_json'
+              ? { b64_json: genResult.base64, revised_prompt: genResult.prompt }
+              : { url: imageUrl, revised_prompt: genResult.prompt }
+          ],
+          workflow: {
+            name: genResult.workflowName,
+            id: genResult.workflowId,
+            seed: genResult.seed,
+            durationMs: genResult.durationMs
+          }
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          error: {
+            message: "生图执行失败: " + err.message,
+            type: 'comfyui_execution_error'
+          }
+        }));
+      }
+    });
+    return;
+  }
+
+  // Image Interrogation Endpoint (/v1/images/interrogate & /images/interrogate)
+  if ((reqUrl.pathname === '/v1/images/interrogate' || reqUrl.pathname === '/images/interrogate') && req.method === 'POST') {
+    readInternalBody(req, res).then(async buf => {
+      if (!buf) return;
+      let body = {};
+      try {
+        body = JSON.parse(buf.toString('utf8'));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON payload: ' + e.message, type: 'invalid_request_error' } }));
+        return;
+      }
+
+      const imageInput = body.image || body.image_path;
+      if (!imageInput) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ error: { message: 'Missing required parameter: image or image_path', type: 'invalid_request_error' } }));
+        return;
+      }
+
+      try {
+        const fallbackVision = async (imgBuf) => {
+          return '1girl, masterpiece, photorealistic, natural lighting, high quality';
+        };
+
+        const result = await comfyuiAdapter.interrogateImage(imageInput, fallbackVision);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: true,
+          tags: result.tags,
+          source: result.source
+        }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          error: {
+            message: "反推失败: " + err.message,
+            type: 'interrogation_error'
+          }
+        }));
+      }
+    });
+    return;
+  }
 
   // Web UI Dashboard & Graphical Config Center
   if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {

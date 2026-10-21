@@ -31,3 +31,4 @@ run_nas_tests.py
 compression-stats.json
 compression-history.json
 .agents/
+artifacts/
