@@ -35,6 +35,9 @@ async function runTests() {
     try { fs.copyFileSync(prodHistPath, userRuntimeHistBak); } catch (_) {}
   }
 
+    // Allow isolated stats disk persistence testing within test_router.js (backed up above and restored in teardown)
+  process.env.ALLOW_PROD_STATS_IN_TEST = '1';
+
   const mockPort = await getFreePort();
   const routerPort = await getFreePort();
   console.log(`✓ Allocated dynamic test ports: MockUpstream=${mockPort}, Router=${routerPort}`);

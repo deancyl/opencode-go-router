@@ -10600,11 +10600,14 @@ function renderDashboardHtml(config) {
         const res = await fetch('/balancer/api/repair', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targets: ['codex_locale'] })
+          body: JSON.stringify({ scope: 'codex' })
         });
         const d = await res.json();
         if (d.success) {
           showToast('已成功为 Codex Desktop 注册 ComfyUI 图像智能体 (mcp-comfyui.js)！', 'success');
+          if (confirm('🎉 已成功为 OpenAI Codex 注册 ComfyUI 图像智能体！\\n\\n是否立即平滑重启 Codex 客户端以立即加载最新生图与反推工具？')) {
+            restartCodexClient();
+          }
         } else {
           showToast('注册 MCP 失败: ' + (d.error || '未知错误'), 'error');
         }

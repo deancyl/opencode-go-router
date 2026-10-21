@@ -1242,7 +1242,7 @@ function pruneResponsesPayload(body, sessionId = null) {
     return res;
   }
 
-  const effectiveSessionId = sessionId || (body && (body.session_id || body.sessionId || body.conversation_id || (body.metadata && body.metadata.session_id))) || null;
+  const effectiveSessionId = sessionId || (typeof extractOrDeriveSessionId === 'function' ? extractOrDeriveSessionId(null, body) : null) || (body && (body.session_id || body.sessionId || body.conversation_id || (body.metadata && body.metadata.session_id))) || null;
 
   let modified = false;
   // Shallow copy top-level payload object without full JSON deep copy
@@ -1251,6 +1251,13 @@ function pruneResponsesPayload(body, sessionId = null) {
   if (Array.isArray(body.input)) {
     let input = body.input.slice();
     const totalItems = input.length;
+
+    const isUserItem = (it) => {
+      if (!it || typeof it !== 'object') return false;
+      if (it.role === 'user') return true;
+      if (it.type === 'message' && (!it.role || it.role === 'user')) return true;
+      return false;
+    };
 
     // 0. Historical Image Base64 Pruning (Rule 5 & Rule 33)
     // In long sessions with frequent view_image / PDF inspections, Base64 image payload can exceed 15MB (80%+ of tokens).
@@ -1379,7 +1386,8 @@ function pruneResponsesPayload(body, sessionId = null) {
           const newOutput = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
           input[i] = { ...item, output: newOutput };
           modified = true;
-          const toolDedupeKey = (effectiveSessionId ? `${effectiveSessionId}:` : '') + `tool:${item.call_id || i}`;
+          const toolId = item.call_id || item.tool_call_id || item.id || (typeof outStr === 'string' ? require('crypto').createHash('md5').update(outStr.slice(0, 200)).digest('hex') : i);
+          const toolDedupeKey = (effectiveSessionId ? `${effectiveSessionId}:` : '') + `tool:${toolId}`;
           if (!prunedFingerprints.has(toolDedupeKey)) {
             prunedFingerprints.add(toolDedupeKey);
             trimPrunedFingerprintsIfNeeded();
@@ -1395,17 +1403,24 @@ function pruneResponsesPayload(body, sessionId = null) {
       }
 
       const curItem = input[i];
-      if (curItem && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
+      const isCurUser = isUserItem(curItem);
+      if (curItem && !isCurUser && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
         const head = curItem.content.slice(0, 1500);
         const tail = curItem.content.slice(-1500);
         const folded = curItem.content.length - 3000;
         const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
         input[i] = { ...curItem, content: newContent };
         modified = true;
-        try {
-          const contextCompactor = require('./context-compactor');
-          contextCompactor.recordSavings('headroom', folded, curItem.content.length, (body && body.model) || null);
-        } catch (_) {}
+        const contentId = curItem.id || curItem.call_id || (typeof curItem.content === 'string' ? require('crypto').createHash('md5').update(curItem.content.slice(0, 200)).digest('hex') : i);
+        const contentDedupeKey = (effectiveSessionId ? `${effectiveSessionId}:` : '') + `content:${contentId}`;
+        if (!prunedFingerprints.has(contentDedupeKey)) {
+          prunedFingerprints.add(contentDedupeKey);
+          trimPrunedFingerprintsIfNeeded();
+          try {
+            const contextCompactor = require('./context-compactor');
+            contextCompactor.recordSavings('headroom', folded, curItem.content.length, (body && body.model) || null);
+          } catch (_) {}
+        }
       }
     }
 
@@ -1434,16 +1449,8 @@ function pruneResponsesPayload(body, sessionId = null) {
       const tailItems = input.slice(tailStartIndex);
       const middleItems = input.slice(headItems.length, tailStartIndex);
 
-      const isUserItem = (it) => {
-        if (!it || typeof it !== 'object') return false;
-        if (it.role === 'user') return true;
-        if (it.type === 'message' && (!it.role || it.role === 'user')) return true;
-        return false;
-      };
-
       const middleUserItems = middleItems.filter(isUserItem);
-      let droppedCount = middleItems.length - middleUserItems.length;
-      let keptMiddleUsers = middleUserItems;
+      const droppedCount = middleItems.length - middleUserItems.length;
 
       if (droppedCount > 0) {
         // Intermediate assistant/tool interactions exist: drop them and 100% preserve all user instructions
@@ -1452,20 +1459,7 @@ function pruneResponsesPayload(body, sessionId = null) {
           role: 'system',
           content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
-        input = [...headItems, notice, ...keptMiddleUsers, ...tailItems];
-        modified = true;
-      } else {
-        // Boundary case: Middle items contain only user messages (0 assistant/tool turns).
-        // Enforce compaction by folding oldest middle user items while preserving newest
-        const maxUsersToKeep = Math.max(0, middleItems.length - 2);
-        droppedCount = middleItems.length - maxUsersToKeep;
-        keptMiddleUsers = middleUserItems.slice(-maxUsersToKeep);
-        const notice = {
-          type: 'message',
-          role: 'system',
-          content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
-        };
-        input = [...headItems, notice, ...keptMiddleUsers, ...tailItems];
+        input = [...headItems, notice, ...middleUserItems, ...tailItems];
         modified = true;
       }
     }
@@ -1510,13 +1504,18 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
     const isTool = msg.role === 'tool';
     const isOversized = typeof msg.content === 'string' && msg.content.length > 2500;
     if (isOversized && (isTool || i < result.length - 1)) {
+      if (msg.role === 'user') {
+        // 100% user instruction exemption: do not fold user messages!
+        continue;
+      }
       const head = msg.content.slice(0, 800);
       const tail = msg.content.slice(-800);
       const folded = msg.content.length - 1600;
       const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
       result[i] = { ...msg, content: newContent };
       modified = true;
-      const chatToolKey = (sessionId ? `${sessionId}:` : '') + `chat_tool:${msg.tool_call_id || i}`;
+      const chatToolId = msg.tool_call_id || msg.id || (typeof msg.content === 'string' ? require('crypto').createHash('md5').update(msg.content.slice(0, 200)).digest('hex') : i);
+      const chatToolKey = (sessionId ? `${sessionId}:` : '') + `chat_tool:${chatToolId}`;
       if (!prunedFingerprints.has(chatToolKey)) {
         prunedFingerprints.add(chatToolKey);
         trimPrunedFingerprintsIfNeeded();
@@ -1529,34 +1528,26 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
   }
 
   if (result.length > 18) {
-    const sysMsgs = result.filter((m, idx) => idx === 0 || m.role === 'system');
-    const nonSys = result.filter((m, idx) => idx !== 0 && m.role !== 'system');
-    const firstUser = nonSys[0];
-    const tailStartIndex = Math.max(1, nonSys.length - 12);
+    const sysMsgs = result.filter(m => m && (m.role === 'system' || m.role === 'developer'));
+    const nonSys = result.filter(m => !m || (m.role !== 'system' && m.role !== 'developer'));
+    const firstUser = nonSys.length > 0 ? nonSys[0] : null;
+    let tailStartIndex = Math.max(1, nonSys.length - 12);
+    while (tailStartIndex < nonSys.length - 2 && nonSys[tailStartIndex]?.role === 'tool') {
+      tailStartIndex++;
+    }
     const recentMsgs = nonSys.slice(tailStartIndex);
     const middleNonSys = nonSys.slice(1, tailStartIndex);
 
     // User instruction exemption: 100% preserve all user messages in the middle
-    const middleUserMsgs = middleNonSys.filter(m => m.role === 'user');
-    let middleDropped = middleNonSys.length - middleUserMsgs.length;
-    let keptMiddleUsers = middleUserMsgs;
+    const middleUserMsgs = middleNonSys.filter(m => m && m.role === 'user');
+    const middleDropped = middleNonSys.length - middleUserMsgs.length;
 
     if (middleDropped > 0) {
       const notice = {
         role: 'system',
         content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
       };
-      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...keptMiddleUsers, ...recentMsgs];
-      modified = true;
-    } else {
-      const maxUsersToKeep = Math.max(0, middleNonSys.length - 2);
-      middleDropped = middleNonSys.length - maxUsersToKeep;
-      keptMiddleUsers = middleUserMsgs.slice(-maxUsersToKeep);
-      const notice = {
-        role: 'system',
-        content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
-      };
-      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...keptMiddleUsers, ...recentMsgs];
+      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...middleUserMsgs, ...recentMsgs];
       modified = true;
     }
   }
@@ -5945,9 +5936,15 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       }
 
       // Ensure ComfyUI MCP Server is registered for Codex Desktop
+      const nodeExe = (process.execPath || 'C:\\Program Files\\nodejs\\node.exe').replace(/\\/g, '\\\\');
       const mcpScript = path.join(__dirname, 'mcp-comfyui.js').replace(/\\/g, '\\\\');
       if (!raw.includes('[mcp_servers.comfyui]')) {
-        raw += `\n[mcp_servers.comfyui]\ncommand = "node"\nargs = ["${mcpScript}"]\n`;
+        const mcpBlock = `\n[mcp_servers.comfyui]\ncommand = "${nodeExe}"\nargs = ["${mcpScript}"]\nstartup_timeout_sec = 60\n`;
+        if (raw.includes('[mcp_servers]')) {
+          raw = raw.replace('[mcp_servers]', '[mcp_servers]' + mcpBlock);
+        } else {
+          raw += `\n[mcp_servers]` + mcpBlock;
+        }
         changed = true;
         messages.push('已为 Codex Desktop 自动注册 ComfyUI 图像智能体 (mcp-comfyui.js)');
       }
@@ -6029,14 +6026,15 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       '1. 无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n' +
       '2. 严禁计划中途早熟停机：若在回复中制定了多步骤任务规划（例如 Step 1/N 到 Step N/N），必须严格自主推进并执行完毕，严禁中途（如 Step 2/N）无故停机交还控制权。\n' +
       '3. 遇到执行报错或脚本异常时，必须自主分析错误原因并调用工具尝试替代方案解决，严禁输出半截话、未闭合括号或未闭合反引号直接终止。\n' +
-      '4. 回复必须保持语法结构与代码块完整闭合。\n';
+      '4. 回复必须保持语法结构与代码块完整闭合。\n' +
+      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（generate_image 与 interrogate_image）。必须优先调用 generate_image 工具生成真实图片，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
 
     if (fs.existsSync(catalogPath)) {
       const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
       let modified = false;
       if (Array.isArray(cat.models)) {
         cat.models.forEach(m => {
-          if (!m.base_instructions || !m.base_instructions.includes('严禁计划中途早熟停机')) {
+          if (!m.base_instructions || !m.base_instructions.includes('视觉图像与设计生成规范')) {
             m.base_instructions = (m.base_instructions || '').replace(/\n\n# 语言规范[\s\S]*$/, '') + chineseNotice;
             modified = true;
           }
@@ -6053,7 +6051,7 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       let modified = false;
       if (Array.isArray(mData.models)) {
         mData.models.forEach(m => {
-          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('严禁计划中途早熟停机'))) {
+          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('视觉图像与设计生成规范'))) {
             m.base_instructions = (m.base_instructions || '').replace(/\n\n# 语言规范[\s\S]*$/, '') + chineseNotice;
             modified = true;
           }

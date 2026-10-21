@@ -167,7 +167,6 @@ async function handleToolCall(name, args = {}) {
 // Stdio JSON-RPC Listener
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout,
   terminal: false
 });
 
