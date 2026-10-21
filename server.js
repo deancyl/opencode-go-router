@@ -208,6 +208,9 @@ function loadConfig() {
 }
 loadConfig();
 const comfyuiAdapter = new ComfyUIAdapter({ rootDir: __dirname, config });
+if (typeof codexAdapter !== 'undefined' && codexAdapter && typeof codexAdapter.setComfyUIAdapter === 'function') {
+  codexAdapter.setComfyUIAdapter(comfyuiAdapter);
+}
 
 /**
  * Zero-dependency native HTTP CONNECT tunnel forward proxy agent for Node.js 18+
@@ -2635,7 +2638,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
       codexAdapter.bridgeResponsesStream(upstreamRes, clientRes, reqModel, responsesBody.id, () => {
         finishRequest();
-      }, sessionId, reconnectFn);
+      }, sessionId, reconnectFn, comfyuiAdapter);
       upstreamRes.on('error', (err) => {
         console.error('[Bridge Stream Error]', err.message);
         finishRequest();

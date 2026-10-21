@@ -4280,7 +4280,7 @@ function compactText(text, options = {}, sessionId = null) {
     // ensure we don't return an empty string that could cause upstream 400 (e.g. Anthropic empty content block)
     // or trigger empty SSE stream aborts.
     if (result.trim().length === 0 && text.trim().length > 0) {
-      result = '[Terminal output cleaned: contained only ANSI control sequences / progress bars]';
+      result = '[Empty terminal output]';
     }
 
     // 100% Anti-Inflation Circuit Breaker (坚决不反向膨胀)
@@ -4293,7 +4293,7 @@ function compactText(text, options = {}, sessionId = null) {
                           result.includes('[Git:') ||
                           result.includes('[Build/Pkg:') ||
                           result.includes('[llmtrim Log Dedup:') ||
-                          result.includes('[Terminal output cleaned:');
+                          result.includes('[Empty terminal output]') || result.includes('[Terminal output cleaned:');
     if (result.length >= text.length && !hasFoldMarker) {
       result = text;
     }

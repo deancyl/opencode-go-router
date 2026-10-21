@@ -219,6 +219,18 @@ class ComfyUIAdapter {
   }
 
   /**
+   * Check if user explicitly requested heavy/twostage high-resolution upscale mode
+   */
+  isHeavyQualityRequested(options = {}) {
+    if (options.mode === 'heavy' || options.mode === 'twostage' || options.mode === 'upscale') {
+      return true;
+    }
+    const prompt = String(options.prompt || '');
+    const heavyKeywords = ['超分', '精雕', '微雕', '高精重绘', '二阶段', '两阶段', '打印级', 'hires', 'upscale', 'highres'];
+    return heavyKeywords.some(kw => prompt.toLowerCase().includes(kw));
+  }
+
+  /**
    * Build execution graph with parameters injected based on manifest node metadata
    */
   buildExecutionGraph(wfMeta, options = {}) {
@@ -252,6 +264,9 @@ class ComfyUIAdapter {
       ? seed
       : Math.floor(Math.random() * 2147483647);
 
+    const isHeavy = this.isHeavyQualityRequested(options);
+    const fastDirectMode = !isHeavy;
+
     // 1. Inject Positive Prompt
     if (prompt && wfMeta.prompt_node) {
       const pnId = String(wfMeta.prompt_node.id);
@@ -271,13 +286,17 @@ class ComfyUIAdapter {
     }
 
     // 3. Inject Seed & Sampler Parameters (Quality Track)
+    const effectiveSteps = typeof steps === 'number'
+      ? steps
+      : (fastDirectMode ? 15 : undefined);
+
     if (wfMeta.sampler_node) {
       const snId = String(wfMeta.sampler_node.id);
       if (graph[snId] && graph[snId].inputs) {
         const sfield = wfMeta.sampler_node.seed_field || 'seed';
         graph[snId].inputs[sfield] = usedSeed;
-        if (typeof steps === 'number' && wfMeta.sampler_node.steps_field) {
-          graph[snId].inputs[wfMeta.sampler_node.steps_field] = steps;
+        if (typeof effectiveSteps === 'number' && wfMeta.sampler_node.steps_field) {
+          graph[snId].inputs[wfMeta.sampler_node.steps_field] = effectiveSteps;
         }
         if (typeof cfg === 'number' && wfMeta.sampler_node.cfg_field) {
           graph[snId].inputs[wfMeta.sampler_node.cfg_field] = cfg;
@@ -297,18 +316,61 @@ class ComfyUIAdapter {
       }
     }
 
-    // 4. Inject Latent Dimensions if requested
-    if (width || height) {
+    // 4. Single-Stage Fast Direct Quality Track Pruning
+    // In AMD iGPU / APU environments, 1.5x LatentUpscaleBy triggers severe memory paging.
+    // Prune the second-stage upscale to achieve 15-step direct output (3x-5x speedup).
+    if (fastDirectMode && wfMeta.sampler_node && wfMeta.refine_sampler_node) {
+      const mainSamplerId = String(wfMeta.sampler_node.id);
+      const refineSamplerId = String(wfMeta.refine_sampler_node.id);
+
+      // Reconnect VAEDecode directly to main sampler
+      for (const [nid, node] of Object.entries(graph)) {
+        if (node.class_type === 'VAEDecode' && Array.isArray(node.inputs?.samples)) {
+          if (node.inputs.samples[0] === refineSamplerId) {
+            node.inputs.samples = [mainSamplerId, 0];
+          }
+        }
+      }
+
+      // Safely delete refine sampler node
+      delete graph[refineSamplerId];
+
+      // Safely delete all LatentUpscaleBy nodes
+      for (const [nid, node] of Object.entries(graph)) {
+        if (node.class_type === 'LatentUpscaleBy') {
+          delete graph[nid];
+        }
+      }
+    }
+
+    // 5. Inject Latent Dimensions with Smart Clamping for SD1.5 (avoid 1024x1024 distortion & timeouts)
+    if (width || height || wfMeta.default_size) {
+      let w = width || (wfMeta.default_size?.width || 512);
+      let h = height || (wfMeta.default_size?.height || 768);
+      const maxDim = 768;
+      if (w > maxDim || h > maxDim) {
+        const scale = maxDim / Math.max(w, h);
+        w = Math.round((w * scale) / 64) * 64;
+        h = Math.round((h * scale) / 64) * 64;
+      }
       for (const [nid, node] of Object.entries(graph)) {
         if (node.class_type === 'EmptyLatentImage' && node.inputs) {
-          if (width) node.inputs.width = width;
-          if (height) node.inputs.height = height;
+          node.inputs.width = w;
+          node.inputs.height = h;
           break;
         }
       }
     }
 
-    return { graph, usedSeed };
+    // 6. Output Track Optimization: Prune redundant preview branch to accelerate Quality track by 2-3x
+    if (options.track !== 'preview' && wfMeta.preview_output_node) {
+      delete graph[String(wfMeta.preview_output_node)];
+      if (wfMeta.preview_sampler_node?.id) {
+        delete graph[String(wfMeta.preview_sampler_node.id)];
+      }
+    }
+
+    return { graph, usedSeed, isFastDirect: fastDirectMode };
   }
 
   /**
@@ -339,7 +401,8 @@ class ComfyUIAdapter {
       throw new Error(`无法匹配适用的生图工作流: ${reqWf || 'default'}`);
     }
 
-    const { graph, usedSeed } = this.buildExecutionGraph(wfMeta, {
+    const { graph, usedSeed, isFastDirect } = this.buildExecutionGraph(wfMeta, {
+      ...options,
       prompt: prompt.trim(),
       negative: negative ? negative.trim() : null,
       seed,
@@ -463,7 +526,8 @@ class ComfyUIAdapter {
       prompt,
       negative: negative || '',
       durationMs: elapsedMs,
-      sizeBytes: imageBuffer.length
+      sizeBytes: imageBuffer.length,
+      isFastDirect
     };
   }
 

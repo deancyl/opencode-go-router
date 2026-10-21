@@ -13,6 +13,7 @@
  * 8. Base64 Air-Gapped Sandbox Sanitization & Deep Tool Parameter Schema Normalization (Rules 5 & 13)
  */
 
+const { EventEmitter } = require('node:events');
 const http = require('node:http');
 const net = require('node:net');
 const assert = require('node:assert');
@@ -336,6 +337,128 @@ async function runTier5AdversarialSuite() {
     };
     const convertedAnthropic = codexAdapter.convertAnthropicResponseToResponses(mockAnthropicResp, 'claude-haiku-5-5', 'resp_2');
     assert.strictEqual(convertedAnthropic.output[0].name, 'mcp__comfyui__generate_image', 'image_gen shimmed to mcp__comfyui__generate_image');
+  });
+
+  await test('1.13 ComfyUI Gateway Transparent Interception: tool_calls intercepted and rendered into Markdown', async () => {
+    const mockComfyAdapter = {
+      executeGeneration: async (opts) => {
+        return {
+          success: true,
+          filename: "test_apple_001.png",
+          localPath: "C:\\Users\\deanc\\.opencode-go-router\\artifacts\\images\\test_apple_001.png",
+          workflowName: "01_真人写实_极致NanoBanana",
+          durationMs: 1200,
+          seed: 99999
+        };
+      }
+    };
+
+    const upstreamStream = new EventEmitter();
+    const events = [];
+    const clientRes = new EventEmitter();
+    clientRes.headersSent = false;
+    clientRes.writableEnded = false;
+    clientRes.destroyed = false;
+    clientRes.writeHead = () => {};
+    clientRes.write = (chunk) => {
+      const lines = chunk.toString().split("\n");
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try { events.push(JSON.parse(line.slice(6))); } catch (_) {}
+        }
+      }
+    };
+    clientRes.end = () => { clientRes.writableEnded = true; };
+
+    let finished = false;
+    codexAdapter.bridgeResponsesStream(
+      upstreamStream,
+      clientRes,
+      "deepseek-v4.1-flash",
+      "resp_test_comfy_t5",
+      () => { finished = true; },
+      "session-t5",
+      null,
+      mockComfyAdapter
+    );
+
+    upstreamStream.emit("data", "data: " + JSON.stringify({
+      choices: [{ delta: { content: "好的，绘制红苹果：" } }]
+    }) + "\n\n");
+
+    upstreamStream.emit("data", "data: " + JSON.stringify({
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: "call_img_t5",
+            function: { name: "generate_image", arguments: "{\"prompt\": \"A fresh red apple\"}" }
+          }]
+        }
+      }]
+    }) + "\n\n");
+
+    upstreamStream.emit("end");
+
+    await new Promise(r => setTimeout(r, 60));
+
+    // Assertions
+    const functionCallAdded = events.find(e => e.type === "response.output_item.added" && e.item?.type === "function_call");
+    assert.strictEqual(functionCallAdded, undefined, "CRITICAL: function_call must NOT be sent to client!");
+
+    const textDeltas = events.filter(e => e.type === "response.output_text.delta").map(e => e.delta);
+    const fullTextResult = textDeltas.join("");
+    assert.strictEqual(fullTextResult.includes("ComfyUI 图像智能体"), true, "Must include ComfyUI notice");
+    assert.strictEqual(fullTextResult.includes("test_apple_001.png"), true, "Must include generated image markdown");
+
+    const completedEvent = events.find(e => e.type === "response.completed");
+    assert.notStrictEqual(completedEvent, undefined, "Must send response.completed");
+    assert.strictEqual(completedEvent.response.status, "completed");
+    assert.strictEqual(finished, true, "onFinished must be called");
+  });
+
+  await test('1.14 ComfyUI Single-Stage Fast Direct Quality Pruning & Heavy Fallback', () => {
+    const { ComfyUIAdapter } = require('./comfyui-adapter.js');
+    const adapter = new ComfyUIAdapter({
+      workflowsDir: 'C:\\Users\\deanc\\.gemini\\antigravity\\scratch\\comfyui-agent-workflows'
+    });
+    const wfMeta = adapter.resolveWorkflow('01');
+    assert.ok(wfMeta, 'Workflow 01 must exist');
+
+    // Case 1: Fast Direct Track (Default)
+    const fastRes = adapter.buildExecutionGraph(wfMeta, {
+      prompt: 'a red apple on table'
+    });
+    assert.strictEqual(fastRes.isFastDirect, true, 'Default must be fast direct mode');
+    const fastGraph = fastRes.graph;
+    assert.strictEqual(fastGraph[String(wfMeta.refine_sampler_node.id)], undefined, 'Refine sampler must be pruned');
+    assert.strictEqual(Object.values(fastGraph).some(n => n.class_type === 'LatentUpscaleBy'), false, 'LatentUpscaleBy must be pruned');
+    // Check VAEDecode connected to main sampler
+    const vaeNode = Object.values(fastGraph).find(n => n.class_type === 'VAEDecode');
+    assert.ok(vaeNode, 'VAEDecode node must exist');
+    assert.strictEqual(vaeNode.inputs.samples[0], String(wfMeta.sampler_node.id), 'VAEDecode must connect to main sampler');
+    assert.strictEqual(fastGraph[String(wfMeta.sampler_node.id)].inputs.steps, 15, 'Fast direct steps must default to 15');
+
+    // Case 2: Explicit Heavy / Upscale Track
+    const heavyRes = adapter.buildExecutionGraph(wfMeta, {
+      prompt: 'a red apple on table, 8k uhd, 打印级超分精雕',
+      mode: 'heavy'
+    });
+    assert.strictEqual(heavyRes.isFastDirect, false, 'Heavy mode must disable fast direct');
+    const heavyGraph = heavyRes.graph;
+    assert.ok(heavyGraph[String(wfMeta.refine_sampler_node.id)], 'Refine sampler must be preserved');
+    assert.ok(Object.values(heavyGraph).some(n => n.class_type === 'LatentUpscaleBy'), 'LatentUpscaleBy must be preserved');
+
+    // Case 3: Clamping 1024x1024 to 768 max dimension
+    const clampedRes = adapter.buildExecutionGraph(wfMeta, {
+      prompt: 'test',
+      width: 1024,
+      height: 1024
+    });
+    const emptyLatent = Object.values(clampedRes.graph).find(n => n.class_type === 'EmptyLatentImage');
+    assert.ok(emptyLatent, 'EmptyLatentImage must exist');
+    assert.ok(emptyLatent.inputs.width <= 768, 'Width must be clamped to <= 768');
+    assert.ok(emptyLatent.inputs.height <= 768, 'Height must be clamped to <= 768');
   });
 
   // -------------------------------------------------------------
