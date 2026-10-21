@@ -37,6 +37,9 @@ namespace OpenCodeRouter
         public static extern bool BringWindowToTop(IntPtr hWnd);
 
         [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll")]
@@ -115,6 +118,7 @@ namespace OpenCodeRouter
         {
             try
             {
+                SetProcessDPIAware();
                 AllowSetForegroundWindow(ASFW_ANY);
                 WM_SHOW_OPENCODE_ROUTER_V35 = RegisterWindowMessage(WM_SHOW_OPENCODE_ROUTER_V35_MSG);
                 if (WM_SHOW_OPENCODE_ROUTER_V35 != 0)

@@ -70,6 +70,8 @@ $filesToCopy = @(
     "server.js",
     "context-compactor.js",
     "codex-adapter.js",
+    "comfyui-adapter.js",
+    "mcp-comfyui.js",
     "updater.js",
     "powershell-optimizer.js",
     "package.json",
@@ -81,6 +83,7 @@ $filesToCopy = @(
     "launch-gui.vbs",
     "OpenCodeRouterApp.exe",
     "OpenCodeRouterTray.exe",
+    "OpenCodeWizard.exe",
     "doctor-repair.ps1",
     "patch-openchamber-office.ps1"
 )

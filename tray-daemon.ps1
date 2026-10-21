@@ -123,7 +123,19 @@ $mutexName = "Local\OpenCodeRouterTrayPSMutex_v2"
 $createdNew = $false
 $mutex = $null
 try {
-    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
+    # 检查 C# 托盘主程序是否已占有互斥体
+    $csMutexExists = $false
+    try {
+        $dummy = [System.Threading.Mutex]::OpenExisting("Local\OpenCodeRouterTrayMutex_v2")
+        $dummy.Close()
+        $csMutexExists = $true
+    } catch { }
+
+    if ($csMutexExists) {
+        $createdNew = $false
+    } else {
+        $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
+    }
 } catch {
     $createdNew = $true
 }
@@ -219,6 +231,7 @@ function Restart-RouterService {
     try {
         $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
         if ($conn) {
+            & taskkill.exe /PID $conn.OwningProcess /T /F 2>$null
             $p = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
             if ($p -and $p.ProcessName -like "*node*") {
                 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
@@ -226,6 +239,7 @@ function Restart-RouterService {
         }
         Start-Sleep -Milliseconds 500
         Ensure-RouterRunning
+        Update-TrayStatus $true
         $notifyIcon.ShowBalloonTip(2000, "路由服务已重启", "✔ 4010 智能网关已完成平滑重载！", [System.Windows.Forms.ToolTipIcon]::Info)
     } catch {
         $notifyIcon.ShowBalloonTip(2000, "重启失败", $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
@@ -272,9 +286,22 @@ function Exit-TrayApp {
             $global:notifyIcon.Visible = $false
             $global:notifyIcon.Dispose()
         }
+        if ($global:cachedNormalIcon -and $global:cachedNormalIcon -ne [System.Drawing.SystemIcons]::Application) {
+            $global:cachedNormalIcon.Dispose()
+        }
+        if ($global:cachedGreenIcon -and $global:cachedGreenIcon -ne [System.Drawing.SystemIcons]::Application -and $global:cachedGreenIcon -ne $global:cachedNormalIcon) {
+            $global:cachedGreenIcon.Dispose()
+        }
         if ($mutex) {
             $mutex.ReleaseMutex()
             $mutex.Dispose()
+        }
+    } catch { }
+    try {
+        # 退出托盘时彻底清理 4010 关联的子进程树
+        $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        if ($conn) {
+            & taskkill.exe /PID $conn.OwningProcess /T /F 2>$null
         }
     } catch { }
     if ($hiddenForm) {
@@ -284,23 +311,43 @@ function Exit-TrayApp {
     exit 0
 }
 
-# --- 初始化 NotifyIcon ---
+# --- 初始化 NotifyIcon 与图标缓存 ---
 Ensure-RouterRunning
+
+$normalIcoPath = Join-Path $rootDir "assets\router.ico"
+$greenIcoPath = Join-Path $rootDir "assets\router_green.ico"
+$global:cachedNormalIcon = $null
+$global:cachedGreenIcon = $null
+
+if (Test-Path $normalIcoPath) {
+    try { $global:cachedNormalIcon = New-Object System.Drawing.Icon($normalIcoPath) } catch { }
+}
+if (Test-Path $greenIcoPath) {
+    try { $global:cachedGreenIcon = New-Object System.Drawing.Icon($greenIcoPath) } catch { }
+}
+if (-not $global:cachedNormalIcon -and $global:cachedGreenIcon) { $global:cachedNormalIcon = $global:cachedGreenIcon }
+if (-not $global:cachedGreenIcon -and $global:cachedNormalIcon) { $global:cachedGreenIcon = $global:cachedNormalIcon }
+if (-not $global:cachedNormalIcon) { $global:cachedNormalIcon = [System.Drawing.SystemIcons]::Application }
+if (-not $global:cachedGreenIcon) { $global:cachedGreenIcon = [System.Drawing.SystemIcons]::Application }
+
+function Update-TrayStatus([bool]$isOnline) {
+    try {
+        if ($global:notifyIcon) {
+            $targetIcon = if ($isOnline) { $global:cachedGreenIcon } else { $global:cachedNormalIcon }
+            if ($global:notifyIcon.Icon -ne $targetIcon) {
+                $global:notifyIcon.Icon = $targetIcon
+            }
+            $statusText = "OpenCode 订阅管理中心 (端口: $port - " + (if ($isOnline) { "在线" } else { "离线" }) + ")"
+            if ($statusText.Length -ge 64) { $statusText = $statusText.Substring(0, 63) }
+            $global:notifyIcon.Text = $statusText
+        }
+    } catch { }
+}
 
 $global:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
 $notifyIcon = $global:notifyIcon
-if (Test-Path $icoPath) {
-    try {
-        $global:notifyIcon.Icon = New-Object System.Drawing.Icon($icoPath)
-        Write-TrayLog "Loaded custom icon: $icoPath"
-    } catch {
-        $global:notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
-        Write-TrayLog "Loaded fallback icon"
-    }
-} else {
-    $global:notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
-}
-
+$isPortUp = Test-PortListening $port
+$global:notifyIcon.Icon = if ($isPortUp) { $global:cachedGreenIcon } else { $global:cachedNormalIcon }
 $global:notifyIcon.Text = "OpenCode 订阅管理中心 (端口: $port)"
 $global:notifyIcon.Visible = $true
 
@@ -369,7 +416,11 @@ $watchdogTimer = New-Object System.Windows.Forms.Timer
 $watchdogTimer.Interval = 5000
 $watchdogTimer.add_Tick({
     try {
-        Ensure-RouterRunning
+        $up = Test-PortListening $port
+        Update-TrayStatus $up
+        if (-not $up) {
+            Ensure-RouterRunning
+        }
         if ($global:notifyIcon -and -not $global:notifyIcon.Visible) {
             $global:notifyIcon.Visible = $true
         }

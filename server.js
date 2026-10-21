@@ -29,7 +29,16 @@ const { execSync, exec, spawn } = require('node:child_process');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
 const powershellOptimizer = require('./powershell-optimizer');
-const { ComfyUIAdapter } = require('./comfyui-adapter');
+let ComfyUIAdapter;
+try {
+  ComfyUIAdapter = require('./comfyui-adapter').ComfyUIAdapter;
+} catch (e) {
+  ComfyUIAdapter = class DummyComfyUIAdapter {
+    constructor() { this.enabled = false; }
+    isComfyUIRequest() { return false; }
+    handleComfyUIRequest() { return false; }
+  };
+}
 
 process.on('uncaughtException', (err) => {
   console.error('[Uncaught Exception]', err && err.stack ? err.stack : err);
