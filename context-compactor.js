@@ -4449,7 +4449,17 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
       const hasMultiAgentOverride = result.messages.some(
         m => m && (m.role === 'system' || m.role === 'developer') && typeof m.content === 'string' && m.content.includes('<multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies')
       );
-      result.messages = result.messages.map(msg => {
+      // P2-M1: Find last tool output index in chat messages for latest-turn protection
+      let lastToolMsgIdx = -1;
+      for (let _ci = result.messages.length - 1; _ci >= 0; _ci--) {
+        const _cm = result.messages[_ci];
+        if (_cm && (_cm.role === 'tool' || _cm.role === 'function')) {
+          lastToolMsgIdx = _ci;
+          break;
+        }
+      }
+
+      result.messages = result.messages.map((msg, _msgIdx) => {
         if (!msg) return msg;
         if ((msg.role === 'system' || msg.role === 'developer') && typeof msg.content === 'string' && msg.content.length >= 1200) {
           const compSys = compactSystemPrompt(msg.content, compOpts, sessionId, hasMultiAgentOverride);
@@ -4478,9 +4488,11 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
             const compacted = compactText(val, compOpts, sessionId);
             return { ...msg, [targetField]: ensureSafeNonEmptyString(compacted) };
           } else if (Array.isArray(val)) {
+            // P2-M1: Skip array folding for latest turn tool output to preserve full data
+            const _isLatestTurnMsg = _msgIdx >= lastToolMsgIdx && lastToolMsgIdx >= 0;
             let targetArray = val;
             let wasArrayFolded = false;
-            if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
+            if (compOpts.foldStructuredData && !_isLatestTurnMsg && targetArray.length > (compOpts.maxStructuredItems || 50)) {
               try {
                 const rawArrStr = JSON.stringify(targetArray);
                 const foldedStr = foldStructuredData(rawArrStr, compOpts);
@@ -4601,9 +4613,11 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                   const compacted = compactText(val, compOpts, sessionId);
                   return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
                 } else if (Array.isArray(val)) {
+                  // P2-M1: Skip array folding for latest turn tool output
+                  const _isLatestTurnMsg2 = _msgIdx >= lastToolMsgIdx && lastToolMsgIdx >= 0;
                   let targetArray = val;
                   let wasArrayFolded = false;
-                  if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
+                  if (compOpts.foldStructuredData && !_isLatestTurnMsg2 && targetArray.length > (compOpts.maxStructuredItems || 50)) {
                     try {
                       const rawArrStr = JSON.stringify(targetArray);
                       const foldedStr = foldStructuredData(rawArrStr, compOpts);
@@ -4713,7 +4727,21 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
       const hasMultiAgentOverride = result.input.some(
         it => it && (it.role === 'system' || it.role === 'developer') && typeof it.content === 'string' && it.content.includes('<multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies')
       );
-      result.input = result.input.map(item => {
+      // P2-M1: Find the last tool output index to protect latest turn from array folding
+      let lastToolOutputIdx = -1;
+      for (let _mi = result.input.length - 1; _mi >= 0; _mi--) {
+        const _it = result.input[_mi];
+        if (_it && (
+          _it.type === 'function_call_output' || _it.type === 'custom_tool_call_output' ||
+          _it.type === 'tool_search_output' || (_it.type && typeof _it.type === 'string' && _it.type.endsWith('_output')) ||
+          (_it.call_id && _it.output !== undefined) || _it.role === 'tool' || _it.role === 'function'
+        )) {
+          lastToolOutputIdx = _mi;
+          break;
+        }
+      }
+
+      result.input = result.input.map((item, _itemIdx) => {
         if (!item) return item;
         if ((item.role === 'system' || item.role === 'developer') && typeof item.content === 'string' && item.content.length >= 1200) {
           const compSys = compactSystemPrompt(item.content, compOpts, sessionId, hasMultiAgentOverride);
@@ -4743,9 +4771,11 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
             return { ...item, [targetField]: ensureSafeNonEmptyString(comp) };
           } else if (Array.isArray(val)) {
             // If it's a giant array (> maxStructuredItems), fold with SmartCrusher first
+            // P2-M1: Skip array folding for the latest turn's tool output to preserve full data for model reasoning
+            const _isLatestTurnOutput = _itemIdx >= lastToolOutputIdx && lastToolOutputIdx >= 0;
             let targetArray = val;
             let wasArrayFolded = false;
-            if (compOpts.foldStructuredData && targetArray.length > (compOpts.maxStructuredItems || 50)) {
+            if (compOpts.foldStructuredData && !_isLatestTurnOutput && targetArray.length > (compOpts.maxStructuredItems || 50)) {
               try {
                 const rawArrStr = JSON.stringify(targetArray);
                 const foldedStr = foldStructuredData(rawArrStr, compOpts);
