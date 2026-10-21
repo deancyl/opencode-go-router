@@ -566,6 +566,13 @@ const OPENCODE_GO_MODEL_RATES = {
   'space-bunny': 0.15,
   'omen-alpha': 0.50,
 
+  // Latest OpenCode Official Models (2026.10 Update)
+  'gemini-4-argon-contributor': 0.15,
+  'minimax-m3.1-flash-free': 0.00,
+  'step-5-preview': 0.35,
+  'beam-free': 0.00,
+  'cat-jam-free': 0.00,
+
   // Codex native aliases
   'codex-mini': 0.40,
   'codex-pro': 1.50
@@ -599,6 +606,7 @@ function pruneByModelEntriesIfNeeded() {
 }
 
 const CANONICAL_MODEL_ALIASES = {
+  // Only map non-standard or legacy aliases; strictly preserve valid opencode distinct models (deepseek-flash & deepseek-v4-flash)
   'deepseek-flash': 'deepseek-v4.1-flash',
   'deepseek-v4-flash': 'deepseek-v4.1-flash',
   'deepseek_flash': 'deepseek-v4.1-flash',
@@ -630,11 +638,11 @@ function normalizeModelName(rawModel) {
   if (CANONICAL_MODEL_ALIASES[clean]) {
     return CANONICAL_MODEL_ALIASES[clean];
   }
-  // Regex canonical alignment for deepseek flash & pro family
-  if (/^deepseek[-_.]*(?:v[0-9.]*[-_.]*)?flash$/.test(clean)) {
+  // Regex canonical alignment only for bare 'deepseek' or typos without full version
+  if (clean === 'deepseek' || clean === 'deepseek-ai' || clean === 'deepseek-chat') {
     return 'deepseek-v4.1-flash';
   }
-  if (/^deepseek[-_.]*(?:v[0-9.]*[-_.]*)?pro$/.test(clean)) {
+  if (clean === 'deepseek-reasoner') {
     return 'deepseek-v4-pro';
   }
   return clean || null;

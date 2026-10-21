@@ -935,6 +935,88 @@ const OPENCODE_GO_ALL_MODELS = [
     visibility: 'list',
     supported_in_api: true,
     priority: 680
+  },
+  {
+    slug: 'gemini-4-argon-contributor',
+    display_name: 'Gemini-4-Argon-Contributor',
+    description: '多模态全景分析与长上下文复杂代码推导模型。',
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速轻量' },
+      { effort: 'medium', description: '标准分析' },
+      { effort: 'high', description: '深度思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    input_modalities: ['text', 'image'],
+    context_window: 1048576,
+    max_context_window: 1048576,
+    effective_context_window_percent: 95,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 885
+  },
+  {
+    slug: 'step-5-preview',
+    display_name: 'Step-5-Preview',
+    description: '前沿大窗口阶跃推理模型，极强逻辑理解与代码生成。',
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速执行' },
+      { effort: 'medium', description: '标准工程推导' },
+      { effort: 'high', description: '高难度逻辑求解' }
+    ],
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    input_modalities: ['text', 'image'],
+    context_window: 524288,
+    max_context_window: 524288,
+    effective_context_window_percent: 95,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 795
+  },
+  {
+    slug: 'minimax-m3.1-flash-free',
+    display_name: 'MiniMax-M3.1-Flash-Free',
+    description: 'MiniMax 极速免费高并发代码与对话模型。',
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [{ effort: 'low', description: '极速响应' }],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    context_window: 262144,
+    max_context_window: 262144,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 755
+  },
+  {
+    slug: 'beam-free',
+    display_name: 'Beam-Free',
+    description: 'Beam 高速免费代码编辑与脚本辅助模型。',
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [{ effort: 'low', description: '快速响应' }],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    context_window: 131072,
+    max_context_window: 131072,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 675
+  },
+  {
+    slug: 'cat-jam-free',
+    display_name: 'Cat-Jam-Free',
+    description: '轻快敏捷免费助理模型，日常问答与文本格式化。',
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [{ effort: 'low', description: '极速响应' }],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    context_window: 131072,
+    max_context_window: 131072,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 670
   }
 ];
 
@@ -946,6 +1028,21 @@ for (const m of OPENCODE_GO_ALL_MODELS) {
 /**
  * Dynamically synchronizes official upstream models into Codex catalog
  */
+function autoSyncFromOpencodeConfig() {
+  try {
+    const ocPath = path.join(require('os').homedir(), '.config', 'opencode', 'opencode.jsonc');
+    if (fs.existsSync(ocPath)) {
+      const raw = fs.readFileSync(ocPath, 'utf8');
+      const clean = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const cfg = JSON.parse(clean);
+      const mObj = cfg?.provider?.['opencode-go']?.models;
+      if (mObj && typeof mObj === 'object') {
+        syncDynamicModels(Object.keys(mObj));
+      }
+    }
+  } catch (_) {}
+}
+
 function syncDynamicModels(slugList) {
   if (!Array.isArray(slugList) || slugList.length === 0) return OPENCODE_GO_ALL_MODELS;
   const existingSlugs = new Set(OPENCODE_GO_ALL_MODELS.map(m => m.slug));
@@ -6453,8 +6550,12 @@ function repairCodexLocaleAndEnvironment(options = {}) {
   return { success: true, messages };
 }
 
+// Automatically synchronize models from local opencode.jsonc on load
+try { autoSyncFromOpencodeConfig(); } catch (_) {}
+
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
+  autoSyncFromOpencodeConfig,
   NATIVE_RESPONSES_MODELS,
   nativeResponsesUnsupportedModels,
   markNativeResponsesUnsupported,

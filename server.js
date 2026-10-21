@@ -1830,7 +1830,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   // Apply context and token compression for direct upstream requests (first attempt only)
   if (parsedBody && config.compression && config.compression.enabled !== false && (!attemptNumber || attemptNumber <= 1)) {
     try {
-      const compOpts = getEffectiveCompressionOptions(config.compression, clientReq);
+      const parsedModel = (parsedBody && typeof parsedBody.model === 'string') ? parsedBody.model.replace(/^opencode-go\//, '') : undefined;
+      const compOpts = {
+        ...getEffectiveCompressionOptions(config.compression, clientReq),
+        model: parsedModel,
+        _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
+      };
       if (isResponsesReq) {
         parsedBody = contextCompactor.compactResponsesPayload(parsedBody, compOpts, sessionId);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
@@ -2342,16 +2347,19 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   const transport = isHttps ? https : http;
 
   let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
+  let rawReqModel = (responsesBody && typeof responsesBody.model === 'string')
+    ? responsesBody.model.replace(/^opencode-go\//, '')
+    : undefined;
 
   // Pre-emptive model fallback check for heterogeneous upstream nodes
-  if (sessionId && responsesBody && responsesBody.model) {
-    const rawReqModel = responsesBody.model.replace(/^opencode-go\//, '');
+  if (sessionId && rawReqModel) {
     const cacheKey = `${sessionId}:${rawReqModel}`;
     if (sessionModelFallbackCache.has(cacheKey)) {
       const cachedFallback = sessionModelFallbackCache.get(cacheKey);
       if (cachedFallback && cachedFallback !== rawReqModel) {
         console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
         responsesBody = { ...responsesBody, model: cachedFallback };
+        rawReqModel = cachedFallback;
       }
     }
   }
@@ -2769,16 +2777,19 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   const transport = isHttps ? https : http;
 
   let sessionId = resolvedSessionId || codexAdapter.extractOrDeriveSessionId(clientReq, responsesBody);
+  let rawReqModel = (responsesBody && typeof responsesBody.model === 'string')
+    ? responsesBody.model.replace(/^opencode-go\//, '')
+    : undefined;
 
   // Pre-emptive model fallback check for heterogeneous upstream nodes (Rule 19)
-  if (sessionId && responsesBody && responsesBody.model) {
-    const rawReqModel = responsesBody.model.replace(/^opencode-go\//, '');
+  if (sessionId && rawReqModel) {
     const cacheKey = `${sessionId}:${rawReqModel}`;
     if (sessionModelFallbackCache.has(cacheKey)) {
       const cachedFallback = sessionModelFallbackCache.get(cacheKey);
       if (cachedFallback && cachedFallback !== rawReqModel) {
         console.log(`[Auto Pre-Emptive Fallback] Anthropic 桥接会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
         responsesBody = { ...responsesBody, model: cachedFallback };
+        rawReqModel = cachedFallback;
         if (!codexAdapter.ANTHROPIC_MODELS.has(cachedFallback)) {
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds, sessionId);
           return;
