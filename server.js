@@ -5888,6 +5888,11 @@ function renderDashboardHtml(config) {
           <span class="nav-label">客户端接入</span>
           <span class="nav-badge" id="nav-badge-clients">Codex</span>
         </a>
+        <a href="#/plugins" class="nav-item" id="nav-item-plugins" onclick="switchTab('plugins')">
+          <span class="nav-icon">🧩</span>
+          <span class="nav-label">外挂与插件</span>
+          <span class="nav-badge" id="nav-badge-plugins" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3);">在线</span>
+        </a>
         <a href="#/accounts" class="nav-item" id="nav-item-accounts" onclick="switchTab('accounts')">
           <span class="nav-icon">📋</span>
           <span class="nav-label">订阅账号与配额</span>
@@ -6015,6 +6020,14 @@ function renderDashboardHtml(config) {
               </div>
               <div style="font-size:1.3rem; font-weight:700; color:#f1f5f9;" id="codex-overview-val">38 款大模型</div>
               <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">Responses 协议桥与高思考等级锁定</div>
+            </div>
+            <div class="card" style="margin-bottom:0; cursor:pointer;" onclick="switchTab('plugins')" title="点击查看外挂插件中心与 ComfyUI 生图">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-size:0.8rem; color:var(--muted);">🧩 外挂插件</span>
+                <span class="badge badge-healthy" id="plugins-overview-badge">🟢 1 个在线</span>
+              </div>
+              <div style="font-size:1.3rem; font-weight:700; color:#f472b6;" id="plugins-overview-val">ComfyUI 就绪</div>
+              <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;" id="plugins-overview-sub">17 套工业级工作流 · GPU 极速生图</div>
             </div>
           </div>
 
@@ -6742,6 +6755,155 @@ function renderDashboardHtml(config) {
           </div>
         </section>
 
+        <!-- View Section: Plugins & Extensions (#/plugins) -->
+        <section class="view-section" id="view-plugins">
+          <!-- Banner / Top Capsule Bar -->
+          <div class="banner status-capsule-bar">
+            <div class="capsule-group">
+              <span class="status-pill status-pill-active">
+                <span class="status-dot-pulse"></span>
+                <span id="plugins-bar-active-count">外挂系统运作中 (1 个已激活)</span>
+              </span>
+              <span class="status-pill" id="comfy-capsule-device">🎮 AMD Radeon 780M (ZLUDA)</span>
+              <span class="status-pill" id="comfy-capsule-workflows">🖼️ 17 套工业级工作流就绪</span>
+              <span class="status-pill">⚡ OpenAI 兼容 /v1/images 协议</span>
+            </div>
+            <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <button class="btn btn-secondary btn-sm" onclick="loadComfyUiPluginStatus(true)" title="强制穿透缓存探测所有外挂插件状态">🔄 刷新插件状态</button>
+            </div>
+          </div>
+
+          <!-- Plugin Card 1: ComfyUI 视觉生图与图片反推中枢 -->
+          <div class="card" id="comfyui-plugin-card" style="border: 1px solid rgba(244, 114, 182, 0.25); background: linear-gradient(180deg, rgba(244, 114, 182, 0.03) 0%, rgba(18, 18, 21, 0.95) 100%);">
+            <div class="section-title">
+              <div class="section-title-left" style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:1.05rem; font-weight:700; color:#f472b6;">🖼️ ComfyUI 视觉生图与图片反推中枢 (ComfyUI Visual Engine)</span>
+                <span id="comfy-status-badge" class="badge badge-healthy">🟢 探测中...</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" onclick="loadComfyUiPluginStatus(true)" title="重新嗅探服务与重载工作流">🔄 探测重载</button>
+                <button class="btn btn-primary btn-sm" style="background:#ec4899; border-color:#db2777;" onclick="saveComfyUiConfig(true)" title="测试当前配置并持久化保存">⚡ 测试并保存</button>
+                <button class="btn btn-secondary btn-sm" onclick="bindCodexMcp()" title="自动为 OpenAI Codex 注入 ComfyUI MCP 智能体工具">🤖 接入 Codex MCP</button>
+                <span class="collapse-toggle" onclick="toggleCardCollapse('comfyui-collapse-body', this)">▼ 收起</span>
+              </div>
+            </div>
+
+            <div id="comfyui-collapse-body">
+              <div class="plain-tip-box" style="border-left-color: #ec4899;">
+                💡 <strong>【白话通俗解释】</strong>：为智能网关赋予外挂生图与图片反推能力。自动发现本地（默认 8284 / 8188）或局域网/远程部署的 ComfyUI，对外暴露 OpenAI 标准生图端点 <code>/v1/images/generations</code>，并通过 MCP 为 Codex / OpenCode 提供原生 <code>generate_image</code> 智能体工具，彻底消除由于模型原生无生图能力带来的断层。
+              </div>
+
+              <!-- ComfyUI Configuration Form Grid -->
+              <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:16px;">
+                <div class="form-group" style="margin-bottom:0;">
+                  <label style="display:flex; justify-content:space-between;">
+                    <span>ComfyUI 服务端地址 (Host URL)</span>
+                    <span style="font-size:0.75rem; color:var(--muted);">支持 8284、8188 或远程局域网</span>
+                  </label>
+                  <input type="text" id="comfy-cfg-host" class="form-control" placeholder="http://127.0.0.1:8284" value="${config.comfyui?.host || 'http://127.0.0.1:8284'}" style="background:#09090b; border-color:#27272a;">
+                </div>
+
+                <div class="form-group" style="margin-bottom:0;">
+                  <label style="display:flex; justify-content:space-between;">
+                    <span>工作流存储目录 (Workflows Directory)</span>
+                    <span style="font-size:0.75rem; color:var(--muted);">留空则自动探测 scratch/comfyui-agent-workflows</span>
+                  </label>
+                  <input type="text" id="comfy-cfg-dir" class="form-control" placeholder="自动探测本地工作流标准库..." value="${config.comfyui?.workflowsDir || ''}" style="background:#09090b; border-color:#27272a;">
+                </div>
+
+                <div class="form-group" style="margin-bottom:0; max-width:200px;">
+                  <label>全局超时时间 (秒)</label>
+                  <input type="number" id="comfy-cfg-timeout" class="form-control" min="30" max="600" value="${config.comfyui?.timeoutSec || 180}" style="background:#09090b; border-color:#27272a;">
+                </div>
+              </div>
+
+              <!-- Hardware & Workflow Statistics Strip -->
+              <div style="display:flex; gap:12px; flex-wrap:wrap; background:#121215; border:1px solid #27272a; border-radius:8px; padding:10px 14px; margin-bottom:16px; align-items:center;">
+                <div style="font-size:0.8rem; color:var(--muted);">硬件加速环境：<strong id="comfy-val-device" style="color:#f4f4f5;">探测中...</strong></div>
+                <div style="font-size:0.8rem; color:var(--muted); margin-left:auto;">显存总计：<strong id="comfy-val-vram" style="color:#34d399;">--</strong></div>
+                <div style="font-size:0.8rem; color:var(--muted);">已装载工作流：<strong id="comfy-val-wfcount" style="color:#38bdf8;">0 套</strong></div>
+              </div>
+
+              <!-- 🧪 即时抽卡与在线测试沙箱 (Interactive Test Sandbox) -->
+              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:14px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                  <span style="font-size:0.85rem; font-weight:600; color:#f1f5f9; display:flex; align-items:center; gap:6px;">
+                    <span>🎨</span>
+                    <span>在线快速出图测试沙箱 (Quick Generation Sandbox)</span>
+                  </span>
+                  <span style="font-size:0.75rem; color:var(--muted);">测试网关端到端调度与图片预览</span>
+                </div>
+
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+                  <div style="flex:1; min-width:260px;">
+                    <label style="font-size:0.75rem; color:var(--muted); margin-bottom:4px; display:block;">测试提示词 (Positive Prompt)</label>
+                    <input type="text" id="comfy-test-prompt" class="form-control" value="1girl, cinematic lighting, 8k uhd, photorealistic, elegant smile" placeholder="输入画面提示词..." style="background:#121215; border-color:#27272a; font-size:0.85rem;">
+                  </div>
+                  <div style="width:240px;">
+                    <label style="font-size:0.75rem; color:var(--muted); margin-bottom:4px; display:block;">调度工作流</label>
+                    <select id="comfy-test-workflow-select" class="form-control" style="background:#121215; border-color:#27272a; font-size:0.85rem;">
+                      <option value="04">04_极速抽卡_无限多风格探索流 (极速测试推荐)</option>
+                      <option value="01">01_真人写实_极致NanoBanana (高精成片)</option>
+                    </select>
+                  </div>
+                  <button type="button" class="btn btn-primary" id="btn-comfy-test-gen" onclick="triggerComfyUiTestGen()" style="background:#ec4899; border-color:#db2777; height:36px; padding:0 16px; font-weight:600;">
+                    🚀 试画一张
+                  </button>
+                </div>
+
+                <!-- Test Result Container (Image Preview & Metadata) -->
+                <div id="comfy-test-result-box" style="display:none; background:#121215; border:1px solid #27272a; border-radius:6px; padding:12px; margin-top:10px;">
+                  <div style="display:flex; gap:16px; flex-wrap:wrap;">
+                    <div style="max-width:280px; max-height:280px; overflow:hidden; border-radius:6px; border:1px solid #3f3f46; display:flex; align-items:center; justify-content:center; background:#000;">
+                      <img id="comfy-test-result-img" src="" alt="预览图" style="max-width:100%; max-height:280px; object-fit:contain; display:block;">
+                    </div>
+                    <div style="flex:1; min-width:240px; font-size:0.8rem; line-height:1.6; color:#a1a1aa;">
+                      <div style="font-weight:600; color:#f4f4f5; margin-bottom:4px;" id="comfy-test-res-title">成片生成就绪</div>
+                      <div>工作流：<strong id="comfy-test-res-wf" style="color:#f472b6;">--</strong></div>
+                      <div>采样耗时：<strong id="comfy-test-res-duration" style="color:#34d399;">--</strong></div>
+                      <div>随机 Seed：<strong id="comfy-test-res-seed" style="color:#38bdf8;">--</strong></div>
+                      <div>托管地址：<a id="comfy-test-res-link" href="#" target="_blank" style="color:#38bdf8; word-break:break-all;">--</a></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Workflow List Accordion / Catalog -->
+              <details style="background:#121215; border:1px solid #27272a; border-radius:8px; padding:10px 14px;">
+                <summary style="font-size:0.85rem; font-weight:600; color:#f1f5f9; cursor:pointer; user-select:none;">
+                  📚 查看已就绪的 17 套工业级双轨工作流清单与标签
+                </summary>
+                <div id="comfy-workflows-catalog-list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:10px; margin-top:12px;">
+                  <!-- Dynamically populated -->
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <!-- Future Extension Slots (插槽化卡片流) -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; margin-top:16px;">
+            <div class="card" style="margin-bottom:0; opacity:0.65; border:1px dashed #3f3f46;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:600; color:#a1a1aa;">🌐 联网搜索增强代理 (Web Search Plugin)</span>
+                <span class="badge" style="background:#27272a; color:#a1a1aa;">扩展预留</span>
+              </div>
+              <div style="font-size:0.8rem; color:var(--muted); line-height:1.5;">
+                为无联网能力的本地大模型赋予实时网络检索与网页正文提取能力，自动注入 Search Tool 闭环。
+              </div>
+            </div>
+
+            <div class="card" style="margin-bottom:0; opacity:0.65; border:1px dashed #3f3f46;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:600; color:#a1a1aa;">📚 本地私有知识库 (Local RAG Plugin)</span>
+                <span class="badge" style="background:#27272a; color:#a1a1aa;">扩展预留</span>
+              </div>
+              <div style="font-size:0.8rem; color:var(--muted); line-height:1.5;">
+                基于本地离线向量库（Chroma / SQLite-vec）挂载私有文档与代码库，100% 离线检索保障代码安全。
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- View Section 4: Accounts & Quotas (#/accounts) -->
         <section class="view-section" id="view-accounts">
           <div class="banner status-capsule-bar">
@@ -7044,6 +7206,7 @@ function renderDashboardHtml(config) {
       'overview': { icon: '📊', name: '总览与快速上手 (Overview)' },
       'compression': { icon: '⚡', name: 'Token 压缩与上下文优化中枢 (Compression)' },
       'clients': { icon: '🤖', name: '客户端接入与模型调度 (Clients & Codex)' },
+      'plugins': { icon: '🧩', name: '外挂与扩展插件中心 (Extensions & Plugins)' },
       'accounts': { icon: '📋', name: '订阅账号与官方实时配额 (Accounts & Quotas)' },
       'doctor': { icon: '🩺', name: '系统运行环境自检与修复 (Doctor & Repair)' },
       'settings': { icon: '⚙️', name: '系统网络与高级安全配置 (Settings & Updates)' }
@@ -7053,6 +7216,8 @@ function renderDashboardHtml(config) {
       'updates': 'settings',
       'config': 'settings',
       'codex': 'clients',
+      'extensions': 'plugins',
+      'comfyui': 'plugins',
       'comp': 'compression'
     };
 
@@ -7073,7 +7238,7 @@ function renderDashboardHtml(config) {
         }
       }
 
-      const tabs = ['overview', 'compression', 'clients', 'accounts', 'doctor', 'settings'];
+      const tabs = ['overview', 'compression', 'clients', 'plugins', 'accounts', 'doctor', 'settings'];
       tabs.forEach(t => {
         const navItem = document.getElementById('nav-item-' + t);
         if (navItem && navItem.classList) {
@@ -8392,7 +8557,7 @@ function renderDashboardHtml(config) {
           e.preventDefault();
           if (typeof saveConfig === 'function') saveConfig();
         } else if (e.altKey && !e.ctrlKey && !e.metaKey) {
-          var tabMap = { '1': 'overview', '2': 'compression', '3': 'clients', '4': 'accounts', '5': 'doctor', '6': 'settings' };
+          var tabMap = { '1': 'overview', '2': 'compression', '3': 'clients', '4': 'plugins', '5': 'accounts', '6': 'doctor', '7': 'settings' };
           if (tabMap[e.key] && typeof switchTab === 'function') {
             e.preventDefault();
             switchTab(tabMap[e.key]);
@@ -10202,6 +10367,225 @@ function renderDashboardHtml(config) {
         scrollToElement('updates-card');
       }, 300);
     }
+
+    // ==========================================
+    // ComfyUI Visual Plugin Management & Testing
+    // ==========================================
+    var comfyUiStatusData = null;
+
+    async function loadComfyUiPluginStatus(force) {
+      try {
+        const url = '/balancer/api/comfyui/status' + (force ? '?force=true' : '');
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data || !data.success) return;
+
+        comfyUiStatusData = data;
+        const st = data.status || {};
+        const isOnline = Boolean(st.isOnline);
+        const devName = st.deviceInfo?.name || '未知设备';
+        const vramGb = st.deviceInfo?.vramTotal ? (st.deviceInfo.vramTotal / (1024 * 1024 * 1024)).toFixed(1) + ' GB' : '--';
+        const wfCount = data.workflowsCount || 0;
+
+        // 1. Update badges
+        const badge = document.getElementById('comfy-status-badge');
+        if (badge) {
+          badge.className = isOnline ? 'badge badge-healthy' : 'badge badge-disabled';
+          badge.textContent = isOnline ? '🟢 已连接 (' + (st.serverUrl || '8284') + ')' : '⚪ 离线 (未启动)';
+        }
+
+        const navBadge = document.getElementById('nav-badge-plugins');
+        if (navBadge) {
+          navBadge.textContent = isOnline ? '在线' : '离线';
+          navBadge.style.color = isOnline ? '#34d399' : '#a1a1aa';
+        }
+
+        const ovBadge = document.getElementById('plugins-overview-badge');
+        if (ovBadge) {
+          ovBadge.className = isOnline ? 'badge badge-healthy' : 'badge badge-disabled';
+          ovBadge.textContent = isOnline ? '🟢 1 个在线' : '⚪ 未就绪';
+        }
+
+        const ovVal = document.getElementById('plugins-overview-val');
+        if (ovVal) {
+          ovVal.textContent = isOnline ? 'ComfyUI 就绪' : 'ComfyUI 离线';
+          ovVal.style.color = isOnline ? '#f472b6' : '#a1a1aa';
+        }
+
+        // 2. Update device info
+        const devEl = document.getElementById('comfy-val-device');
+        if (devEl) devEl.textContent = isOnline ? devName : '未连接';
+
+        const vramEl = document.getElementById('comfy-val-vram');
+        if (vramEl) vramEl.textContent = vramGb;
+
+        const countEl = document.getElementById('comfy-val-wfcount');
+        if (countEl) countEl.textContent = wfCount + ' 套';
+
+        const capDev = document.getElementById('comfy-capsule-device');
+        if (capDev) capDev.textContent = isOnline ? '🎮 ' + devName : '🎮 纯 CPU/轻薄本模式';
+
+        const capWf = document.getElementById('comfy-capsule-workflows');
+        if (capWf) capWf.textContent = '🖼️ ' + wfCount + ' 套工业级工作流就绪';
+
+        // 3. Populate workflow dropdown in test sandbox
+        const sel = document.getElementById('comfy-test-workflow-select');
+        if (sel && Array.isArray(data.workflows)) {
+          const prevVal = sel.value;
+          sel.innerHTML = '';
+          data.workflows.forEach(wf => {
+            const opt = document.createElement('option');
+            opt.value = wf.id;
+            opt.textContent = wf.name + ' (' + (wf.tags ? wf.tags.slice(0, 3).join('/') : '') + ')';
+            if (wf.id === '04') opt.textContent += ' ⭐[极速推荐]';
+            sel.appendChild(opt);
+          });
+          if (prevVal) sel.value = prevVal;
+        }
+
+        // 4. Populate catalog accordion
+        const catalogList = document.getElementById('comfy-workflows-catalog-list');
+        if (catalogList && Array.isArray(data.workflows)) {
+          var items = [];
+          for (var i = 0; i < data.workflows.length; i++) {
+            var wf = data.workflows[i];
+            var tagsHtml = '';
+            if (Array.isArray(wf.tags)) {
+              for (var j = 0; j < wf.tags.length; j++) {
+                tagsHtml += '<span style="background:#18181b; border:1px solid #27272a; border-radius:3px; padding:1px 5px; color:#a1a1aa; font-size:0.68rem;">#' + wf.tags[j] + '</span>';
+              }
+            }
+            items.push('<div style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:8px 10px; font-size:0.75rem;"><div style="font-weight:600; color:#f472b6; margin-bottom:2px;">[' + wf.id + '] ' + wf.name + '</div><div style="color:var(--muted); margin-bottom:4px; font-size:0.72rem;">' + (wf.description || '') + '</div><div style="display:flex; flex-wrap:wrap; gap:4px;">' + tagsHtml + '</div></div>');
+          }
+          catalogList.innerHTML = items.join('');
+        }
+
+        if (force) {
+          showToast(isOnline ? 'ComfyUI 服务嗅探成功，工作流已实时重载！' : 'ComfyUI 未响应，请确认本地 8284/8188 端口是否已启动', isOnline ? 'success' : 'error');
+        }
+      } catch (e) {
+        console.warn('获取 ComfyUI 状态失败:', e);
+      }
+    }
+
+    async function saveComfyUiConfig(andTest) {
+      const hostInput = document.getElementById('comfy-cfg-host');
+      const dirInput = document.getElementById('comfy-cfg-dir');
+      const timeoutInput = document.getElementById('comfy-cfg-timeout');
+
+      const comfyCfg = {
+        enabled: true,
+        host: hostInput ? hostInput.value.trim() : 'http://127.0.0.1:8284',
+        workflowsDir: dirInput ? dirInput.value.trim() : '',
+        timeoutSec: timeoutInput ? (parseInt(timeoutInput.value, 10) || 180) : 180
+      };
+
+      try {
+        const res = await fetch('/balancer/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ comfyui: comfyCfg })
+        });
+        const d = await res.json();
+        if (d.success) {
+          showToast('ComfyUI 外挂配置已安全保存！', 'success');
+          if (andTest) {
+            await loadComfyUiPluginStatus(true);
+          }
+        } else {
+          showToast('保存失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (err) {
+        showToast('网络请求异常: ' + err.message, 'error');
+      }
+    }
+
+    async function triggerComfyUiTestGen() {
+      const btn = document.getElementById('btn-comfy-test-gen');
+      const promptInput = document.getElementById('comfy-test-prompt');
+      const wfSel = document.getElementById('comfy-test-workflow-select');
+      const resultBox = document.getElementById('comfy-test-result-box');
+      const resImg = document.getElementById('comfy-test-result-img');
+      const resTitle = document.getElementById('comfy-test-res-title');
+      const resWf = document.getElementById('comfy-test-res-wf');
+      const resDuration = document.getElementById('comfy-test-res-duration');
+      const resSeed = document.getElementById('comfy-test-res-seed');
+      const resLink = document.getElementById('comfy-test-res-link');
+
+      const prompt = promptInput ? promptInput.value.trim() : '';
+      if (!prompt) {
+        showToast('提示词不能为空', 'error');
+        return;
+      }
+
+      const workflow = wfSel ? wfSel.value : '04';
+
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '🎨 GPU 采样中 (请稍候)...';
+      }
+
+      try {
+        const res = await fetch('/v1/images/generations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: prompt,
+            model: workflow,
+            response_format: 'url'
+          })
+        });
+
+        const data = await res.json();
+        if (data && data.data && data.data[0] && data.data[0].url) {
+          const item = data.data[0];
+          const wfInfo = data.workflow || {};
+          if (resImg) resImg.src = item.url;
+          if (resWf) resWf.textContent = wfInfo.name || workflow;
+          if (resDuration) resDuration.textContent = wfInfo.durationMs ? (wfInfo.durationMs / 1000).toFixed(1) + 's' : '--';
+          if (resSeed) resSeed.textContent = wfInfo.seed || '--';
+          if (resLink) {
+            resLink.href = item.url;
+            resLink.textContent = item.url;
+          }
+          if (resultBox) resultBox.style.display = 'block';
+          showToast('🎉 成片渲染完成！', 'success');
+        } else {
+          const errMsg = data?.error?.message || '生成失败，请检查 ComfyUI 连接';
+          showToast('出图失败: ' + errMsg, 'error');
+        }
+      } catch (e) {
+        showToast('请求出错: ' + e.message, 'error');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🚀 试画一张';
+        }
+      }
+    }
+
+    async function bindCodexMcp() {
+      try {
+        const res = await fetch('/balancer/api/repair', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targets: ['codex_locale'] })
+        });
+        const d = await res.json();
+        if (d.success) {
+          showToast('已成功为 Codex Desktop 注册 ComfyUI 图像智能体 (mcp-comfyui.js)！', 'success');
+        } else {
+          showToast('注册 MCP 失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, 'error');
+      }
+    }
+
+    // Auto-load ComfyUI status on initialization
+    setTimeout(function() {
+      loadComfyUiPluginStatus(false);
+    }, 400);
   </script>
 </body>
 </html>`;
@@ -10439,7 +10823,8 @@ const server = http.createServer((req, res) => {
       hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
       uiPassword: config.uiPassword || '',
       accounts: config.accounts,
-      compression: config.compression || DEFAULT_CONFIG.compression
+      compression: config.compression || DEFAULT_CONFIG.compression,
+      comfyui: config.comfyui || DEFAULT_CONFIG.comfyui || { enabled: true, host: 'http://127.0.0.1:8284', workflowsDir: '', timeoutSec: 180 }
     }));
     return;
   }
@@ -10617,6 +11002,20 @@ const server = http.createServer((req, res) => {
               }
             }
             newConfig.compression = contextCompactor.normalizeCompressionOptions(toNormalize);
+          }
+        }
+
+        if (payload.comfyui && typeof payload.comfyui === 'object') {
+          const prevComfy = config.comfyui || DEFAULT_CONFIG.comfyui || {};
+          newConfig.comfyui = {
+            enabled: payload.comfyui.enabled !== false,
+            host: (payload.comfyui.host !== undefined ? String(payload.comfyui.host).trim() : (prevComfy.host || 'http://127.0.0.1:8284')),
+            workflowsDir: (payload.comfyui.workflowsDir !== undefined ? String(payload.comfyui.workflowsDir).trim() : (prevComfy.workflowsDir || '')),
+            timeoutSec: (Number(payload.comfyui.timeoutSec) && Number(payload.comfyui.timeoutSec) > 0) ? Number(payload.comfyui.timeoutSec) : (prevComfy.timeoutSec || 180)
+          };
+          if (typeof comfyuiAdapter !== 'undefined' && comfyuiAdapter) {
+            comfyuiAdapter.config = newConfig;
+            comfyuiAdapter.reloadManifest();
           }
         }
 
