@@ -1255,6 +1255,11 @@ function getCorsHeaders(upstreamHeaders = {}) {
   headers['access-control-allow-origin'] = '*';
   headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
   headers['access-control-allow-headers'] = '*';
+  const cType = String(headers['content-type'] || '').toLowerCase();
+  if (cType.includes('text/event-stream')) {
+    headers['x-accel-buffering'] = 'no';
+    headers['cache-control'] = 'no-cache';
+  }
   return headers;
 }
 
@@ -13108,5 +13113,6 @@ module.exports = {
   recordAccountFailure,
   calculateJitteredBackoff,
   isAccountAvailable,
-  selectAccount
+  selectAccount,
+  getCorsHeaders
 };

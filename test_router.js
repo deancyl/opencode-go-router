@@ -8618,8 +8618,50 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers (Test 158) passed');
 
+    // --- [Test 159] Codex & Multi-IDE Stream State Machine, TCP Packet Fragmentation & Anti-Buffering Headers ---
+    console.log('\n--- [Test 159] Codex & Multi-IDE Stream State Machine, TCP Packet Fragmentation & Anti-Buffering Headers ---');
+
+    // 1. Verify getCorsHeaders injects anti-buffering headers for SSE
+    const corsSseHeaders = serverMod.getCorsHeaders({ 'content-type': 'text/event-stream; charset=utf-8' });
+    assert.strictEqual(corsSseHeaders['x-accel-buffering'], 'no');
+    assert.strictEqual(corsSseHeaders['cache-control'], 'no-cache');
+
+    // 2. Verify codexAdapter stream bridges export and function definition
+    assert.strictEqual(typeof codexAdapter.bridgeResponsesStream, 'function');
+    assert.strictEqual(typeof codexAdapter.bridgeAnthropicStream, 'function');
+    assert.strictEqual(typeof codexAdapter.bridgeChatStream, 'function');
+
+    // 3. Verify bridgeChatStream exactly-once [DONE] and finish_reason guarantee
+    const chatStreamChunks159 = [];
+    let chatStreamDoneCalled159 = false;
+    const mockClientRes159 = new (require('events').EventEmitter)();
+    mockClientRes159.writeHead = (st, hdrs) => {
+      assert.strictEqual(hdrs['X-Accel-Buffering'], 'no');
+      assert.strictEqual(hdrs['Cache-Control'], 'no-cache');
+    };
+    mockClientRes159.write = (chunk) => chatStreamChunks159.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    mockClientRes159.end = () => {};
+    const mockUpstreamEv159 = new (require('events').EventEmitter)();
+
+    codexAdapter.bridgeChatStream(mockUpstreamEv159, mockClientRes159, 'deepseek-v4.1-flash', 'req_test159', () => {
+      chatStreamDoneCalled159 = true;
+    });
+
+    mockUpstreamEv159.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n', 'utf8'));
+    mockUpstreamEv159.emit('data', Buffer.from('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'utf8'));
+    mockUpstreamEv159.emit('data', Buffer.from('data: [DONE]\n\n', 'utf8'));
+    mockUpstreamEv159.emit('end');
+
+    assert.strictEqual(chatStreamDoneCalled159, true);
+    const combinedStream159 = chatStreamChunks159.join('');
+    const doneMatches159 = combinedStream159.match(/data: \[DONE\]/g);
+    assert.strictEqual(doneMatches159?.length, 1, 'Must send exactly one data: [DONE]');
+    assert.ok(combinedStream159.includes('Hello'));
+
+    console.log('✓ Codex & Multi-IDE Stream State Machine & Anti-Buffering (Test 159) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 158 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 159 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

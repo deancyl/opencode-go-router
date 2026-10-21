@@ -85,3 +85,26 @@ wire_api = "responses"
 - **协议兼容性**：Responses 双向流协议无缝转换，HTTP 200，SSE 平稳闭环到达 `completed`，0 断流；
 - **多模块独立节约**：Codex 单轮实测节约 435 字符（~114 Tokens），其中 PowerShell 贡献 340 字符、RTK 贡献 57 字符、Schema 规范化贡献 38 字符。
 
+---
+
+## 🛡️ 多 IDE 协议适配与流式底层健壮性架构
+
+针对 VSCode、Cursor、OpenChamber 及 Codex CLI 在高并发流式交互与复杂工具调用场景，网关在底层构建了高可靠的流式状态机：
+
+### 1. SSE 流式 TCP 半包与 UTF-8 多字节分包免疫 (StringDecoder State Machine)
+- **隐患根因**：传统按单次 `chunk.toString('utf8')` 切行解析的方式，在遇到 3 字节 UTF-8 中文或 4 字节 Emoji 恰好被 TCP 分包切断时，会被 Node.js 强制置换为不可逆的乱码占位符 `\uFFFD`，且跨包截断的 JSON 帧会直接抛出 `SyntaxError` 导致 IDE 代码补全中断。
+- **加固机制**：引入 `string_decoder.StringDecoder('utf8')` 与 `pendingBuffer` 行缓冲区。只有收到完整换行符 `\n` 时才提交给 JSON 解析器；在连接结束时，通过 `decoder.end()` 冲刷并回捞尾部不带换行符的完整数据行，实现 100% 字节还原与零数据丢失。
+
+### 2. 多并发工具调用分片隔离与参数汇聚 (Tool Calls Index Demuxing)
+- **隐患根因**：多并发工具调用（如同时并发触发搜索与文件读取）时，上游推送的 `tool_calls` 切片交错到达；若单纯全局累加参数会导致 JSON 串混淆。
+- **加固机制**：网关在流式管道中建立局部 `toolCallsMap (index -> { id, name, args, outIdx })`，严格按照 `index` 与 `call_id` 隔离拼接每个工具调用的 `arguments`，在流终态时自动校验闭合并生成规范的 `response.output_item.done` 事件。
+
+### 3. 反向代理抗缓冲与 IDE 补全零卡顿 (Anti-Buffering Optimization)
+- **隐患根因**：中间反向代理（如 Nginx、Traefik、透明网关）在代理 SSE 流时，默认启用 4KB~16KB 输出缓冲，导致 Cursor / VSCode / Codex CLI 补全出现“长时间卡顿后一次性喷出一大段”的跳跃体验。
+- **加固机制**：网关在全部 SSE 流通道（`/v1/responses`、`/v1/chat/completions`、`/v1/messages`）的响应头中强制注入 `'X-Accel-Buffering': 'no'` 与 `'Cache-Control': 'no-cache'`，提示反向代理立即将单字分片刷新至下游客户端，实现丝滑流畅的打字机流式补全。
+
+### 4. 终态帧与思维链保底 (Exactly-Once Completion & DeepSeek <think> Guard)
+- **终态严格一次 (Exactly-Once)**：无论上游是正常 `[DONE]` 结束、携带 `finish_reason: stop` 终止，还是因异常触发 Rule 33 优雅关闭，网关确保唯一一次派发终态元数据与 `data: [DONE]\n\n`，绝不发生重复发送或漏发。
+- **思维链平滑提取**：内置跨包前缀缓冲状态机（`thinkBuffer`），对 DeepSeek 系列模型跨 SSE 分片到达的 `<think>` 与 `</think>` 标签进行精确识别与剥离，将思考过程无损转为 `reasoning_text`，正文转为 `output_text`，严防思考标签泄露污染正式回复。
+
+
