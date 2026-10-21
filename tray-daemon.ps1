@@ -43,7 +43,7 @@ function Ensure-RouterRunning {
         if (Test-PortListening $port) { return }
         $silentVbs = Join-Path $rootDir "silent-start.vbs"
         if (Test-Path $silentVbs) {
-            Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WindowStyle Hidden
+            Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WorkingDirectory $rootDir -WindowStyle Hidden
         } else {
             $nodeExe = "node.exe"
             if (Test-Path "C:\Program Files\nodejs\node.exe") {

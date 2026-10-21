@@ -45,6 +45,20 @@ namespace OpenCodeRouter
         private static int isBindingClients = 0;
         private static int isEnsuringRunning = 0;
 
+        private static void Log(string msg)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(logPath)) return;
+                using (FileStream fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                using (StreamWriter sw = new StreamWriter(fs, Encoding.UTF8))
+                {
+                    sw.WriteLine("[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] " + msg);
+                }
+            }
+            catch { }
+        }
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -66,17 +80,18 @@ namespace OpenCodeRouter
 
             LoadConfig(rootDir, ref port, ref uiPassword);
             logPath = Path.Combine(rootDir, "tray.log");
+            LoadCachedIcons();
 
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] UnhandledException: " + e.ExceptionObject + "\r\n"); } catch { }
+                Log("UnhandledException: " + e.ExceptionObject);
             };
             Application.ThreadException += (s, e) => {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] ThreadException: " + e.Exception + "\r\n"); } catch { }
+                Log("ThreadException: " + e.Exception);
             };
 
             try
             {
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 1: Main started, pid=" + Process.GetCurrentProcess().Id + "\r\n");
+                Log("Step 1: Main started, pid=" + Process.GetCurrentProcess().Id);
 
                 bool createdNew = false;
                 try
@@ -103,7 +118,7 @@ namespace OpenCodeRouter
                 }
                 catch (Exception mex)
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Mutex ex: " + mex.Message + "\r\n");
+                    Log("Mutex ex: " + mex.Message);
                     createdNew = true;
                 }
 
@@ -120,10 +135,10 @@ namespace OpenCodeRouter
                     }
                 }
 
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent + "\r\n");
+                Log("Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent);
                 if (!createdNew)
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Another instance is running. Activating dashboard and exiting.\r\n");
+                    Log("Another instance is running. Activating dashboard and exiting.");
                     EnsureRouterRunning(false);
                     if (!isSilent)
                     {
@@ -132,21 +147,18 @@ namespace OpenCodeRouter
                     return;
                 }
 
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 3: EnsureRouterRunning\r\n");
+                Log("Step 3: EnsureRouterRunning");
                 EnsureRouterRunning(true);
                 if (!isSilent)
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 4: OpenDashboard\r\n");
+                    Log("Step 4: OpenDashboard");
                     OpenDashboard();
                 }
                 else
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 4: Silent mode, skipping OpenDashboard\r\n");
+                    Log("Step 4: Silent mode, skipping OpenDashboard");
                 }
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 5: Setting up NotifyIcon\r\n");
-
-                // Initialize Cached Icons to prevent GDI+ handle leaks
-                LoadCachedIcons();
+                Log("Step 5: Setting up NotifyIcon");
 
                 // Setup NotifyIcon
                 notifyIcon = new NotifyIcon();
@@ -251,13 +263,23 @@ namespace OpenCodeRouter
                 };
                 watchdogTimer.Start();
 
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Step 7: Entering Application.Run...\r\n");
-                Application.Run();
-                File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Application.Run EXITED!\r\n");
+                // 创建常驻隐形宿主窗体 (防止消息泵被回收)
+                Form hiddenForm = new Form();
+                hiddenForm.Text = "OpenCodeRouterTrayMsgSink";
+                hiddenForm.FormBorderStyle = FormBorderStyle.None;
+                hiddenForm.ShowInTaskbar = false;
+                hiddenForm.WindowState = FormWindowState.Minimized;
+                hiddenForm.Size = new Size(0, 0);
+                hiddenForm.Opacity = 0;
+                hiddenForm.ShowIcon = false;
+
+                Log("Step 7: Entering Application.Run(hiddenForm)...");
+                Application.Run(hiddenForm);
+                Log("Application.Run EXITED!");
             }
             catch (Exception ex)
             {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] Main CRASH: " + ex + "\r\n"); } catch { }
+                Log("Main CRASH: " + ex);
             }
         }
 
@@ -377,7 +399,7 @@ namespace OpenCodeRouter
             }
             catch (Exception ex)
             {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] EnsureRouterRunning exception: " + ex + "\r\n"); } catch { }
+                Log("EnsureRouterRunning exception: " + ex);
             }
             finally
             {
