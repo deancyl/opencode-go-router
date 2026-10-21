@@ -25,7 +25,62 @@ param(
     [switch]$NoShortcuts
 )
 
+$OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+
+# 自动防范受限 ExecutionPolicy
+try {
+    $policy = Get-ExecutionPolicy -Scope Process -ErrorAction SilentlyContinue
+    if ($policy -eq 'Restricted') {
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
+    }
+} catch { }
+
+function Stop-SafeProcess {
+    param(
+        [Parameter(Mandatory=$true)][int]$ProcessId,
+        [Parameter(Mandatory=$true)][string[]]$Keywords,
+        [Parameter(Mandatory=$true)][string]$ServiceName
+    )
+    if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return $false }
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $proc) { return $false }
+
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    $cmdLine = if ($cim -and $cim.CommandLine) { $cim.CommandLine } else { "" }
+    $execPath = if ($cim -and $cim.ExecutablePath) { $cim.ExecutablePath } else { "" }
+    $procName = $proc.ProcessName
+
+    $isMatch = $false
+    foreach ($kw in $Keywords) {
+        if (($cmdLine -and $cmdLine -like "*$kw*") -or 
+            ($execPath -and $execPath -like "*$kw*") -or 
+            ($procName -like "*$kw*")) {
+            $isMatch = $true
+            break
+        }
+    }
+
+    if ($isMatch) {
+        try {
+            Start-Process -FilePath "taskkill.exe" -ArgumentList "/F /T /PID $ProcessId" -NoNewWindow -Wait -ErrorAction SilentlyContinue
+            Write-Host "   [OK]   已安全终止 $ServiceName 进程 (PID: $ProcessId)" -ForegroundColor Green
+            return $true
+        } catch {
+            try {
+                Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+                Write-Host "   [OK]   已强制终止 $ServiceName 进程 (PID: $ProcessId)" -ForegroundColor Green
+                return $true
+            } catch {
+                return $false
+            }
+        }
+    } else {
+        Write-Host "   [WARN] PID $ProcessId 非 $ServiceName 实例 (命令行特征不符: '$cmdLine')，已跳过以防止误杀！" -ForegroundColor Yellow
+        return $false
+    }
+}
 
 $rootDir = if ($InstallDir) { $InstallDir } elseif ($PSScriptRoot) { $PSScriptRoot } else { "$env:USERPROFILE\.opencode-go-router" }
 $cfgPath = Join-Path $rootDir "config.json"
@@ -583,20 +638,31 @@ function Step-Stop {
     Write-Host "正在停止智能网关与托盘守护进程..." -ForegroundColor Yellow
     # 停止托盘 (仅在默认端口 4010 且未指定 NoShortcuts 时处理全局托盘，保护沙箱/多实例互不干扰)
     if ($port -eq 4010 -and -not $NoShortcuts) {
-        Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        Get-Process -Name "OpenCodeRouterApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $trayProcs = Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue
+        if ($trayProcs) {
+            foreach ($tp in $trayProcs) {
+                Stop-SafeProcess -ProcessId $tp.Id -Keywords @("OpenCodeRouterTray") -ServiceName "OpenCodeRouterTray" | Out-Null
+            }
+        }
+        $appProcs = Get-Process -Name "OpenCodeRouterApp" -ErrorAction SilentlyContinue
+        if ($appProcs) {
+            foreach ($ap in $appProcs) {
+                Stop-SafeProcess -ProcessId $ap.Id -Keywords @("OpenCodeRouterApp") -ServiceName "OpenCodeRouterApp" | Out-Null
+            }
+        }
         $trays = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" }
         if ($trays) {
             foreach ($t in $trays) {
-                try { Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+                Stop-SafeProcess -ProcessId $t.ProcessId -Keywords @("tray-daemon.ps1", "tray-runner.ps1") -ServiceName "托盘守护脚本" | Out-Null
             }
         }
     }
-    # 停止端口上的路由进程
+    # 停止端口上的路由进程 (安全校验命令行特征)
     $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conns) {
-        foreach ($c in $conns) {
-            try { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue } catch { }
+        $portPids = @($conns | Select-Object -ExpandProperty OwningProcess -Unique)
+        foreach ($cpid in $portPids) {
+            Stop-SafeProcess -ProcessId $cpid -Keywords @("server.js", "opencode-go-router", "OpenCodeRouter") -ServiceName "opencode-go-router" | Out-Null
         }
     }
     Start-Sleep -Milliseconds 400

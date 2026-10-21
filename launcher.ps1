@@ -1,35 +1,54 @@
-# launcher.ps1: 智能检测托盘守护并唤出控制台
+# launcher.ps1: 智能检测托盘守护并唤出控制台 (加固版: 路径空格/中文/特殊字符与 LiteralPath 免疫)
+$OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { "$env:USERPROFILE\.opencode-go-router" }
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+
+$rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { Join-Path $env:USERPROFILE ".opencode-go-router" }
 $appExe = Join-Path $rootDir "OpenCodeRouterApp.exe"
 $port = 4010
 $cfgFile = Join-Path $rootDir "config.json"
-if (Test-Path $cfgFile) {
+
+if (Test-Path -LiteralPath $cfgFile) {
     try {
-        $cfg = Get-Content $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $cfg = Get-Content -LiteralPath $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($cfg.port) { $port = [int]$cfg.port }
     } catch { }
 }
 
-if (Test-Path $appExe) {
-    Start-Process -FilePath $appExe
+if (Test-Path -LiteralPath $appExe) {
+    Start-Process -FilePath $appExe -WorkingDirectory $rootDir
     return
 }
 
-$trayScript = if (Test-Path (Join-Path $rootDir "tray-daemon.ps1")) { Join-Path $rootDir "tray-daemon.ps1" } else { Join-Path $rootDir "tray-runner.ps1" }
-$running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" }
+$trayScript = if (Test-Path -LiteralPath (Join-Path $rootDir "tray-daemon.ps1")) { 
+    Join-Path $rootDir "tray-daemon.ps1" 
+} else { 
+    Join-Path $rootDir "tray-runner.ps1" 
+}
+
+$running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { 
+    $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" -or $_.Name -eq "OpenCodeRouterTray.exe"
+}
 
 if (-not $running) {
-    Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$trayScript`"") -WindowStyle Hidden
+    if (Test-Path -LiteralPath (Join-Path $rootDir "OpenCodeRouterTray.exe")) {
+        Start-Process -FilePath (Join-Path $rootDir "OpenCodeRouterTray.exe") -WorkingDirectory $rootDir
+    } elseif (Test-Path -LiteralPath $trayScript) {
+        Start-Process powershell.exe -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $trayScript) -WorkingDirectory $rootDir -WindowStyle Hidden
+    }
 } else {
-    $edgePaths = @(
+    $browserCandidates = @(
+        "C:\Program Files\Google\Chrome\Application\chrome.exe",
+        "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
         "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
     )
-    $edgeExe = $edgePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($edgeExe) {
-        Start-Process -FilePath $edgeExe -ArgumentList "--app=http://127.0.0.1:$port/balancer/ui"
+    $browserExe = $browserCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $targetUrl = "http://127.0.0.1:$port/balancer/ui"
+    if ($browserExe) {
+        Start-Process -FilePath $browserExe -ArgumentList "--app=$targetUrl"
     } else {
-        Start-Process "http://127.0.0.1:$port/balancer/ui"
+        Start-Process $targetUrl
     }
 }

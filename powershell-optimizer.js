@@ -26,6 +26,8 @@
  */
 
 const os = require('node:os');
+const childProcess = require('node:child_process');
+const { StringDecoder } = require('node:string_decoder');
 
 const DEFAULT_POWERSHELL_CONFIG = {
   enabled: true,
@@ -209,7 +211,7 @@ function cleanPowerShellNoise(text) {
         result = result.replace(/#<\s*CLIXML[\s\S]*?<\/Objs>/g, extractedError ? `[PowerShell Error]:\n${extractedError}` : '');
         modified = true;
       } else {
-        result = result.replace(/#<\s*CLIXML[\s\S]*?<\/Objs>/g, '[PowerShell Error Output Cleaned]');
+        result = result.replace(/#<\s*CLIXML[\s\S]*?<\/Objs>\r?\n?/g, '');
         modified = true;
       }
     }
@@ -331,10 +333,11 @@ function fixPowerShellCommandEscaping(cmd, options = {}) {
     // Solution: If a quoted Windows path has a trailing backslash right before the quote,
     // double the backslash: "C:\path\\" so the CRT parser treats it as an escaped backslash followed by a closing quote.
     if (cfg.fixTrailingSlash !== false) {
-      // Matches double-quoted strings ending with an odd number of backslashes
-      // e.g. "C:\dir\" or "D:\test\sub\"
-      result = result.replace(/(")(?:[A-Za-z]:\\[^"\r\n]*?)(\\)(?=")/g, (match, q, backslash) => {
-        return match + '\\'; // becomes \\"
+      // Matches double-quoted Windows directory paths ending with an odd number of backslashes
+      // e.g. "C:\dir\", ".\test\", "\\nas\share\" or "C:\Program Files (x86)\"
+      // Avoids mangling escaped quotes (e.g. \"$(whoami)\") inside commands.
+      result = result.replace(/(")(?:(?:[A-Za-z]:|\.\.?|\\\\)[^"\r\n]*?)(?<!\\)((?:\\\\)*\\)(?=")/g, (match) => {
+        return match + '\\';
       });
     }
 
@@ -806,6 +809,224 @@ function optimizeAnthropicPayload(payload, options = {}, req = null) {
   }
 }
 
+
+/**
+ * Encodes a PowerShell script/command into a Base64-encoded UTF-16LE string
+ * suitable for `powershell.exe -EncodedCommand <string>`.
+ * @param {string} scriptOrCmd
+ * @returns {string}
+ */
+function toEncodedCommand(scriptOrCmd) {
+  if (typeof scriptOrCmd !== "string") return "";
+  return Buffer.from(scriptOrCmd, "utf16le").toString("base64");
+}
+
+/**
+ * Decodes a Base64 UTF-16LE string generated for PowerShell -EncodedCommand.
+ * @param {string} base64Str
+ * @returns {string}
+ */
+function fromEncodedCommand(base64Str) {
+  if (typeof base64Str !== "string") return "";
+  return Buffer.from(base64Str, "base64").toString("utf16le");
+}
+
+/**
+ * Builds standard arguments for powershell.exe / pwsh.exe execution
+ * with UTF-8 console output encoding enforcement and -NoProfile -NonInteractive -ExecutionPolicy Bypass.
+ * @param {string} commandOrScript
+ * @param {object} [options={}]
+ * @returns {string[]}
+ */
+function buildPowerShellArgs(commandOrScript, options = {}) {
+  const baseArgs = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"];
+  const utf8Preamble = "$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
+  const fullCommand = utf8Preamble + (commandOrScript || "");
+
+  if (options.useEncodedCommand !== false) {
+    const encoded = toEncodedCommand(fullCommand);
+    return [...baseArgs, "-EncodedCommand", encoded];
+  }
+
+  return [...baseArgs, "-Command", fullCommand];
+}
+
+/**
+ * Detects the best available PowerShell executable on the host.
+ * Prefers pwsh.exe if installed, otherwise powershell.exe.
+ * @returns {string}
+ */
+function getPowerShellExe() {
+  if (process.platform !== "win32") {
+    return "pwsh";
+  }
+  try {
+    const test = childProcess.spawnSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.Major"], { encoding: "utf8", timeout: 1500 });
+    if (!test.error && test.status === 0) {
+      return "pwsh.exe";
+    }
+  } catch (_) {}
+  return "powershell.exe";
+}
+
+/**
+ * Asynchronously executes a PowerShell command or script with:
+ * - Active stdio pipe drainage (preventing 64KB OS buffer hangs)
+ * - Multi-byte UTF-8 string decoders (preventing CJK/Emoji slicing)
+ * - Strict timeout with recursive taskkill tree kill (preventing zombie processes)
+ * - Auto-decoding and denoising of PowerShell error noise
+ * @param {string} commandOrScript
+ * @param {object} [options={}]
+ * @returns {Promise<{ stdout: string, stderr: string, exitCode: number|null, timedOut: boolean, rawStdout: string, rawStderr: string }>}
+ */
+function executePowerShellCommand(commandOrScript, options = {}) {
+  return new Promise((resolve) => {
+    const timeout = typeof options.timeout === "number" ? options.timeout : 30000;
+    const maxBuffer = typeof options.maxBuffer === "number" ? options.maxBuffer : 16 * 1024 * 1024;
+    const cwd = options.cwd || process.cwd();
+    const env = { ...process.env, PYTHONIOENCODING: "utf-8", ...options.env };
+    const psExe = options.pwshPath || getPowerShellExe();
+    const args = buildPowerShellArgs(commandOrScript, options);
+
+    let child;
+    let timedOut = false;
+    let timer = null;
+
+    try {
+      child = childProcess.spawn(psExe, args, {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (spawnErr) {
+      return resolve({
+        stdout: "",
+        stderr: spawnErr.message || "Spawn failed",
+        exitCode: 1,
+        timedOut: false,
+        rawStdout: "",
+        rawStderr: spawnErr.message || ""
+      });
+    }
+
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let rawStdout = "";
+    let rawStderr = "";
+
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        if (child.pid) {
+          if (process.platform === "win32") {
+            try {
+              childProcess.execSync(`taskkill.exe /F /T /PID ${child.pid}`, { stdio: "ignore" });
+            } catch (_) {
+              try { child.kill("SIGKILL"); } catch (__) {}
+            }
+          } else {
+            try { child.kill("SIGKILL"); } catch (_) {}
+          }
+        }
+      }, timeout);
+    }
+
+    if (child.stdout) {
+      child.stdout.on("data", (chunk) => {
+        if (rawStdout.length < maxBuffer) {
+          rawStdout += stdoutDecoder.write(chunk);
+        }
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        if (rawStderr.length < maxBuffer) {
+          rawStderr += stderrDecoder.write(chunk);
+        }
+      });
+    }
+
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({
+        stdout: cleanPowerShellNoise(rawStdout),
+        stderr: cleanPowerShellNoise((rawStderr + "\n" + (err.message || "")).trim()),
+        exitCode: 1,
+        timedOut,
+        rawStdout,
+        rawStderr
+      });
+    });
+
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      rawStdout += stdoutDecoder.end();
+      rawStderr += stderrDecoder.end();
+
+      const cleanedStdout = cleanPowerShellNoise(rawStdout.trim());
+      const cleanedStderr = cleanPowerShellNoise(rawStderr.trim());
+
+      resolve({
+        stdout: cleanedStdout,
+        stderr: cleanedStderr,
+        exitCode: code !== null ? code : (timedOut ? 124 : 1),
+        timedOut,
+        rawStdout,
+        rawStderr
+      });
+    });
+  });
+}
+
+/**
+ * Synchronously executes a PowerShell command or script.
+ * @param {string} commandOrScript
+ * @param {object} [options={}]
+ * @returns {{ stdout: string, stderr: string, exitCode: number, timedOut: boolean, rawStdout: string, rawStderr: string }}
+ */
+function executePowerShellCommandSync(commandOrScript, options = {}) {
+  const timeout = typeof options.timeout === "number" ? options.timeout : 30000;
+  const cwd = options.cwd || process.cwd();
+  const env = { ...process.env, PYTHONIOENCODING: "utf-8", ...options.env };
+  const psExe = options.pwshPath || getPowerShellExe();
+  const args = buildPowerShellArgs(commandOrScript, options);
+
+  try {
+    const res = childProcess.spawnSync(psExe, args, {
+      cwd,
+      env,
+      stdio: "pipe",
+      timeout,
+      encoding: "utf8",
+      windowsHide: true
+    });
+
+    const timedOut = Boolean(res.error && (res.error.code === "ETIMEDOUT" || res.error.message?.includes("ETIMEDOUT")));
+    const rawStdout = res.stdout || "";
+    const rawStderr = (res.stderr || "") + (res.error && !timedOut ? `\n${res.error.message}` : "");
+
+    return {
+      stdout: cleanPowerShellNoise(rawStdout.trim()),
+      stderr: cleanPowerShellNoise(rawStderr.trim()),
+      exitCode: res.status !== null ? res.status : (timedOut ? 124 : 1),
+      timedOut,
+      rawStdout,
+      rawStderr
+    };
+  } catch (err) {
+    return {
+      stdout: "",
+      stderr: cleanPowerShellNoise(err.message || ""),
+      exitCode: 1,
+      timedOut: false,
+      rawStdout: "",
+      rawStderr: err.message || ""
+    };
+  }
+}
+
 module.exports = {
   DEFAULT_POWERSHELL_CONFIG,
   detectPlatform,
@@ -816,6 +1037,12 @@ module.exports = {
   generatePowerShellGuardDirective,
   isComplexCommandNeedingScriptFile,
   wrapInScriptFileExecution,
+  toEncodedCommand,
+  fromEncodedCommand,
+  buildPowerShellArgs,
+  getPowerShellExe,
+  executePowerShellCommand,
+  executePowerShellCommandSync,
   optimizeChatPayload,
   optimizeResponsesPayload,
   optimizeAnthropicPayload

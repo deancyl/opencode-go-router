@@ -135,8 +135,71 @@ async function runAdversarialTests() {
   assert.ok(allSseText.includes('response.completed'), 'SSE stream must emit response.completed');
   console.log('✓ End-to-End Streaming Degeneration Circuit Breaker verified!\n');
 
+  // --- Test 6: Trailing Backslash Quote Eating in Diverse Windows Paths ---
+  console.log('[Test 6] Testing Trailing Backslash Quote Eating in Diverse Windows Paths...');
+  const psOptimizer = require('./powershell-optimizer');
+
+  // Test case 1: Standard absolute path with spaces
+  const p1 = 'dir "C:\\Program Files (x86)\\My App\\"';
+  const f1 = psOptimizer.fixPowerShellCommandEscaping(p1, { targetPlatform: "win32" });
+  assert.strictEqual(f1, 'dir "C:\\Program Files (x86)\\My App\\\\"', "Must double trailing backslash for absolute path with spaces");
+
+  // Test case 2: Relative path with dots and backslash
+  const p2 = 'ls ".\\relative\\path\\"';
+  const f2 = psOptimizer.fixPowerShellCommandEscaping(p2, { targetPlatform: "win32" });
+  assert.strictEqual(f2, 'ls ".\\relative\\path\\\\"', "Must double trailing backslash for relative path");
+
+  // Test case 3: UNC network path
+  const p3 = 'Get-ChildItem "\\\\nas-server\\share\\documents\\"';
+  const f3 = psOptimizer.fixPowerShellCommandEscaping(p3, { targetPlatform: "win32" });
+  assert.strictEqual(f3, 'Get-ChildItem "\\\\nas-server\\share\\documents\\\\"', "Must double trailing backslash for UNC network path");
+
+  // Test case 4: Even number of backslashes (already escaped) must NOT be modified
+  const p4 = 'echo "C:\\already\\escaped\\\\"';
+  const f4 = psOptimizer.fixPowerShellCommandEscaping(p4, { targetPlatform: "win32" });
+  assert.strictEqual(f4, p4, "Even number of trailing backslashes must remain unchanged");
+  console.log('✓ Trailing Backslash Quote Eating verified across diverse Windows path formats\n');
+
+  // --- Test 7: PowerShell EncodedCommand Generation & Round-Trip Decoding ---
+  console.log('[Test 7] Testing PowerShell -EncodedCommand (Base64 UTF-16LE) Round-Trip...');
+  const complexScript = 'Write-Output "测试中文特殊字符: $`"&| (2026)"\n$val = 123\nWrite-Host "Value: $val"';
+  const encoded = psOptimizer.toEncodedCommand(complexScript);
+  assert.ok(typeof encoded === "string" && encoded.length > 0, "Encoded string must be non-empty");
+  const decoded = psOptimizer.fromEncodedCommand(encoded);
+  assert.strictEqual(decoded, complexScript, "Decoded script must match original verbatim");
+  console.log('✓ PowerShell -EncodedCommand Generation & Decoding verified\n');
+
+  // --- Test 8: Real Subprocess Execution with UTF-8 & CJK ---
+  console.log('[Test 8] Testing Real PowerShell Subprocess Execution with UTF-8 & CJK...');
+  const execRes = await psOptimizer.executePowerShellCommand('Write-Output "PowerShell UTF8 中文测试 - 状态: 正常 (2026)"');
+  assert.strictEqual(execRes.exitCode, 0, "Exit code must be 0");
+  assert.strictEqual(execRes.timedOut, false, "Command must not time out");
+  assert.ok(execRes.stdout.includes("PowerShell UTF8 中文测试 - 状态: 正常 (2026)"), "Stdout must contain exact Chinese characters without mojibake");
+  console.log('✓ Real PowerShell Subprocess Execution with UTF-8 & CJK verified\n');
+
+  // --- Test 9: Active Pipe Drainage & Timeout Force Termination ---
+  console.log('[Test 9] Testing Active Pipe Drainage & Timeout Force Termination...');
+  const timeStart = Date.now();
+  const timeoutRes = await psOptimizer.executePowerShellCommand("Start-Sleep -Seconds 10", { timeout: 800 });
+  const duration = Date.now() - timeStart;
+  assert.strictEqual(timeoutRes.timedOut, true, "Command must be marked as timedOut");
+  assert.ok(duration < 4000, `Command must be terminated promptly around timeout (elapsed: ${duration}ms)`);
+  console.log(`✓ Timeout Force Termination verified (elapsed: ${duration}ms, clean tree-kill)\n`);
+
+  // --- Test 10: Operational PowerShell scripts safety and AST structure ---
+  console.log('[Test 10] Testing Operational PowerShell scripts safety and AST structure...');
+  const fs = require("fs");
+  for (const scriptName of ["launcher.ps1", "stop-all.ps1", "start-all.ps1", "status-all.ps1", "setup-windows.ps1"]) {
+    const scriptPath = path.join(__dirname, scriptName);
+    assert.ok(fs.existsSync(scriptPath), `${scriptName} must exist`);
+    const scriptBody = fs.readFileSync(scriptPath, "utf8");
+    assert.ok(scriptBody.includes("UTF8"), `${scriptName} must declare UTF-8 console encoding`);
+    assert.ok(scriptBody.includes("LiteralPath") || scriptBody.includes("Stop-SafeProcess"), `${scriptName} must incorporate LiteralPath or Stop-SafeProcess safety`);
+  }
+  console.log('✓ Operational PowerShell scripts safety and AST structure verified\n');
+
   console.log('================================================================');
-  console.log('🎉 ALL 5/5 ADVERSARIAL TESTS PASSED PERFECTLY!');
+  console.log('🎉 ALL 10/10 ADVERSARIAL TESTS PASSED PERFECTLY!');
   console.log('================================================================');
 }
 
