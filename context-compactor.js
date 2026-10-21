@@ -815,6 +815,22 @@ function estimateTokens(input) {
   return Math.round(cjkCount / 1.25 + nonCjkCount / 3.8);
 }
 
+function isTestEnvironment() {
+  if (process.env.OPENCODE_TEST_MODE || process.env.NODE_ENV === 'test') return true;
+  if (process.env.COMPRESSION_SANDBOX === '1') return true;
+  if (process.argv && process.argv[1]) {
+    const script = path.basename(process.argv[1]);
+    if (/^test_.*\.js$/i.test(script) || script.includes('test')) return true;
+  }
+  return false;
+}
+
+function isProductionDiskTarget() {
+  const isProdStats = !process.env.COMPRESSION_STATS_FILE || path.basename(STATS_FILE) === 'compression-stats.json';
+  const isProdHist = !process.env.COMPRESSION_HISTORY_FILE || path.basename(HISTORY_FILE) === 'compression-history.json';
+  return isProdStats || isProdHist;
+}
+
 const IS_TEST_ENV = Boolean(process.env.OPENCODE_TEST_MODE || process.env.NODE_ENV === 'test');
 const STATS_FILE = process.env.COMPRESSION_STATS_FILE || (IS_TEST_ENV && process.env.COMPRESSION_SANDBOX === '1'
   ? path.join(__dirname, 'compression-stats.test.json')
@@ -1185,6 +1201,11 @@ function saveStatsToDisk() {
 
 let persistTimer = null;
 function persistStatsThrottled() {
+  // Test Environment Guard (Root-Cause Fix for Benchmark/Adversarial Stats Pollution)
+  // In test environment, forbid writing to production compression-stats.json / compression-history.json
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
   if (persistTimer) return;
   persistTimer = setTimeout(() => {
     persistTimer = null;
@@ -1466,6 +1487,12 @@ function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = nu
   recordBucketSavings('d1', ts, moduleName, validSaved, validOrig, modelName, validTokens);
 
   pruneExpiredBuckets();
+
+  // Test Environment Guard: do not persist to production disk when running in test mode
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
+
   persistStatsThrottled();
 }
 
@@ -1482,6 +1509,12 @@ function recordOverallSavings(origLen, compLen, timestamp = Date.now()) {
   recordBucketSavings('h1', ts, null, validSaved, origLen, null);
   recordBucketSavings('d1', ts, null, validSaved, origLen, null);
   pruneExpiredBuckets();
+
+  // Test Environment Guard: do not persist to production disk when running in test mode
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
+
   persistStatsThrottled();
 }
 
@@ -5165,6 +5198,8 @@ module.exports = {
   formatTimeSeriesLabel,
   recordCompressionEvent,
   pruneExpiredBuckets,
+  isTestEnvironment,
+  isProductionDiskTarget,
   BUCKET_DEFINITIONS,
   RANGE_CONFIG,
   compressionHistory,

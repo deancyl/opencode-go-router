@@ -28,6 +28,14 @@ const DEFAULT_SNIFF_TARGETS = [
 const SNIFF_CACHE_TTL_MS = 15000; // 15s debounce cache (Rule 7)
 const DEFAULT_TASK_TIMEOUT_MS = 180000; // 3 minutes timeout
 
+function cleanDeviceName(raw) {
+  if (!raw || typeof raw !== 'string') return 'GPU Device';
+  let s = raw.replace(/^cuda:[0-9]+ */i, '').replace(/ *: *native *$/i, '').trim();
+  s = s.replace(/ Graphics/i, '');
+  s = s.split('[').join('(').split(']').join(')');
+  return s.trim() || raw;
+}
+
 class ComfyUIAdapter {
   constructor(options = {}) {
     this.config = options.config || {};
@@ -132,7 +140,8 @@ class ComfyUIAdapter {
             isOnline: true,
             serverUrl: targetUrl,
             deviceInfo: {
-              name: deviceName,
+              name: cleanDeviceName(deviceName),
+              rawName: deviceName,
               vramTotal,
               os: stats.system.os,
               comfyVersion: stats.system.comfyui_version

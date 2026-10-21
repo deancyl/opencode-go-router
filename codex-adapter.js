@@ -1211,7 +1211,28 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
  * Prunes and compresses an oversized Responses API payload (body.input) to fit within
  * the model's context window (e.g. 1M or 2M tokens).
  */
-function pruneResponsesPayload(body) {
+const MAX_PRUNE_FINGERPRINTS = 10000;
+const prunedFingerprints = new Set();
+
+function trimPrunedFingerprintsIfNeeded() {
+  if (prunedFingerprints.size > MAX_PRUNE_FINGERPRINTS) {
+    let toRemove = Math.floor(MAX_PRUNE_FINGERPRINTS * 0.2);
+    for (const key of prunedFingerprints) {
+      prunedFingerprints.delete(key);
+      if (--toRemove <= 0) break;
+    }
+  }
+}
+
+function clearPruneFingerprints() {
+  prunedFingerprints.clear();
+}
+
+/**
+ * Prunes and compresses an oversized Responses API payload (body.input) to fit within
+ * the model's context window (e.g. 1M or 2M tokens).
+ */
+function pruneResponsesPayload(body, sessionId = null) {
   if (!body || typeof body !== 'object') {
     const res = body || {};
     if (typeof res === 'object') {
@@ -1220,6 +1241,8 @@ function pruneResponsesPayload(body) {
     }
     return res;
   }
+
+  const effectiveSessionId = sessionId || (body && (body.session_id || body.sessionId || body.conversation_id || (body.metadata && body.metadata.session_id))) || null;
 
   let modified = false;
   // Shallow copy top-level payload object without full JSON deep copy
@@ -1290,10 +1313,15 @@ function pruneResponsesPayload(body) {
           const placeholder = `[Historical Image Verified: ${pageLabel}]`;
           input[idx] = { ...item, output: placeholder };
           modified = true;
-          try {
-            const contextCompactor = require('./context-compactor');
-            contextCompactor.recordSavings('headroom', Math.max(0, origLen - placeholder.length), origLen, (body && body.model) || null);
-          } catch (_) {}
+          const imgDedupeKey = (effectiveSessionId ? `${effectiveSessionId}:` : '') + `img:${item.call_id || pageLabel}`;
+          if (!prunedFingerprints.has(imgDedupeKey)) {
+            prunedFingerprints.add(imgDedupeKey);
+            trimPrunedFingerprintsIfNeeded();
+            try {
+              const contextCompactor = require('./context-compactor');
+              contextCompactor.recordSavings('headroom', Math.max(0, origLen - placeholder.length), origLen, (body && body.model) || null);
+            } catch (_) {}
+          }
         } else if (item.type === 'message' && Array.isArray(item.content)) {
           let contentModified = false;
           let origContentLen = 0;
@@ -1317,10 +1345,15 @@ function pruneResponsesPayload(body) {
           if (contentModified) {
             input[idx] = { ...item, content: newContent };
             modified = true;
-            try {
-              const contextCompactor = require('./context-compactor');
-              contextCompactor.recordSavings('headroom', Math.max(0, origContentLen - newContentLen), origContentLen, (body && body.model) || null);
-            } catch (_) {}
+            const imgMsgKey = (effectiveSessionId ? `${effectiveSessionId}:` : '') + `img_msg:${idx}:${pageLabel}`;
+            if (!prunedFingerprints.has(imgMsgKey)) {
+              prunedFingerprints.add(imgMsgKey);
+              trimPrunedFingerprintsIfNeeded();
+              try {
+                const contextCompactor = require('./context-compactor');
+                contextCompactor.recordSavings('headroom', Math.max(0, origContentLen - newContentLen), origContentLen, (body && body.model) || null);
+              } catch (_) {}
+            }
           }
         }
       }
@@ -1346,10 +1379,15 @@ function pruneResponsesPayload(body) {
           const newOutput = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
           input[i] = { ...item, output: newOutput };
           modified = true;
-          try {
-            const contextCompactor = require('./context-compactor');
-            contextCompactor.recordSavings('headroom', folded, outStr.length, (body && body.model) || null);
-          } catch (_) {}
+          const toolDedupeKey = (effectiveSessionId ? `${effectiveSessionId}:` : '') + `tool:${item.call_id || i}`;
+          if (!prunedFingerprints.has(toolDedupeKey)) {
+            prunedFingerprints.add(toolDedupeKey);
+            trimPrunedFingerprintsIfNeeded();
+            try {
+              const contextCompactor = require('./context-compactor');
+              contextCompactor.recordSavings('headroom', folded, outStr.length, (body && body.model) || null);
+            } catch (_) {}
+          }
         } else if (outStr !== item.output) {
           input[i] = { ...item, output: outStr };
           modified = true;
@@ -1372,6 +1410,7 @@ function pruneResponsesPayload(body) {
     }
 
     // 2. Sliding window: if input length > 18, prune intermediate items with turn-boundary safety
+    // User Instruction Exemption: ALL user messages (role === 'user') are 100% preserved!
     if (input.length > 18) {
       const headItems = input.slice(0, 2);
       let tailStartIndex = Math.max(2, input.length - 12);
@@ -1393,14 +1432,24 @@ function pruneResponsesPayload(body) {
       }
 
       const tailItems = input.slice(tailStartIndex);
-      const droppedCount = input.length - headItems.length - tailItems.length;
+      const middleItems = input.slice(headItems.length, tailStartIndex);
+
+      const isUserItem = (it) => {
+        if (!it || typeof it !== 'object') return false;
+        if (it.role === 'user') return true;
+        if (it.type === 'message' && (!it.role || it.role === 'user')) return true;
+        return false;
+      };
+
+      const middleUserItems = middleItems.filter(isUserItem);
+      const droppedCount = middleItems.length - middleUserItems.length;
       if (droppedCount > 0) {
         const notice = {
           type: 'message',
           role: 'system',
           content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
-        input = [...headItems, notice, ...tailItems];
+        input = [...headItems, notice, ...middleUserItems, ...tailItems];
         modified = true;
       }
     }
@@ -1426,7 +1475,7 @@ function pruneResponsesPayload(body) {
 /**
  * Prunes and compresses an oversized standard ChatCompletions messages array.
  */
-function pruneChatMessages(messages, maxTokens) {
+function pruneChatMessages(messages, maxTokens, sessionId = null) {
   if (!Array.isArray(messages) || messages.length === 0) {
     if (Array.isArray(messages)) {
       Object.defineProperty(messages, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
@@ -1451,10 +1500,15 @@ function pruneChatMessages(messages, maxTokens) {
       const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
       result[i] = { ...msg, content: newContent };
       modified = true;
-      try {
-        const contextCompactor = require('./context-compactor');
-        contextCompactor.recordSavings('headroom', folded, msg.content.length);
-      } catch (_) {}
+      const chatToolKey = (sessionId ? `${sessionId}:` : '') + `chat_tool:${msg.tool_call_id || i}`;
+      if (!prunedFingerprints.has(chatToolKey)) {
+        prunedFingerprints.add(chatToolKey);
+        trimPrunedFingerprintsIfNeeded();
+        try {
+          const contextCompactor = require('./context-compactor');
+          contextCompactor.recordSavings('headroom', folded, msg.content.length);
+        } catch (_) {}
+      }
     }
   }
 
@@ -1462,14 +1516,19 @@ function pruneChatMessages(messages, maxTokens) {
     const sysMsgs = result.filter((m, idx) => idx === 0 || m.role === 'system');
     const nonSys = result.filter((m, idx) => idx !== 0 && m.role !== 'system');
     const firstUser = nonSys[0];
-    const recentMsgs = nonSys.slice(-12);
-    const middleDropped = nonSys.length - 1 - recentMsgs.length;
+    const tailStartIndex = Math.max(1, nonSys.length - 12);
+    const recentMsgs = nonSys.slice(tailStartIndex);
+    const middleNonSys = nonSys.slice(1, tailStartIndex);
+
+    // User instruction exemption: 100% preserve all user messages in the middle
+    const middleUserMsgs = middleNonSys.filter(m => m.role === 'user');
+    const middleDropped = middleNonSys.length - middleUserMsgs.length;
     if (middleDropped > 0) {
       const notice = {
         role: 'system',
         content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
       };
-      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...recentMsgs];
+      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...middleUserMsgs, ...recentMsgs];
       modified = true;
     }
   }
@@ -6017,6 +6076,8 @@ module.exports = {
   adapterConfig,
   pruneResponsesPayload,
   pruneChatMessages,
+  clearPruneFingerprints,
+  prunedFingerprints,
   getCodexConfigDir,
   convertResponsesToChatPayload,
   bridgeResponsesStream,

@@ -6026,7 +6026,7 @@ function renderDashboardHtml(config) {
                 <span style="font-size:0.8rem; color:var(--muted);">🧩 外挂插件</span>
                 <span class="badge badge-healthy" id="plugins-overview-badge">🟢 1 个在线</span>
               </div>
-              <div style="font-size:1.3rem; font-weight:700; color:#f472b6;" id="plugins-overview-val">ComfyUI 就绪</div>
+              <div style="font-size:1.3rem; font-weight:700; color:#38bdf8;" id="plugins-overview-val">ComfyUI 就绪</div>
               <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;" id="plugins-overview-sub">17 套工业级工作流 · GPU 极速生图</div>
             </div>
           </div>
@@ -6774,58 +6774,70 @@ function renderDashboardHtml(config) {
           </div>
 
           <!-- Plugin Card 1: ComfyUI 视觉生图与图片反推中枢 -->
-          <div class="card" id="comfyui-plugin-card" style="border: 1px solid rgba(244, 114, 182, 0.25); background: linear-gradient(180deg, rgba(244, 114, 182, 0.03) 0%, rgba(18, 18, 21, 0.95) 100%);">
+          <div class="card" id="comfyui-plugin-card">
             <div class="section-title">
               <div class="section-title-left" style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:1.05rem; font-weight:700; color:#f472b6;">🖼️ ComfyUI 视觉生图与图片反推中枢 (ComfyUI Visual Engine)</span>
+                <span style="font-size:0.95rem; font-weight:600; color:#f4f4f5;">🖼️ ComfyUI 视觉生图与图片反推中枢 (ComfyUI Visual Engine)</span>
                 <span id="comfy-status-badge" class="badge badge-healthy">🟢 探测中...</span>
               </div>
               <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                 <button class="btn btn-secondary btn-sm" onclick="loadComfyUiPluginStatus(true)" title="重新嗅探服务与重载工作流">🔄 探测重载</button>
-                <button class="btn btn-primary btn-sm" style="background:#ec4899; border-color:#db2777;" onclick="saveComfyUiConfig(true)" title="测试当前配置并持久化保存">⚡ 测试并保存</button>
+                <button class="btn btn-primary btn-sm" onclick="saveComfyUiConfig(true)" title="测试当前配置并持久化保存">⚡ 测试并保存</button>
                 <button class="btn btn-secondary btn-sm" onclick="bindCodexMcp()" title="自动为 OpenAI Codex 注入 ComfyUI MCP 智能体工具">🤖 接入 Codex MCP</button>
                 <span class="collapse-toggle" onclick="toggleCardCollapse('comfyui-collapse-body', this)">▼ 收起</span>
               </div>
             </div>
 
             <div id="comfyui-collapse-body">
-              <div class="plain-tip-box" style="border-left-color: #ec4899;">
+              <div class="plain-tip-box" style="border-left-color: #38bdf8;">
                 💡 <strong>【白话通俗解释】</strong>：为智能网关赋予外挂生图与图片反推能力。自动发现本地（默认 8284 / 8188）或局域网/远程部署的 ComfyUI，对外暴露 OpenAI 标准生图端点 <code>/v1/images/generations</code>，并通过 MCP 为 Codex / OpenCode 提供原生 <code>generate_image</code> 智能体工具，彻底消除由于模型原生无生图能力带来的断层。
               </div>
 
               <!-- ComfyUI Configuration Form Grid -->
-              <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:16px;">
+              <div style="display:grid; grid-template-columns: minmax(240px, 1.2fr) minmax(280px, 1.8fr) minmax(130px, 160px); gap:16px; margin-bottom:16px; align-items:flex-start;">
                 <div class="form-group" style="margin-bottom:0;">
-                  <label style="display:flex; justify-content:space-between;">
-                    <span>ComfyUI 服务端地址 (Host URL)</span>
-                    <span style="font-size:0.75rem; color:var(--muted);">支持 8284、8188 或远程局域网</span>
+                  <label style="display:block; font-size:0.8rem; font-weight:600; color:#f4f4f5; margin-bottom:4px;">
+                    ComfyUI 服务端地址 (Host URL)
                   </label>
-                  <input type="text" id="comfy-cfg-host" class="form-control" placeholder="http://127.0.0.1:8284" value="${config.comfyui?.host || 'http://127.0.0.1:8284'}" style="background:#09090b; border-color:#27272a;">
+                  <input type="text" id="comfy-cfg-host" class="form-control" placeholder="http://127.0.0.1:8284" value="${config.comfyui?.host || 'http://127.0.0.1:8284'}" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
+                  <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">支持 8284、8188 端口或远程局域网 IP</div>
                 </div>
 
                 <div class="form-group" style="margin-bottom:0;">
-                  <label style="display:flex; justify-content:space-between;">
-                    <span>工作流存储目录 (Workflows Directory)</span>
-                    <span style="font-size:0.75rem; color:var(--muted);">留空则自动探测 scratch/comfyui-agent-workflows</span>
+                  <label style="display:block; font-size:0.8rem; font-weight:600; color:#f4f4f5; margin-bottom:4px;">
+                    工作流存储目录 (Workflows Directory)
                   </label>
-                  <input type="text" id="comfy-cfg-dir" class="form-control" placeholder="自动探测本地工作流标准库..." value="${config.comfyui?.workflowsDir || ''}" style="background:#09090b; border-color:#27272a;">
+                  <input type="text" id="comfy-cfg-dir" class="form-control" placeholder="留空则自动探测 scratch/comfyui-agent-workflows" value="${config.comfyui?.workflowsDir || ''}" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
+                  <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">留空则自动探测 scratch/comfyui-agent-workflows</div>
                 </div>
 
-                <div class="form-group" style="margin-bottom:0; max-width:200px;">
-                  <label>全局超时时间 (秒)</label>
-                  <input type="number" id="comfy-cfg-timeout" class="form-control" min="30" max="600" value="${config.comfyui?.timeoutSec || 180}" style="background:#09090b; border-color:#27272a;">
+                <div class="form-group" style="margin-bottom:0;">
+                  <label style="display:block; font-size:0.8rem; font-weight:600; color:#f4f4f5; margin-bottom:4px;">
+                    采样超时 (秒)
+                  </label>
+                  <input type="number" id="comfy-cfg-timeout" class="form-control" min="30" max="600" value="${config.comfyui?.timeoutSec || 180}" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
+                  <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">出图等待上限 (默认 180s)</div>
                 </div>
               </div>
 
               <!-- Hardware & Workflow Statistics Strip -->
-              <div style="display:flex; gap:12px; flex-wrap:wrap; background:#121215; border:1px solid #27272a; border-radius:8px; padding:10px 14px; margin-bottom:16px; align-items:center;">
-                <div style="font-size:0.8rem; color:var(--muted);">硬件加速环境：<strong id="comfy-val-device" style="color:#f4f4f5;">探测中...</strong></div>
-                <div style="font-size:0.8rem; color:var(--muted); margin-left:auto;">显存总计：<strong id="comfy-val-vram" style="color:#34d399;">--</strong></div>
-                <div style="font-size:0.8rem; color:var(--muted);">已装载工作流：<strong id="comfy-val-wfcount" style="color:#38bdf8;">0 套</strong></div>
+              <div style="display:flex; gap:16px; flex-wrap:wrap; background:#09090b; border:1px solid #27272a; border-radius:6px; padding:10px 14px; margin-bottom:16px; align-items:center;">
+                <div style="font-size:0.8rem; color:var(--muted); display:flex; align-items:center; gap:6px;">
+                  <span>🎮 加速环境:</span>
+                  <strong id="comfy-val-device" style="color:#f4f4f5; font-weight:600;">探测中...</strong>
+                </div>
+                <div style="font-size:0.8rem; color:var(--muted); display:flex; align-items:center; gap:6px; margin-left:auto;">
+                  <span>显存总计:</span>
+                  <strong id="comfy-val-vram" style="color:#34d399; font-weight:600;">--</strong>
+                </div>
+                <div style="font-size:0.8rem; color:var(--muted); display:flex; align-items:center; gap:6px;">
+                  <span>已装载工作流:</span>
+                  <strong id="comfy-val-wfcount" style="color:#38bdf8; font-weight:600;">0 套</strong>
+                </div>
               </div>
 
               <!-- 🧪 即时抽卡与在线测试沙箱 (Interactive Test Sandbox) -->
-              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:14px; margin-bottom:12px;">
+              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:14px; margin-bottom:14px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                   <span style="font-size:0.85rem; font-weight:600; color:#f1f5f9; display:flex; align-items:center; gap:6px;">
                     <span>🎨</span>
@@ -6834,32 +6846,34 @@ function renderDashboardHtml(config) {
                   <span style="font-size:0.75rem; color:var(--muted);">测试网关端到端调度与图片预览</span>
                 </div>
 
-                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
-                  <div style="flex:1; min-width:260px;">
+                <div style="display:grid; grid-template-columns: minmax(220px, 1fr) minmax(240px, 340px) auto; gap:10px; align-items:flex-end;">
+                  <div style="min-width:0;">
                     <label style="font-size:0.75rem; color:var(--muted); margin-bottom:4px; display:block;">测试提示词 (Positive Prompt)</label>
-                    <input type="text" id="comfy-test-prompt" class="form-control" value="1girl, cinematic lighting, 8k uhd, photorealistic, elegant smile" placeholder="输入画面提示词..." style="background:#121215; border-color:#27272a; font-size:0.85rem;">
+                    <input type="text" id="comfy-test-prompt" class="form-control" value="1girl, cinematic lighting, 8k uhd, photorealistic, elegant smile" placeholder="输入画面提示词..." style="width:100%; box-sizing:border-box; background:#121215; border-color:#27272a; font-size:0.85rem; height:36px;">
                   </div>
-                  <div style="width:240px;">
+                  <div style="min-width:0;">
                     <label style="font-size:0.75rem; color:var(--muted); margin-bottom:4px; display:block;">调度工作流</label>
-                    <select id="comfy-test-workflow-select" class="form-control" style="background:#121215; border-color:#27272a; font-size:0.85rem;">
-                      <option value="04">04_极速抽卡_无限多风格探索流 (极速测试推荐)</option>
+                    <select id="comfy-test-workflow-select" class="form-control" style="width:100%; max-width:100%; box-sizing:border-box; background:#121215; border-color:#27272a; font-size:0.85rem; height:36px; text-overflow:ellipsis; overflow:hidden;">
+                      <option value="04">04_极速抽卡_无限多风格探索流 ⭐[极速推荐]</option>
                       <option value="01">01_真人写实_极致NanoBanana (高精成片)</option>
                     </select>
                   </div>
-                  <button type="button" class="btn btn-primary" id="btn-comfy-test-gen" onclick="triggerComfyUiTestGen()" style="background:#ec4899; border-color:#db2777; height:36px; padding:0 16px; font-weight:600;">
-                    🚀 试画一张
-                  </button>
+                  <div style="flex-shrink:0;">
+                    <button type="button" class="btn btn-primary" id="btn-comfy-test-gen" onclick="triggerComfyUiTestGen()" style="height:36px; padding:0 18px; font-weight:600; white-space:nowrap; display:inline-flex; align-items:center; justify-content:center; gap:6px;">
+                      🚀 试画一张
+                    </button>
+                  </div>
                 </div>
 
                 <!-- Test Result Container (Image Preview & Metadata) -->
-                <div id="comfy-test-result-box" style="display:none; background:#121215; border:1px solid #27272a; border-radius:6px; padding:12px; margin-top:10px;">
+                <div id="comfy-test-result-box" style="display:none; background:#121215; border:1px solid #27272a; border-radius:6px; padding:12px; margin-top:12px;">
                   <div style="display:flex; gap:16px; flex-wrap:wrap;">
                     <div style="max-width:280px; max-height:280px; overflow:hidden; border-radius:6px; border:1px solid #3f3f46; display:flex; align-items:center; justify-content:center; background:#000;">
                       <img id="comfy-test-result-img" src="" alt="预览图" style="max-width:100%; max-height:280px; object-fit:contain; display:block;">
                     </div>
                     <div style="flex:1; min-width:240px; font-size:0.8rem; line-height:1.6; color:#a1a1aa;">
                       <div style="font-weight:600; color:#f4f4f5; margin-bottom:4px;" id="comfy-test-res-title">成片生成就绪</div>
-                      <div>工作流：<strong id="comfy-test-res-wf" style="color:#f472b6;">--</strong></div>
+                      <div>工作流：<strong id="comfy-test-res-wf" style="color:#38bdf8;">--</strong></div>
                       <div>采样耗时：<strong id="comfy-test-res-duration" style="color:#34d399;">--</strong></div>
                       <div>随机 Seed：<strong id="comfy-test-res-seed" style="color:#38bdf8;">--</strong></div>
                       <div>托管地址：<a id="comfy-test-res-link" href="#" target="_blank" style="color:#38bdf8; word-break:break-all;">--</a></div>
@@ -10373,6 +10387,14 @@ function renderDashboardHtml(config) {
     // ==========================================
     var comfyUiStatusData = null;
 
+    function cleanDeviceName(raw) {
+      if (!raw || typeof raw !== 'string') return 'GPU 加速设备';
+      var s = raw.replace(/^cuda:[0-9]+ */i, '').replace(/ *: *native *$/i, '').trim();
+      s = s.replace(/ Graphics/i, '');
+      s = s.split('[').join('(').split(']').join(')');
+      return s.trim() || raw;
+    }
+
     async function loadComfyUiPluginStatus(force) {
       try {
         const url = '/balancer/api/comfyui/status' + (force ? '?force=true' : '');
@@ -10383,7 +10405,7 @@ function renderDashboardHtml(config) {
         comfyUiStatusData = data;
         const st = data.status || {};
         const isOnline = Boolean(st.isOnline);
-        const devName = st.deviceInfo?.name || '未知设备';
+        const devName = cleanDeviceName(st.deviceInfo?.name || '未知设备');
         const vramGb = st.deviceInfo?.vramTotal ? (st.deviceInfo.vramTotal / (1024 * 1024 * 1024)).toFixed(1) + ' GB' : '--';
         const wfCount = data.workflowsCount || 0;
 
@@ -10409,7 +10431,7 @@ function renderDashboardHtml(config) {
         const ovVal = document.getElementById('plugins-overview-val');
         if (ovVal) {
           ovVal.textContent = isOnline ? 'ComfyUI 就绪' : 'ComfyUI 离线';
-          ovVal.style.color = isOnline ? '#f472b6' : '#a1a1aa';
+          ovVal.style.color = isOnline ? '#38bdf8' : '#a1a1aa';
         }
 
         // 2. Update device info
@@ -10455,7 +10477,7 @@ function renderDashboardHtml(config) {
                 tagsHtml += '<span style="background:#18181b; border:1px solid #27272a; border-radius:3px; padding:1px 5px; color:#a1a1aa; font-size:0.68rem;">#' + wf.tags[j] + '</span>';
               }
             }
-            items.push('<div style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:8px 10px; font-size:0.75rem;"><div style="font-weight:600; color:#f472b6; margin-bottom:2px;">[' + wf.id + '] ' + wf.name + '</div><div style="color:var(--muted); margin-bottom:4px; font-size:0.72rem;">' + (wf.description || '') + '</div><div style="display:flex; flex-wrap:wrap; gap:4px;">' + tagsHtml + '</div></div>');
+            items.push('<div style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:8px 10px; font-size:0.75rem;"><div style="margin-bottom:2px;"><span style="color:#38bdf8; font-weight:700; margin-right:4px;">[' + wf.id + ']</span><span style="font-weight:600; color:#f4f4f5;">' + wf.name + '</span></div><div style="color:var(--muted); margin-bottom:4px; font-size:0.72rem;">' + (wf.description || '') + '</div><div style="display:flex; flex-wrap:wrap; gap:4px;">' + tagsHtml + '</div></div>');
           }
           catalogList.innerHTML = items.join('');
         }
