@@ -28,6 +28,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
 const DEFAULT_COMPRESSION_CONFIG = {
   enabled: true,
@@ -1951,6 +1952,7 @@ function resetCompressionStats() {
   try {
     sessionCompressionMemo.clear();
     globalCompressionMemo.clear();
+    globalStatsDedup.clear();
   } catch (_) {}
 
   const nowIso = new Date().toISOString();
@@ -2604,8 +2606,6 @@ function foldStructuredData(text, options = {}, context = {}) {
     // NEVER truncate plaintext, source code, scripts, or file outputs. Plaintext
     // is 100% preserved to guarantee zero code loss, zero hallucination, and zero patch failures.
     return text;
-
-    return text;
   } catch (err) {
     console.warn('[ContextCompactor] foldStructuredData error, bypassing:', err.message);
     return text;
@@ -3212,13 +3212,21 @@ function cleanSearchAndTreeOutput(text) {
           return line;
         }
         const spaceCount = (t.match(/ /g) || []).length;
-        const isMinifiedOrAsset = (spaceCount / t.length < 0.05) ||
+        // P2-M3: Tighter threshold (0.02) + SQL/URL exclusion to prevent false positives
+        const isMinifiedOrAsset = (
+          (spaceCount / t.length < 0.02) ||
           t.includes(';function(') ||
           t.includes(',function(') ||
           t.includes('data:image/') ||
           t.includes('<svg ') ||
           t.includes('webpack') ||
-          /^[\w./\\-]+:\d+:/.test(t);
+          /^[\w./\\-]+:\d+:/.test(t)
+        ) && !(
+          // Exclude SQL statements — they naturally have low space ratios
+          /^\s*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|EXPLAIN)\s/i.test(t) ||
+          // Exclude long URLs / API endpoints
+          /^https?:\/\//i.test(t)
+        );
         if (isMinifiedOrAsset) {
           modified = true;
           const omitted = line.length - 220;
@@ -3534,8 +3542,9 @@ function slimDescription(desc) {
   if (typeof desc !== 'string' || !desc.trim()) return desc;
   try {
     let text = desc;
-    // 1. Strip markdown code blocks (e.g. verbose multi-line code examples)
-    text = text.replace(/```[\s\S]*?```/g, '');
+    // 1. Strip markdown code blocks, but ONLY verbose ones (> 500 chars)
+    // P3-M2: Short code examples (< 500 chars) are preserved to maintain tool parameter formatting guidance
+    text = text.replace(/```[\s\S]*?```/g, (match) => match.length > 500 ? '' : match);
     // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...") while preserving trailing safety rules
     text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
     // 3. Strip trailing example sections at the end of description
@@ -3791,6 +3800,13 @@ const MAX_MEMO_SESSIONS = 500;
 const MAX_MEMO_KEYS_PER_SESSION = 200;
 const MAX_GLOBAL_MEMO_KEYS = 2000;
 const globalCompressionMemo = new Map();
+
+// P0-H2: Stats dedup fingerprint pool — prevent multi-turn re-counting of identical content
+// In multi-turn Responses API conversations, when CacheZone misses (session evicted),
+// the same tool output text gets re-compressed and re-counted. This pool tracks content
+// fingerprints to skip duplicate stats recording.
+const MAX_STATS_DEDUP_KEYS = 10000;
+const globalStatsDedup = new Map();
 
 function normalizeMemoSessionId(sessionId) {
   if (!sessionId || typeof sessionId !== 'string') return null;
@@ -4082,7 +4098,7 @@ function compactSystemPrompt(text, opts = {}, sessionId = null, hasMultiAgentOve
 
     // 1. If <multi_agent_mode> explicitly disables earlier multi-agent delegation instructions,
     // compact the contradicted 2,189-char multi-agent tutorial message down to its core workspace rule
-    if (hasMultiAgentOverride && out.includes('You are `/root`, the primary agent in a team of agents') && out.includes('spawn_agent')) {
+    if (hasMultiAgentOverride && out.includes('You are `/root`, the primary agent in a team of agents') && out.includes('spawn_agent') && out.includes('Use the spawn_agent tool to delegate')) {
       out = 'You are `/root`, the primary agent. All agents share the same container, filesystem, and current working directory.';
     }
 
@@ -4264,7 +4280,7 @@ function compactText(text, options = {}, sessionId = null) {
     // ensure we don't return an empty string that could cause upstream 400 (e.g. Anthropic empty content block)
     // or trigger empty SSE stream aborts.
     if (result.trim().length === 0 && text.trim().length > 0) {
-      result = '[Empty terminal output]';
+      result = '[Terminal output cleaned: contained only ANSI control sequences / progress bars]';
     }
 
     // 100% Anti-Inflation Circuit Breaker (坚决不反向膨胀)
@@ -4277,7 +4293,7 @@ function compactText(text, options = {}, sessionId = null) {
                           result.includes('[Git:') ||
                           result.includes('[Build/Pkg:') ||
                           result.includes('[llmtrim Log Dedup:') ||
-                          result.includes('[Empty terminal output]');
+                          result.includes('[Terminal output cleaned:');
     if (result.length >= text.length && !hasFoldMarker) {
       result = text;
     }
@@ -4287,7 +4303,17 @@ function compactText(text, options = {}, sessionId = null) {
     }
 
     const totalSaved = text.length - result.length;
-    if (totalSaved > 0 && !opts._isRetryAttempt) {
+    // P0-H2: Stats dedup — skip recording if this exact content was already counted
+    const _statsFp = hashContent(text) + '_' + (opts.model || 'u');
+    const _isStatsDedup = globalStatsDedup.has(_statsFp);
+    if (!_isStatsDedup && totalSaved > 0) {
+      if (globalStatsDedup.size >= MAX_STATS_DEDUP_KEYS) {
+        const oldestKey = globalStatsDedup.keys().next().value;
+        globalStatsDedup.delete(oldestKey);
+      }
+      globalStatsDedup.set(_statsFp, 1);
+    }
+    if (totalSaved > 0 && !opts._isRetryAttempt && !_isStatsDedup) {
       const origLen = text.length;
       const compLen = result.length;
       compressionStats.totalOriginalChars += origLen;
@@ -4432,7 +4458,7 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
           }
           return msg;
         }
-        if (msg.role === 'user' && typeof msg.content === 'string' && msg.content.startsWith('[Tool Output: ') && msg.content.endsWith(']')) {
+        if (msg.role === 'user' && typeof msg.content === 'string' && (msg._isGatewayToolWrapper === true || (msg.content.startsWith('[Tool Output: ') && msg.content.endsWith(']')))) {
           const innerToolText = msg.content.slice(14, -1);
           const compInner = compactText(innerToolText, compOpts, sessionId);
           if (compInner !== innerToolText) {

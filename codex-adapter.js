@@ -19,6 +19,27 @@ const os = require('node:os');
 const { execSync } = require('node:child_process');
 const contextCompactor = require('./context-compactor');
 
+let _globalComfyAdapter = null;
+function getComfyUIAdapter() {
+  if (!_globalComfyAdapter) {
+    try {
+      const { ComfyUIAdapter } = require('./comfyui-adapter');
+      _globalComfyAdapter = new ComfyUIAdapter({ rootDir: __dirname });
+    } catch (_) {}
+  }
+  return _globalComfyAdapter;
+}
+
+function setComfyUIAdapter(adapter) {
+  _globalComfyAdapter = adapter;
+}
+
+function isImageGenerationToolName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const n = name.trim();
+  return n === 'generate_image' || n === 'mcp__comfyui__generate_image' || n === 'image_gen';
+}
+
 // 38 All Available OpenCode Go Models with rich metadata for Codex catalog & reasoning support
 const OPENCODE_GO_ALL_MODELS = [
   {
@@ -1404,7 +1425,22 @@ function pruneResponsesPayload(body, sessionId = null) {
 
       const curItem = input[i];
       const isCurUser = isUserItem(curItem);
-      if (curItem && !isCurUser && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
+      // P0-H3: Skip content folding for tool responses — they must stay paired with tool_calls
+      // and their content structure must remain intact for upstream strict validation.
+      // Also skip 'message' items that contain tool_calls (they hold the function invocation).
+      const isCurToolResponse = curItem && (
+        curItem.type === 'function_call_output' ||
+        curItem.type === 'custom_tool_call_output' ||
+        (curItem.type && curItem.type.endsWith('_output')) ||
+        (curItem.call_id && curItem.output !== undefined) ||
+        curItem.role === 'tool' ||
+        curItem.role === 'function'
+      );
+      const isCurToolCall = curItem && (
+        curItem.type === 'function_call' ||
+        (curItem.tool_calls && curItem.tool_calls.length > 0)
+      );
+      if (curItem && !isCurUser && !isCurToolResponse && !isCurToolCall && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
         const head = curItem.content.slice(0, 1500);
         const tail = curItem.content.slice(-1500);
         const folded = curItem.content.length - 3000;
@@ -1872,7 +1908,8 @@ function sanitizeAndValidateChatMessages(messages) {
         if (interMsg.role === 'tool') {
           result.push({
             role: 'user',
-            content: `[Tool Output: ${typeof interMsg.content === 'string' ? interMsg.content : JSON.stringify(interMsg.content)}]`
+            content: `[Tool Output: ${typeof interMsg.content === 'string' ? interMsg.content : JSON.stringify(interMsg.content)}]`,
+            _isGatewayToolWrapper: true
           });
         } else {
           result.push(interMsg);
@@ -1883,7 +1920,8 @@ function sanitizeAndValidateChatMessages(messages) {
     } else if (msg && msg.role === 'tool') {
       result.push({
         role: 'user',
-        content: `[Tool Output: ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}]`
+        content: `[Tool Output: ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}]`,
+        _isGatewayToolWrapper: true
       });
       i++;
     } else {
@@ -2000,7 +2038,7 @@ const COMFYUI_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'mcp__comfyui__generate_image',
+      name: 'generate_image',
       description: '调用本地 ComfyUI 图像智能体工业级工作流生成高质量真实图片。支持真人写实、二次元、国风厚涂、极速抽卡、唯美壁纸等多种风格，成片以 Markdown 格式优雅渲染展示。',
       parameters: {
         type: 'object',
@@ -2037,7 +2075,26 @@ const COMFYUI_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'mcp__comfyui__interrogate_image',
+      name: 'mcp__comfyui__generate_image',
+      description: '别名工具：调用本地 ComfyUI 图像智能体工业级工作流生成高质量真实图片。与 generate_image 等价。',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: '正向提示词' },
+          workflow: { type: 'string', description: '工作流编号或风格标签' },
+          negative: { type: 'string', description: '负向屏蔽词' },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          seed: { type: 'integer' }
+        },
+        required: ['prompt']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'interrogate_image',
       description: '分析反推图片中的提示词、风格与关键特征 (支持本地 ComfyUI WD14 深度反推或网关视觉多模态大模型透明兜底)',
       parameters: {
         type: 'object',
@@ -2046,6 +2103,20 @@ const COMFYUI_TOOLS = [
             type: 'string',
             description: '本地图片绝对文件路径或 Base64 编码图片数据'
           }
+        },
+        required: ['image_path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mcp__comfyui__interrogate_image',
+      description: '别名工具：分析反推图片中的提示词、风格与关键特征。与 interrogate_image 等价。',
+      parameters: {
+        type: 'object',
+        properties: {
+          image_path: { type: 'string', description: '本地图片绝对路径或 Base64 数据' }
         },
         required: ['image_path']
       }
@@ -2361,7 +2432,7 @@ function normalizeResponsesUsage(rawUsage, defaultInput = 20, defaultOutput = 20
 /**
  * Translates upstream ChatCompletions SSE stream into compliant OpenAI Responses SSE stream for Codex
  */
-function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null, reconnectFn = null) {
+function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null, reconnectFn = null, customComfyAdapter = null) {
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -2442,6 +2513,8 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   let fullText = '';
   const degenDetector = new StreamDegenerationDetector();
   const toolCallsMap = new Map(); // index -> { id, name, args, outIdx }
+  let comfyInterceptRec = null; // { id, name, args }
+  const comfyInterceptIndices = new Set();
   let collectedUsage = null;
   let buffer = '';
   let streamFinished = false;
@@ -2981,17 +3054,42 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         // 3. Tool Calls Stream
         if (Array.isArray(delta.tool_calls)) {
           closeReasoning();
-          closeText();
+          const hasNonImageTool = delta.tool_calls.some(tc => {
+            const fn = tc.function?.name || "";
+            const idx = tc.index ?? 0;
+            return !isImageGenerationToolName(fn) && !comfyInterceptIndices.has(idx);
+          });
+          if (hasNonImageTool) {
+            closeText();
+          }
           for (const tc of delta.tool_calls) {
             const idx = tc.index ?? 0;
+            const funcName = tc.function?.name || "";
+
+            // 智能网关层 ComfyUI 生图透明代执行拦截
+            if (isImageGenerationToolName(funcName) || comfyInterceptIndices.has(idx)) {
+              comfyInterceptIndices.add(idx);
+              if (!comfyInterceptRec) {
+                comfyInterceptRec = {
+                  id: tc.id || ("call_" + Date.now() + "_" + idx + "_comfy"),
+                  name: funcName || "generate_image",
+                  args: ""
+                };
+              }
+              if (tc.id && !comfyInterceptRec.id) {
+                comfyInterceptRec.id = tc.id;
+              }
+              if (tc.function?.arguments) {
+                comfyInterceptRec.args += tc.function.arguments;
+              }
+              continue;
+            }
             if (!toolCallsMap.has(idx)) {
               const tcOutIdx = outputIndex++;
               const callId = tc.id || `call_${Date.now()}_${idx}`;
               let funcName = tc.function?.name || '';
-              if (funcName === 'generate_image' || funcName === 'image_gen') {
-                funcName = 'mcp__comfyui__generate_image';
-              } else if (funcName === 'interrogate_image') {
-                funcName = 'mcp__comfyui__interrogate_image';
+              if (funcName === 'image_gen') {
+                funcName = 'generate_image';
               }
               const isCustomTool = (funcName === 'apply_patch');
               const rec = {
@@ -3053,7 +3151,110 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   };
 
-  const onUpstreamEnd = () => {
+  const handleComfyUITransparentExecution = async () => {
+    try {
+      let parsedArgs = {};
+      try {
+        parsedArgs = JSON.parse(comfyInterceptRec.args || '{}');
+      } catch (_) {
+        parsedArgs = { prompt: comfyInterceptRec.args };
+      }
+      const prompt = (parsedArgs.prompt || parsedArgs.description || '').trim();
+      if (!prompt) return;
+
+      const adapter = customComfyAdapter || getComfyUIAdapter();
+      if (!adapter) return;
+
+      if (!textStarted) {
+        textStarted = true;
+        textIndex = outputIndex++;
+        sendEvent('response.output_item.added', {
+          type: 'response.output_item.added',
+          sequence_number: seq++,
+          output_index: textIndex,
+          item: { id: itemIdText, type: 'message', status: 'in_progress', role: 'assistant', phase: 'final_answer', content: [] }
+        });
+        sendEvent('response.content_part.added', {
+          type: 'response.content_part.added',
+          sequence_number: seq++,
+          output_index: textIndex,
+          content_index: 0,
+          item_id: itemIdText,
+          part: { type: 'output_text', text: '', annotations: [], logprobs: [] }
+        });
+      }
+
+      const isHeavy = parsedArgs.mode === 'heavy' || /超分|精雕|微雕|高精重绘|打印级|二阶段/i.test(prompt);
+      const modeDesc = isHeavy
+        ? '正在调度双阶段高精微雕工作流渲染（高精度慢速通道）...'
+        : '正在调度单阶段极速直出工作流渲染（15步极速直出）...';
+      const notice = '\n\n> 🎨 **ComfyUI 图像智能体**：已拦截生图意图，' + modeDesc + '请稍候...\n\n';
+      fullText += notice;
+      sendEvent('response.output_text.delta', {
+        type: 'response.output_text.delta',
+        sequence_number: seq++,
+        output_index: textIndex,
+        content_index: 0,
+        item_id: itemIdText,
+        delta: notice,
+        logprobs: []
+      });
+
+      const genRes = await adapter.executeGeneration({
+        ...parsedArgs,
+        prompt,
+        negative: parsedArgs.negative || null,
+        workflow: parsedArgs.workflow || 'auto',
+        width: parsedArgs.width || null,
+        height: parsedArgs.height || null,
+        seed: parsedArgs.seed || null,
+        onProgress: ({ elapsedSec }) => {
+          if (!clientRes.destroyed && !clientRes.writableEnded) {
+            try { clientRes.write(': comfyui rendering ' + elapsedSec + 's\n\n'); } catch (_) {}
+          }
+        },
+        timeoutMs: 300000
+      });
+
+      if (genRes && genRes.success) {
+        const fileUrl = 'file:///' + genRes.localPath.replace(/\\/g, '/');
+        const durationSec = (genRes.durationMs / 1000).toFixed(1);
+        const cleanPromptTitle = prompt.slice(0, 30).replace(/[\[\]]/g, '');
+        const trackTag = genRes.isFastDirect ? '极速直出轨 (15步)' : '双阶段高精微雕轨';
+        const cardMd = '![ ' + cleanPromptTitle + ' ](' + fileUrl + ')\n\n' +
+          '> 🖼️ **成片已生成**：\n' +
+          '> - **工作流风格**：`' + (genRes.workflowName || '工业级双轨写实') + '` (' + trackTag + ')\n' +
+          '> - **本地文件**：[`' + genRes.filename + '`](' + fileUrl + ')\n' +
+          '> - **渲染耗时**：`' + durationSec + 's` | 种子：`' + (genRes.seed || '随机') + '`\n\n';
+
+        fullText += cardMd;
+        sendEvent('response.output_text.delta', {
+          type: 'response.output_text.delta',
+          sequence_number: seq++,
+          output_index: textIndex,
+          content_index: 0,
+          item_id: itemIdText,
+          delta: cardMd,
+          logprobs: []
+        });
+      }
+    } catch (err) {
+      console.error('[ComfyUI Gateway Intercept Error]', err.message);
+      const failNotice = '\n\n> ⚠️ **ComfyUI 渲染提示**：未能完成图片自动渲染（' + err.message + '）。请确认本地 8284 端口 ComfyUI 服务正常。\n\n';
+      fullText += failNotice;
+      sendEvent('response.output_text.delta', {
+        type: 'response.output_text.delta',
+        sequence_number: seq++,
+        output_index: textIndex,
+        content_index: 0,
+        item_id: itemIdText,
+        delta: failNotice,
+        logprobs: []
+      });
+    }
+  };
+
+  const onUpstreamEnd = async () => {
     upstreamEnded = true;
     if (streamFinished) return;
 
@@ -3126,6 +3327,10 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
 
     closeReasoning();
+    clearInterval(stallWatchdog);
+    if (comfyInterceptRec) {
+      await handleComfyUITransparentExecution();
+    }
     closeText();
 
     // Close tool calls
@@ -4214,10 +4419,8 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             const tcOutIdx = outputIndex++;
             const callId = cb.id || `call_${Date.now()}_${bIdx}`;
             let funcName = cb.name || 'custom_tool';
-            if (funcName === 'generate_image' || funcName === 'image_gen') {
-              funcName = 'mcp__comfyui__generate_image';
-            } else if (funcName === 'interrogate_image') {
-              funcName = 'mcp__comfyui__interrogate_image';
+            if (funcName === 'image_gen') {
+              funcName = 'generate_image';
             }
             const isCustomTool = (funcName === 'apply_patch');
             const rec = { id: callId, name: funcName, args: '', outIdx: tcOutIdx, isCustomTool };
@@ -6190,7 +6393,7 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       '2. 严禁计划中途早熟停机：若在回复中制定了多步骤任务规划（例如 Step 1/N 到 Step N/N），必须严格自主推进并执行完毕，严禁中途（如 Step 2/N）无故停机交还控制权。\n' +
       '3. 遇到执行报错或脚本异常时，必须自主分析错误原因并调用工具尝试替代方案解决，严禁输出半截话、未闭合括号或未闭合反引号直接终止。\n' +
       '4. 回复必须保持语法结构与代码块完整闭合。\n' +
-      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（mcp__comfyui__generate_image 与 mcp__comfyui__interrogate_image，或 generate_image）。必须优先直接调用 mcp__comfyui__generate_image 工具生成真实图片，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
+      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（generate_image 与 interrogate_image）。必须优先直接调用 generate_image 工具生成真实图片，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
 
     if (fs.existsSync(catalogPath)) {
       const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
@@ -6323,5 +6526,7 @@ module.exports = {
   COMPRESSION_PRESETS: contextCompactor.COMPRESSION_PRESETS,
   StreamDegenerationDetector,
   autoCorrectToolArgs,
-  dispatchResponsesStreamError
+  dispatchResponsesStreamError,
+  setComfyUIAdapter,
+  getComfyUIAdapter
 };
