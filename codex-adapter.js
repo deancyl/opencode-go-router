@@ -5920,6 +5920,11 @@ function checkCodexProcessHealth() {
 
   try {
     const psScript = `
+$procs = Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue
+if (-not $procs) {
+    Write-Output '0|0|0|0|'
+    exit
+}
 Add-Type @'
 using System;
 using System.Text;
@@ -6025,6 +6030,11 @@ function resumeOrCleanCodexProcesses() {
 
   try {
     const psScript = `
+$procs = Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue
+if (-not $procs) {
+    Write-Output '0'
+    exit
+}
 Add-Type @'
 using System;
 using System.Diagnostics;

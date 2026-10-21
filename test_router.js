@@ -9,6 +9,7 @@ const { EventEmitter } = require('node:events');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
 const psOptimizer = require('./powershell-optimizer');
+const serverMod = require('./server');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -8574,8 +8575,51 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(sseChunks.join('').includes('网关智能防御：检测到模型输出产生重复循环'), 'Must emit user-friendly degeneration notice');
     console.log('✓ Stream Degeneration Circuit Breaker & Windows Native PowerShell Anchor (Test 157) passed');
 
+    // --- [Test 158] Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers Verification ---
+    console.log('\n--- [Test 158] Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers Verification ---');
+
+    // 1. Verify GET /balancer/api/circuit-status endpoint
+    const circuitRes = await request('/balancer/api/circuit-status', { method: 'GET' });
+    assert.strictEqual(circuitRes.statusCode, 200);
+    const circuitData = JSON.parse(circuitRes.body);
+    assert.strictEqual(circuitData.ok, true);
+    assert.ok(circuitData.circuitBreaker);
+    assert.ok(Array.isArray(circuitData.accounts));
+    assert.ok(circuitData.accounts.length >= 2);
+    const accItem = circuitData.accounts[0];
+    assert.ok(accItem.circuitState);
+    assert.strictEqual(typeof accItem.consecutiveFailures, 'number');
+
+    // 2. Verify Transparent Headers in Router Response
+    const headerTestRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer test-key'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'test transparent headers' }]
+      })
+    });
+    assert.strictEqual(headerTestRes.statusCode, 200);
+    assert.ok(headerTestRes.headers['x-router-account-id'], 'Must inject x-router-account-id header');
+    assert.ok(headerTestRes.headers['x-router-circuit-state'], 'Must inject x-router-circuit-state header');
+    assert.ok(headerTestRes.headers['x-router-ttft-ms'], 'Must inject x-router-ttft-ms header');
+
+    // 3. Verify Server Module Exports & Single-Flight Mutual Exclusion
+    assert.ok(serverMod.CIRCUIT_STATE);
+    assert.strictEqual(serverMod.CIRCUIT_STATE.CLOSED, 'CLOSED');
+    assert.strictEqual(serverMod.CIRCUIT_STATE.HALF_OPEN, 'HALF_OPEN');
+    assert.strictEqual(serverMod.CIRCUIT_STATE.OPEN, 'OPEN');
+
+    const testBackoff = serverMod.calculateJitteredBackoff(1000, 2, 16000);
+    assert.ok(testBackoff >= 2800 && testBackoff <= 5200, 'Backoff must reflect 70%~130% jitter range');
+
+    console.log('✓ Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers (Test 158) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 157 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 158 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

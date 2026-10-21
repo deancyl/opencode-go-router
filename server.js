@@ -70,6 +70,15 @@ const DEFAULT_CONFIG = {
   defaultCooldownMs: 60000,
   maxFailoverRetries: 2,
   sessionAffinityEnabled: true,
+  ttftTimeoutMs: 25000,
+  chunkIdleTimeoutMs: 60000,
+  circuitBreaker: {
+    enabled: true,
+    failureThreshold: 3,
+    baseCooldownMs: 5000,
+    maxCooldownMs: 120000,
+    halfOpenMaxProbes: 1
+  },
   uiPassword: '',
   allowModelAutoUpgrade: false,
   allowRegionFallback: false,
@@ -508,7 +517,21 @@ function getEffectiveCompressionOptions(baseCompressionConfig, clientReq = null)
   return comp;
 }
 
-// Runtime account state tracking
+// Runtime account state tracking & Circuit Breaker state machine
+const CIRCUIT_STATE = {
+  CLOSED: 'CLOSED',       // 正常：放行所有常规请求
+  HALF_OPEN: 'HALF_OPEN', // 半开：单飞探测中 (Single-Flight Probe)
+  OPEN: 'OPEN'            // 熔断：完全阻断流量，执行退避冷却
+};
+
+const DEFAULT_CIRCUIT_CONFIG = {
+  enabled: true,
+  failureThreshold: 3,
+  baseCooldownMs: 5000,
+  maxCooldownMs: 120000,
+  halfOpenMaxProbes: 1
+};
+
 const accountStats = new Map();
 function syncAccountStats() {
   for (const acc of config.accounts) {
@@ -522,7 +545,18 @@ function syncAccountStats() {
         failoverCount: 0,
         cooldownUntil: 0,
         lastUsedAt: null,
-        lastError: null
+        lastError: null,
+        // Circuit Breaker State Machine
+        circuitState: CIRCUIT_STATE.CLOSED,
+        consecutiveFailures: 0,
+        consecutiveSuccesses: 0,
+        halfOpenInFlight: false,
+        halfOpenProbeStartTime: 0,
+        openCount: 0,
+        // Latency & TTFT Sliding Window
+        lastTtftMs: null,
+        avgTtftMs: null,
+        ttftSamples: []
       });
     } else {
       const stat = accountStats.get(acc.id);
@@ -538,6 +572,105 @@ function syncAccountStats() {
   }
 }
 syncAccountStats();
+
+function getCircuitState(accountId, now = Date.now()) {
+  const stat = accountStats.get(accountId);
+  if (!stat) return CIRCUIT_STATE.CLOSED;
+  if (!stat.circuitState) stat.circuitState = CIRCUIT_STATE.CLOSED;
+  if (stat.circuitState === CIRCUIT_STATE.OPEN) {
+    if (now >= (stat.cooldownUntil || 0)) {
+      stat.circuitState = CIRCUIT_STATE.HALF_OPEN;
+      stat.halfOpenInFlight = false;
+      console.log(`[Circuit Breaker] Account "${stat.name}" cooldown expired. Transitioned to HALF_OPEN (Awaiting Single-Flight Probe).`);
+    }
+  } else if (stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+    // Deadlock defense: if probe hung for > 45s without completion or error, release probe lock
+    if (stat.halfOpenInFlight && now - (stat.halfOpenProbeStartTime || 0) > 45000) {
+      console.warn(`[Circuit Breaker Deadlock Defense] Account "${stat.name}" probe hung for >45s. Releasing probe lock.`);
+      stat.halfOpenInFlight = false;
+    }
+  }
+  return stat.circuitState;
+}
+
+function calculateJitteredBackoff(baseMs, failureCount, maxMs = 120000) {
+  const exponent = Math.max(0, Math.min(failureCount, 8));
+  const rawBackoff = Math.min(maxMs, baseMs * Math.pow(2, exponent));
+  // Full jitter: 70% ~ 130%
+  const jitterFactor = 0.7 + Math.random() * 0.6;
+  return Math.round(rawBackoff * jitterFactor);
+}
+
+function recordAccountSuccess(accountId, ttftMs = null) {
+  const stat = accountStats.get(accountId);
+  if (!stat) return;
+  if (typeof ttftMs === 'number' && ttftMs >= 0) {
+    stat.lastTtftMs = ttftMs;
+    if (!Array.isArray(stat.ttftSamples)) stat.ttftSamples = [];
+    stat.ttftSamples.push(ttftMs);
+    if (stat.ttftSamples.length > 10) stat.ttftSamples.shift();
+    stat.avgTtftMs = Math.round(stat.ttftSamples.reduce((a, b) => a + b, 0) / stat.ttftSamples.length);
+  }
+  stat.consecutiveFailures = 0;
+  stat.consecutiveSuccesses = (stat.consecutiveSuccesses || 0) + 1;
+  if (stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+    stat.circuitState = CIRCUIT_STATE.CLOSED;
+    stat.halfOpenInFlight = false;
+    stat.cooldownUntil = 0;
+    stat.lastError = null;
+    console.log(`[Circuit Breaker] Account "${stat.name}" single-flight probe SUCCEEDED. Circuit CLOSED (Fully Recovered).`);
+  } else if (stat.circuitState === CIRCUIT_STATE.CLOSED) {
+    stat.halfOpenInFlight = false;
+  }
+}
+
+function recordAccountFailure(accountId, reason, statusCode = null, isRateLimit = false, explicitCooldownMs = null) {
+  const stat = accountStats.get(accountId);
+  if (!stat) return;
+  const errDesc = `${statusCode ? 'HTTP ' + statusCode + ': ' : ''}${reason || 'Unknown error'}`;
+  stat.lastError = errDesc;
+  stat.consecutiveSuccesses = 0;
+  const circuitConf = { ...DEFAULT_CIRCUIT_CONFIG, ...(config.circuitBreaker || {}) };
+
+  if (stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+    // Single-flight probe failed! Escalate cooldown and reopen circuit
+    stat.halfOpenInFlight = false;
+    stat.consecutiveFailures = (stat.consecutiveFailures || 0) + 1;
+    stat.circuitState = CIRCUIT_STATE.OPEN;
+    stat.openCount = (stat.openCount || 0) + 1;
+    const cooldown = calculateJitteredBackoff(circuitConf.baseCooldownMs, stat.consecutiveFailures, circuitConf.maxCooldownMs);
+    stat.cooldownUntil = Date.now() + cooldown;
+    console.warn(`[Circuit Breaker] Account "${stat.name}" probe FAILED (${errDesc}). Circuit re-opened until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (+${Math.round(cooldown / 1000)}s)`);
+    return;
+  }
+
+  if (isRateLimit) {
+    stat.rateLimitCount = (stat.rateLimitCount || 0) + 1;
+    stat.consecutiveFailures = (stat.consecutiveFailures || 0) + 1;
+    stat.circuitState = CIRCUIT_STATE.OPEN;
+    stat.openCount = (stat.openCount || 0) + 1;
+    let dur = Number(explicitCooldownMs);
+    if (isNaN(dur) || dur <= 0 || !isFinite(dur)) {
+      dur = config.defaultCooldownMs || 60000;
+    }
+    const jitteredDur = Math.round(dur * (0.95 + Math.random() * 0.1));
+    const targetCooldown = Date.now() + jitteredDur;
+    stat.cooldownUntil = Math.max(stat.cooldownUntil || 0, targetCooldown);
+    console.warn(`[Circuit Breaker RateLimit] Account "${stat.name}" tripped OPEN until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (${errDesc})`);
+    return;
+  }
+
+  // Standard 5xx or TTFT Timeout or Network failure
+  stat.consecutiveFailures = (stat.consecutiveFailures || 0) + 1;
+  const threshold = circuitConf.failureThreshold || 3;
+  if (stat.consecutiveFailures >= threshold) {
+    stat.circuitState = CIRCUIT_STATE.OPEN;
+    stat.openCount = (stat.openCount || 0) + 1;
+    const cooldown = calculateJitteredBackoff(circuitConf.baseCooldownMs, stat.consecutiveFailures - threshold, circuitConf.maxCooldownMs);
+    stat.cooldownUntil = Date.now() + cooldown;
+    console.warn(`[Circuit Breaker Tripped] Account "${stat.name}" reached ${stat.consecutiveFailures} consecutive failures. Circuit OPEN until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (${errDesc})`);
+  }
+}
 
 // Session affinity map: sessionId -> accountId
 const sessionMap = new Map();
@@ -658,18 +791,25 @@ setInterval(() => {
 
 let rrIndex = 0;
 
-function isAccountAvailable(acc) {
+function isAccountAvailable(acc, now = Date.now()) {
   if (!acc.enabled || !acc.apiKey || acc.apiKey.trim() === '') return false;
   const stat = accountStats.get(acc.id);
   if (!stat) return false;
-  if (stat.cooldownUntil > Date.now()) return false;
-  return true;
+  const state = getCircuitState(acc.id, now);
+  if (state === CIRCUIT_STATE.CLOSED) return true;
+  if (state === CIRCUIT_STATE.OPEN) return false;
+  if (state === CIRCUIT_STATE.HALF_OPEN) {
+    // Single-Flight Probe Guard: if a probe is already running, block concurrent requests
+    if (stat.halfOpenInFlight) return false;
+    return true;
+  }
+  return false;
 }
 
 function selectAccount(sessionId, excludeAccountIds = new Set()) {
   const now = Date.now();
   const accounts = Array.isArray(config.accounts) ? config.accounts : [];
-  const available = accounts.filter(a => isAccountAvailable(a) && !excludeAccountIds.has(a.id));
+  const available = accounts.filter(a => isAccountAvailable(a, now) && !excludeAccountIds.has(a.id));
 
   if (available.length === 0) {
     return null;
@@ -682,6 +822,12 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
     const pinnedId = sessionMap.get(effectiveSessionId) || (sessionId ? sessionMap.get(sessionId) : null);
     const candidate = available.find(a => a.id === pinnedId);
     if (candidate) {
+      const candStat = accountStats.get(candidate.id);
+      if (candStat && candStat.circuitState === CIRCUIT_STATE.HALF_OPEN && !candStat.halfOpenInFlight) {
+        candStat.halfOpenInFlight = true;
+        candStat.halfOpenProbeStartTime = now;
+        console.log(`[Circuit Breaker] Account "${candStat.name}" granted single-flight probe ticket (Session Affinity).`);
+      }
       touchSession(effectiveSessionId, now);
       if (sessionId && sessionId !== effectiveSessionId) touchSession(sessionId, now);
       return candidate;
@@ -693,6 +839,15 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
   const chosen = available[rrIndex % available.length];
   rrIndex = (rrIndex + 1) % available.length;
 
+  if (chosen) {
+    const chosenStat = accountStats.get(chosen.id);
+    if (chosenStat && chosenStat.circuitState === CIRCUIT_STATE.HALF_OPEN && !chosenStat.halfOpenInFlight) {
+      chosenStat.halfOpenInFlight = true;
+      chosenStat.halfOpenProbeStartTime = now;
+      console.log(`[Circuit Breaker] Account "${chosenStat.name}" granted single-flight probe ticket.`);
+    }
+  }
+
   if (config.sessionAffinityEnabled && effectiveSessionId) {
     if (sessionMap.size > 5000) {
       let pruneCount = Math.floor(sessionMap.size * 0.2) || 1;
@@ -702,7 +857,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
       }
       if (sessionMap.size > 5000) {
         let remaining = Math.floor(sessionMap.size * 0.2) || 1;
-        for (const sess of sessionMap.keys()) {
+        for (const sess of sessionLastSeen.keys()) {
           deleteSessionRecord(sess);
           if (--remaining <= 0) break;
         }
@@ -720,18 +875,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
 }
 
 function recordCooldown(accountId, cooldownMs, reason) {
-  const stat = accountStats.get(accountId);
-  if (stat) {
-    let dur = Number(cooldownMs);
-    if (isNaN(dur) || dur <= 0 || !isFinite(dur)) {
-      dur = config.defaultCooldownMs;
-    }
-    const targetCooldown = Date.now() + dur;
-    stat.cooldownUntil = Math.max(stat.cooldownUntil || 0, targetCooldown);
-    stat.rateLimitCount += 1;
-    stat.lastError = `Rate limit cooldown for ${Math.round(dur / 1000)}s: ${reason || '429 / 503'}`;
-    console.warn(`[Router Cooldown] Account "${stat.name}" cooling down until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (${reason})`);
-  }
+  recordAccountFailure(accountId, reason, null, true, cooldownMs);
 }
 
 // Connectivity Tester
@@ -1480,6 +1624,7 @@ function handleUpstreamGlitchAndFailover({
   }
 
   // Step 2: If in-flight jitter retry failed, try backup subscription account if available
+  recordAccountFailure(account.id, `Upstream Cluster Node Failure (${statusCode})`, statusCode, false);
   const nextAccount = selectAccount(sessionId, triedAccountIds);
   if (nextAccount) {
     const stat = accountStats.get(account.id);
@@ -1583,6 +1728,7 @@ function handleNetworkErrorFailover({
   }
 
   // Step 2: Try next backup subscription account
+  recordAccountFailure(account.id, err.message, err.message && err.message.includes('Timeout') ? 504 : 502, false);
   const nextAccount = selectAccount(sessionId, triedAccountIds);
   if (nextAccount) {
     const stat = accountStats.get(account.id);
@@ -1976,7 +2122,54 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   let clientAborted = false;
   let currentUpstreamRes = null;
 
+  const startTime = Date.now();
+  let ttftTimer = null;
+  let chunkIdleTimer = null;
+  let ttftMs = null;
+
+  const effectiveTtftTimeout = Number(config.ttftTimeoutMs) > 0 
+    ? Number(config.ttftTimeoutMs) 
+    : (config.circuitBreaker?.ttftTimeoutMs || 25000);
+
+  const effectiveChunkIdleTimeout = Number(config.chunkIdleTimeoutMs) > 0 
+    ? Number(config.chunkIdleTimeoutMs) 
+    : (config.circuitBreaker?.chunkIdleTimeoutMs || 60000);
+
+  const clearAllTimers = () => {
+    if (ttftTimer) {
+      clearTimeout(ttftTimer);
+      ttftTimer = null;
+    }
+    if (chunkIdleTimer) {
+      clearTimeout(chunkIdleTimer);
+      chunkIdleTimer = null;
+    }
+  };
+
+  ttftTimer = setTimeout(() => {
+    if (responded || clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+    console.warn(`[TTFT Timeout] Proxy request to "${account.name}" exceeded ${effectiveTtftTimeout}ms TTFT threshold before first byte.`);
+    recordAccountFailure(account.id, `TTFT Timeout (${effectiveTtftTimeout}ms)`, 504);
+    try {
+      proxyReq.destroy(new Error(`TTFT Timeout (${effectiveTtftTimeout}ms)`));
+    } catch (_) {}
+
+    if (!clientRes.headersSent) {
+      const nextAccount = selectAccount(sessionId, triedAccountIds);
+      const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+      if (nextAccount && attemptNumber <= maxRetries) {
+        console.log(`[TTFT Failover] In-flight switching from "${account.name}" to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+        finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+        sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
+        return;
+      }
+    }
+  }, effectiveTtftTimeout);
+
   const finishRequest = () => {
+    clearAllTimers();
     if (!requestFinished) {
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
@@ -1987,11 +2180,15 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   let clientErrorHandler = null;
   const clientCloseHandler = () => {
+    clearAllTimers();
     if (clientErrorHandler) {
       clientRes.removeListener('error', clientErrorHandler);
     }
     if (!clientRes.writableEnded) {
       clientAborted = true;
+      if (stat && stat.halfOpenInFlight && stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+        stat.halfOpenInFlight = false;
+      }
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
       }
@@ -2019,6 +2216,11 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   });
 
   proxyReq.on('response', (upstreamRes) => {
+    if (ttftTimer) {
+      clearTimeout(ttftTimer);
+      ttftTimer = null;
+    }
+    ttftMs = Date.now() - startTime;
     currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
@@ -2250,7 +2452,30 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
 
     responded = true;
-    clientRes.writeHead(statusCode, getCorsHeaders(upstreamRes.headers));
+    recordAccountSuccess(account.id, ttftMs);
+    const outHeaders = getCorsHeaders(upstreamRes.headers);
+    outHeaders['x-router-account-id'] = account.id;
+    outHeaders['x-router-circuit-state'] = stat ? stat.circuitState : 'CLOSED';
+    if (ttftMs !== null) outHeaders['x-router-ttft-ms'] = String(ttftMs);
+    if (attemptNumber > 1) outHeaders['x-router-failover-attempts'] = String(attemptNumber - 1);
+    clientRes.writeHead(statusCode, outHeaders);
+
+    const resetChunkIdleTimer = () => {
+      if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
+      chunkIdleTimer = setTimeout(() => {
+        console.warn(`[Chunk Idle Timeout] Upstream stream idle for more than ${effectiveChunkIdleTimeout}ms`);
+        try { upstreamRes.destroy(new Error(`Chunk Idle Timeout (${effectiveChunkIdleTimeout}ms)`)); } catch (_) {}
+      }, effectiveChunkIdleTimeout);
+    };
+    resetChunkIdleTimer();
+    upstreamRes.on('data', resetChunkIdleTimer);
+    upstreamRes.on('end', () => {
+      if (chunkIdleTimer) {
+        clearTimeout(chunkIdleTimer);
+        chunkIdleTimer = null;
+      }
+    });
+
     upstreamRes.pipe(clientRes);
 
     const onClientPipeError = () => {
@@ -2288,9 +2513,9 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
             clientRes.write(`event: error\ndata: ${JSON.stringify({ error: { message: 'Upstream stream terminated prematurely: ' + err.message, type: 'upstream_stream_error' } })}\n\n`);
           } catch (_) {}
           try {
-            clientRes.destroy(err);
+            clientRes.end();
           } catch (_) {
-            try { clientRes.end(); } catch (_) {}
+            try { clientRes.destroy(err); } catch (_) {}
           }
         } else {
           clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -2316,7 +2541,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           try {
             clientRes.write(`event: error\ndata: ${JSON.stringify({ error: { message: err.message, type: 'upstream_stream_error' } })}\n\n`);
           } catch (_) {}
-          try { clientRes.destroy(err); } catch (_) { try { clientRes.end(); } catch (_) {} }
+          try { clientRes.end(); } catch (_) { try { clientRes.destroy(err); } catch (_) {} }
         } else {
           clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
           clientRes.end(JSON.stringify({ error: { message: err.message, type: 'upstream_stream_error' } }));
@@ -2334,6 +2559,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   });
 
   proxyReq.on('error', (err) => {
+    clearAllTimers();
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
     if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
@@ -2344,6 +2570,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       return;
     }
 
+    recordAccountFailure(account.id, err.message, err.message && err.message.includes('Timeout') ? 504 : 502);
     console.error(`[Upstream Proxy Error] Account "${account.name}":`, err.stack || err.message);
     if (!responded) {
       const handled = handleNetworkErrorFailover({
@@ -2507,7 +2734,54 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   let clientAborted = false;
   let currentUpstreamRes = null;
 
+  const startTime = Date.now();
+  let ttftTimer = null;
+  let chunkIdleTimer = null;
+  let ttftMs = null;
+
+  const effectiveTtftTimeout = Number(config.ttftTimeoutMs) > 0 
+    ? Number(config.ttftTimeoutMs) 
+    : (config.circuitBreaker?.ttftTimeoutMs || 25000);
+
+  const effectiveChunkIdleTimeout = Number(config.chunkIdleTimeoutMs) > 0 
+    ? Number(config.chunkIdleTimeoutMs) 
+    : (config.circuitBreaker?.chunkIdleTimeoutMs || 60000);
+
+  const clearAllTimers = () => {
+    if (ttftTimer) {
+      clearTimeout(ttftTimer);
+      ttftTimer = null;
+    }
+    if (chunkIdleTimer) {
+      clearTimeout(chunkIdleTimer);
+      chunkIdleTimer = null;
+    }
+  };
+
+  ttftTimer = setTimeout(() => {
+    if (responded || clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+    console.warn(`[TTFT Timeout] Bridge chat request for model "${reqModel}" exceeded ${effectiveTtftTimeout}ms TTFT threshold before first byte.`);
+    recordAccountFailure(account.id, `TTFT Timeout (${effectiveTtftTimeout}ms)`, 504);
+    try {
+      proxyReq.destroy(new Error(`TTFT Timeout (${effectiveTtftTimeout}ms)`));
+    } catch (_) {}
+
+    if (!clientRes.headersSent) {
+      const nextAccount = selectAccount(sessionId, triedAccountIds);
+      const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+      if (nextAccount && attemptNumber <= maxRetries) {
+        console.log(`[TTFT Failover] In-flight switching from "${account.name}" to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+        finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+        bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
+        return;
+      }
+    }
+  }, effectiveTtftTimeout);
+
   const finishRequest = () => {
+    clearAllTimers();
     if (!requestFinished) {
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
@@ -2518,11 +2792,15 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
   let clientErrorHandler = null;
   const clientCloseHandler = () => {
+    clearAllTimers();
     if (clientErrorHandler) {
       clientRes.removeListener('error', clientErrorHandler);
     }
     if (!clientRes.writableEnded) {
       clientAborted = true;
+      if (stat && stat.halfOpenInFlight && stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+        stat.halfOpenInFlight = false;
+      }
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
       }
@@ -2550,6 +2828,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   });
 
   proxyReq.on('response', (upstreamRes) => {
+    if (ttftTimer) {
+      clearTimeout(ttftTimer);
+      ttftTimer = null;
+    }
+    ttftMs = Date.now() - startTime;
     currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
@@ -2723,8 +3006,32 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
 
     responded = true;
+    recordAccountSuccess(account.id, ttftMs);
+    if (!clientRes.headersSent) {
+      try {
+        clientRes.setHeader('x-router-account-id', account.id);
+        clientRes.setHeader('x-router-circuit-state', stat ? stat.circuitState : 'CLOSED');
+        if (ttftMs !== null) clientRes.setHeader('x-router-ttft-ms', String(ttftMs));
+        if (attemptNumber > 1) clientRes.setHeader('x-router-failover-attempts', String(attemptNumber - 1));
+      } catch (_) {}
+    }
 
     if (isStream) {
+      const resetChunkIdleTimer = () => {
+        if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
+        chunkIdleTimer = setTimeout(() => {
+          console.warn(`[Chunk Idle Timeout] Upstream chat stream idle for more than ${effectiveChunkIdleTimeout}ms`);
+          try { upstreamRes.destroy(new Error(`Chunk Idle Timeout (${effectiveChunkIdleTimeout}ms)`)); } catch (_) {}
+        }, effectiveChunkIdleTimeout);
+      };
+      resetChunkIdleTimer();
+      upstreamRes.on('data', resetChunkIdleTimer);
+      upstreamRes.on('end', () => {
+        if (chunkIdleTimer) {
+          clearTimeout(chunkIdleTimer);
+          chunkIdleTimer = null;
+        }
+      });
       const reconnectFn = (onSuccess, onFailure) => {
         try {
           const retryReq = transport.request(proxyOptions);
@@ -2815,10 +3122,12 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   });
 
   proxyReq.on('error', (err) => {
+    clearAllTimers();
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
     if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
+    recordAccountFailure(account.id, err.message, err.message && err.message.includes('Timeout') ? 504 : 502);
 
     if (!responded) {
       const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
@@ -2974,7 +3283,54 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   let clientAborted = false;
   let currentUpstreamRes = null;
 
+  const startTime = Date.now();
+  let ttftTimer = null;
+  let chunkIdleTimer = null;
+  let ttftMs = null;
+
+  const effectiveTtftTimeout = Number(config.ttftTimeoutMs) > 0 
+    ? Number(config.ttftTimeoutMs) 
+    : (config.circuitBreaker?.ttftTimeoutMs || 25000);
+
+  const effectiveChunkIdleTimeout = Number(config.chunkIdleTimeoutMs) > 0 
+    ? Number(config.chunkIdleTimeoutMs) 
+    : (config.circuitBreaker?.chunkIdleTimeoutMs || 60000);
+
+  const clearAllTimers = () => {
+    if (ttftTimer) {
+      clearTimeout(ttftTimer);
+      ttftTimer = null;
+    }
+    if (chunkIdleTimer) {
+      clearTimeout(chunkIdleTimer);
+      chunkIdleTimer = null;
+    }
+  };
+
+  ttftTimer = setTimeout(() => {
+    if (responded || clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+    console.warn(`[TTFT Timeout] Bridge Anthropic request for model "${reqModel}" exceeded ${effectiveTtftTimeout}ms TTFT threshold before first byte.`);
+    recordAccountFailure(account.id, `TTFT Timeout (${effectiveTtftTimeout}ms)`, 504);
+    try {
+      proxyReq.destroy(new Error(`TTFT Timeout (${effectiveTtftTimeout}ms)`));
+    } catch (_) {}
+
+    if (!clientRes.headersSent) {
+      const nextAccount = selectAccount(sessionId, triedAccountIds);
+      const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+      if (nextAccount && attemptNumber <= maxRetries) {
+        console.log(`[TTFT Failover] In-flight switching from "${account.name}" to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+        finishRequest();
+        clientRes.removeListener('close', clientCloseHandler);
+        if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+        bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
+        return;
+      }
+    }
+  }, effectiveTtftTimeout);
+
   const finishRequest = () => {
+    clearAllTimers();
     if (!requestFinished) {
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
@@ -2985,11 +3341,15 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
   let clientErrorHandler = null;
   const clientCloseHandler = () => {
+    clearAllTimers();
     if (clientErrorHandler) {
       clientRes.removeListener('error', clientErrorHandler);
     }
     if (!clientRes.writableEnded) {
       clientAborted = true;
+      if (stat && stat.halfOpenInFlight && stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+        stat.halfOpenInFlight = false;
+      }
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
       }
@@ -3017,6 +3377,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   });
 
   proxyReq.on('response', (upstreamRes) => {
+    if (ttftTimer) {
+      clearTimeout(ttftTimer);
+      ttftTimer = null;
+    }
+    ttftMs = Date.now() - startTime;
     currentUpstreamRes = upstreamRes;
     const statusCode = upstreamRes.statusCode;
 
@@ -3170,8 +3535,32 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     }
 
     responded = true;
+    recordAccountSuccess(account.id, ttftMs);
+    if (!clientRes.headersSent) {
+      try {
+        clientRes.setHeader('x-router-account-id', account.id);
+        clientRes.setHeader('x-router-circuit-state', stat ? stat.circuitState : 'CLOSED');
+        if (ttftMs !== null) clientRes.setHeader('x-router-ttft-ms', String(ttftMs));
+        if (attemptNumber > 1) clientRes.setHeader('x-router-failover-attempts', String(attemptNumber - 1));
+      } catch (_) {}
+    }
 
     if (isStream) {
+      const resetChunkIdleTimer = () => {
+        if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
+        chunkIdleTimer = setTimeout(() => {
+          console.warn(`[Chunk Idle Timeout] Upstream Anthropic stream idle for more than ${effectiveChunkIdleTimeout}ms`);
+          try { upstreamRes.destroy(new Error(`Chunk Idle Timeout (${effectiveChunkIdleTimeout}ms)`)); } catch (_) {}
+        }, effectiveChunkIdleTimeout);
+      };
+      resetChunkIdleTimer();
+      upstreamRes.on('data', resetChunkIdleTimer);
+      upstreamRes.on('end', () => {
+        if (chunkIdleTimer) {
+          clearTimeout(chunkIdleTimer);
+          chunkIdleTimer = null;
+        }
+      });
       const reconnectFn = (onSuccess, onFailure) => {
         try {
           const retryReq = transport.request(proxyOptions);
@@ -3262,10 +3651,12 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   });
 
   proxyReq.on('error', (err) => {
+    clearAllTimers();
     finishRequest();
     clientRes.removeListener('close', clientCloseHandler);
     if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
     if (clientAborted || clientRes.destroyed || clientRes.writableEnded || clientReq.destroyed) return;
+    recordAccountFailure(account.id, err.message, err.message && err.message.includes('Timeout') ? 504 : 502);
 
     if (!responded) {
       const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
@@ -4077,12 +4468,15 @@ async function executeSystemRepair(options = {}) {
 
   const results = [];
 
-  // 1. Reset all cooldowns
+  // 1. Reset all cooldowns & circuit breakers
   for (const stat of accountStats.values()) {
     stat.cooldownUntil = 0;
+    stat.circuitState = CIRCUIT_STATE.CLOSED;
+    stat.consecutiveFailures = 0;
+    stat.halfOpenInFlight = false;
     stat.lastError = null;
   }
-  results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却状态' });
+  results.push({ item: 'Reset Cooldowns', success: true, message: '已重置所有账号的限频冷却与熔断器状态' });
 
   let omoPatchedNow = false;
   let agentGoalInjectedNow = false;
@@ -9474,12 +9868,16 @@ function renderDashboardHtml(config) {
         let badgeClass = 'badge-disabled';
         let statusText = '未配置密钥/已禁用';
         if (acc.enabled && acc.apiKey) {
-          if (stat.status === 'cooling_down') {
+          const cState = stat.circuitState || (stat.status === 'cooling_down' ? 'OPEN' : 'CLOSED');
+          if (cState === 'HALF_OPEN' || stat.status === 'half_open') {
+            badgeClass = 'badge-halfopen';
+            statusText = '🟡 半开探测中';
+          } else if (cState === 'OPEN' || stat.status === 'cooling_down') {
             badgeClass = 'badge-cooling';
-            statusText = '冷却中 (' + stat.remainingCooldownSec + 's)';
+            statusText = '🔴 熔断冷却 (' + (stat.remainingCooldownSec || 0) + 's)';
           } else {
             badgeClass = 'badge-healthy';
-            statusText = '正常可用';
+            statusText = '🟢 正常 (CLOSED)';
           }
         }
 
@@ -9517,6 +9915,8 @@ function renderDashboardHtml(config) {
           <div class="acc-metrics">
             <div class="metric-item"><span class="metric-label">活跃请求:</span><span class="metric-val" id="m-act-\${acc.id}">\${stat.activeRequests || 0}</span></div>
             <div class="metric-item"><span class="metric-label">总请求数:</span><span class="metric-val" id="m-tot-\${acc.id}">\${stat.totalRequests || 0}</span></div>
+            <div class="metric-item"><span class="metric-label">平均 TTFT:</span><span class="metric-val" id="m-ttft-\${acc.id}">\${stat.avgTtftMs ? stat.avgTtftMs + 'ms' : (stat.lastTtftMs ? stat.lastTtftMs + 'ms' : '--')}</span></div>
+            <div class="metric-item"><span class="metric-label">连续失败:</span><span class="metric-val" id="m-fail-\${acc.id}">\${stat.consecutiveFailures || 0}</span></div>
             <div class="metric-item"><span class="metric-label">429 限频:</span><span class="metric-val" id="m-429-\${acc.id}">\${stat.rateLimitCount || 0}</span></div>
             <div class="metric-item"><span class="metric-label">故障转移:</span><span class="metric-val" id="m-flv-\${acc.id}">\${stat.failoverCount || 0}</span></div>
           </div>
@@ -9985,21 +10385,28 @@ function renderDashboardHtml(config) {
         const flv = document.getElementById('m-flv-' + id);
         const badge = document.getElementById('badge-' + id);
 
-        if (act) act.innerText = stat.activeRequests;
-        if (tot) tot.innerText = stat.totalRequests;
-        if (r429) r429.innerText = stat.rateLimitCount;
-        if (flv) flv.innerText = stat.failoverCount;
+        if (act) act.innerText = stat.activeRequests || 0;
+        if (tot) tot.innerText = stat.totalRequests || 0;
+        const ttft = document.getElementById('m-ttft-' + id);
+        if (ttft) ttft.innerText = stat.avgTtftMs ? stat.avgTtftMs + 'ms' : (stat.lastTtftMs ? stat.lastTtftMs + 'ms' : '--');
+        const fail = document.getElementById('m-fail-' + id);
+        if (fail) fail.innerText = stat.consecutiveFailures || 0;
+        if (r429) r429.innerText = stat.rateLimitCount || 0;
+        if (flv) flv.innerText = stat.failoverCount || 0;
 
         if (badge) {
           if (!stat.hasKey || !stat.enabled) {
             badge.className = 'badge badge-disabled';
             badge.innerText = '未配置密钥/已禁用';
-          } else if (stat.status === 'cooling_down') {
+          } else if (stat.circuitState === 'HALF_OPEN' || stat.status === 'half_open') {
+            badge.className = 'badge badge-halfopen';
+            badge.innerText = '🟡 半开探测中';
+          } else if (stat.circuitState === 'OPEN' || stat.status === 'cooling_down') {
             badge.className = 'badge badge-cooling';
-            badge.innerText = '冷却中 (' + stat.remainingCooldownSec + 's)';
+            badge.innerText = '🔴 熔断冷却 (' + stat.remainingCooldownSec + 's)';
           } else {
             badge.className = 'badge badge-healthy';
-            badge.innerText = '正常可用';
+            badge.innerText = '🟢 正常 (CLOSED)';
           }
         }
       }
@@ -11201,11 +11608,13 @@ const server = http.createServer((req, res) => {
     const now = Date.now();
     const accountsData = config.accounts.map(acc => {
       const stat = accountStats.get(acc.id) || {};
-      const isCooling = (stat.cooldownUntil || 0) > now;
-      const remainingCooldown = isCooling ? Math.ceil((stat.cooldownUntil - now) / 1000) : 0;
+      const state = getCircuitState(acc.id, now);
+      const isCooling = state === CIRCUIT_STATE.OPEN || (stat.cooldownUntil || 0) > now;
+      const remainingCooldown = isCooling ? Math.max(0, Math.ceil(((stat.cooldownUntil || 0) - now) / 1000)) : 0;
       let status = 'healthy';
       if (!acc.enabled || !acc.apiKey || !acc.apiKey.trim()) status = 'disabled';
       else if (isCooling) status = 'cooling_down';
+      else if (state === CIRCUIT_STATE.HALF_OPEN) status = 'half_open';
 
       return {
         id: acc.id,
@@ -11213,6 +11622,12 @@ const server = http.createServer((req, res) => {
         enabled: acc.enabled,
         hasKey: Boolean(acc.apiKey && acc.apiKey.trim()),
         status,
+        circuitState: state,
+        consecutiveFailures: stat.consecutiveFailures || 0,
+        consecutiveSuccesses: stat.consecutiveSuccesses || 0,
+        halfOpenInFlight: Boolean(stat.halfOpenInFlight),
+        avgTtftMs: stat.avgTtftMs || null,
+        lastTtftMs: stat.lastTtftMs || null,
         remainingCooldownSec: remainingCooldown,
         activeRequests: stat.activeRequests || 0,
         totalRequests: stat.totalRequests || 0,
@@ -11234,7 +11649,48 @@ const server = http.createServer((req, res) => {
       sessionAffinityEnabled: config.sessionAffinityEnabled,
       defaultCooldownMs: config.defaultCooldownMs,
       maxFailoverRetries: config.maxFailoverRetries,
+      ttftTimeoutMs: config.ttftTimeoutMs || 25000,
+      chunkIdleTimeoutMs: config.chunkIdleTimeoutMs || 60000,
+      circuitBreaker: config.circuitBreaker || DEFAULT_CIRCUIT_CONFIG,
       activeSessions: sessionMap.size,
+      accounts: accountsData
+    }, null, 2));
+    return;
+  }
+
+  // Circuit Breaker Status API
+  if (reqUrl.pathname === '/balancer/api/circuit-status' && req.method === 'GET') {
+    const now = Date.now();
+    const accountsData = config.accounts.map(acc => {
+      const stat = accountStats.get(acc.id) || {};
+      const state = getCircuitState(acc.id, now);
+      const isCooling = state === CIRCUIT_STATE.OPEN || (stat.cooldownUntil || 0) > now;
+      const remSec = isCooling ? Math.max(0, Math.ceil(((stat.cooldownUntil || 0) - now) / 1000)) : 0;
+      return {
+        id: acc.id,
+        name: acc.name,
+        enabled: acc.enabled,
+        hasKey: Boolean(acc.apiKey && acc.apiKey.trim()),
+        circuitState: state,
+        consecutiveFailures: stat.consecutiveFailures || 0,
+        consecutiveSuccesses: stat.consecutiveSuccesses || 0,
+        halfOpenInFlight: Boolean(stat.halfOpenInFlight),
+        cooldownRemainingSec: remSec,
+        lastTtftMs: stat.lastTtftMs || null,
+        avgTtftMs: stat.avgTtftMs || null,
+        activeRequests: stat.activeRequests || 0,
+        totalRequests: stat.totalRequests || 0,
+        rateLimitCount: stat.rateLimitCount || 0,
+        failoverCount: stat.failoverCount || 0,
+        lastError: stat.lastError || null
+      };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({
+      success: true,
+      ok: true,
+      timestamp: new Date().toISOString(),
+      circuitBreaker: config.circuitBreaker || DEFAULT_CIRCUIT_CONFIG,
       accounts: accountsData
     }, null, 2));
     return;
@@ -11980,11 +12436,17 @@ $ghost
           const stat = accountStats.get(accountId);
           if (stat) {
             stat.cooldownUntil = 0;
+            stat.circuitState = CIRCUIT_STATE.CLOSED;
+            stat.consecutiveFailures = 0;
+            stat.halfOpenInFlight = false;
             stat.lastError = null;
           }
         } else {
           for (const stat of accountStats.values()) {
             stat.cooldownUntil = 0;
+            stat.circuitState = CIRCUIT_STATE.CLOSED;
+            stat.consecutiveFailures = 0;
+            stat.halfOpenInFlight = false;
             stat.lastError = null;
           }
         }
@@ -12501,10 +12963,27 @@ $ghost
         const now = Date.now();
         const cooldowns = enabledAccounts.map(a => Math.max(0, (accountStats.get(a.id)?.cooldownUntil || 0) - now));
         const finiteCooldowns = cooldowns.filter(c => isFinite(c) && c > 0);
-        const minCooldownMs = finiteCooldowns.length > 0 ? Math.min(...finiteCooldowns) : config.defaultCooldownMs;
+        const minCooldownMs = finiteCooldowns.length > 0 ? Math.min(...finiteCooldowns) : (config.defaultCooldownMs || 60000);
         const minCooldownSec = Math.max(1, Math.ceil(minCooldownMs / 1000));
+
+        const circuitReports = enabledAccounts.map(a => {
+          const st = accountStats.get(a.id) || {};
+          const cState = getCircuitState(a.id, now);
+          const remSec = Math.max(0, Math.ceil(((st.cooldownUntil || 0) - now) / 1000));
+          return {
+            id: a.id,
+            name: a.name,
+            state: cState,
+            probe_in_flight: Boolean(st.halfOpenInFlight),
+            consecutive_failures: st.consecutiveFailures || 0,
+            cooldown_remaining_sec: remSec,
+            last_error: st.lastError || null,
+            avg_ttft_ms: st.avgTtftMs || null
+          };
+        });
+
         res.writeHead(429, {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json; charset=utf-8',
           'Retry-After': String(minCooldownSec),
           'Access-Control-Allow-Origin': '*'
         });
@@ -12513,7 +12992,9 @@ $ghost
             message: `All OpenCode Go accounts in pool are temporarily cooling down due to rate limits. Nearest account recovers in ${minCooldownSec}s.`,
             type: 'rate_limit_exceeded',
             code: 'rate_limit_exceeded',
-            retry_after: minCooldownSec
+            retry_after: minCooldownSec,
+            circuit_status: circuitReports,
+            remediation: `Wait ${minCooldownSec}s for automatic single-flight probe, or call POST /balancer/api/reset-cooldown to immediately reset all circuit breakers.`
           }
         }));
         return;
@@ -12618,5 +13099,14 @@ module.exports = {
   getEffectiveProxyForRequest,
   clearProxyAgentCache,
   isAuthorized,
-  writeFileSyncAtomic
+  writeFileSyncAtomic,
+  CIRCUIT_STATE,
+  DEFAULT_CIRCUIT_CONFIG,
+  accountStats,
+  getCircuitState,
+  recordAccountSuccess,
+  recordAccountFailure,
+  calculateJitteredBackoff,
+  isAccountAvailable,
+  selectAccount
 };
