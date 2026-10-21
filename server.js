@@ -1603,12 +1603,12 @@ function handleModelAndContextFallback({
     let pruned = payload;
     let wasPruned = false;
     if (Array.isArray(payload.messages)) {
-      const pruneRes = codexAdapter.pruneChatMessages(payload.messages);
+      const pruneRes = codexAdapter.pruneChatMessages(payload.messages, null, sessionId);
       const prunedMsgs = pruneRes.pruned || pruneRes;
       wasPruned = Boolean(pruneRes.modified);
       pruned = { ...payload, messages: prunedMsgs };
     } else if (Array.isArray(payload.input)) {
-      const pruneRes = codexAdapter.pruneResponsesPayload(payload);
+      const pruneRes = codexAdapter.pruneResponsesPayload(payload, sessionId);
       pruned = pruneRes.pruned || pruneRes;
       wasPruned = Boolean(pruneRes.modified);
     }
@@ -1805,7 +1805,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     const hasBase64Image = reqBody && (reqBody.includes(';base64,') || reqBody.includes('data:image/'));
     if (Array.isArray(parsedBody.input) && (parsedBody.input.length > 12 || hasBase64Image || (reqBody && reqBody.length > 100000))) {
       try {
-        const pruneRes = codexAdapter.pruneResponsesPayload(parsedBody);
+        const pruneRes = codexAdapter.pruneResponsesPayload(parsedBody, sessionId);
         if (pruneRes && pruneRes.modified) {
           parsedBody = pruneRes;
           reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
@@ -2359,7 +2359,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       (responsesBody.input.length > 3 && responsesBody.input.some(it => it && ((typeof it.output === 'string' && (it.output.length > 2000 || it.output.includes(';base64,'))) || (typeof it.content === 'string' && it.content.length > 5000))));
     if (shouldPrune) {
       try {
-        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody);
+        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody, sessionId);
         if (pruneRes && pruneRes.modified) {
           responsesBody = pruneRes;
         }
@@ -2798,7 +2798,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       (responsesBody.input.length > 3 && responsesBody.input.some(it => it && ((typeof it.output === 'string' && (it.output.length > 2000 || it.output.includes(';base64,'))) || (typeof it.content === 'string' && it.content.length > 5000))));
     if (shouldPrune) {
       try {
-        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody);
+        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody, sessionId);
         if (pruneRes && pruneRes.modified) {
           responsesBody = pruneRes;
         }
@@ -7727,18 +7727,27 @@ function renderDashboardHtml(config) {
     let cachedTimeSeriesStats = null;
 
     const MODEL_PALETTE = {
-      'deepseek': '#f97316', // 活力橙 (与参考图一致)
-      'claude': '#38bdf8',   // 天空蓝
-      'kimi': '#a855f7',     // 紫罗兰
-      'glm': '#eab308',      // 亮金黄
-      'gpt': '#10b981',      // 翡翠绿
+      'deepseek-v4-pro': '#ea580c',      // 深赤橙
+      'deepseek-v4.1-flash': '#f59e0b',  // 金黄橙
+      'deepseek': '#f97316',             // 活力亮橙兜底
+      'claude': '#38bdf8',               // 天空蓝
+      'kimi': '#a855f7',                 // 紫罗兰
+      'glm': '#eab308',                  // 亮金黄
+      'gpt': '#10b981',                  // 翡翠绿
       'default': '#f97316'
     };
-    const FALLBACK_COLORS = ['#f97316', '#38bdf8', '#10b981', '#a855f7', '#eab308', '#ec4899', '#06b6d4', '#84cc16'];
+    const FALLBACK_COLORS = ['#ea580c', '#f59e0b', '#38bdf8', '#10b981', '#a855f7', '#eab308', '#ec4899', '#06b6d4', '#84cc16'];
 
     function getModelColor(modelName, index = 0) {
       if (!modelName) return MODEL_PALETTE['default'];
       const lower = String(modelName).toLowerCase();
+      // 精准区分 DeepSeek 旗舰 Pro (深赤橙 #ea580c) 与轻量 Flash (金黄橙 #f59e0b)，杜绝同色塌陷
+      if (lower.includes('deepseek') && (lower.includes('pro') || lower.includes('r1') || lower.includes('v4-pro'))) {
+        return '#ea580c';
+      }
+      if (lower.includes('deepseek') && (lower.includes('flash') || lower.includes('v4.1') || lower.includes('lite'))) {
+        return '#f59e0b';
+      }
       for (const [k, c] of Object.entries(MODEL_PALETTE)) {
         if (k !== 'default' && lower.includes(k)) return c;
       }

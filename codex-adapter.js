@@ -1442,14 +1442,30 @@ function pruneResponsesPayload(body, sessionId = null) {
       };
 
       const middleUserItems = middleItems.filter(isUserItem);
-      const droppedCount = middleItems.length - middleUserItems.length;
+      let droppedCount = middleItems.length - middleUserItems.length;
+      let keptMiddleUsers = middleUserItems;
+
       if (droppedCount > 0) {
+        // Intermediate assistant/tool interactions exist: drop them and 100% preserve all user instructions
         const notice = {
           type: 'message',
           role: 'system',
           content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
-        input = [...headItems, notice, ...middleUserItems, ...tailItems];
+        input = [...headItems, notice, ...keptMiddleUsers, ...tailItems];
+        modified = true;
+      } else {
+        // Boundary case: Middle items contain only user messages (0 assistant/tool turns).
+        // Enforce compaction by folding oldest middle user items while preserving newest
+        const maxUsersToKeep = Math.max(0, middleItems.length - 2);
+        droppedCount = middleItems.length - maxUsersToKeep;
+        keptMiddleUsers = middleUserItems.slice(-maxUsersToKeep);
+        const notice = {
+          type: 'message',
+          role: 'system',
+          content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
+        };
+        input = [...headItems, notice, ...keptMiddleUsers, ...tailItems];
         modified = true;
       }
     }
@@ -1522,13 +1538,25 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
 
     // User instruction exemption: 100% preserve all user messages in the middle
     const middleUserMsgs = middleNonSys.filter(m => m.role === 'user');
-    const middleDropped = middleNonSys.length - middleUserMsgs.length;
+    let middleDropped = middleNonSys.length - middleUserMsgs.length;
+    let keptMiddleUsers = middleUserMsgs;
+
     if (middleDropped > 0) {
       const notice = {
         role: 'system',
         content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
       };
-      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...middleUserMsgs, ...recentMsgs];
+      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...keptMiddleUsers, ...recentMsgs];
+      modified = true;
+    } else {
+      const maxUsersToKeep = Math.max(0, middleNonSys.length - 2);
+      middleDropped = middleNonSys.length - maxUsersToKeep;
+      keptMiddleUsers = middleUserMsgs.slice(-maxUsersToKeep);
+      const notice = {
+        role: 'system',
+        content: `[系统自动自愈提示：智能网关已自动压缩中间 ${middleDropped} 轮历史对话，保留初始目标与最近交互，已消除上下文超限。]`
+      };
+      result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...keptMiddleUsers, ...recentMsgs];
       modified = true;
     }
   }
