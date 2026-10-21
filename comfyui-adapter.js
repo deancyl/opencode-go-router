@@ -250,8 +250,19 @@ class ComfyUIAdapter {
       throw new Error(`找不到工作流 API 格式定义文件: ${apiPath}`);
     }
 
-    const raw = fs.readFileSync(apiPath, 'utf8');
-    const graph = JSON.parse(raw);
+    let raw;
+    try {
+      raw = fs.readFileSync(apiPath, 'utf8');
+    } catch (readErr) {
+      throw new Error(`无法读取工作流定义文件 (${apiPath}): ${readErr.message}`);
+    }
+
+    let graph;
+    try {
+      graph = JSON.parse(raw);
+    } catch (parseErr) {
+      throw new Error(`工作流定义文件 JSON 语法损坏 (${apiPath}): ${parseErr.message}`);
+    }
 
     const {
       prompt,
@@ -347,12 +358,14 @@ class ComfyUIAdapter {
       }
     }
 
-    // 5. Inject Latent Dimensions with Smart Clamping for SD1.5 (avoid 1024x1024 distortion & timeouts)
+    // 5. Inject Latent Dimensions with Smart Clamping for SD1.5 (avoid 1024x1024 square distortion & OOM timeouts)
     if (width || height || wfMeta.default_size) {
       let w = width || (wfMeta.default_size?.width || 512);
       let h = height || (wfMeta.default_size?.height || 768);
-      const maxDim = 768;
-      if (w > maxDim || h > maxDim) {
+      const isGiantSquare = (w >= 1024 && h >= 1024);
+      const isExtreme = (w > 1024 || h > 1024);
+      if (options.clampResolution === true || isGiantSquare || isExtreme) {
+        const maxDim = 768;
         const scale = maxDim / Math.max(w, h);
         w = Math.round((w * scale) / 64) * 64;
         h = Math.round((h * scale) / 64) * 64;
@@ -508,14 +521,31 @@ class ComfyUIAdapter {
     }
 
     if (!targetImage || !targetImage.filename) {
-      throw new Error('ComfyUI 执行成功但未产出图像文件。');
+      let errDetail = '';
+      if (historyEntry.status && typeof historyEntry.status === 'object') {
+        const msgs = historyEntry.status.messages;
+        if (Array.isArray(msgs) && msgs.length > 0) {
+          errDetail = msgs.map(m => Array.isArray(m) ? m.slice(1).join(': ') : String(m)).join('; ');
+        } else if (historyEntry.status.status_str) {
+          errDetail = historyEntry.status.status_str;
+        }
+      }
+      const fullMsg = errDetail
+        ? `ComfyUI 节点执行失败: ${errDetail}`
+        : 'ComfyUI 执行完成但未产出图像文件。请检查工作流中是否包含 SaveImage 节点。';
+      throw new Error(fullMsg);
     }
 
     // 4. Download image bytes from ComfyUI /view
     const viewUrl = `${serverUrl}/view?filename=${encodeURIComponent(targetImage.filename)}&subfolder=${encodeURIComponent(targetImage.subfolder || '')}&type=${encodeURIComponent(targetImage.type || 'output')}`;
     const imageBuffer = await this._httpGetBuffer(viewUrl);
 
-    // 5. Save to local artifacts directory
+    // 5. Save to local artifacts directory (with directory guard)
+    try {
+      if (!fs.existsSync(this.artifactsDir)) {
+        fs.mkdirSync(this.artifactsDir, { recursive: true });
+      }
+    } catch (_) {}
     const ext = path.extname(targetImage.filename) || '.png';
     const localFilename = `img_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext}`;
     const localFilePath = path.join(this.artifactsDir, localFilename);

@@ -4699,6 +4699,21 @@ function renderDashboardHtml(config) {
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
     }
+    /* High-Precision Tabular Numbers & Spinner */
+    .stat-val, .kpi-num, .metric-val, .metric-num, .badge, table td, .stat-badge, .quota-val, .acc-title-input {
+      font-variant-numeric: tabular-nums;
+    }
+    .card, .stat-card, .account-card, .top-bar-left, .top-bar-right, .header-actions {
+      min-width: 0;
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .spin {
+      display: inline-block;
+      animation: spin 0.8s linear infinite;
+    }
     /* Sleek Scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #09090b; }
@@ -9980,13 +9995,34 @@ function renderDashboardHtml(config) {
       }
     }
 
+    let _isRefreshingQuotas = false;
     async function refreshAllQuotas(silent = true, force = false) {
+      if (_isRefreshingQuotas) return;
       if (!currentConfig || !currentConfig.accounts) return;
       const validAccounts = currentConfig.accounts.filter(a => a.apiKey && a.apiKey.trim() && a.enabled);
       if (validAccounts.length === 0) return;
-      await Promise.all(validAccounts.map(a => fetchSingleQuota(a.id, force)));
-      if (!silent) {
-        showToast('✔ 已完成所有账号官方限额刷新！');
+
+      const refreshBtn = document.getElementById('btn-refresh-quotas');
+      const originalText = refreshBtn ? refreshBtn.innerHTML : '';
+      _isRefreshingQuotas = true;
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.innerHTML = '<span class="spin" style="margin-right:4px;">🔄</span>刷新中...';
+      }
+
+      try {
+        await Promise.all(validAccounts.map(a => fetchSingleQuota(a.id, force)));
+        if (!silent) {
+          showToast('✔ 已完成所有账号官方限额刷新！');
+        }
+      } catch (e) {
+        if (!silent) showToast('刷新配额异常: ' + e.message, true);
+      } finally {
+        _isRefreshingQuotas = false;
+        if (refreshBtn) {
+          refreshBtn.disabled = false;
+          refreshBtn.innerHTML = originalText || '🔄 刷新配额/状态';
+        }
       }
     }
 
@@ -12030,7 +12066,13 @@ $ghost
     const safeBaseDir = path.join(__dirname, 'artifacts', 'images');
 
     // Strict boundary defense against path traversal attacks (Rule 5 & Air-Gapped Safety)
-    if (!targetFilePath.startsWith(safeBaseDir) || safeFilename.includes('..')) {
+    const normTarget = path.resolve(targetFilePath);
+    const normBase = path.resolve(safeBaseDir);
+    const isInsideBase = process.platform === 'win32'
+      ? normTarget.toLowerCase().startsWith(normBase.toLowerCase() + path.sep)
+      : normTarget.startsWith(normBase + path.sep);
+
+    if (!isInsideBase || safeFilename.includes('..') || safeFilename.includes('/') || safeFilename.includes('\\') || safeFilename.includes('\0')) {
       res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: 'Forbidden: Path traversal detected' }));
       return;
