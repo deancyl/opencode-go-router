@@ -668,7 +668,8 @@ function isAccountAvailable(acc) {
 
 function selectAccount(sessionId, excludeAccountIds = new Set()) {
   const now = Date.now();
-  const available = config.accounts.filter(a => isAccountAvailable(a) && !excludeAccountIds.has(a.id));
+  const accounts = Array.isArray(config.accounts) ? config.accounts : [];
+  const available = accounts.filter(a => isAccountAvailable(a) && !excludeAccountIds.has(a.id));
 
   if (available.length === 0) {
     return null;
@@ -688,6 +689,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
   }
 
   // 2. Round-Robin selection
+  rrIndex = (Number.isInteger(rrIndex) && rrIndex >= 0) ? rrIndex : 0;
   const chosen = available[rrIndex % available.length];
   rrIndex = (rrIndex + 1) % available.length;
 
@@ -724,7 +726,8 @@ function recordCooldown(accountId, cooldownMs, reason) {
     if (isNaN(dur) || dur <= 0 || !isFinite(dur)) {
       dur = config.defaultCooldownMs;
     }
-    stat.cooldownUntil = Date.now() + dur;
+    const targetCooldown = Date.now() + dur;
+    stat.cooldownUntil = Math.max(stat.cooldownUntil || 0, targetCooldown);
     stat.rateLimitCount += 1;
     stat.lastError = `Rate limit cooldown for ${Math.round(dur / 1000)}s: ${reason || '429 / 503'}`;
     console.warn(`[Router Cooldown] Account "${stat.name}" cooling down until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (${reason})`);
@@ -1161,6 +1164,19 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
     lowerText.includes('authentication failed')
   );
 
+  // 2b. Detect Account Quota / Balance Exhaustion (HTTP 402 or 429/403 with quota exceeded)
+  const isQuotaExhausted = statusCode === 402 || (
+    (statusCode === 429 || statusCode === 403) && (
+      lowerText.includes('insufficient_quota') ||
+      lowerText.includes('quota_exceeded') ||
+      lowerText.includes('exceeded your current quota') ||
+      lowerText.includes('out of quota') ||
+      lowerText.includes('credit') ||
+      lowerText.includes('balance') ||
+      lowerText.includes('arrears')
+    )
+  );
+
   // 3. Detect Rate Limited / Service Unavailable
   const isRateLimitedOrServiceUnavailable = statusCode === 429 || (statusCode === 503 && lowerText.includes('rate limit'));
 
@@ -1213,6 +1229,7 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
   return {
     isUpstreamClusterGlitch,
     isInvalidApiKey,
+    isQuotaExhausted,
     isRateLimitedOrServiceUnavailable,
     isContextLengthExceeded,
     isRegionBlocked,
@@ -1251,11 +1268,54 @@ function handleInvalidApiKeyFailover({
   if (clientErrorHandler || clientCloseHandler?.errorHandler) {
     clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
   }
+  const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+  if (attemptNumber > maxRetries) {
+    return false;
+  }
   const nextAccount = selectAccount(sessionId, triedAccountIds);
   if (nextAccount) {
     const stat = accountStats.get(account.id);
     if (stat) stat.failoverCount += 1;
     console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode} (Invalid API Key). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+    retryFn(nextAccount);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Unified Quota / Balance Exhaustion Account Failover Handler (HTTP 402)
+ */
+function handleQuotaExhaustedFailover({
+  protocolTag,
+  clientRes,
+  account,
+  attemptNumber,
+  triedAccountIds,
+  sessionId,
+  statusCode,
+  errText,
+  finishRequest,
+  clientCloseHandler,
+  clientErrorHandler = clientCloseHandler?.errorHandler,
+  retryFn
+}) {
+  console.warn(`[Router Quota Alert] Account "${account.name}" quota/balance exhausted (${statusCode}): ${errText.slice(0, 160)}`);
+  recordCooldown(account.id, 3600000, 'Quota / Balance Exhausted');
+  finishRequest();
+  clientRes.removeListener('close', clientCloseHandler);
+  if (clientErrorHandler || clientCloseHandler?.errorHandler) {
+    clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
+  }
+  const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+  if (attemptNumber > maxRetries) {
+    return false;
+  }
+  const nextAccount = selectAccount(sessionId, triedAccountIds);
+  if (nextAccount && attemptNumber <= maxRetries) {
+    const stat = accountStats.get(account.id);
+    if (stat) stat.failoverCount += 1;
+    console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode} (Quota Exhausted). Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
     retryFn(nextAccount);
     return true;
   }
@@ -1885,6 +1945,10 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     if (!proxyHeaders['anthropic-version']) {
       proxyHeaders['anthropic-version'] = '2023-06-01';
     }
+  } else {
+    // Strip Anthropic-specific headers when proxying to OpenAI or native /responses endpoints
+    delete proxyHeaders['anthropic-version'];
+    delete proxyHeaders['anthropic-beta'];
   }
 
   const proxyOptions = {
@@ -2069,6 +2133,26 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
         if (classified.isInvalidApiKey) {
           const handled = handleInvalidApiKeyFailover({
+            protocolTag: 'Proxy',
+            clientRes,
+            account,
+            attemptNumber,
+            triedAccountIds,
+            sessionId,
+            statusCode,
+            errText,
+            finishRequest,
+            clientCloseHandler,
+            clientErrorHandler,
+            retryFn: (nextAccount) => {
+              sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
+            }
+          });
+          if (handled) return;
+        }
+
+        if (classified.isQuotaExhausted) {
+          const handled = handleQuotaExhaustedFailover({
             protocolTag: 'Proxy',
             clientRes,
             account,
@@ -2547,6 +2631,26 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           if (handled) return;
         }
 
+        if (classified.isQuotaExhausted) {
+          const handled = handleQuotaExhaustedFailover({
+            protocolTag: 'Bridge',
+            clientRes,
+            account,
+            attemptNumber,
+            triedAccountIds,
+            sessionId,
+            statusCode,
+            errText,
+            finishRequest,
+            clientCloseHandler,
+            clientErrorHandler,
+            retryFn: (nextAccount) => {
+              bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
+            }
+          });
+          if (handled) return;
+        }
+
         if (classified.isUpstreamClusterGlitch) {
           const eff = responsesBody?.reasoning_effort || responsesBody?.reasoning?.effort || responsesBody?.model_reasoning_effort;
           const handled = handleUpstreamGlitchAndFailover({
@@ -2836,11 +2940,15 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   const proxyHeaders = {
     'content-type': 'application/json',
     'content-length': String(anthropicBody.length),
+    'authorization': `Bearer ${account.apiKey.trim()}`,
     'x-api-key': account.apiKey.trim(),
     'x-opencode-session': sessionId,
-    'anthropic-version': '2023-06-01',
+    'anthropic-version': clientReq.headers['anthropic-version'] || '2023-06-01',
     'user-agent': clientReq.headers['user-agent'] || 'OpenCode-Go-Router-AnthropicBridge/2.1'
   };
+  if (clientReq.headers['anthropic-beta']) {
+    proxyHeaders['anthropic-beta'] = clientReq.headers['anthropic-beta'];
+  }
 
   const proxyOptions = {
     protocol: upstreamUrl.protocol,
@@ -12486,6 +12594,7 @@ module.exports = {
   classifyUpstreamError,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
+  handleQuotaExhaustedFailover,
   handleRateLimitFailover,
   handleNetworkErrorFailover,
   handleModelAndContextFallback,

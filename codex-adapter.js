@@ -2371,6 +2371,9 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
     messages: sanitizedMessages,
     stream: body.stream === true
   };
+  if (chatPayload.stream) {
+    chatPayload.stream_options = { include_usage: true };
+  }
 
   if (body.temperature !== undefined) chatPayload.temperature = body.temperature;
   if (body.top_p !== undefined) chatPayload.top_p = body.top_p;
@@ -2544,7 +2547,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   }
   const sendEvent = (event, data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
-    clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    try {
+      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {}
   };
 
   sendEvent('response.created', {
@@ -2770,7 +2775,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    clientRes.write(': keep-alive\n\n');
+    try { clientRes.write(': keep-alive\n\n'); } catch (_) {}
   }, 10000);
 
   const isXHighReasoning = Boolean(reqModel && (
@@ -2935,6 +2940,10 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     totalChunks++;
     lastDataTime = Date.now();
     buffer += chunk.toString('utf8');
+    if (buffer.length > 10 * 1024 * 1024) {
+      console.warn('[SSE Buffer Overflow Guard] bridgeResponsesStream buffer exceeded 10MB without newline. Pruning stale prefix.');
+      buffer = buffer.slice(-1024 * 1024);
+    }
     const lines = buffer.split('\n');
     buffer = lines.pop(); // keep partial
 
@@ -3355,6 +3364,21 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const onUpstreamEnd = async () => {
     upstreamEnded = true;
     if (streamFinished) return;
+
+    // Flush any pending trailing line left in buffer without newline
+    if (buffer && buffer.trim()) {
+      const trailingLine = buffer.trim();
+      buffer = '';
+      if (trailingLine.startsWith('data:')) {
+        const payloadStr = trailingLine.slice(5).trim();
+        if (payloadStr && payloadStr !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(payloadStr);
+            if (parsed.usage) collectedUsage = parsed.usage;
+          } catch (_) {}
+        }
+      }
+    }
 
     if (thinkBuffer || pendingPrefixText) {
       if (inThinkTag) {
@@ -3980,6 +4004,39 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
     }
   }
 
+  // 2. Ensure each assistant tool_use has a corresponding tool_result in the immediately following turn
+  for (let idx = 0; idx < mergedMessages.length; idx++) {
+    const msg = mergedMessages[idx];
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const toolUseBlocks = msg.content.filter(b => b && b.type === 'tool_use');
+      if (toolUseBlocks.length > 0) {
+        let nextMsg = mergedMessages[idx + 1];
+        if (!nextMsg || nextMsg.role !== 'user') {
+          nextMsg = { role: 'user', content: [] };
+          mergedMessages.splice(idx + 1, 0, nextMsg);
+        }
+        if (!Array.isArray(nextMsg.content)) {
+          nextMsg.content = typeof nextMsg.content === 'string' && nextMsg.content
+            ? [{ type: 'text', text: nextMsg.content }]
+            : [];
+        }
+        const existingResultIds = new Set(
+          nextMsg.content.filter(b => b && b.type === 'tool_result').map(b => b.tool_use_id)
+        );
+        for (const tu of toolUseBlocks) {
+          if (!existingResultIds.has(tu.id)) {
+            nextMsg.content.unshift({
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: '{"status":"completed","note":"auto-filled by gateway resilience"}'
+            });
+            existingResultIds.add(tu.id);
+          }
+        }
+      }
+    }
+  }
+
   // Ensure first message is user
   if (mergedMessages.length === 0 || mergedMessages[0].role !== 'user') {
     mergedMessages.unshift({ role: 'user', content: 'Begin conversation.' });
@@ -4069,7 +4126,9 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   }
   const sendEvent = (event, data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
-    clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    try {
+      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {}
   };
 
   sendEvent('response.created', {
@@ -4451,6 +4510,10 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     totalChunks++;
     lastDataTime = Date.now();
     buffer += chunk.toString('utf8');
+    if (buffer.length > 10 * 1024 * 1024) {
+      console.warn('[SSE Buffer Overflow Guard] bridgeAnthropicStream buffer exceeded 10MB without newline. Pruning stale prefix.');
+      buffer = buffer.slice(-1024 * 1024);
+    }
     const lines = buffer.split('\n');
     buffer = lines.pop();
 

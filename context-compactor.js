@@ -1132,6 +1132,21 @@ function computeDerivedStats(stats) {
   return stats;
 }
 
+function writeFileSyncAtomic(filePath, data, encoding = 'utf8') {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.tmp-${path.basename(filePath)}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  fs.writeFileSync(tmpPath, data, encoding);
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.copyFileSync(tmpPath, filePath);
+      fs.unlinkSync(tmpPath);
+    } catch (_) {}
+  }
+}
+
 function saveStatsToDisk() {
   try {
     pruneExpiredBuckets();
@@ -1192,19 +1207,15 @@ function saveStatsToDisk() {
       historyJson = JSON.stringify(compressionHistory, null, 2);
     }
 
-    const tmpHist = `${HISTORY_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpHist, historyJson, 'utf8');
-    fs.renameSync(tmpHist, HISTORY_FILE);
-    // Dual-write disaster recovery backup (.bak)
-    try { fs.writeFileSync(HISTORY_BAK_FILE, historyJson, 'utf8'); } catch (_) {}
+    writeFileSyncAtomic(HISTORY_FILE, historyJson, 'utf8');
+    // Dual-write disaster recovery backup (.bak) with atomic guarantee
+    try { writeFileSyncAtomic(HISTORY_BAK_FILE, historyJson, 'utf8'); } catch (_) {}
 
     // Save legacy compression-stats.json for 100% compatibility with existing test assertions
     const statsJson = JSON.stringify(compressionStats, null, 2);
-    const tmpStats = `${STATS_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpStats, statsJson, 'utf8');
-    fs.renameSync(tmpStats, STATS_FILE);
-    // Dual-write disaster recovery backup (.bak)
-    try { fs.writeFileSync(STATS_BAK_FILE, statsJson, 'utf8'); } catch (_) {}
+    writeFileSyncAtomic(STATS_FILE, statsJson, 'utf8');
+    // Dual-write disaster recovery backup (.bak) with atomic guarantee
+    try { writeFileSyncAtomic(STATS_BAK_FILE, statsJson, 'utf8'); } catch (_) {}
   } catch (err) {
     // Non-fatal, sandbox logged
   }
