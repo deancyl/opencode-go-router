@@ -1345,6 +1345,69 @@ function trimPrunedFingerprintsIfNeeded() {
 function clearPruneFingerprints() {
   prunedFingerprints.clear();
 }
+/**
+ * UTF-16 Unicode Surrogate Pair Safe Slice.
+ * Prevents splitting high surrogates (0xD800-0xDBFF) and low surrogates (0xDC00-0xDFFF),
+ * ensuring multi-byte emojis (e.g. 👨‍👩‍👧‍👦, 🎉) and rare CJK characters are never split into malformed sequences.
+ */
+function safeUnicodeSlice(str, start, end) {
+  if (typeof str !== "string" || str.length === 0) return "";
+  const len = str.length;
+  let s = start === undefined ? 0 : (start < 0 ? Math.max(0, len + start) : Math.min(len, start));
+  let e = end === undefined ? len : (end < 0 ? Math.max(0, len + end) : Math.min(len, end));
+  if (s >= e) return "";
+
+  if (s > 0 && s < len) {
+    const code = str.charCodeAt(s);
+    if (code >= 0xDC00 && code <= 0xDFFF) {
+      const prevCode = str.charCodeAt(s - 1);
+      if (prevCode >= 0xD800 && prevCode <= 0xDBFF) {
+        s--;
+      }
+    }
+  }
+
+  if (e > 0 && e < len) {
+    const code = str.charCodeAt(e - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const nextCode = str.charCodeAt(e);
+      if (nextCode >= 0xDC00 && nextCode <= 0xDFFF) {
+        e++;
+      }
+    }
+  }
+
+  return str.slice(s, e);
+}
+
+/**
+ * Ensures code block (```) syntax balance when folding long text.
+ * If prefix leaves an unclosed code block (odd number of ```), appends a closing ```\n.
+ * If suffix has an unbalanced closing code block (odd number of ```), prepends an opening ```\n.
+ */
+function balanceCodeBlocks(head, tail) {
+  let balancedHead = head;
+  let balancedTail = tail;
+
+  const countCodeFence = (s) => {
+    if (!s) return 0;
+    const matches = s.match(/(?:^|\n)```/g);
+    return matches ? matches.length : 0;
+  };
+
+  const headFenceCount = countCodeFence(head);
+  if (headFenceCount % 2 !== 0) {
+    balancedHead = head.endsWith("\n") ? `${head}\`\`\`\n` : `${head}\n\`\`\`\n`;
+  }
+
+  const tailFenceCount = countCodeFence(tail);
+  if (tailFenceCount % 2 !== 0) {
+    balancedTail = tail.startsWith("\n") ? `\`\`\`\n${tail}` : `\`\`\`\n${tail}`;
+  }
+
+  return { head: balancedHead, tail: balancedTail };
+}
+
 
 /**
  * Prunes and compresses an oversized Responses API payload (body.input) to fit within
@@ -1498,9 +1561,10 @@ function pruneResponsesPayload(body, sessionId = null) {
       if (isToolOutput && item.output) {
         let outStr = sanitizeToolOutput(item.output);
         if (outStr.length > 2000) {
-          const head = outStr.slice(0, 600);
-          const tail = outStr.slice(-600);
-          const folded = outStr.length - 1200;
+          const rawHead = safeUnicodeSlice(outStr, 0, 600);
+          const rawTail = safeUnicodeSlice(outStr, -600);
+          const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
+          const folded = Math.max(0, outStr.length - (rawHead.length + rawTail.length));
           const newOutput = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
           input[i] = { ...item, output: newOutput };
           modified = true;
@@ -1538,9 +1602,10 @@ function pruneResponsesPayload(body, sessionId = null) {
         (curItem.tool_calls && curItem.tool_calls.length > 0)
       );
       if (curItem && !isCurUser && !isCurToolResponse && !isCurToolCall && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
-        const head = curItem.content.slice(0, 1500);
-        const tail = curItem.content.slice(-1500);
-        const folded = curItem.content.length - 3000;
+        const rawHead = safeUnicodeSlice(curItem.content, 0, 1500);
+        const rawTail = safeUnicodeSlice(curItem.content, -1500);
+        const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
+        const folded = Math.max(0, curItem.content.length - (rawHead.length + rawTail.length));
         const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
         input[i] = { ...curItem, content: newContent };
         modified = true;
@@ -1579,20 +1644,25 @@ function pruneResponsesPayload(body, sessionId = null) {
         }
       }
 
+      const isSystemItem = it => it && (
+        (it.type === 'message' && (it.role === 'system' || it.role === 'developer')) ||
+        it.role === 'system' || it.role === 'developer'
+      );
       const tailItems = input.slice(tailStartIndex);
       const middleItems = input.slice(headItems.length, tailStartIndex);
 
-      const middleUserItems = middleItems.filter(isUserItem);
-      const droppedCount = middleItems.length - middleUserItems.length;
+      // System & User instruction exemption: 100% preserve all user instructions and system prompts
+      const middlePreservedItems = middleItems.filter(it => isUserItem(it) || isSystemItem(it));
+      const droppedCount = middleItems.length - middlePreservedItems.length;
 
       if (droppedCount > 0) {
-        // Intermediate assistant/tool interactions exist: drop them and 100% preserve all user instructions
+        // Intermediate assistant/tool interactions exist: drop them and 100% preserve user instructions & system prompts
         const notice = {
           type: 'message',
           role: 'system',
           content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
-        input = [...headItems, notice, ...middleUserItems, ...tailItems];
+        input = [...headItems, notice, ...middlePreservedItems, ...tailItems];
         modified = true;
       }
     }
@@ -1641,9 +1711,10 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
         // 100% user instruction exemption: do not fold user messages!
         continue;
       }
-      const head = msg.content.slice(0, 800);
-      const tail = msg.content.slice(-800);
-      const folded = msg.content.length - 1600;
+      const rawHead = safeUnicodeSlice(msg.content, 0, 800);
+      const rawTail = safeUnicodeSlice(msg.content, -800);
+      const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
+      const folded = Math.max(0, msg.content.length - (rawHead.length + rawTail.length));
       const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
       result[i] = { ...msg, content: newContent };
       modified = true;
@@ -1663,13 +1734,17 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
   if (result.length > 18) {
     const sysMsgs = result.filter(m => m && (m.role === 'system' || m.role === 'developer'));
     const nonSys = result.filter(m => !m || (m.role !== 'system' && m.role !== 'developer'));
-    const firstUser = nonSys.length > 0 ? nonSys[0] : null;
-    let tailStartIndex = Math.max(1, nonSys.length - 12);
+    
+    // Accurate initial user instruction detection (first non-system message that has role === 'user')
+    const firstUserIndex = nonSys.findIndex(m => m && m.role === 'user');
+    const firstUser = firstUserIndex >= 0 ? nonSys[firstUserIndex] : (nonSys.length > 0 ? nonSys[0] : null);
+
+    let tailStartIndex = Math.max(firstUserIndex >= 0 ? firstUserIndex + 1 : 1, nonSys.length - 12);
     while (tailStartIndex < nonSys.length - 2 && nonSys[tailStartIndex]?.role === 'tool') {
       tailStartIndex++;
     }
     const recentMsgs = nonSys.slice(tailStartIndex);
-    const middleNonSys = nonSys.slice(1, tailStartIndex);
+    const middleNonSys = nonSys.slice(firstUserIndex >= 0 ? firstUserIndex + 1 : 1, tailStartIndex);
 
     // User instruction exemption: 100% preserve all user messages in the middle
     const middleUserMsgs = middleNonSys.filter(m => m && m.role === 'user');
@@ -1682,6 +1757,11 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
       };
       result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...middleUserMsgs, ...recentMsgs];
       modified = true;
+    }
+
+    // Double Shield: Enforce full topological sanitization to heal any orphan or interleaved tool calls
+    if (typeof sanitizeAndValidateChatMessages === 'function') {
+      result = sanitizeAndValidateChatMessages(result);
     }
   }
 
@@ -6643,6 +6723,10 @@ module.exports = {
   adapterConfig,
   pruneResponsesPayload,
   pruneChatMessages,
+  safeUnicodeSlice,
+  balanceCodeBlocks,
+  safeUnicodeSlice,
+  balanceCodeBlocks,
   clearPruneFingerprints,
   prunedFingerprints,
   getCodexConfigDir,

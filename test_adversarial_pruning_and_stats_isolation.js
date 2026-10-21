@@ -1,9 +1,13 @@
 /**
  * Adversarial Verification Suite:
- * 1. Sliding Window 100% User Message Preservation Red Line
+ * 1. Sliding Window 100% User & System Message Preservation Red Line
  * 2. Multi-turn Session Deduplication & Zero-Bloat Fingerprinting
  * 3. Test Environment Disk Isolation Guard
  * 4. Model Palette DeepSeek Pro vs Flash Distinction
+ * 5. UTF-16 Unicode Surrogate Pair Safe Slice (Emoji & Rare CJK Boundary Fidelity)
+ * 6. Markdown Code Block Syntax Balance Guard (balanceCodeBlocks)
+ * 7. Atomic Tool Call & Response Contiguity in Sliding Window Pruning
+ * 8. Numerical Boundary, Extreme Dirty Input & NaN Shield Isolation
  */
 
 const assert = require('node:assert');
@@ -227,6 +231,223 @@ async function runAll() {
     assert.strictEqual(proColor, '#ea580c', 'deepseek-v4-pro MUST be styled in deep amber-orange (#ea580c)');
     assert.strictEqual(flashColor, '#f59e0b', 'deepseek-v4.1-flash MUST be styled in golden amber (#f59e0b)');
     assert.notStrictEqual(proColor, flashColor, 'Pro and Flash MUST NOT collapse to the same color!');
+  });
+
+  // =========================================================================
+  // Test 6: UTF-16 Unicode Surrogate Pair Safe Slice (Emoji & CJK Boundary Fidelity)
+  // =========================================================================
+  await runTest('5.1 Unicode Safe Slice: Never splits UTF-16 surrogate pairs (Emoji & Rare CJK)', () => {
+    const safeUnicodeSlice = codexAdapter.safeUnicodeSlice;
+    assert.strictEqual(typeof safeUnicodeSlice, 'function', 'safeUnicodeSlice must be exported');
+
+    // Construct string with high-value astral symbols:
+    // '🎉' = \uD83C\uDF89 (length 2)
+    // '𠮷' = \uD842\uDFB7 (length 2)
+    // '👨‍👩‍👧‍👦' = multi-character ZWJ emoji sequence
+    const str = 'ABC' + '🎉' + 'DEF' + '𠮷' + 'GHI';
+    // Indices: 'ABC' (0..2), '🎉' (3, 4), 'DEF' (5, 6, 7), '𠮷' (8, 9), 'GHI' (10, 11, 12)
+
+    // Slicing at index 4 would normally cut right inside 🎉 (\uD83C | \uDF89)
+    const cutInsideEmoji = safeUnicodeSlice(str, 0, 4);
+    // safeUnicodeSlice should include the low surrogate (expand to index 5) so 🎉 is not broken
+    assert.strictEqual(cutInsideEmoji, 'ABC🎉', 'safeUnicodeSlice must keep high+low surrogate pair intact');
+
+    // Slicing from index 4 would normally start at low surrogate
+    const startInsideEmoji = safeUnicodeSlice(str, 4, 8);
+    // safeUnicodeSlice should expand start backwards to index 3 to include high surrogate
+    assert.strictEqual(startInsideEmoji, '🎉DEF', 'safeUnicodeSlice must include leading high surrogate when start is on low surrogate');
+
+    // Test with oversized message in pruneChatMessages
+    const emojiHeavyContent = 'Prefix ' + '🎉'.repeat(800) + '𠮷'.repeat(800) + ' Suffix';
+    assert.ok(emojiHeavyContent.length > 3000);
+    const messages = [
+      { role: 'system', content: 'test sys' },
+      { role: 'assistant', content: emojiHeavyContent },
+      { role: 'user', content: 'hello' }
+    ];
+    const pruned = codexAdapter.pruneChatMessages(messages, 4000);
+    assert.strictEqual(pruned.modified, true);
+    // Check that pruned content contains no lone unpaired surrogates
+    const content = pruned[1].content;
+    const hasUnpairedSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(content);
+    assert.strictEqual(hasUnpairedSurrogate, false, 'Folded content must not contain any lone unpaired surrogates!');
+  });
+
+  // =========================================================================
+  // Test 7: Markdown Code Block Syntax Balance Guard (balanceCodeBlocks)
+  // =========================================================================
+  await runTest('6.1 Markdown Code Block Balance: Closes dangling ``` in folded prefix and suffix', () => {
+    const balanceCodeBlocks = codexAdapter.balanceCodeBlocks;
+    assert.strictEqual(typeof balanceCodeBlocks, 'function', 'balanceCodeBlocks must be exported');
+
+    // Scenario A: Head has 1 opening fence (odd number) -> Must append closing fence
+    const head1 = 'Here is code:\n```js\nconst x = 1;\n';
+    const tail1 = 'const y = 2;\n```\nDone!';
+    const resA = balanceCodeBlocks(head1, tail1);
+    assert.ok(resA.head.endsWith('```\n'), 'Unclosed head fence must be closed with ```\\n');
+    assert.ok(resA.tail.startsWith('```\n'), 'Unbalanced tail fence must open with ```\\n');
+
+    // Scenario B: Already balanced (even number of fences in head and tail)
+    const head2 = '```js\ncode1\n```\nSome text';
+    const tail2 = 'More text\n```py\ncode2\n```';
+    const resB = balanceCodeBlocks(head2, tail2);
+    assert.strictEqual(resB.head, head2, 'Balanced head must not be altered');
+    assert.strictEqual(resB.tail, tail2, 'Balanced tail must not be altered');
+  });
+
+  // =========================================================================
+  // Test 8: Atomic Tool Call & Response Contiguity in Sliding Window Pruning
+  // =========================================================================
+  await runTest('7.1 Sliding Window Tool Topology: Assistant tool_calls paired with role:tool messages are NEVER broken', () => {
+    // Construct 24 messages where an assistant calls 2 tools right at the sliding window boundary
+    const messages = [
+      { role: 'system', content: 'system base instructions' },
+      { role: 'user', content: 'initial task prompt' }
+    ];
+
+    // Intermediate conversational steps
+    for (let i = 2; i <= 10; i++) {
+      messages.push({ role: 'assistant', content: `step ${i}` });
+      messages.push({ role: 'user', content: `feedback ${i}` });
+    }
+
+    // Atomic tool transaction at boundary
+    messages.push({
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'call_boundary_alpha', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Tokyo"}' } },
+        { id: 'call_boundary_beta', type: 'function', function: { name: 'get_time', arguments: '{"city":"Tokyo"}' } }
+      ]
+    });
+    messages.push({ role: 'tool', tool_call_id: 'call_boundary_alpha', content: 'Sunny 22C' });
+    messages.push({ role: 'tool', tool_call_id: 'call_boundary_beta', content: '14:00 JST' });
+
+    // Active trailing messages
+    for (let i = 0; i < 8; i++) {
+      messages.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `recent tail ${i}` });
+    }
+
+    assert.ok(messages.length > 25, `Messages length must exceed 25, got ${messages.length}`);
+
+    const pruned = codexAdapter.pruneChatMessages(messages, 4000, 'topology-session-test');
+    assert.strictEqual(pruned.modified, true);
+
+    // Verify Topological Integrity:
+    // Every assistant with tool_calls must have contiguous matching tool messages
+    for (let i = 0; i < pruned.length; i++) {
+      const msg = pruned[i];
+      if (msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          // The corresponding tool message must be present in pruned messages
+          const toolMsg = pruned.find(m => m && m.role === 'tool' && m.tool_call_id === tc.id);
+          assert.ok(toolMsg, `Tool call ${tc.id} MUST have a matching tool message in pruned messages!`);
+        }
+      }
+      if (msg && msg.role === 'tool') {
+        // Must not be an orphan: an assistant preceding this tool must have invoked it,
+        // or sanitizeAndValidateChatMessages must have healed it
+        const precedingAssistant = pruned.slice(0, i).reverse().find(m => m && m.role === 'assistant' && Array.isArray(m.tool_calls));
+        const wasInvoked = precedingAssistant && precedingAssistant.tool_calls.some(tc => tc.id === msg.tool_call_id);
+        assert.ok(wasInvoked, `Retained tool message ${msg.tool_call_id} must be paired with preceding assistant tool_calls`);
+      }
+    }
+  });
+
+  // =========================================================================
+  // Test 9: Numerical Boundary, Extreme Dirty Input & NaN Shield Isolation
+  // =========================================================================
+  await runTest('8.1 NaN Shield & Numerical Bounds: All metrics remain finite, non-negative & uncorrupted under dirty inputs', () => {
+    // Test dirty inputs to recordSavings
+    contextCompactor.recordSavings('headroom', NaN, 1000);
+    contextCompactor.recordSavings('headroom', 1000, NaN);
+    contextCompactor.recordSavings('rtk', -500, -1000);
+    contextCompactor.recordSavings('schema', Infinity, 5000);
+    contextCompactor.recordSavings('cacheZone', null, undefined);
+
+    // Test dirty inputs to recordModelSavings
+    contextCompactor.recordModelSavings('deepseek-v4-pro', NaN, 5000);
+    contextCompactor.recordModelSavings('deepseek-v4.1-flash', -100, -200);
+    contextCompactor.recordModelSavings('deepseek-v4-pro', 1000, Infinity);
+
+    // Test dirty inputs to recordModuleOnlySavings & recordOverallSavings
+    contextCompactor.recordModuleOnlySavings('rtk', NaN);
+    contextCompactor.recordOverallSavings(NaN, 500);
+    contextCompactor.recordOverallSavings(500, NaN);
+    contextCompactor.recordOverallSavings(500, 1000); // Negative savings: compLen > origLen (inflation)
+
+    // Test recordCompressionEvent with corrupted event objects
+    contextCompactor.recordCompressionEvent(null);
+    contextCompactor.recordCompressionEvent({});
+    contextCompactor.recordCompressionEvent({ savedChars: NaN, originalChars: NaN });
+    contextCompactor.recordCompressionEvent({ deltaChars: -999, originalChars: -100 });
+
+    const stats = contextCompactor.getCompressionStats();
+
+    // Verify All Numerical Fields are Finite and Non-Negative
+    assert.strictEqual(Number.isFinite(stats.totalOriginalChars), true, 'totalOriginalChars must be finite');
+    assert.strictEqual(isNaN(stats.totalOriginalChars), false, 'totalOriginalChars must not be NaN');
+    assert.ok(stats.totalOriginalChars >= 0, 'totalOriginalChars must be non-negative');
+
+    assert.strictEqual(Number.isFinite(stats.totalCompressedChars), true, 'totalCompressedChars must be finite');
+    assert.strictEqual(isNaN(stats.totalCompressedChars), false, 'totalCompressedChars must not be NaN');
+    assert.ok(stats.totalCompressedChars >= 0, 'totalCompressedChars must be non-negative');
+
+    assert.strictEqual(Number.isFinite(stats.totalSavedChars), true, 'totalSavedChars must be finite');
+    assert.strictEqual(isNaN(stats.totalSavedChars), false, 'totalSavedChars must not be NaN');
+    assert.ok(stats.totalSavedChars >= 0, 'totalSavedChars must be non-negative');
+
+    assert.strictEqual(Number.isFinite(stats.savedTokens), true, 'savedTokens must be finite');
+    assert.strictEqual(isNaN(stats.savedTokens), false, 'savedTokens must not be NaN');
+    assert.ok(stats.savedTokens >= 0, 'savedTokens must be non-negative');
+
+    assert.strictEqual(Number.isFinite(stats.compressionRatio), true, 'compressionRatio must be finite');
+    assert.strictEqual(isNaN(stats.compressionRatio), false, 'compressionRatio must not be NaN');
+    assert.ok(stats.compressionRatio >= 0 && stats.compressionRatio <= 100, 'compressionRatio must be between 0 and 100');
+
+    // Verify modules stats
+    for (const [modKey, modData] of Object.entries(stats.modules || {})) {
+      assert.strictEqual(Number.isFinite(modData.savedChars), true, `module ${modKey}.savedChars must be finite`);
+      assert.strictEqual(isNaN(modData.savedChars), false, `module ${modKey}.savedChars must not be NaN`);
+      assert.strictEqual(Number.isFinite(modData.savedTokens), true, `module ${modKey}.savedTokens must be finite`);
+      assert.strictEqual(isNaN(modData.savedTokens), false, `module ${modKey}.savedTokens must not be NaN`);
+    }
+
+    // Verify byModel stats
+    for (const [mName, mData] of Object.entries(stats.byModel || {})) {
+      assert.strictEqual(Number.isFinite(mData.savedChars), true, `byModel[${mName}].savedChars must be finite`);
+      assert.strictEqual(isNaN(mData.savedChars), false, `byModel[${mName}].savedChars must not be NaN`);
+      assert.strictEqual(Number.isFinite(mData.savedTokens), true, `byModel[${mName}].savedTokens must be finite`);
+      assert.strictEqual(isNaN(mData.savedTokens), false, `byModel[${mName}].savedTokens must not be NaN`);
+      assert.strictEqual(Number.isFinite(mData.savedCostUSD), true, `byModel[${mName}].savedCostUSD must be finite`);
+      assert.strictEqual(isNaN(mData.savedCostUSD), false, `byModel[${mName}].savedCostUSD must not be NaN`);
+    }
+
+    // Verify Malformed Payload Compaction Safety
+    const malformedChat = {
+      model: 'opencode-go/deepseek-v4-pro',
+      messages: [
+        null,
+        undefined,
+        { role: 'user', content: null },
+        { role: 'assistant', content: [] },
+        { role: 'tool', tool_call_id: 'c1', content: null },
+        { role: 'tool', tool_call_id: 'c2', output: undefined }
+      ]
+    };
+    const compChat = contextCompactor.compactChatPayload(malformedChat);
+    assert.ok(compChat, 'compactChatPayload must safely handle null and empty elements without crashing');
+
+    const malformedResp = {
+      model: 'opencode-go/deepseek-v4-pro',
+      input: [
+        null,
+        { type: 'message', role: 'user', content: null },
+        { type: 'function_call_output', call_id: 'f1', output: null }
+      ]
+    };
+    const compResp = contextCompactor.compactResponsesPayload(malformedResp);
+    assert.ok(compResp, 'compactResponsesPayload must safely handle null input items without crashing');
   });
 
   console.log(`\n========================================`);

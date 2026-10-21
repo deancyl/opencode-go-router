@@ -971,10 +971,14 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
   const bucket = getOrCreateBucket(tier, ts);
   if (!bucket) return;
 
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeSaved = (typeof validSaved === 'number' && Number.isFinite(validSaved) && !isNaN(validSaved)) ? Math.max(0, validSaved) : 0;
+  const safeOrig = (typeof validOrig === 'number' && Number.isFinite(validOrig) && !isNaN(validOrig)) ? Math.max(safeSaved, validOrig) : safeSaved;
+  if (safeSaved <= 0 && safeOrig <= 0) return;
+
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
-    : estimateTokens(validSaved);
-  const validOrigTokens = estimateTokens(validOrig);
+    : estimateTokens(safeSaved);
+  const validOrigTokens = estimateTokens(safeOrig);
 
   bucket.totalOriginalChars += validOrig;
   bucket.totalCompressedChars += (validOrig - validSaved);
@@ -1125,9 +1129,10 @@ function computeDerivedStats(stats) {
   const unassignedConsumedCost = (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
   stats.consumedCostUSD = Number((modelConsumedCostSum + unassignedConsumedCost).toFixed(6));
 
-  stats.compressionRatio = stats.totalOriginalChars > 0
+  const rawRatio = (stats.totalOriginalChars > 0 && Number.isFinite(stats.totalOriginalChars))
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
     : 0;
+  stats.compressionRatio = (Number.isFinite(rawRatio) && !isNaN(rawRatio)) ? rawRatio : 0;
 
   return stats;
 }
@@ -1433,10 +1438,12 @@ loadStatsFromDisk();
 
 function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp = Date.now(), customSavedTokens = null) {
   const model = normalizeModelName(modelName);
-  if (!model || (savedChars <= 0 && originalChars <= 0)) return;
-  const validSaved = Math.max(0, savedChars);
-  const validOrig = Math.max(validSaved, originalChars);
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeSaved = (typeof savedChars === 'number' && Number.isFinite(savedChars) && !isNaN(savedChars)) ? Math.max(0, savedChars) : 0;
+  const safeOrig = (typeof originalChars === 'number' && Number.isFinite(originalChars) && !isNaN(originalChars)) ? Math.max(safeSaved, originalChars) : safeSaved;
+  if (!model || (safeSaved <= 0 && safeOrig <= 0)) return;
+  const validSaved = safeSaved;
+  const validOrig = safeOrig;
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
     : estimateTokens(validSaved);
 
@@ -1462,11 +1469,13 @@ function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp 
 }
 
 function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now(), customSavedTokens = null) {
-  if (deltaChars <= 0) return;
-  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeDelta = (typeof deltaChars === 'number' && Number.isFinite(deltaChars) && !isNaN(deltaChars)) ? Math.max(0, deltaChars) : 0;
+  if (safeDelta <= 0) return;
+  const ts = (typeof timestamp === 'number' && Number.isFinite(timestamp) && !isNaN(timestamp)) ? timestamp : Date.now();
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
-    : estimateTokens(deltaChars);
+    : estimateTokens(safeDelta);
+  const deltaCharsSafe = safeDelta;
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += deltaChars;
     compressionStats.modules[moduleName].savedTokens = (compressionStats.modules[moduleName].savedTokens || 0) + validTokens;
@@ -1483,11 +1492,13 @@ function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now(),
 }
 
 function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null, timestamp = Date.now(), customSavedTokens = null) {
-  if (deltaChars <= 0 && originalChars <= 0) return;
-  const validSaved = Math.max(0, deltaChars);
-  const validOrig = Math.max(validSaved, originalChars);
-  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeSaved = (typeof deltaChars === 'number' && Number.isFinite(deltaChars) && !isNaN(deltaChars)) ? Math.max(0, deltaChars) : 0;
+  const safeOrig = (typeof originalChars === 'number' && Number.isFinite(originalChars) && !isNaN(originalChars)) ? Math.max(safeSaved, originalChars) : safeSaved;
+  if (safeSaved <= 0 && safeOrig <= 0) return;
+  const validSaved = safeSaved;
+  const validOrig = safeOrig;
+  const ts = (typeof timestamp === 'number' && Number.isFinite(timestamp) && !isNaN(timestamp)) ? timestamp : Date.now();
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
     : estimateTokens(validSaved);
 
@@ -1519,11 +1530,13 @@ function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = nu
 }
 
 function recordOverallSavings(origLen, compLen, timestamp = Date.now()) {
-  if (origLen <= compLen) return;
-  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
-  const validSaved = origLen - compLen;
-  compressionStats.totalOriginalChars += origLen;
-  compressionStats.totalCompressedChars += compLen;
+  const safeOrig = (typeof origLen === 'number' && Number.isFinite(origLen) && !isNaN(origLen)) ? Math.max(0, origLen) : 0;
+  const safeComp = (typeof compLen === 'number' && Number.isFinite(compLen) && !isNaN(compLen)) ? Math.max(0, compLen) : safeOrig;
+  if (safeOrig <= safeComp) return;
+  const ts = (typeof timestamp === 'number' && Number.isFinite(timestamp) && !isNaN(timestamp)) ? timestamp : Date.now();
+  const validSaved = safeOrig - safeComp;
+  compressionStats.totalOriginalChars += safeOrig;
+  compressionStats.totalCompressedChars += safeComp;
   compressionStats.updatedAt = new Date().toISOString();
   computeDerivedStats(compressionStats);
 
@@ -1551,8 +1564,10 @@ function recordCompressionEvent(event) {
     modelName = null,
     timestamp = Date.now()
   } = event;
-  const actualSaved = savedChars || deltaChars || 0;
-  const actualOrig = Math.max(actualSaved, originalChars || 0);
+  const rawSaved = typeof savedChars === 'number' ? savedChars : (typeof deltaChars === 'number' ? deltaChars : 0);
+  const actualSaved = (Number.isFinite(rawSaved) && !isNaN(rawSaved)) ? Math.max(0, rawSaved) : 0;
+  const rawOrig = typeof originalChars === 'number' ? originalChars : 0;
+  const actualOrig = (Number.isFinite(rawOrig) && !isNaN(rawOrig)) ? Math.max(actualSaved, rawOrig) : actualSaved;
   const actualModel = model || modelName || null;
   recordSavings(module, actualSaved, actualOrig, actualModel, timestamp);
 }
@@ -5308,6 +5323,9 @@ module.exports = {
   HISTORY_FILE,
   createEmptyBucket,
   recordSavings,
+  recordModelSavings,
+  recordModuleOnlySavings,
+  recordOverallSavings,
   STATS_FILE,
   stripAnsi,
   cleanProgressBars,
