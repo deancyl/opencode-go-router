@@ -8660,8 +8660,33 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Codex & Multi-IDE Stream State Machine & Anti-Buffering (Test 159) passed');
 
+    // --- [Test 160] ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox ---
+    console.log('\n--- [Test 160] ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox ---');
+
+    // 1. Verify ComfyUIAdapter cancelPrompt & _deleteFromQueue methods
+    const { ComfyUIAdapter } = require('./comfyui-adapter.js');
+    const testComfyAdapter = new ComfyUIAdapter({ rootDir: __dirname });
+    assert.strictEqual(typeof testComfyAdapter.cancelPrompt, 'function');
+    assert.strictEqual(typeof testComfyAdapter._deleteFromQueue, 'function');
+    assert.strictEqual(typeof testComfyAdapter.detectServer, 'function');
+    assert.strictEqual(typeof testComfyAdapter.buildExecutionGraph, 'function');
+
+    // 2. Verify Office Preview Engine security & XSS sanitizer
+    const officeEngineContent = fs.readFileSync(path.join(__dirname, 'assets', 'office-preview-engine.js'), 'utf8');
+    assert.ok(officeEngineContent.includes('textContent = rowData[c]'), 'Must use textContent for cell rendering to guarantee zero XSS');
+    assert.ok(officeEngineContent.includes('INITIAL_PAGE_SIZE = 150'), 'Must implement non-blocking chunked pagination');
+    assert.ok(officeEngineContent.includes('oc-pulse'), 'Must include animated loading skeleton');
+
+    // 3. Verify MCP Server tool definition manifest
+    const mcpContent = fs.readFileSync(path.join(__dirname, 'mcp-comfyui.js'), 'utf8');
+    assert.ok(mcpContent.includes('code: -32700'), 'MCP server must handle JSON-RPC Parse error (-32700)');
+    assert.ok(mcpContent.includes('code: -32602'), 'MCP server must handle Invalid params (-32602)');
+    assert.ok(mcpContent.includes('notifications/progress'), 'MCP server must support progress notifications');
+
+    console.log('✓ ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox (Test 160) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 159 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 160 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

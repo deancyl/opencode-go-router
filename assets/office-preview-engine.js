@@ -314,6 +314,20 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       @keyframes oc-spin {
         to { transform: rotate(360deg); }
       }
+      @keyframes oc-pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 0.8; }
+      }
+      .oc-excel-row-idx {
+        width: 44px;
+        min-width: 44px;
+        text-align: center;
+        color: var(--muted-foreground, #94a3b8);
+        user-select: none;
+        background: rgba(255, 255, 255, 0.04) !important;
+        font-weight: 600;
+        border-right: 2px solid var(--border, #334155) !important;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -438,9 +452,20 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       const viewport = document.createElement('div');
       viewport.className = 'oc-office-viewport';
       viewport.innerHTML = `
-        <div class="oc-loading">
-          <div class="oc-spinner"></div>
-          <div>正在纯本地安全解析 ${escapeHtml(ext.toUpperCase())} 文档...</div>
+        <div class="oc-loading" style="padding:32px 16px; width:100%; max-width:680px; margin:0 auto;">
+          <div class="oc-spinner" style="margin-bottom:12px;"></div>
+          <div style="font-weight:600; font-size:14px; color:var(--foreground); margin-bottom:6px;">
+            正在纯本地离线沙箱安全解析 ${escapeHtml(ext.toUpperCase())} 文档...
+          </div>
+          <div style="font-size:12px; color:var(--muted-foreground); margin-bottom:20px;">
+            🔒 100% 本地内存沙箱，严格阻断第三方公网云端预览外泄 (Air-Gapped Safety)
+          </div>
+          <div style="width:100%; display:flex; flex-direction:column; gap:8px; opacity:0.6;">
+            <div style="height:12px; width:45%; background:var(--border, #334155); border-radius:4px; animation:oc-pulse 1.5s infinite;"></div>
+            <div style="height:10px; width:92%; background:var(--border, #334155); border-radius:4px; animation:oc-pulse 1.5s infinite 0.2s;"></div>
+            <div style="height:10px; width:84%; background:var(--border, #334155); border-radius:4px; animation:oc-pulse 1.5s infinite 0.4s;"></div>
+            <div style="height:10px; width:68%; background:var(--border, #334155); border-radius:4px; animation:oc-pulse 1.5s infinite 0.6s;"></div>
+          </div>
         </div>
       `;
       root.appendChild(viewport);
@@ -470,15 +495,30 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
         .catch(err => {
           viewport.innerHTML = `
             <div class="oc-legacy-card" style="border-color: rgba(248,113,113,0.4);">
-              <div style="color: #f87171; font-weight: 600; margin-bottom: 8px;">⚠ 离线解析异常</div>
-              <div style="font-size: 13px; color: var(--muted-foreground); margin-bottom: 16px;">${escapeHtml(err.message)}</div>
-              <button class="oc-btn oc-btn-primary" id="oc-err-open-native">
-                💻 改用系统本地 Office / WPS 打开
-              </button>
+              <div style="color: #f87171; font-weight: 600; font-size: 15px; margin-bottom: 8px;">⚠️ 离线沙箱解析异常</div>
+              <div style="font-size: 13px; color: var(--muted-foreground); margin-bottom: 16px; line-height: 1.5;">${escapeHtml(err.message)}</div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="oc-btn oc-btn-primary" id="oc-err-open-native">
+                  💻 改用系统本地 Office / WPS 打开
+                </button>
+                <button class="oc-btn" id="oc-err-download-fallback">
+                  📥 下载原文件到本地
+                </button>
+              </div>
             </div>
           `;
           const errBtn = viewport.querySelector('#oc-err-open-native');
           if (errBtn) errBtn.onclick = () => openNativeApp(path);
+          const dlBtn = viewport.querySelector('#oc-err-download-fallback');
+          if (dlBtn) {
+            dlBtn.onclick = () => {
+              const a = document.createElement('a');
+              a.href = fileUrl + '&download=true';
+              a.download = name;
+              a.target = '_blank';
+              a.click();
+            };
+          }
         });
     },
 
@@ -518,7 +558,7 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
       }
     },
 
-    // 渲染 Excel (XLSX, XLS, CSV)
+    // 渲染 Excel (100% XSS 免疫 + 分片非阻塞渲染)
     renderExcel: function(viewport, center, buffer, ext) {
       if (!window.XLSX) {
         viewport.innerHTML = '<div style="color:#f87171;">SheetJS 引擎未就绪</div>';
@@ -548,12 +588,89 @@ if(xr(e,"index.xml"))throw new Error("Unsupported NUMBERS 09 file");throw new Er
           });
           const ws = wb.Sheets[name];
           if (!ws) return;
-          // 转 HTML
-          let html = window.XLSX.utils.sheet_to_html(ws, { header: '', footer: '' });
-          // 清理多余 html 标签，保留 table
-          html = html.replace(/<\/?(html|head|meta|title|body)>/gi, '');
-          html = html.replace(/<table/gi, '<table class="oc-excel-table"');
-          tableBox.innerHTML = html;
+
+          // Convert sheet to 2D array of string values for safe, non-blocking rendering
+          const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+          tableBox.innerHTML = '';
+
+          if (!rows || rows.length === 0) {
+            tableBox.innerHTML = '<div style="color:var(--muted-foreground); padding:24px; text-align:center;">当前工作表为空</div>';
+            return;
+          }
+
+          const table = document.createElement('table');
+          table.className = 'oc-excel-table';
+          const tbody = document.createElement('tbody');
+          table.appendChild(tbody);
+
+          const INITIAL_PAGE_SIZE = 150;
+          let renderedCount = 0;
+
+          function renderBatch(batchSize) {
+            const endIdx = Math.min(renderedCount + batchSize, rows.length);
+            for (let r = renderedCount; r < endIdx; r++) {
+              const rowData = rows[r] || [];
+              const tr = document.createElement('tr');
+
+              // Add row index header column
+              const thIdx = document.createElement('th');
+              thIdx.className = 'oc-excel-row-idx';
+              thIdx.textContent = String(r + 1);
+              tr.appendChild(thIdx);
+
+              for (let c = 0; c < rowData.length; c++) {
+                const td = document.createElement(r === 0 ? 'th' : 'td');
+                // 100% XSS Immunity via textContent (Zero unescaped HTML injection)
+                td.textContent = rowData[c] !== undefined && rowData[c] !== null ? String(rowData[c]) : '';
+                tr.appendChild(td);
+              }
+              tbody.appendChild(tr);
+            }
+            renderedCount = endIdx;
+            updateFooter();
+          }
+
+          const footerBar = document.createElement('div');
+          footerBar.style.cssText = 'padding:10px 16px; display:flex; justify-content:space-between; align-items:center; background:var(--card-background); border-top:1px solid var(--border); font-size:12px; color:var(--muted-foreground);';
+
+          function updateFooter() {
+            footerBar.innerHTML = '';
+            const infoSpan = document.createElement('span');
+            infoSpan.textContent = `📊 已安全展示前 ${renderedCount} 行，共 ${rows.length} 行数据`;
+            footerBar.appendChild(infoSpan);
+
+            if (renderedCount < rows.length) {
+              const btnGroup = document.createElement('div');
+              btnGroup.style.display = 'flex';
+              btnGroup.style.gap = '8px';
+
+              const btnMore = document.createElement('button');
+              btnMore.className = 'oc-btn';
+              btnMore.textContent = '⬇️ 加载下 200 行';
+              btnMore.onclick = () => renderBatch(200);
+              btnGroup.appendChild(btnMore);
+
+              const btnAll = document.createElement('button');
+              btnAll.className = 'oc-btn';
+              btnAll.textContent = '📑 加载全部行';
+              btnAll.onclick = () => {
+                btnAll.disabled = true;
+                btnAll.textContent = '正在渲染...';
+                if (typeof requestAnimationFrame === 'function') {
+                  requestAnimationFrame(() => renderBatch(rows.length - renderedCount));
+                } else {
+                  setTimeout(() => renderBatch(rows.length - renderedCount), 0);
+                }
+              };
+              btnGroup.appendChild(btnAll);
+
+              footerBar.appendChild(btnGroup);
+            }
+          }
+
+          renderBatch(INITIAL_PAGE_SIZE);
+          tableBox.appendChild(table);
+          tableBox.appendChild(footerBar);
         }
 
         sheetNames.forEach((name, i) => {

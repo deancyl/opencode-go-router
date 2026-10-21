@@ -461,7 +461,7 @@ class ComfyUIAdapter {
     try {
       while (Date.now() - startTime < timeoutMs) {
         if (typeof options.isCancelled === 'function' && options.isCancelled()) {
-          this.interrupt(serverUrl).catch(() => {});
+          this.cancelPrompt(serverUrl, promptId).catch(() => {});
           throw new Error('客户端连接已断开，生图任务已安全中断');
         }
 
@@ -499,13 +499,13 @@ class ComfyUIAdapter {
         }
       }
     } catch (err) {
-      // If error or timeout, attempt interrupt to free GPU VRAM
-      this.interrupt(serverUrl).catch(() => {});
+      // If error or timeout, interrupt and purge from queue to free GPU VRAM & eliminate orphan tasks
+      this.cancelPrompt(serverUrl, promptId).catch(() => {});
       throw err;
     }
 
     if (!historyEntry) {
-      this.interrupt(serverUrl).catch(() => {});
+      this.cancelPrompt(serverUrl, promptId).catch(() => {});
       throw new Error(`生图任务超时 (${Math.round(timeoutMs / 1000)}s)，已执行安全熔断。`);
     }
 
@@ -559,13 +559,23 @@ class ComfyUIAdapter {
     fs.writeFileSync(localFilePath, imageBuffer);
 
     const elapsedMs = Date.now() - startTime;
+    const maxInlineB64Bytes = options.maxBase64Bytes || 5 * 1024 * 1024; // 5MB safety limit
+    let cachedBase64 = null;
+    const getBase64 = () => {
+      if (cachedBase64 !== null) return cachedBase64;
+      if (imageBuffer.length > maxInlineB64Bytes) {
+        console.warn(`[ComfyUI] 产物图像体积 (${(imageBuffer.length / 1024 / 1024).toFixed(2)} MB) 超过单次 Base64 内联安全上限 (5MB)，已降级为本地 URL 引用以防止 V8 堆内存溢出。`);
+        return null;
+      }
+      cachedBase64 = imageBuffer.toString('base64');
+      return cachedBase64;
+    };
 
-    return {
+    const resObj = {
       success: true,
       filename: localFilename,
       localPath: localFilePath,
       url: `/artifacts/images/${localFilename}`,
-      base64: imageBuffer.toString('base64'),
       mimeType: ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png',
       workflowName: wfMeta.name,
       workflowId: wfMeta.id,
@@ -576,6 +586,45 @@ class ComfyUIAdapter {
       sizeBytes: imageBuffer.length,
       isFastDirect
     };
+
+    Object.defineProperty(resObj, 'base64', {
+      enumerable: true,
+      configurable: true,
+      get: getBase64
+    });
+
+    return resObj;
+  }
+
+  /**
+   * Cancel and purge task: interrupts running execution and deletes from pending queue
+   */
+  async cancelPrompt(serverUrl, promptId = null) {
+    const sUrl = serverUrl || (await this.detectServer()).serverUrl;
+    if (!sUrl) return false;
+    try {
+      const actions = [this.interrupt(sUrl)];
+      if (promptId) {
+        actions.push(this._deleteFromQueue(sUrl, promptId));
+      }
+      await Promise.allSettled(actions);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Delete pending prompt from ComfyUI queue to avoid orphan task execution
+   */
+  async _deleteFromQueue(serverUrl, promptId) {
+    if (!serverUrl || !promptId) return false;
+    try {
+      await this._httpPostJson(`${serverUrl}/queue`, { delete: [promptId] }, 3000);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /**
