@@ -37,6 +37,12 @@ FILES_TO_VERIFY = [
     'package.json',
     'README.md',
     'setup-linux.sh',
+    'start-linux.sh',
+    'stop-linux.sh',
+    'status-linux.sh',
+    'daemon_runner.py',
+    'opencode-router.service',
+    'patch-openchamber-office.sh',
     'test_router.js',
     'test_stress_regression.js',
     'test_m1_adversarial_deep.js',
@@ -124,7 +130,7 @@ def main():
                 print("   ", m)
             test_results['CHALLENGE_1_MD5'] = False
         else:
-            print("✔ All 14 files have 100% identical MD5 hashes between local Windows and Linux NAS!")
+            print(f"✔ All {len(FILES_TO_VERIFY)} files have 100% identical MD5 hashes between local Windows and Linux NAS!")
             test_results['CHALLENGE_1_MD5'] = True
 
         # -------------------------------------------------------------
@@ -147,6 +153,15 @@ def main():
                 syntax_passed = False
             else:
                 print(f"  [Syntax OK] {target}")
+
+        # Python syntax prior check
+        py_target = f"{REMOTE_DIR}/daemon_runner.py"
+        code, out, err = run_ssh_command(client, f"python3 -m py_compile {py_target}")
+        if code != 0 or err.strip():
+            print(f"❌ Python syntax check FAILED for {py_target}:\n{err}")
+            syntax_passed = False
+        else:
+            print(f"  [Syntax OK] {py_target}")
 
         test_results['CHALLENGE_2_SYNTAX'] = syntax_passed
 

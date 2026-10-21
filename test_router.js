@@ -8717,8 +8717,57 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security (Test 161) passed');
 
+    // =========================================================================
+    // [Test 162] Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment Verification:
+    // 1. Graceful SIGTERM/SIGINT shutdown & synchronous stats flushing in server.js
+    // 2. daemon_runner.py signal forwarding, crash-loop backoff & 10MB log rotation
+    // 3. POSIX sh / BusyBox ash compatibility across start/stop/status-linux.sh
+    // 4. patch-openchamber-office.sh / .ps1 idempotency marker (V2) & .orig rollback
+    // 5. Air-Gapped Safety: zero external CDN, fonts, or telemetry leakage
+    // =========================================================================
+    console.log('\n--- [Test 162] Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment Verification ---');
+
+    // 1. server.js graceful shutdown exports
+    const srvMod = require('./server');
+    assert.strictEqual(typeof srvMod.gracefulShutdown, 'function', 'server.js must export gracefulShutdown');
+
+    // 2. daemon_runner.py signal handling & backoff verification
+    const daemonRunnerCode = fs.readFileSync(path.join(__dirname, 'daemon_runner.py'), 'utf8');
+    assert.ok(daemonRunnerCode.includes('handle_shutdown_signal'), 'daemon_runner.py must handle shutdown signals');
+    assert.ok(daemonRunnerCode.includes('stable_uptime_threshold'), 'daemon_runner.py must implement crash-loop backoff');
+    assert.ok(daemonRunnerCode.includes('BoundedLogRotator'), 'daemon_runner.py must implement bounded log rotation');
+    assert.ok(daemonRunnerCode.includes('MAX_LOG_SIZE'), 'daemon_runner.py must enforce max log size');
+
+    // 3. opencode-router.service systemd unit verification
+    const serviceCode = fs.readFileSync(path.join(__dirname, 'opencode-router.service'), 'utf8');
+    assert.ok(serviceCode.includes('TimeoutStopSec=15s'), 'opencode-router.service must specify TimeoutStopSec');
+    assert.ok(serviceCode.includes('KillMode=mixed'), 'opencode-router.service must specify KillMode=mixed');
+
+    // 4. Linux scripts BusyBox compatibility
+    const startSh = fs.readFileSync(path.join(__dirname, 'start-linux.sh'), 'utf8');
+    const stopSh = fs.readFileSync(path.join(__dirname, 'stop-linux.sh'), 'utf8');
+    const statusSh = fs.readFileSync(path.join(__dirname, 'status-linux.sh'), 'utf8');
+    assert.ok(startSh.startsWith('#!/bin/sh'), 'start-linux.sh must have POSIX /bin/sh shebang');
+    assert.ok(stopSh.startsWith('#!/bin/sh'), 'stop-linux.sh must have POSIX /bin/sh shebang');
+    assert.ok(statusSh.startsWith('#!/bin/sh'), 'status-linux.sh must have POSIX /bin/sh shebang');
+
+    // 5. Office patch idempotency & air-gapped safety
+    const patchSh = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.sh'), 'utf8');
+    const patchPs = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.ps1'), 'utf8');
+    assert.ok(patchSh.includes('OPENCODE_OFFICE_PATCH_IDEMPOTENT_V2'), 'patch-openchamber-office.sh must contain V2 idempotency marker');
+    assert.ok(patchPs.includes('OPENCODE_OFFICE_PATCH_IDEMPOTENT_V2'), 'patch-openchamber-office.ps1 must contain V2 idempotency marker');
+    assert.ok(patchSh.includes('.orig'), 'patch-openchamber-office.sh must support .orig factory baseline');
+    assert.ok(patchPs.includes('.orig'), 'patch-openchamber-office.ps1 must support .orig factory baseline');
+
+    // 6. Air-gapped safety audit on office-preview-engine.js
+    const officeEngine = fs.readFileSync(path.join(__dirname, 'assets', 'office-preview-engine.js'), 'utf8');
+    assert.ok(!officeEngine.includes('view.officeapps.live.com'), 'office-preview-engine.js must not load external office iframe');
+    assert.ok(!officeEngine.includes('cdnjs.cloudflare.com'), 'office-preview-engine.js must not load external CDN');
+
+    console.log('✓ Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment (Test 162) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 161 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 162 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

@@ -13275,7 +13275,41 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+let isShuttingDown = false;
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[OpenCode Go Router] Received ${signal || 'shutdown signal'}, initiating graceful shutdown...`);
+  try {
+    if (contextCompactor && typeof contextCompactor.flushStatsToDisk === 'function') {
+      contextCompactor.flushStatsToDisk();
+      console.log('[OpenCode Go Router] Successfully flushed compression stats to disk.');
+    }
+  } catch (err) {
+    console.error('[OpenCode Go Router] Error flushing stats on exit:', err.message);
+  }
+  if (server && server.listening) {
+    try {
+      server.close(() => {
+        console.log('[OpenCode Go Router] HTTP server closed gracefully.');
+        process.exit(0);
+      });
+    } catch (_) {
+      process.exit(0);
+    }
+  } else {
+    process.exit(0);
+  }
+  const forceTimer = setTimeout(() => {
+    console.warn('[OpenCode Go Router] Shutdown timeout reached (4s), exiting forcibly.');
+    process.exit(0);
+  }, 4000);
+  if (forceTimer.unref) forceTimer.unref();
+}
+
 if (require.main === module) {
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   server.listen(config.port, config.host, () => {
     console.log(`[OpenCode Go Router] Running on http://${config.host}:${config.port}`);
     console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
@@ -13289,6 +13323,7 @@ if (require.main === module) {
 module.exports = {
   server,
   config,
+  gracefulShutdown,
   classifyUpstreamError,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
