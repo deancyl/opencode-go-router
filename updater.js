@@ -128,7 +128,7 @@ function getRouterConfigPath() {
   return process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 }
 
-// 38 All Available OpenCode Go Models with zero-loss fallback
+// 43 All Available OpenCode Go Models with zero-loss fallback
 const ALL_38_SLUGS = [
   'deepseek-v4.1-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash',
   'deepseek-v4-flash-vision-exp', 'glm-5.1', 'glm-5.2', 'glm-5.3', 'glm-5.3-flash',
@@ -137,7 +137,8 @@ const ALL_38_SLUGS = [
   'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k3', 'mimo-v2.5', 'mimo-v2.6-flash',
   'mimo-v2.5-pro', 'mimo-v2.6-pro', 'minimax-m2.5', 'minimax-m2.7', 'minimax-m3',
   'space-bunny', 'longcat-2.0', 'longcat-2.5-preview-free', 'step-5-preview-free',
-  'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.8-max', 'qwen3.8-flash'
+  'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.8-max', 'qwen3.8-flash',
+  'gemini-4-argon-contributor', 'step-5-preview', 'minimax-m3.1-flash-free', 'beam-free', 'cat-jam-free'
 ];
 
 /**
@@ -1341,15 +1342,15 @@ function analyzeCompatibility(local, remote, options = {}) {
       // E. Check if opencode-go models list is incomplete
       if (parsed && parsed.provider && parsed.provider['opencode-go'] && parsed.provider['opencode-go'].models) {
         const currentModelKeys = Object.keys(parsed.provider['opencode-go'].models);
-        if (currentModelKeys.length < 38) {
+        if (currentModelKeys.length < ALL_38_SLUGS.length) {
           if (riskLevel === 'safe') riskLevel = 'warning';
           warnings.push({
             component: 'opencode.jsonc',
             level: 'warning',
-            title: `opencode-go 提供商模型清单未补全 (当前 ${currentModelKeys.length}/38 款)`,
-            desc: '官方已提供 38 款全量模型（含 glm-5.3-flash, deepseek-v4.1, kimi-k3, qwen3.8 等），当前模型列表不完整可能导致部分模型无法在下拉列表调用。'
+            title: `opencode-go 提供商模型清单未补全 (当前 ${currentModelKeys.length}/${ALL_38_SLUGS.length} 款)`,
+            desc: `官方已提供 ${ALL_38_SLUGS.length} 款全量模型（含 glm-5.3-flash, deepseek-v4.1, kimi-k3, qwen3.8 等），当前模型列表不完整可能导致部分模型无法在下拉列表调用。`
           });
-          recommendations.push('在管理面板点击【一键体检与修复】，即可无损补齐官方 38 款全量模型并保留当前首选模型。');
+          recommendations.push(`在管理面板点击【一键体检与修复】，即可无损补齐官方 ${ALL_38_SLUGS.length} 款全量模型并保留当前首选模型。`);
         }
       }
     } catch (e) {}
@@ -2215,9 +2216,9 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     try {
       const targetPort = options.routerPort || options.port || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4010);
       const targetOmoVer = results['oh-my-openagent'] ? results['oh-my-openagent'].targetVersion : null;
-      logs.push(`正在自动执行跨平台配置合流自愈 (清洗单复数冲突，注入全量 38 款模型，端口: ${targetPort})...`);
+      logs.push(`正在自动执行跨平台配置合流自愈 (清洗单复数冲突，注入全量 ${ALL_38_SLUGS.length} 款模型，端口: ${targetPort})...`);
       const harmRes = harmonizeOpencodeConfig(options.configPath || null, targetPort, { omoVersion: targetOmoVer });
-      logs.push(`✔ opencode.jsonc 自动合流自愈成功 (38 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
+      logs.push(`✔ opencode.jsonc 自动合流自愈成功 (${ALL_38_SLUGS.length} 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
     } catch (harmErr) {
       logs.push(`⚠ 跨平台配置自愈提示: ${harmErr.message}`);
     }

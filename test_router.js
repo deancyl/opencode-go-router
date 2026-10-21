@@ -1280,7 +1280,7 @@ async function runTests() {
     const jsonCodexStatus = JSON.parse(resCodexStatus.body);
     assert.strictEqual(jsonCodexStatus.success, true);
     assert.ok(jsonCodexStatus.status, 'status object must be present');
-    assert.strictEqual(jsonCodexStatus.status.availableModels.length, 38, 'must offer all 38 OpenCode Go models');
+    assert.strictEqual(jsonCodexStatus.status.availableModels.length, codexAdapter.OPENCODE_GO_ALL_MODELS.length, 'must offer all OpenCode Go models');
     const mKimi = jsonCodexStatus.status.availableModels.find(m => m.slug === 'kimi-k3');
     assert.ok(mKimi, 'kimi-k3 must be available');
     assert.strictEqual(mKimi.default_reasoning_level, 'high');
@@ -1330,7 +1330,7 @@ async function runTests() {
 
     // Verify models.json merged original with 38 models
     const boundModels = JSON.parse(fs.readFileSync(path.join(isolatedCodexDir, 'models.json'), 'utf8'));
-    assert.strictEqual(boundModels.models.length, 39, '38 OpenCode Go models + 1 custom user model');
+    assert.strictEqual(boundModels.models.length, codexAdapter.OPENCODE_GO_ALL_MODELS.length + 1, 'OpenCode Go models + 1 custom user model');
     assert.ok(boundModels.models.some(m => m.slug === 'custom-model-abc'), 'User original model retained');
     assert.ok(boundModels.models.some(m => m.slug === 'kimi-k3'), 'OpenCode Go models injected');
 
@@ -1853,7 +1853,7 @@ async function runTests() {
     assert.strictEqual(harmonizedData.provider['opencode-go'].options.baseURL, 'http://127.0.0.1:4010/v1');
     assert.strictEqual(harmonizedData.provider['opencode-go'].options.apiKey, 'local-router');
     // 4. All 38 models must exist AND custom model must be preserved (total 39)
-    assert.strictEqual(Object.keys(harmonizedData.provider['opencode-go'].models).length, 39);
+    assert.strictEqual(Object.keys(harmonizedData.provider['opencode-go'].models).length, updater.ALL_38_SLUGS.length + 1);
     assert.ok(harmonizedData.provider['opencode-go'].models['deepseek-v4.1-flash']);
     assert.ok(harmonizedData.provider['opencode-go'].models['glm-5.3-flash']);
     assert.ok(harmonizedData.provider['opencode-go'].models['custom-finetuned-model']);
@@ -1967,9 +1967,9 @@ async function runTests() {
     // Harmonize to complete 38 models
     const fixedIncomplete = updater.harmonizeOpencodeConfig(incompleteFile, 4010);
     assert.strictEqual(fixedIncomplete.success, true);
-    assert.strictEqual(fixedIncomplete.modelCount, 38);
+    assert.strictEqual(fixedIncomplete.modelCount, updater.ALL_38_SLUGS.length);
     const fixedData = JSON.parse(fs.readFileSync(incompleteFile, 'utf8'));
-    assert.strictEqual(Object.keys(fixedData.provider['opencode-go'].models).length, 38);
+    assert.strictEqual(Object.keys(fixedData.provider['opencode-go'].models).length, updater.ALL_38_SLUGS.length);
     console.log('✓ Doctor Diagnostic & Self-Healing for Incomplete 38-Models Catalog verified');
 
     // [Test 55] Testing Dynamic Upstream Models Sync & Incremental Hot-Merge

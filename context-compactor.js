@@ -4295,7 +4295,7 @@ function compactText(text, options = {}, sessionId = null) {
     // Reverts to original text reference if no compression savings were achieved,
     // protecting against reverse inflation while preserving explicit folding markers.
     // P2-C2: Unified fold marker detection via regex — auto-covers new fold types
-    const hasFoldMarker = /\[(Test suite|Lockfile diff folded|SmartCrusher|Headroom SmartCrusher|Git|Build\/Pkg|llmtrim Log Dedup|Terminal output cleaned|RTK Search|Docker|Terraform|Kubectl)[:\s]/i.test(result);
+    const hasFoldMarker = /\[(Test suite|Lockfile diff folded|SmartCrusher|Headroom SmartCrusher|Git|Build\/Pkg|llmtrim Log Dedup|Terminal output cleaned|RTK Search|Docker|Terraform|Kubectl|Empty terminal output)[:\s\]]/i.test(result);
     if (result.length >= text.length && !hasFoldMarker) {
       result = text;
     }
