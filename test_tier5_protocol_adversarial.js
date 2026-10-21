@@ -200,7 +200,7 @@ async function runTier5AdversarialSuite() {
     const makeItems = (n) => {
       const items = [{ type: 'message', role: 'user', content: 'Start task' }];
       for (let i = 1; i < n; i++) {
-        items.push({ type: 'message', role: 'user', content: `Item ${i}` });
+        items.push({ type: 'message', role: i % 2 === 1 ? 'assistant' : 'user', content: 'Item ' + i });
       }
       return items;
     };
