@@ -8501,8 +8501,11 @@ function renderDashboardHtml(config) {
         const compCharsSub = document.getElementById('stat-compressed-chars-sub');
 
         const savedTokens = Number(stats.savedTokens || 0);
-        const consumedTokens = Number(stats.consumedTokens || 0);
-        const totalTokens = savedTokens + consumedTokens;
+        const rawConsumedTokens = Number(stats.consumedTokens || 0);
+        // P0-S1: consumedTokens from backend = original total (before compression)
+        // actualConsumed = what the model actually processes after compression
+        const totalTokens = Math.max(rawConsumedTokens, savedTokens);
+        const consumedTokens = Math.max(0, totalTokens - savedTokens);
         const dynamicSavingsRatio = totalTokens > 0
           ? Number(((savedTokens / totalTokens) * 100).toFixed(1))
           : (savedTokens > 0 ? 100.0 : 0.0);
@@ -8514,7 +8517,7 @@ function renderDashboardHtml(config) {
         const savedTokensSub = document.getElementById('stat-saved-tokens-sub');
         if (savedTokensSub) {
           savedTokensSub.innerText = hasData
-            ? ('实际处理消耗 ~' + consumedTokens.toLocaleString() + ' T · 原本需求 ~' + totalTokens.toLocaleString() + ' T')
+            ? ('压缩后实际消耗 ~' + consumedTokens.toLocaleString() + ' T · 压缩前原需 ~' + totalTokens.toLocaleString() + ' T')
             : '基于中英双语动态模型 (~1.25 中文 / ~3.8 英文代码 字符/Token)';
         }
 
@@ -8523,7 +8526,7 @@ function renderDashboardHtml(config) {
         if (dynRatioEl) dynRatioEl.innerText = dynamicSavingsRatio.toFixed(1) + '%';
         if (dynRatioSub) {
           dynRatioSub.innerText = hasData
-            ? ('原本需求 ~' + totalTokens.toLocaleString() + ' T · 相当于打 ' + discountRate + ' 折')
+            ? ('压缩前原需 ~' + totalTokens.toLocaleString() + ' T → 压缩后实消 ~' + consumedTokens.toLocaleString() + ' T · 打 ' + discountRate + ' 折')
             : (currentCompRange === 'all' ? '原本总需求: 0 T · 相当于打 10 折' : '此时间段内暂无数据');
         }
 

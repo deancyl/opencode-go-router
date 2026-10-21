@@ -4286,14 +4286,8 @@ function compactText(text, options = {}, sessionId = null) {
     // 100% Anti-Inflation Circuit Breaker (坚决不反向膨胀)
     // Reverts to original text reference if no compression savings were achieved,
     // protecting against reverse inflation while preserving explicit folding markers.
-    const hasFoldMarker = result.includes('[Test suite:') ||
-                          result.includes('[Lockfile diff folded:') ||
-                          result.includes('[SmartCrusher:') ||
-                          result.includes('[Headroom SmartCrusher:') ||
-                          result.includes('[Git:') ||
-                          result.includes('[Build/Pkg:') ||
-                          result.includes('[llmtrim Log Dedup:') ||
-                          result.includes('[Empty terminal output]') || result.includes('[Terminal output cleaned:');
+    // P2-C2: Unified fold marker detection via regex — auto-covers new fold types
+    const hasFoldMarker = /\[(Test suite|Lockfile diff folded|SmartCrusher|Headroom SmartCrusher|Git|Build\/Pkg|llmtrim Log Dedup|Terminal output cleaned|RTK Search|Docker|Terraform|Kubectl)[:\s]/i.test(result);
     if (result.length >= text.length && !hasFoldMarker) {
       result = text;
     }
@@ -4306,6 +4300,8 @@ function compactText(text, options = {}, sessionId = null) {
     // P0-H2: Stats dedup — skip recording if this exact content was already counted
     const _statsFp = hashContent(text) + '_' + (opts.model || 'u');
     const _isStatsDedup = globalStatsDedup.has(_statsFp);
+    // P2-R2: Refresh LRU position on hit
+    if (_isStatsDedup) { globalStatsDedup.delete(_statsFp); globalStatsDedup.set(_statsFp, 1); }
     if (!_isStatsDedup && totalSaved > 0) {
       if (globalStatsDedup.size >= MAX_STATS_DEDUP_KEYS) {
         const oldestKey = globalStatsDedup.keys().next().value;
@@ -4489,7 +4485,7 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
             return { ...msg, [targetField]: ensureSafeNonEmptyString(compacted) };
           } else if (Array.isArray(val)) {
             // P2-M1: Skip array folding for latest turn tool output to preserve full data
-            const _isLatestTurnMsg = _msgIdx >= lastToolMsgIdx && lastToolMsgIdx >= 0;
+            const _isLatestTurnMsg = compOpts.preserveLatestTurn === true && _msgIdx >= lastToolMsgIdx && lastToolMsgIdx >= 0;
             let targetArray = val;
             let wasArrayFolded = false;
             if (compOpts.foldStructuredData && !_isLatestTurnMsg && targetArray.length > (compOpts.maxStructuredItems || 50)) {
@@ -4497,7 +4493,13 @@ function compactChatPayload(payload, options = {}, sessionId = null) {
                 const rawArrStr = JSON.stringify(targetArray);
                 const foldedStr = foldStructuredData(rawArrStr, compOpts);
                 if (foldedStr.length < rawArrStr.length) {
-                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
+                  // P1-F2: Array fold dedup protection
+                  const _arrFoldFp = require('crypto').createHash('sha256').update(rawArrStr.slice(0, 2000)).digest('hex').slice(0, 12) + '_afold';
+                  if (!globalStatsDedup.has(_arrFoldFp)) {
+                    if (globalStatsDedup.size >= MAX_STATS_DEDUP_KEYS) { const _ok = globalStatsDedup.keys().next().value; globalStatsDedup.delete(_ok); }
+                    globalStatsDedup.set(_arrFoldFp, 1);
+                    recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
+                  }
                   targetArray = JSON.parse(foldedStr);
                   wasArrayFolded = true;
                 }
@@ -4590,8 +4592,19 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
       result.tools = compactToolsList(result.tools, compOpts).tools;
     }
 
+    let lastToolMsgIdx = -1;
     if (Array.isArray(result.messages)) {
-      result.messages = result.messages.map(msg => {
+      for (let i = result.messages.length - 1; i >= 0; i--) {
+        const m = result.messages[i];
+        if (m && (m.role === 'tool' || (Array.isArray(m.content) && m.content.some(b => b && b.type === 'tool_result')))) {
+          lastToolMsgIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (Array.isArray(result.messages)) {
+      result.messages = result.messages.map((msg, _msgIdx) => {
         if (!msg) return msg;
         if (msg.role === 'tool' && typeof msg.content === 'string') {
           const compacted = compactText(msg.content, compOpts, sessionId);
@@ -4614,7 +4627,7 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                   return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
                 } else if (Array.isArray(val)) {
                   // P2-M1: Skip array folding for latest turn tool output
-                  const _isLatestTurnMsg2 = _msgIdx >= lastToolMsgIdx && lastToolMsgIdx >= 0;
+                  const _isLatestTurnMsg2 = compOpts.preserveLatestTurn === true && _msgIdx >= lastToolMsgIdx && lastToolMsgIdx >= 0;
                   let targetArray = val;
                   let wasArrayFolded = false;
                   if (compOpts.foldStructuredData && !_isLatestTurnMsg2 && targetArray.length > (compOpts.maxStructuredItems || 50)) {
@@ -4622,7 +4635,13 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                       const rawArrStr = JSON.stringify(targetArray);
                       const foldedStr = foldStructuredData(rawArrStr, compOpts);
                       if (foldedStr.length < rawArrStr.length) {
-                        recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
+                        // P1-F2: Array fold dedup protection
+                  const _arrFoldFp = require('crypto').createHash('sha256').update(rawArrStr.slice(0, 2000)).digest('hex').slice(0, 12) + '_afold';
+                  if (!globalStatsDedup.has(_arrFoldFp)) {
+                    if (globalStatsDedup.size >= MAX_STATS_DEDUP_KEYS) { const _ok = globalStatsDedup.keys().next().value; globalStatsDedup.delete(_ok); }
+                    globalStatsDedup.set(_arrFoldFp, 1);
+                    recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
+                  }
                         targetArray = JSON.parse(foldedStr);
                         wasArrayFolded = true;
                       }
@@ -4772,7 +4791,7 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
           } else if (Array.isArray(val)) {
             // If it's a giant array (> maxStructuredItems), fold with SmartCrusher first
             // P2-M1: Skip array folding for the latest turn's tool output to preserve full data for model reasoning
-            const _isLatestTurnOutput = _itemIdx >= lastToolOutputIdx && lastToolOutputIdx >= 0;
+            const _isLatestTurnOutput = compOpts.preserveLatestTurn === true && _itemIdx >= lastToolOutputIdx && lastToolOutputIdx >= 0;
             let targetArray = val;
             let wasArrayFolded = false;
             if (compOpts.foldStructuredData && !_isLatestTurnOutput && targetArray.length > (compOpts.maxStructuredItems || 50)) {
@@ -4780,7 +4799,13 @@ function compactResponsesPayload(payload, options = {}, sessionId = null) {
                 const rawArrStr = JSON.stringify(targetArray);
                 const foldedStr = foldStructuredData(rawArrStr, compOpts);
                 if (foldedStr.length < rawArrStr.length) {
-                  recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
+                  // P1-F2: Array fold dedup protection
+                  const _arrFoldFp = require('crypto').createHash('sha256').update(rawArrStr.slice(0, 2000)).digest('hex').slice(0, 12) + '_afold';
+                  if (!globalStatsDedup.has(_arrFoldFp)) {
+                    if (globalStatsDedup.size >= MAX_STATS_DEDUP_KEYS) { const _ok = globalStatsDedup.keys().next().value; globalStatsDedup.delete(_ok); }
+                    globalStatsDedup.set(_arrFoldFp, 1);
+                    recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
+                  }
                   targetArray = JSON.parse(foldedStr);
                   wasArrayFolded = true;
                 }

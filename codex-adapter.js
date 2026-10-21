@@ -3208,6 +3208,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
         width: parsedArgs.width || null,
         height: parsedArgs.height || null,
         seed: parsedArgs.seed || null,
+        isCancelled: () => clientRes.destroyed || clientRes.writableEnded,
         onProgress: ({ elapsedSec }) => {
           if (!clientRes.destroyed && !clientRes.writableEnded) {
             try { clientRes.write(': comfyui rendering ' + elapsedSec + 's\n\n'); } catch (_) {}
@@ -6393,14 +6394,14 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       '2. 严禁计划中途早熟停机：若在回复中制定了多步骤任务规划（例如 Step 1/N 到 Step N/N），必须严格自主推进并执行完毕，严禁中途（如 Step 2/N）无故停机交还控制权。\n' +
       '3. 遇到执行报错或脚本异常时，必须自主分析错误原因并调用工具尝试替代方案解决，严禁输出半截话、未闭合括号或未闭合反引号直接终止。\n' +
       '4. 回复必须保持语法结构与代码块完整闭合。\n' +
-      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（generate_image 与 interrogate_image）。必须优先直接调用 generate_image 工具生成真实图片，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
+      '5. 视觉图像与设计生成规范：当用户需要生成图片、插画、设计图、二次元壁纸或反推图片提示词时，本地已挂载 ComfyUI 图像智能体工具（generate_image 与 interrogate_image）。必须优先直接调用 generate_image 工具生成真实图片，无需输出冗长的前置文字说明，严禁编写 System.Drawing 或 GDI+ 本地脚本伪造图片。\n';
 
     if (fs.existsSync(catalogPath)) {
       const cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
       let modified = false;
       if (Array.isArray(cat.models)) {
         cat.models.forEach(m => {
-          if (!m.base_instructions || !m.base_instructions.includes('视觉图像与设计生成规范')) {
+          if (!m.base_instructions || !m.base_instructions.includes('无需输出冗长的前置文字说明')) {
             m.base_instructions = (m.base_instructions || '').replace(/\n\n# 语言规范[\s\S]*$/, '') + chineseNotice;
             modified = true;
           }
@@ -6417,7 +6418,7 @@ function repairCodexLocaleAndEnvironment(options = {}) {
       let modified = false;
       if (Array.isArray(mData.models)) {
         mData.models.forEach(m => {
-          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('视觉图像与设计生成规范'))) {
+          if (m.model_provider === 'opencode-go' && (!m.base_instructions || !m.base_instructions.includes('无需输出冗长的前置文字说明'))) {
             m.base_instructions = (m.base_instructions || '').replace(/\n\n# 语言规范[\s\S]*$/, '') + chineseNotice;
             modified = true;
           }

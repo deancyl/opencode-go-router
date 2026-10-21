@@ -168,13 +168,17 @@ class ComfyUIAdapter {
   /**
    * Lookup and match workflow by ID, filename prefix, or semantic style tags
    */
-  resolveWorkflow(identifierOrQuery) {
+  resolveWorkflow(identifierOrQuery, promptText = '') {
     if (!this.manifest) {
       this._loadManifest();
     }
     if (!this.manifest) return null;
 
     if (!identifierOrQuery || identifierOrQuery === 'auto') {
+      // If user prompt explicitly requests fast sketch/draft, auto-route to 04 (Fast Draft)
+      if (promptText && /极速|快速|速写|速画|草图|抽卡|试画|快画|draft|sketch|fast|preview/i.test(promptText)) {
+        return this.manifest['04'] || this.manifest['01'] || Object.values(this.manifest)[0] || null;
+      }
       // Default to 01 (Quality Photorealistic)
       return this.manifest['01'] || Object.values(this.manifest)[0] || null;
     }
@@ -396,7 +400,7 @@ class ComfyUIAdapter {
       throw new Error('生图提示词 (prompt) 不能为空');
     }
 
-    const wfMeta = this.resolveWorkflow(reqWf);
+    const wfMeta = this.resolveWorkflow(reqWf, prompt.trim());
     if (!wfMeta) {
       throw new Error(`无法匹配适用的生图工作流: ${reqWf || 'default'}`);
     }
@@ -429,15 +433,21 @@ class ComfyUIAdapter {
 
     const promptId = queueRes.prompt_id;
 
-    // 2. Poll for completion with Keep-Alive progress callbacks
+    // 2. Poll for completion with Keep-Alive progress callbacks & cancellation guard
     const timeoutMs = options.timeoutMs || this.config.comfyui?.timeoutSec * 1000 || DEFAULT_TASK_TIMEOUT_MS;
     let historyEntry = null;
     let pollRounds = 0;
 
     try {
       while (Date.now() - startTime < timeoutMs) {
+        if (typeof options.isCancelled === 'function' && options.isCancelled()) {
+          this.interrupt(serverUrl).catch(() => {});
+          throw new Error('客户端连接已断开，生图任务已安全中断');
+        }
+
         pollRounds++;
-        await new Promise(r => setTimeout(r, 1200));
+        const pollDelay = pollRounds <= 6 ? 700 : 1000;
+        await new Promise(r => setTimeout(r, pollDelay));
 
         // Call progress callback to send keep-alive SSE pings or UI deltas
         if (typeof onProgress === 'function') {
