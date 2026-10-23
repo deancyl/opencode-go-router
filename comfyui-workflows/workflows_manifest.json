@@ -1,0 +1,850 @@
+{
+  "01": {
+    "id": "01",
+    "name": "01_真人写实_极致NanoBanana",
+    "description": "电影级胶片写实人像，真实皮肤微观毛孔与耳廓次表面透光",
+    "api_file": "workflows_api/01_真人写实_极致NanoBanana_次表面透析_电影双段精雕流.json",
+    "ui_file": "workflows/01_真人写实_极致NanoBanana_次表面透析_电影双段精雕流.json",
+    "style_tags": [
+      "真人",
+      "写实",
+      "肖像",
+      "摄影",
+      "电影质感",
+      "photorealistic",
+      "portrait",
+      "subsurface_scattering"
+    ],
+    "prompt_node": {
+      "id": "2",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "5",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "7",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "12",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "9",
+    "preview_output_node": "14",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "Realistic_Vision_V5.1.safetensors"
+    }
+  },
+  "02": {
+    "id": "02",
+    "name": "02_抓拍视角_MOSS灵感POV画中画",
+    "description": "业余手持手机画中画抓拍视角，真实闪光灯暗角与新娘婚纱质感",
+    "api_file": "workflows_api/02_抓拍视角_MOSS灵感_业余POV画中画_多档切换胶片流.json",
+    "ui_file": "workflows/02_抓拍视角_MOSS灵感_业余POV画中画_多档切换胶片流.json",
+    "style_tags": [
+      "POV",
+      "画中画",
+      "抓拍",
+      "手机屏幕",
+      "婚纱",
+      "胶片",
+      "candid",
+      "smartphone"
+    ],
+    "prompt_node": {
+      "id": "2",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "5",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "7",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "12",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "9",
+    "preview_output_node": "14",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "Realistic_Vision_V5.1.safetensors"
+    }
+  },
+  "03": {
+    "id": "03",
+    "name": "03_智能工具_NSFW精准提示词反推",
+    "description": "WD14 深度反推 + 双轨中英对照与结构化提示词重构分析工具",
+    "api_file": "workflows_api/03_智能工具_NSFW精准提示词反推工作台_中英对照融合.json",
+    "ui_file": "workflows/03_智能工具_NSFW精准提示词反推工作台_中英对照融合.json",
+    "style_tags": [
+      "反推",
+      "分析",
+      "WD14",
+      "中英对照",
+      "自然语言描述",
+      "interrogator",
+      "tagger"
+    ]
+  },
+  "04": {
+    "id": "04",
+    "name": "04_极速抽卡_无限多风格探索流",
+    "description": "全体系唯一保留的极速抽卡流，8步秒级盲盒灵感探索",
+    "api_file": "workflows_api/04_极速抽卡_无限多风格探索流_秒级盲盒.json",
+    "ui_file": "workflows/04_极速抽卡_无限多风格探索流_秒级盲盒.json",
+    "style_tags": [
+      "极速",
+      "抽卡",
+      "盲盒",
+      "多风格",
+      "秒级",
+      "Hyper-SD",
+      "fast_gacha"
+    ],
+    "prompt_node": {
+      "id": "5",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "6",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "output_node": "10",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "Realistic_Vision_V5.1.safetensors"
+    }
+  },
+  "05": {
+    "id": "05",
+    "name": "05_二次元总控_全能风格切换总控台",
+    "description": "二次元 3 路 LoRA 切换矩阵，吉卜力/新海诚/暗黑自由组合",
+    "api_file": "workflows_api/05_二次元总控_全能风格切换总控台_吉卜力_新海诚_暗黑.json",
+    "ui_file": "workflows/05_二次元总控_全能风格切换总控台_吉卜力_新海诚_暗黑.json",
+    "style_tags": [
+      "二次元",
+      "总控台",
+      "吉卜力",
+      "新海诚",
+      "暗黑深渊",
+      "LoRA切换",
+      "anime_switchboard"
+    ],
+    "prompt_node": {
+      "id": "5",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "6",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "10",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "15",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "12",
+    "preview_output_node": "17",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "06": {
+    "id": "06",
+    "name": "06_二次元手绘_吉卜力唯美手绘风",
+    "description": "宫崎骏/男鹿和雄唯美水彩手绘，翠绿草坡、碧水天池与治愈云影",
+    "api_file": "workflows_api/06_二次元手绘_吉卜力唯美手绘风_童话治愈流.json",
+    "ui_file": "workflows/06_二次元手绘_吉卜力唯美手绘风_童话治愈流.json",
+    "style_tags": [
+      "二次元",
+      "手绘",
+      "水彩",
+      "吉卜力",
+      "宫崎骏",
+      "童话",
+      "治愈",
+      "ghibli"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "4",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "6",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "13",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "10",
+    "preview_output_node": "15",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "07": {
+    "id": "07",
+    "name": "07_二次元光影_新海诚光影日漫",
+    "description": "新海诚暮色光影、彗星尾迹与东京夜景，线稿利落纯净",
+    "api_file": "workflows_api/07_二次元光影_新海诚光影日漫_双轨纯欲流.json",
+    "ui_file": "workflows/07_二次元光影_新海诚光影日漫_双轨纯欲流.json",
+    "style_tags": [
+      "二次元",
+      "新海诚",
+      "光影",
+      "日漫",
+      "彗星",
+      "暮色霞光",
+      "纯欲",
+      "shinkai"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "4",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "6",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "13",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "10",
+    "preview_output_node": "15",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "08": {
+    "id": "08",
+    "name": "08_二次元暗黑_异界深渊触手侵蚀",
+    "description": "哥特式暗黑少女、发光星云紫瞳、恶魔小虎牙与深V黑蕾丝刺绣",
+    "api_file": "workflows_api/08_二次元暗黑_暗黑异界深渊_触手侵蚀流.json",
+    "ui_file": "workflows/08_二次元暗黑_暗黑异界深渊_触手侵蚀流.json",
+    "style_tags": [
+      "二次元",
+      "暗黑",
+      "哥特",
+      "深渊",
+      "发光瞳",
+      "触手",
+      "蕾丝",
+      "dark_fantasy"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "4",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "6",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "13",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "10",
+    "preview_output_node": "15",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "09": {
+    "id": "09",
+    "name": "09_2D精细厚涂_圣职修女与地牢囚徒",
+    "description": "哥特式厚涂油画笔触、金边十字架、半透明黑丝暗纹与彩绘玻璃",
+    "api_file": "workflows_api/09_2D精细厚涂_圣职修女与地牢囚徒_禁断反差专精流.json",
+    "ui_file": "workflows/09_2D精细厚涂_圣职修女与地牢囚徒_禁断反差专精流.json",
+    "style_tags": [
+      "2D厚涂",
+      "修女",
+      "地牢",
+      "禁断",
+      "彩绘玻璃",
+      "金饰",
+      "黑丝",
+      "gothic_nun"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "4",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "6",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "13",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "10",
+    "preview_output_node": "15",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "10": {
+    "id": "10",
+    "name": "10_2D精细厚涂_4大经典主题总控台",
+    "description": "4 大经典奇幻主题总控台，世界之树、古祭坛与精灵法师宏大概念原画",
+    "api_file": "workflows_api/10_2D精细厚涂_4大经典主题快速切换总控台.json",
+    "ui_file": "workflows/10_2D精细厚涂_4大经典主题快速切换总控台.json",
+    "style_tags": [
+      "2D厚涂",
+      "世界之树",
+      "地牢遗迹",
+      "精灵法师",
+      "女武神",
+      "游戏原画",
+      "concept_art"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "7",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "9",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "11",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "16",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "13",
+    "preview_output_node": "18",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "11": {
+    "id": "11",
+    "name": "11_2D精细厚涂_开放式材质强化沙箱",
+    "description": "巴洛克金雕板甲、镜面精钢反光、紫水晶眼眸与半透明白丝披风",
+    "api_file": "workflows_api/11_2D精细厚涂_开放式材质强化与反推沙箱.json",
+    "ui_file": "workflows/11_2D精细厚涂_开放式材质强化与反推沙箱.json",
+    "style_tags": [
+      "2D厚涂",
+      "材质沙箱",
+      "黄金板甲",
+      "镜面精钢",
+      "白丝披风",
+      "紫水晶",
+      "armor"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "6",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "10",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "17",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "12",
+    "preview_output_node": "19",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "12": {
+    "id": "12",
+    "name": "12_BetterWaifu_五阶LoRA矩阵姿态总控",
+    "description": "五阶 LoRA 矩阵与动态姿态总控台，赛璐珞硬线稿二次元机甲，杜绝油画模糊",
+    "api_file": "workflows_api/12_BetterWaifu_五阶LoRA矩阵与动态姿态总控台.json",
+    "ui_file": "workflows/12_BetterWaifu_五阶LoRA矩阵与动态姿态总控台.json",
+    "style_tags": [
+      "BetterWaifu",
+      "姿态控制",
+      "赛璐珞",
+      "机甲少女",
+      "硬线稿",
+      "防模糊",
+      "cel_shading"
+    ],
+    "prompt_node": {
+      "id": "6",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "7",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "9",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "11",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "16",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "13",
+    "preview_output_node": "18",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "13": {
+    "id": "13",
+    "name": "13_实用工具_局部重绘与垫图修图流",
+    "description": "VAE 羽化遮罩局部重绘与垫图图生图修图流，边缘高精融合",
+    "api_file": "workflows_api/13_实用工具_局部重绘与垫图图生图修图流.json",
+    "ui_file": "workflows/13_实用工具_局部重绘与垫图图生图修图流.json",
+    "style_tags": [
+      "局部重绘",
+      "修手",
+      "修脸",
+      "垫图",
+      "Inpaint",
+      "羽化遮罩",
+      "image_editing"
+    ],
+    "prompt_node": {
+      "id": "5",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "6",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "7",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "12",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "9",
+    "preview_output_node": "14",
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "14": {
+    "id": "14",
+    "name": "14_精准控制_ControlNet姿态骨骼线稿",
+    "description": "OpenPose 人体骨骼锁定与 Canny 边缘线稿 1:1 精确约束生图",
+    "api_file": "workflows_api/14_精准控制_ControlNet姿态骨骼与线稿重绘流.json",
+    "ui_file": "workflows/14_精准控制_ControlNet姿态骨骼与线稿重绘流.json",
+    "style_tags": [
+      "ControlNet",
+      "OpenPose",
+      "Canny",
+      "姿态锁定",
+      "线稿复刻",
+      "精确控制",
+      "pose"
+    ],
+    "prompt_node": {
+      "id": "4",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "6",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "10",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "16",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "12",
+    "preview_output_node": "18",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "15": {
+    "id": "15",
+    "name": "15_生活写实_日常阳光通勤写真流",
+    "description": "晨光街拍日常写真，毛线针织针脚微观纹理与自然真实笑容",
+    "api_file": "workflows_api/15_生活写实_日常阳光通勤与社交人像写真流.json",
+    "ui_file": "workflows/15_生活写实_日常阳光通勤与社交人像写真流.json",
+    "style_tags": [
+      "生活写实",
+      "日常通勤",
+      "街拍",
+      "针织毛衣",
+      "晨光写真",
+      "自然笑容",
+      "lifestyle"
+    ],
+    "prompt_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "4",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "6",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "8",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "13",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "10",
+    "preview_output_node": "15",
+    "default_size": {
+      "width": 512,
+      "height": 768
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "Realistic_Vision_V5.1.safetensors"
+    }
+  },
+  "16": {
+    "id": "16",
+    "name": "16_宽屏场景_16比9超清唯美风光壁纸",
+    "description": "896x512 黄金 16:9 原生宽画布，日照金山与镜湖倒影宏大壁纸",
+    "api_file": "workflows_api/16_宽屏场景_16比9超清唯美风光与桌面壁纸流.json",
+    "ui_file": "workflows/16_宽屏场景_16比9超清唯美风光与桌面壁纸流.json",
+    "style_tags": [
+      "宽屏",
+      "16比9",
+      "壁纸",
+      "日照金山",
+      "雪山湖泊",
+      "大风景",
+      "wallpaper"
+    ],
+    "prompt_node": {
+      "id": "2",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "3",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "5",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "7",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "12",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "9",
+    "preview_output_node": "14",
+    "default_size": {
+      "width": 896,
+      "height": 512
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  },
+  "17": {
+    "id": "17",
+    "name": "17_概念设计_全能设计图三视图设定集",
+    "description": "工业级角色设计正/侧/背三视图设定集 + 5 组表情差分矩阵",
+    "api_file": "workflows_api/17_概念设计_全能设计图与角色三视图设定集.json",
+    "ui_file": "workflows/17_概念设计_全能设计图与角色三视图设定集.json",
+    "style_tags": [
+      "三视图",
+      "设定集",
+      "概念设计",
+      "表情差分",
+      "工业制图",
+      "角色设计",
+      "character_sheet"
+    ],
+    "prompt_node": {
+      "id": "2",
+      "field": "text"
+    },
+    "negative_node": {
+      "id": "5",
+      "field": "text"
+    },
+    "sampler_node": {
+      "id": "7",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "cfg_field": "cfg",
+      "denoise_field": "denoise"
+    },
+    "refine_sampler_node": {
+      "id": "9",
+      "seed_field": "seed",
+      "steps_field": "steps",
+      "denoise_field": "denoise"
+    },
+    "preview_sampler_node": {
+      "id": "14",
+      "seed_field": "seed",
+      "steps_field": "steps"
+    },
+    "output_node": "11",
+    "preview_output_node": "16",
+    "default_size": {
+      "width": 832,
+      "height": 512
+    },
+    "checkpoint_node": {
+      "id": "1",
+      "model_field": "ckpt_name",
+      "default_model": "anything-v5-PrtRE.safetensors"
+    }
+  }
+}

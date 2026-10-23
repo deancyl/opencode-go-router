@@ -8683,6 +8683,77 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(mcpContent.includes('code: -32602'), 'MCP server must handle Invalid params (-32602)');
     assert.ok(mcpContent.includes('notifications/progress'), 'MCP server must support progress notifications');
 
+    
+
+    // 4. Verify ComfyUI Service Lifecycle & GitHub Deployment Methods
+    {
+      assert.strictEqual(typeof testComfyAdapter.startService, 'function', 'startService must be a function');
+      assert.strictEqual(typeof testComfyAdapter.stopService, 'function', 'stopService must be a function');
+      assert.strictEqual(typeof testComfyAdapter.restartService, 'function', 'restartService must be a function');
+      assert.strictEqual(typeof testComfyAdapter.syncWorkflowsFromGitHub, 'function', 'syncWorkflowsFromGitHub must be a function');
+      assert.strictEqual(typeof testComfyAdapter.deployToComfyUI, 'function', 'deployToComfyUI must be a function');
+      assert.strictEqual(typeof testComfyAdapter.detectLocalComfyUIDirs, 'function', 'detectLocalComfyUIDirs must be a function');
+      assert.strictEqual(typeof testComfyAdapter.openWebGui, 'function', 'openWebGui must be a function');
+
+      // 5. Test ComfyUI Status API & Master Switch Lifecycle
+      const statusRes = await request('/balancer/api/comfyui/status');
+      assert.strictEqual(statusRes.statusCode, 200, '/balancer/api/comfyui/status must return 200');
+      const comfyStatusJson = JSON.parse(statusRes.body);
+      assert.strictEqual(comfyStatusJson.success, true);
+      assert.strictEqual(typeof comfyStatusJson.enabled, 'boolean');
+      assert.ok(Array.isArray(comfyStatusJson.detectedDirs));
+      assert.ok(typeof comfyStatusJson.repoUrl === 'string');
+
+      // Test ComfyUI Toggle (Disable Master Switch)
+      const toggleOffRes = await request('/balancer/api/comfyui/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: false })
+      });
+      assert.strictEqual(toggleOffRes.statusCode, 200);
+      const toggleOffJson = JSON.parse(toggleOffRes.body);
+      assert.strictEqual(toggleOffJson.success, true);
+      assert.strictEqual(toggleOffJson.enabled, false);
+
+      // When disabled, /v1/images/generations must be blocked with 403 comfyui_disabled
+      const genDisabledRes = await request('/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'test when disabled' })
+      });
+      assert.strictEqual(genDisabledRes.statusCode, 403);
+      const genDisabledJson = JSON.parse(genDisabledRes.body);
+      assert.strictEqual(genDisabledJson.error?.code, 'comfyui_disabled');
+
+      // When disabled, /v1/images/interrogate must be blocked with 403 comfyui_disabled
+      const intDisabledRes = await request('/v1/images/interrogate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' })
+      });
+      assert.strictEqual(intDisabledRes.statusCode, 403);
+      const intDisabledJson = JSON.parse(intDisabledRes.body);
+      assert.strictEqual(intDisabledJson.error?.code, 'comfyui_disabled');
+
+      // Test ComfyUI Toggle (Re-enable Master Switch)
+      const toggleOnRes = await request('/balancer/api/comfyui/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true })
+      });
+      assert.strictEqual(toggleOnRes.statusCode, 200);
+      const toggleOnJson = JSON.parse(toggleOnRes.body);
+      assert.strictEqual(toggleOnJson.success, true);
+      assert.strictEqual(toggleOnJson.enabled, true);
+
+      // Test ComfyUI Detect Local Dirs API
+      const detectDirsRes = await request('/balancer/api/comfyui/detect-dirs');
+      assert.strictEqual(detectDirsRes.statusCode, 200);
+      const detectDirsJson = JSON.parse(detectDirsRes.body);
+      assert.strictEqual(detectDirsJson.success, true);
+      assert.ok(Array.isArray(detectDirsJson.dirs));
+    }
+
     console.log('✓ ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox (Test 160) passed');
 
     // --- [Test 161] Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security ---

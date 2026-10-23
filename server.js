@@ -116,6 +116,8 @@ const DEFAULT_CONFIG = {
     enabled: true,
     host: 'http://127.0.0.1:8284',
     workflowsDir: '',
+    localDir: '',
+    repoUrl: 'https://github.com/deancyl/comfyui-agent-workflows',
     timeoutSec: 180
   }
 };
@@ -149,6 +151,7 @@ const DEFAULT_OMO_CONFIG = {
 };
 
 const proxyAgentCache = new Map();
+const MAX_PROXY_AGENT_CACHE = 50; // N3 Fix: Bounded LRU cap to prevent unbounded memory growth
 
 function clearProxyAgentCache() {
   for (const [key, agent] of proxyAgentCache.entries()) {
@@ -438,9 +441,20 @@ function getProxyAgent(proxyUrlInput, isHttps = true) {
   if (!proxyUrlStr) return null;
   const key = `${isHttps ? 'https' : 'http'}://${proxyUrlStr}`;
   if (proxyAgentCache.has(key)) {
-    return proxyAgentCache.get(key);
+    // LRU refresh: delete and re-insert to move to end
+    const cached = proxyAgentCache.get(key);
+    proxyAgentCache.delete(key);
+    proxyAgentCache.set(key, cached);
+    return cached;
   }
   try {
+    // N3 Fix: Evict oldest entry when cache exceeds bounded cap
+    if (proxyAgentCache.size >= MAX_PROXY_AGENT_CACHE) {
+      const oldestKey = proxyAgentCache.keys().next().value;
+      const oldAgent = proxyAgentCache.get(oldestKey);
+      proxyAgentCache.delete(oldestKey);
+      try { oldAgent.destroy(); } catch (_) {}
+    }
     const agent = isHttps ? new HttpsTunnelAgent(proxyUrlStr) : new HttpTunnelAgent(proxyUrlStr);
     proxyAgentCache.set(key, agent);
     return agent;
@@ -1322,9 +1336,9 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
     lowerText.includes('authentication failed')
   );
 
-  // 2b. Detect Account Quota / Balance Exhaustion (HTTP 402 or 429/403 with quota exceeded)
+  // 2b. Detect Account Quota / Balance Exhaustion (HTTP 402 or 429/403/401 with quota exceeded)
   const isQuotaExhausted = statusCode === 402 || (
-    (statusCode === 429 || statusCode === 403) && (
+    (statusCode === 429 || statusCode === 403 || statusCode === 401) && (
       lowerText.includes('insufficient_quota') ||
       lowerText.includes('quota_exceeded') ||
       lowerText.includes('exceeded your current quota') ||
@@ -1351,10 +1365,21 @@ function classifyUpstreamError(statusCode, rawErrText = '') {
   );
 
   // 5. Detect Region Blocked
-  const isRegionBlocked = statusCode === 403 || (
-    lowerText.includes('unsupported_country_region_territory') ||
-    lowerText.includes('territory not supported') ||
-    lowerText.includes('not available in your country')
+  // N2 Fix: Require BOTH 403 status AND region-specific keywords to avoid false positives
+  // on generic 403 Forbidden (WAF, permissions, IP blacklist) which should not trigger region fallback.
+  // Bare keyword matches (any status code) are also accepted for non-standard upstream error wrapping.
+  const isRegionBlocked = (
+    (statusCode === 403 && !isQuotaExhausted && (
+      lowerText.includes('unsupported_country_region_territory') ||
+      lowerText.includes('territory not supported') ||
+      lowerText.includes('not available in your country') ||
+      lowerText.includes('region') ||
+      lowerText.includes('geograph') ||
+      lowerText.includes('country') ||
+      lowerText.length === 0  // bare 403 with no body — likely CDN geo-block
+    )) ||
+    // Catch region keywords in non-403 error wrappers (e.g. 400/200 with error body)
+    lowerText.includes('unsupported_country_region_territory')
   );
 
   // 6. Detect Protocol Incompatible
@@ -1540,6 +1565,11 @@ function handleRateLimitFailover({
   });
 
   upstreamRes.on('end', () => {
+    const errText = Buffer.concat(errorChunks).toString('utf8');
+    const classified = classifyUpstreamError(statusCode, upstreamRes.headers, errText);
+    if (classified && classified.isQuotaExhausted) {
+      recordCooldown(account.id, 3600000, 'Quota / Balance Exhausted');
+    }
     if (clientRes.destroyed || clientRes.writableEnded) {
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
@@ -1939,14 +1969,11 @@ function dispatchResponsesRequest(clientReq, clientRes, responsesBody, account, 
   // Pre-emptive model fallback check for heterogeneous upstream nodes (Rule 19)
   if (sessionId && model) {
     const rawReqModel = model.replace(/^opencode-go\//, '');
-    const cacheKey = `${sessionId}:${rawReqModel}`;
-    if (sessionModelFallbackCache.has(cacheKey)) {
-      const cachedFallback = sessionModelFallbackCache.get(cacheKey);
-      if (cachedFallback && cachedFallback !== rawReqModel) {
-        console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
-        responsesBody = { ...responsesBody, model: cachedFallback };
-        model = cachedFallback;
-      }
+    const cachedFallback = getSessionModelFallback(sessionId, rawReqModel);
+    if (cachedFallback && cachedFallback !== rawReqModel) {
+      console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
+      responsesBody = { ...responsesBody, model: cachedFallback };
+      model = cachedFallback;
     }
   }
 
@@ -2012,23 +2039,21 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   // Pre-emptive model fallback check for heterogeneous upstream nodes (Rule 19)
   if (sessionId && parsedBody && parsedBody.model) {
     const rawReqModel = parsedBody.model.replace(/^opencode-go\//, '');
-    const cacheKey = `${sessionId}:${rawReqModel}`;
-    if (sessionModelFallbackCache.has(cacheKey)) {
-      const cachedFallback = sessionModelFallbackCache.get(cacheKey);
-      if (cachedFallback && cachedFallback !== rawReqModel) {
-        console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
-        parsedBody.model = cachedFallback;
-        reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
-      }
+    const cachedFallback = getSessionModelFallback(sessionId, rawReqModel);
+    if (cachedFallback && cachedFallback !== rawReqModel) {
+      console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
+      parsedBody.model = cachedFallback;
+      reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
     }
   }
 
   const isResponsesReq = targetPath.startsWith('/responses') || (clientReq.url && clientReq.url.includes('/responses'));
   if (isResponsesReq && parsedBody) {
+    const isCompEnabled = Boolean(config.compression && config.compression.enabled);
     const hasBase64Image = reqBody && (reqBody.includes(';base64,') || reqBody.includes('data:image/'));
-    if (Array.isArray(parsedBody.input) && (parsedBody.input.length > 12 || hasBase64Image || (reqBody && reqBody.length > 100000))) {
+    if (isCompEnabled && Array.isArray(parsedBody.input) && (parsedBody.input.length > 12 || hasBase64Image || (reqBody && reqBody.length > 100000))) {
       try {
-        const pruneRes = codexAdapter.pruneResponsesPayload(parsedBody, sessionId);
+        const pruneRes = codexAdapter.pruneResponsesPayload(parsedBody, sessionId, { enabled: isCompEnabled });
         if (pruneRes && pruneRes.modified) {
           parsedBody = pruneRes;
           reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
@@ -2100,13 +2125,14 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   proxyHeaders['x-opencode-session'] = sessionId;
   proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
-  if (targetPath.includes('/messages') || clientReq.headers['x-api-key'] || clientReq.headers['anthropic-version']) {
+  if (targetPath.includes('/messages')) {
     proxyHeaders['x-api-key'] = account.apiKey.trim();
     if (!proxyHeaders['anthropic-version']) {
-      proxyHeaders['anthropic-version'] = '2023-06-01';
+      proxyHeaders['anthropic-version'] = clientReq.headers['anthropic-version'] || '2023-06-01';
     }
   } else {
     // Strip Anthropic-specific headers when proxying to OpenAI or native /responses endpoints
+    delete proxyHeaders['x-api-key'];
     delete proxyHeaders['anthropic-version'];
     delete proxyHeaders['anthropic-beta'];
   }
@@ -2162,8 +2188,12 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   ttftTimer = setTimeout(() => {
     if (responded || clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+    responded = true;
+    clearAllTimers();
     console.warn(`[TTFT Timeout] Proxy request to "${account.name}" exceeded ${effectiveTtftTimeout}ms TTFT threshold before first byte.`);
     recordAccountFailure(account.id, `TTFT Timeout (${effectiveTtftTimeout}ms)`, 504);
+    proxyReq.removeAllListeners('error');
+    proxyReq.on('error', () => {});
     try {
       proxyReq.destroy(new Error(`TTFT Timeout (${effectiveTtftTimeout}ms)`));
     } catch (_) {}
@@ -2490,6 +2520,26 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       }
     });
 
+    // Sniff response.id to lock root session mapping for native /responses models (e.g. Luna)
+    let sessionSniffed = false;
+    let sniffBuffer = '';
+    const onSniffData = (chunk) => {
+      if (sessionSniffed) return;
+      sniffBuffer += chunk.toString('utf8', 0, Math.min(chunk.length, 1024));
+      const m = sniffBuffer.match(/"id"\s*:\s*"(resp_[^"]+)"/);
+      if (m && m[1]) {
+        sessionSniffed = true;
+        upstreamRes.removeListener('data', onSniffData);
+        if (typeof codexAdapter.recordResponseSession === 'function') {
+          codexAdapter.recordResponseSession(m[1], sessionId);
+        }
+      } else if (sniffBuffer.length > 2048) {
+        sessionSniffed = true;
+        upstreamRes.removeListener('data', onSniffData);
+      }
+    };
+    upstreamRes.on('data', onSniffData);
+
     upstreamRes.pipe(clientRes);
 
     const onClientPipeError = () => {
@@ -2678,24 +2728,22 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
   // Pre-emptive model fallback check for heterogeneous upstream nodes
   if (sessionId && rawReqModel) {
-    const cacheKey = `${sessionId}:${rawReqModel}`;
-    if (sessionModelFallbackCache.has(cacheKey)) {
-      const cachedFallback = sessionModelFallbackCache.get(cacheKey);
-      if (cachedFallback && cachedFallback !== rawReqModel) {
-        console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
-        responsesBody = { ...responsesBody, model: cachedFallback };
-        rawReqModel = cachedFallback;
-      }
+    const cachedFallback = getSessionModelFallback(sessionId, rawReqModel);
+    if (cachedFallback && cachedFallback !== rawReqModel) {
+      console.log(`[Auto Pre-Emptive Fallback] 会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
+      responsesBody = { ...responsesBody, model: cachedFallback };
+      rawReqModel = cachedFallback;
     }
   }
 
   // Pre-flight check & pruning for oversized responses payload (Rule 5 & Rule 33)
-  if (!precomputedChatPayload && responsesBody && Array.isArray(responsesBody.input) && !responsesBody.modified) {
+  const isCompEnabled = Boolean(config.compression && config.compression.enabled);
+  if (isCompEnabled && !precomputedChatPayload && responsesBody && Array.isArray(responsesBody.input) && !responsesBody.modified) {
     const shouldPrune = responsesBody.input.length > 12 ||
       (responsesBody.input.length > 3 && responsesBody.input.some(it => it && ((typeof it.output === 'string' && (it.output.length > 2000 || it.output.includes(';base64,'))) || (typeof it.content === 'string' && it.content.length > 5000))));
     if (shouldPrune) {
       try {
-        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody, sessionId);
+        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody, sessionId, { enabled: isCompEnabled });
         if (pruneRes && pruneRes.modified) {
           responsesBody = pruneRes;
         }
@@ -2774,8 +2822,12 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
   ttftTimer = setTimeout(() => {
     if (responded || clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+    responded = true;
+    clearAllTimers();
     console.warn(`[TTFT Timeout] Bridge chat request for model "${reqModel}" exceeded ${effectiveTtftTimeout}ms TTFT threshold before first byte.`);
     recordAccountFailure(account.id, `TTFT Timeout (${effectiveTtftTimeout}ms)`, 504);
+    proxyReq.removeAllListeners('error');
+    proxyReq.on('error', () => {});
     try {
       proxyReq.destroy(new Error(`TTFT Timeout (${effectiveTtftTimeout}ms)`));
     } catch (_) {}
@@ -3210,17 +3262,14 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
   // Pre-emptive model fallback check for heterogeneous upstream nodes (Rule 19)
   if (sessionId && rawReqModel) {
-    const cacheKey = `${sessionId}:${rawReqModel}`;
-    if (sessionModelFallbackCache.has(cacheKey)) {
-      const cachedFallback = sessionModelFallbackCache.get(cacheKey);
-      if (cachedFallback && cachedFallback !== rawReqModel) {
-        console.log(`[Auto Pre-Emptive Fallback] Anthropic 桥接会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
-        responsesBody = { ...responsesBody, model: cachedFallback };
-        rawReqModel = cachedFallback;
-        if (!codexAdapter.ANTHROPIC_MODELS.has(cachedFallback)) {
-          bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds, sessionId);
-          return;
-        }
+    const cachedFallback = getSessionModelFallback(sessionId, rawReqModel);
+    if (cachedFallback && cachedFallback !== rawReqModel) {
+      console.log(`[Auto Pre-Emptive Fallback] Anthropic 桥接会话 ${sessionId} 命中异构节点模型记忆，直接将 "${rawReqModel}" 替换为 "${cachedFallback}"`);
+      responsesBody = { ...responsesBody, model: cachedFallback };
+      rawReqModel = cachedFallback;
+      if (!codexAdapter.ANTHROPIC_MODELS.has(cachedFallback)) {
+        bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds, sessionId);
+        return;
       }
     }
   }
@@ -3234,12 +3283,13 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
   }
 
   // Pre-flight check & pruning for oversized responses payload (Rule 5 & Rule 33)
-  if (!precomputedAnthropicPayload && responsesBody && Array.isArray(responsesBody.input) && !responsesBody.modified) {
+  const isCompEnabled = Boolean(config.compression && config.compression.enabled);
+  if (isCompEnabled && !precomputedAnthropicPayload && responsesBody && Array.isArray(responsesBody.input) && !responsesBody.modified) {
     const shouldPrune = responsesBody.input.length > 12 ||
       (responsesBody.input.length > 3 && responsesBody.input.some(it => it && ((typeof it.output === 'string' && (it.output.length > 2000 || it.output.includes(';base64,'))) || (typeof it.content === 'string' && it.content.length > 5000))));
     if (shouldPrune) {
       try {
-        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody, sessionId);
+        const pruneRes = codexAdapter.pruneResponsesPayload(responsesBody, sessionId, { enabled: isCompEnabled });
         if (pruneRes && pruneRes.modified) {
           responsesBody = pruneRes;
         }
@@ -3323,8 +3373,12 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
   ttftTimer = setTimeout(() => {
     if (responded || clientAborted || clientRes.destroyed || clientRes.writableEnded) return;
+    responded = true;
+    clearAllTimers();
     console.warn(`[TTFT Timeout] Bridge Anthropic request for model "${reqModel}" exceeded ${effectiveTtftTimeout}ms TTFT threshold before first byte.`);
     recordAccountFailure(account.id, `TTFT Timeout (${effectiveTtftTimeout}ms)`, 504);
+    proxyReq.removeAllListeners('error');
+    proxyReq.on('error', () => {});
     try {
       proxyReq.destroy(new Error(`TTFT Timeout (${effectiveTtftTimeout}ms)`));
     } catch (_) {}
@@ -3459,6 +3513,26 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
         if (classified.isInvalidApiKey) {
           const handled = handleInvalidApiKeyFailover({
+            protocolTag: 'Anthropic',
+            clientRes,
+            account,
+            attemptNumber,
+            triedAccountIds,
+            sessionId,
+            statusCode,
+            errText,
+            finishRequest,
+            clientCloseHandler,
+            clientErrorHandler,
+            retryFn: (nextAccount) => {
+              bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
+            }
+          });
+          if (handled) return;
+        }
+
+        if (classified.isQuotaExhausted) {
+          const handled = handleQuotaExhaustedFailover({
             protocolTag: 'Anthropic',
             clientRes,
             account,
@@ -4015,6 +4089,20 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
   HasWindow = $hasWindow
   ChamberCount = if ($chamberProcs) { $chamberProcs.Count } else { 0 }
   HasManagedOpencode = [bool]$managedOpencode
+$appProfileDir = Join-Path $env:LOCALAPPDATA "OpenCodeRouter\\AppProfile"
+$browserGhostCount = 0
+if (Test-Path $appProfileDir) {
+  $bps = Get-Process -Name "chrome", "msedge" -ErrorAction SilentlyContinue
+  foreach ($bp in $bps) {
+    if ($bp.MainWindowHandle -eq 0) {
+      try {
+        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $($bp.Id)").CommandLine
+        if ($cmd -like "*OpenCodeRouter*AppProfile*") { $browserGhostCount++ }
+      } catch {}
+    }
+  }
+}
+  BrowserGhostCount = $browserGhostCount
 } | ConvertTo-Json -Compress
 `;
       const enc = Buffer.from(psCheck, 'utf16le').toString('base64');
@@ -4042,6 +4130,14 @@ $managedOpencode = Get-Process -Name "opencode" -ErrorAction SilentlyContinue | 
               severity: 'medium',
               title: 'OpenCode 孤立后台托管进程残留占用端口',
               desc: 'OpenChamber 退出后残留孤立 opencode serve 进程占用端口，可一键清理'
+            });
+          }
+          if (procState.BrowserGhostCount > 0) {
+            report.issues.push({
+              id: 'router_browser_ghost_process',
+              severity: 'high',
+              title: '智能网关桌面前端后台无窗口僵死进程死锁单实例锁（导致桌面打不开）',
+              desc: '检测到 ' + procState.BrowserGhostCount + ' 个后台无界面浏览器进程霸占 Chromium AppProfile 单实例锁，导致桌面双击图标无法打开或无反应，可一键自动清理释放'
             });
           }
         }
@@ -4693,7 +4789,25 @@ if ($ghostFound -or (-not $chamberProcs -and $orphanProcs)) {
 }
 $codeCache = Join-Path $env:APPDATA "OpenChamber\\Code Cache"
 if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction SilentlyContinue }
-[PSCustomObject]@{ GhostKilled = $ghostFound; OrphanKilled = $orphanFound } | ConvertTo-Json -Compress
+$appProfileDir = Join-Path $env:LOCALAPPDATA "OpenCodeRouter\\AppProfile"
+$browserGhostFound = $false
+if (Test-Path $appProfileDir) {
+  $bps = Get-Process -Name "chrome", "msedge" -ErrorAction SilentlyContinue
+  foreach ($bp in $bps) {
+    if ($bp.MainWindowHandle -eq 0) {
+      try {
+        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $($bp.Id)").CommandLine
+        if ($cmd -like "*OpenCodeRouter*AppProfile*") {
+          Stop-Process -Id $bp.Id -Force -ErrorAction SilentlyContinue
+          $browserGhostFound = $true
+        }
+      } catch {}
+    }
+  }
+  $lf = Join-Path $appProfileDir "lockfile"
+  if (Test-Path $lf) { Remove-Item $lf -Force -ErrorAction SilentlyContinue }
+}
+[PSCustomObject]@{ GhostKilled = $ghostFound; OrphanKilled = $orphanFound; BrowserGhostKilled = $browserGhostFound } | ConvertTo-Json -Compress
 `;
       const enc = Buffer.from(psCleanup, 'utf16le').toString('base64');
       const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
@@ -4707,6 +4821,9 @@ if (Test-Path $codeCache) { Remove-Item $codeCache -Recurse -Force -ErrorAction 
           const res = JSON.parse(jsonMatch[0]);
           if (res.GhostKilled) {
             results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已彻底终止后台僵死进程并释放单实例互斥锁，恢复桌面秒开' });
+          }
+          if (res.BrowserGhostKilled) {
+            results.push({ item: 'Router Browser SingleInstanceLock', success: true, message: '已彻底终止无窗口僵死浏览器进程并释放 AppProfile 单实例锁' });
           } else {
             results.push({ item: 'OpenChamber SingleInstanceLock', success: true, message: '已校验单实例互斥锁状态健康（无僵死锁死）' });
           }
@@ -7645,8 +7762,9 @@ function renderDashboardHtml(config) {
           <!-- Plugin Card 1: ComfyUI 视觉生图与图片反推中枢 -->
           <div class="card" id="comfyui-plugin-card">
             <div class="section-title">
-              <div class="section-title-left" style="display:flex; align-items:center; gap:8px;">
+              <div class="section-title-left" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                 <span style="font-size:0.95rem; font-weight:600; color:#f4f4f5;">🖼️ ComfyUI 视觉生图与图片反推中枢 (ComfyUI Visual Engine)</span>
+                <span id="comfy-enabled-toggle" class="badge" style="cursor:pointer; font-size:0.75rem; padding:3px 9px; border-radius:12px; transition:all 0.2s ease; border:1px solid #10b981; background:rgba(16,185,129,0.15); color:#34d399;" onclick="toggleComfyUiPlugin()" title="点击切换 ComfyUI 插件全局开启/停用状态">🟢 插件已启用</span>
                 <span id="comfy-status-badge" class="badge badge-healthy">🟢 探测中...</span>
               </div>
               <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
@@ -7660,6 +7778,73 @@ function renderDashboardHtml(config) {
             <div id="comfyui-collapse-body">
               <div class="plain-tip-box" style="border-left-color: #38bdf8;">
                 💡 <strong>【白话通俗解释】</strong>：为智能网关赋予外挂生图与图片反推能力。自动发现本地（默认 8284 / 8188）或局域网/远程部署的 ComfyUI，对外暴露 OpenAI 标准生图端点 <code>/v1/images/generations</code>，并通过 MCP 为 Codex / OpenCode 提供原生 <code>generate_image</code> 智能体工具，彻底消除由于模型原生无生图能力带来的断层。
+              </div>
+
+              <!-- 🖥️ 本地守护服务生命周期控制条 (Local ComfyUI Daemon Lifecycle) -->
+              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:12px 14px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:0.85rem; font-weight:600; color:#f4f4f5;">🖥️ 本地守护服务控制台</span>
+                    <span id="comfy-service-state-pill" class="badge badge-healthy" style="font-size:0.72rem;">探测中...</span>
+                  </div>
+                  <div id="comfy-service-controls" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <!-- Dynamically populated buttons -->
+                    <button class="btn btn-primary btn-sm" id="btn-comfy-start-gpu" onclick="startComfyUiService('gpu')" title="以 Windows 原生静默脱钩模式拉起 GPU/ZLUDA 加速实例">🚀 启动本地服务 (GPU加速)</button>
+                    <button class="btn btn-secondary btn-sm" id="btn-comfy-start-cpu" onclick="startComfyUiService('cpu')" title="以 CPU 安全模式无黑框拉起本地服务">💻 CPU安全模式</button>
+                    <button class="btn btn-danger btn-sm" id="btn-comfy-stop" style="display:none;" onclick="stopComfyUiService()" title="优雅终止本地 ComfyUI 进程树并释放显存与端口">🛑 停止服务</button>
+                    <button class="btn btn-secondary btn-sm" id="btn-comfy-restart" style="display:none;" onclick="restartComfyUiService()" title="重启本地 ComfyUI 服务实例">🔄 重启</button>
+                    <button class="btn btn-secondary btn-sm" id="btn-comfy-open-gui" onclick="openComfyUiWebGui()" title="以无边框桌面独立应用唤起 ComfyUI Web 界面 (Edge --app 模式)">🌐 打开 Web 界面 ↗</button>
+                  </div>
+                </div>
+                <div id="comfy-service-subtext" style="font-size:0.73rem; color:var(--muted); margin-top:6px; line-height:1.4;">
+                  内核级静默脱钩常驻，无终端黑框占用；点击启动后毫秒级唤起守护进程。
+                </div>
+              </div>
+
+              <!-- 📦 从 GitHub 一键配置工作流至本地专区 (One-Click GitHub Workflow Deployment Hub) -->
+              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:12px 14px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                  <span style="font-size:0.85rem; font-weight:600; color:#f4f4f5; display:flex; align-items:center; gap:6px;">
+                    <span>📦</span>
+                    <span>从 GitHub 一键配置工作流至本地 ComfyUI (Workflows & Auto-Setup)</span>
+                  </span>
+                  <span style="font-size:0.73rem; color:var(--muted);">支持 Git 自动拉取与 Zip 双轨容灾</span>
+                </div>
+
+                <div style="display:grid; grid-template-columns: minmax(240px, 1.2fr) minmax(280px, 1.5fr); gap:12px; margin-bottom:10px; align-items:flex-end;">
+                  <div>
+                    <label style="display:block; font-size:0.76rem; font-weight:600; color:#a1a1aa; margin-bottom:4px;">
+                      GitHub 工作流仓库地址 (Repo URL)
+                    </label>
+                    <div style="display:flex; gap:6px;">
+                      <input type="text" id="comfy-cfg-repo-url" class="form-control" placeholder="https://github.com/deancyl/comfyui-agent-workflows" value="${config.comfyui?.repoUrl || 'https://github.com/deancyl/comfyui-agent-workflows'}" style="flex:1; background:#121215; border-color:#27272a; font-size:0.8rem; height:34px;">
+                      <button class="btn btn-secondary btn-sm" id="btn-comfy-sync-github" onclick="syncComfyWorkflowsFromGitHub()" style="white-space:nowrap; height:34px;" title="克隆或拉取 GitHub 远端仓库最新提交">📥 同步工作流</button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style="display:block; font-size:0.76rem; font-weight:600; color:#a1a1aa; margin-bottom:4px;">
+                      本地 ComfyUI 根目录 (Target ComfyUI Directory)
+                    </label>
+                    <div style="display:flex; gap:6px;">
+                      <input type="text" id="comfy-cfg-local-dir" class="form-control" placeholder="如 C:\Users\...\ComfyUI-Zluda" value="${config.comfyui?.localDir || ''}" style="flex:1; background:#121215; border-color:#27272a; font-size:0.8rem; height:34px;">
+                      <button class="btn btn-secondary btn-sm" id="btn-comfy-detect-dirs" onclick="detectComfyLocalDirs()" style="white-space:nowrap; height:34px;" title="自动探测系统中的 ComfyUI-Zluda / Aki 目录">🔍 自动探测</button>
+                      <button class="btn btn-primary btn-sm" id="btn-comfy-deploy-local" onclick="deployWorkflowsToLocalComfy()" style="white-space:nowrap; height:34px; font-weight:600;" title="一键复制 17 套双轨工作流、NSFW 反推节点与硬件补丁至本地 ComfyUI">⚡ 一键部署</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Terminal Execution Log Console (Collapsible) -->
+                <div id="comfy-terminal-log-container" style="display:none; background:#050507; border:1px solid #27272a; border-radius:6px; padding:10px; margin-top:10px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <span style="font-size:0.75rem; color:#a1a1aa; font-family:monospace; display:flex; align-items:center; gap:6px;">
+                      <span class="status-dot-pulse" style="width:6px; height:6px;"></span>
+                      <span>📋 操作执行终端日志 (Deployment Logs)</span>
+                    </span>
+                    <button class="btn btn-secondary btn-sm" style="font-size:0.7rem; padding:1px 6px; height:20px;" onclick="clearComfyLog()">清空</button>
+                  </div>
+                  <pre id="comfy-terminal-log" style="margin:0; font-family:monospace; font-size:0.72rem; color:#34d399; max-height:160px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; line-height:1.5;"></pre>
+                </div>
               </div>
 
               <!-- ComfyUI Configuration Form Grid -->
@@ -7677,7 +7862,7 @@ function renderDashboardHtml(config) {
                     工作流存储目录 (Workflows Directory)
                   </label>
                   <input type="text" id="comfy-cfg-dir" class="form-control" placeholder="留空则自动探测 scratch/comfyui-agent-workflows" value="${config.comfyui?.workflowsDir || ''}" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
-                  <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">留空则自动探测 scratch/comfyui-agent-workflows</div>
+                  <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">工作流库与 manifest 所在目录</div>
                 </div>
 
                 <div class="form-group" style="margin-bottom:0;">
@@ -9529,9 +9714,10 @@ function renderDashboardHtml(config) {
       location.reload();
     }
 
-    function showToast(msg, isError = false) {
+    function showToast(msg, typeOrIsError = false) {
       const toast = document.getElementById('toast');
       if (!toast) return;
+      const isError = (typeOrIsError === true || typeOrIsError === 'error' || typeOrIsError === 'danger');
       toast.innerText = msg;
       toast.style.background = isError ? '#991b1b' : '#065f46';
       toast.style.borderColor = isError ? '#f87171' : '#34d399';
@@ -10531,7 +10717,7 @@ function renderDashboardHtml(config) {
         const data = await res.json();
         if (data.success) {
           if (uiPassword) {
-            const newToken = btoa(uiPassword);
+            const newToken = btoa(unescape(encodeURIComponent(uiPassword)));
             localStorage.setItem('opencode_router_token', newToken);
             document.cookie = 'router_auth=' + encodeURIComponent(newToken) + '; Path=/; Max-Age=2592000; SameSite=Lax';
           } else {
@@ -11048,7 +11234,9 @@ function renderDashboardHtml(config) {
         html += '<div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="runCodexDoctorCheck()">🔍 重新体检诊断</button> <button class="btn btn-warning btn-sm" style="margin-left:6px; background:#d97706; border-color:#b45309; color:#fff;" onclick="restartCodexClient()">🔄 平滑重启 Codex 客户端</button></div>';
         if (box) box.innerHTML = html;
         showToast('Codex 专项自愈完成！');
-        if (confirm('🎉 OpenAI Codex 专项自愈与加固完成！\\n\\n是否立即平滑重启 Codex 客户端以立即加载最新环境与加固配置？')) {
+        // Auto-refresh diagnostics immediately so UI badges and issue cards update in real-time
+        await runCodexDoctorCheck();
+        if (confirm('🎉 OpenAI Codex 专项自愈与加固完成！\\n\\n是否立即平滑重启 Codex 客户端以彻底清理互斥锁并加载最新环境？')) {
           restartCodexClient();
         }
       } catch (e) {
@@ -11434,7 +11622,7 @@ function renderDashboardHtml(config) {
     }
 
     // ==========================================
-    // ComfyUI Visual Plugin Management & Testing
+    // ComfyUI Visual Plugin Management & Lifecycle
     // ==========================================
     var comfyUiStatusData = null;
 
@@ -11446,46 +11634,124 @@ function renderDashboardHtml(config) {
       return s.trim() || raw;
     }
 
+    function appendComfyLog(msg) {
+      const container = document.getElementById('comfy-terminal-log-container');
+      const logEl = document.getElementById('comfy-terminal-log');
+      if (container) container.style.display = 'block';
+      if (logEl) {
+        const timeStr = new Date().toLocaleTimeString();
+        logEl.textContent += '[' + timeStr + '] ' + msg + '\\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+    }
+
+    function clearComfyLog() {
+      const logEl = document.getElementById('comfy-terminal-log');
+      const container = document.getElementById('comfy-terminal-log-container');
+      if (logEl) logEl.textContent = '';
+      if (container) container.style.display = 'none';
+    }
+
     async function loadComfyUiPluginStatus(force) {
       try {
         const url = '/balancer/api/comfyui/status' + (force ? '?force=true' : '');
-        const res = await fetch(url);
+        const res = await fetch(url, { headers: apiHeaders() });
         const data = await res.json();
         if (!data || !data.success) return;
 
         comfyUiStatusData = data;
         const st = data.status || {};
         const isOnline = Boolean(st.isOnline);
+        const isEnabled = data.enabled !== false;
         const devName = cleanDeviceName(st.deviceInfo?.name || '未知设备');
         const vramGb = st.deviceInfo?.vramTotal ? (st.deviceInfo.vramTotal / (1024 * 1024 * 1024)).toFixed(1) + ' GB' : '--';
         const wfCount = data.workflowsCount || 0;
 
-        // 1. Update badges
+        // 1. Update Master Switch Toggle & Badges
+        const toggleBtn = document.getElementById('comfy-enabled-toggle');
+        if (toggleBtn) {
+          if (isEnabled) {
+            toggleBtn.textContent = '🟢 插件已启用';
+            toggleBtn.style.borderColor = '#10b981';
+            toggleBtn.style.background = 'rgba(16,185,129,0.15)';
+            toggleBtn.style.color = '#34d399';
+          } else {
+            toggleBtn.textContent = '⚪ 插件已停用';
+            toggleBtn.style.borderColor = '#71717a';
+            toggleBtn.style.background = 'rgba(113,113,122,0.15)';
+            toggleBtn.style.color = '#a1a1aa';
+          }
+        }
+
         const badge = document.getElementById('comfy-status-badge');
         if (badge) {
-          badge.className = isOnline ? 'badge badge-healthy' : 'badge badge-disabled';
-          badge.textContent = isOnline ? '🟢 已连接 (' + (st.serverUrl || '8284') + ')' : '⚪ 离线 (未启动)';
+          if (!isEnabled) {
+            badge.className = 'badge badge-disabled';
+            badge.textContent = '⚪ 插件已停用';
+          } else {
+            badge.className = isOnline ? 'badge badge-healthy' : 'badge badge-disabled';
+            badge.textContent = isOnline ? '🟢 已连接 (' + (st.serverUrl || '8284') + ')' : '⚪ 服务离线 (未启动)';
+          }
         }
 
         const navBadge = document.getElementById('nav-badge-plugins');
         if (navBadge) {
-          navBadge.textContent = isOnline ? '在线' : '离线';
-          navBadge.style.color = isOnline ? '#34d399' : '#a1a1aa';
+          navBadge.textContent = isEnabled ? (isOnline ? '在线' : '离线') : '已停用';
+          navBadge.style.color = isEnabled ? (isOnline ? '#34d399' : '#eab308') : '#71717a';
+        }
+
+        const barCount = document.getElementById('plugins-bar-active-count');
+        if (barCount) {
+          barCount.textContent = isEnabled ? (isOnline ? '外挂系统运作中 (1 个已激活)' : '外挂系统待命中 (服务离线)') : '外挂系统已停用 (0 个已激活)';
         }
 
         const ovBadge = document.getElementById('plugins-overview-badge');
         if (ovBadge) {
-          ovBadge.className = isOnline ? 'badge badge-healthy' : 'badge badge-disabled';
-          ovBadge.textContent = isOnline ? '🟢 1 个在线' : '⚪ 未就绪';
+          ovBadge.className = isEnabled && isOnline ? 'badge badge-healthy' : 'badge badge-disabled';
+          ovBadge.textContent = isEnabled && isOnline ? '🟢 1 个在线' : (isEnabled ? '⚪ 未连接' : '⚪ 已停用');
         }
 
         const ovVal = document.getElementById('plugins-overview-val');
         if (ovVal) {
-          ovVal.textContent = isOnline ? 'ComfyUI 就绪' : 'ComfyUI 离线';
-          ovVal.style.color = isOnline ? '#38bdf8' : '#a1a1aa';
+          ovVal.textContent = isEnabled ? (isOnline ? 'ComfyUI 就绪' : 'ComfyUI 离线') : '插件已停用';
+          ovVal.style.color = isEnabled ? (isOnline ? '#38bdf8' : '#eab308') : '#71717a';
         }
 
-        // 2. Update device info
+        // 2. Update service lifecycle buttons and status
+        const sPill = document.getElementById('comfy-service-state-pill');
+        const sSubtext = document.getElementById('comfy-service-subtext');
+        const btnStartGpu = document.getElementById('btn-comfy-start-gpu');
+        const btnStartCpu = document.getElementById('btn-comfy-start-cpu');
+        const btnStop = document.getElementById('btn-comfy-stop');
+        const btnRestart = document.getElementById('btn-comfy-restart');
+
+        if (sPill) {
+          if (!isEnabled) {
+            sPill.className = 'badge badge-disabled';
+            sPill.textContent = '⚪ 插件已停用';
+          } else if (isOnline) {
+            sPill.className = 'badge badge-healthy';
+            sPill.textContent = '🟢 服务在线 (' + (st.serverUrl || '8284') + ')';
+          } else {
+            sPill.className = 'badge badge-disabled';
+            sPill.textContent = '⚪ 服务未运行';
+          }
+        }
+
+        if (sSubtext) {
+          if (isOnline) {
+            sSubtext.innerHTML = '已通过 <strong style="color:#38bdf8;">' + (st.serverUrl || '8284') + '</strong> 成功挂载 <strong>' + devName + '</strong>，显存 <strong>' + vramGb + '</strong>。';
+          } else {
+            sSubtext.textContent = '内核级静默脱钩常驻，无终端黑框占用；点击启动后后台秒级唤起守护进程。';
+          }
+        }
+
+        if (btnStartGpu) btnStartGpu.style.display = isOnline ? 'none' : 'inline-flex';
+        if (btnStartCpu) btnStartCpu.style.display = isOnline ? 'none' : 'inline-flex';
+        if (btnStop) btnStop.style.display = isOnline ? 'inline-flex' : 'none';
+        if (btnRestart) btnRestart.style.display = isOnline ? 'inline-flex' : 'none';
+
+        // 3. Update device and workflows info
         const devEl = document.getElementById('comfy-val-device');
         if (devEl) devEl.textContent = isOnline ? devName : '未连接';
 
@@ -11501,7 +11767,17 @@ function renderDashboardHtml(config) {
         const capWf = document.getElementById('comfy-capsule-workflows');
         if (capWf) capWf.textContent = '🖼️ ' + wfCount + ' 套工业级工作流就绪';
 
-        // 3. Populate workflow dropdown in test sandbox
+        // 4. Auto-populate inputs if empty
+        const localDirInput = document.getElementById('comfy-cfg-local-dir');
+        if (localDirInput && !localDirInput.value.trim() && data.localDir) {
+          localDirInput.value = data.localDir;
+        }
+        const repoUrlInput = document.getElementById('comfy-cfg-repo-url');
+        if (repoUrlInput && !repoUrlInput.value.trim() && data.repoUrl) {
+          repoUrlInput.value = data.repoUrl;
+        }
+
+        // 5. Populate workflow dropdown in test sandbox
         const sel = document.getElementById('comfy-test-workflow-select');
         if (sel && Array.isArray(data.workflows)) {
           const prevVal = sel.value;
@@ -11516,7 +11792,7 @@ function renderDashboardHtml(config) {
           if (prevVal) sel.value = prevVal;
         }
 
-        // 4. Populate catalog accordion
+        // 6. Populate catalog accordion
         const catalogList = document.getElementById('comfy-workflows-catalog-list');
         if (catalogList && Array.isArray(data.workflows)) {
           var items = [];
@@ -11525,10 +11801,10 @@ function renderDashboardHtml(config) {
             var tagsHtml = '';
             if (Array.isArray(wf.tags)) {
               for (var j = 0; j < wf.tags.length; j++) {
-                tagsHtml += '<span style="background:#18181b; border:1px solid #27272a; border-radius:3px; padding:1px 5px; color:#a1a1aa; font-size:0.68rem;">#' + wf.tags[j] + '</span>';
+                tagsHtml += '<span style="background:#18181b; border:1px solid #27272a; border-radius:3px; padding:1px 5px; color:#a1a1aa; font-size:0.68rem;">#' + escapeHtml(wf.tags[j]) + '</span>';
               }
             }
-            items.push('<div style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:8px 10px; font-size:0.75rem;"><div style="margin-bottom:2px;"><span style="color:#38bdf8; font-weight:700; margin-right:4px;">[' + wf.id + ']</span><span style="font-weight:600; color:#f4f4f5;">' + wf.name + '</span></div><div style="color:var(--muted); margin-bottom:4px; font-size:0.72rem;">' + (wf.description || '') + '</div><div style="display:flex; flex-wrap:wrap; gap:4px;">' + tagsHtml + '</div></div>');
+            items.push('<div style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:8px 10px; font-size:0.75rem;"><div style="margin-bottom:2px;"><span style="color:#38bdf8; font-weight:700; margin-right:4px;">[' + escapeHtml(wf.id) + ']</span><span style="font-weight:600; color:#f4f4f5;">' + escapeHtml(wf.name) + '</span></div><div style="color:var(--muted); margin-bottom:4px; font-size:0.72rem;">' + escapeHtml(wf.description || '') + '</div><div style="display:flex; flex-wrap:wrap; gap:4px;">' + tagsHtml + '</div></div>');
           }
           catalogList.innerHTML = items.join('');
         }
@@ -11541,15 +11817,260 @@ function renderDashboardHtml(config) {
       }
     }
 
+    async function toggleComfyUiPlugin() {
+      const currentEnabled = comfyUiStatusData?.enabled !== false;
+      const targetEnabled = !currentEnabled;
+      try {
+        const res = await fetch('/balancer/api/comfyui/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: targetEnabled })
+        });
+        const d = await res.json();
+        if (d.success) {
+          showToast(d.message || (targetEnabled ? '已启用 ComfyUI 插件' : '已停用 ComfyUI 插件'), 'success');
+          await loadComfyUiPluginStatus(false);
+        } else {
+          showToast('切换失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, 'error');
+      }
+    }
+
+    async function startComfyUiService(mode) {
+      const hostInput = document.getElementById('comfy-cfg-host');
+      const localDirInput = document.getElementById('comfy-cfg-local-dir');
+      let port = 8284;
+      try {
+        if (hostInput && hostInput.value) {
+          const u = new URL(hostInput.value.trim());
+          if (u.port) port = parseInt(u.port, 10);
+        }
+      } catch (_) {}
+
+      const localDir = localDirInput ? localDirInput.value.trim() : '';
+
+      appendComfyLog('[Service] 正在请求启动本地 ComfyUI 服务 (模式: ' + mode + ', 端口: ' + port + ')...');
+      const btn = mode === 'gpu' ? document.getElementById('btn-comfy-start-gpu') : document.getElementById('btn-comfy-start-cpu');
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 正在静默拉起...'; }
+
+      try {
+        const res = await fetch('/balancer/api/comfyui/service/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: mode || 'gpu', port: port, localDir: localDir })
+        });
+        const d = await res.json();
+        if (d.success) {
+          appendComfyLog('[Service] ' + (d.message || ('服务启动命令已派发，PID: ' + d.pid)));
+          showToast(d.message || 'ComfyUI 本地服务启动成功！正在等待端口就绪...', 'success');
+          // Polling status
+          setTimeout(() => { loadComfyUiPluginStatus(true); }, 2000);
+          setTimeout(() => { loadComfyUiPluginStatus(true); }, 5000);
+        } else {
+          appendComfyLog('[Service 启动失败] ' + (d.error || '未知错误'));
+          showToast('启动失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        appendComfyLog('[Service 启动异常] ' + e.message);
+        showToast('请求异常: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText; }
+      }
+    }
+
+    async function stopComfyUiService() {
+      if (!confirm('确定要停止本地 ComfyUI 守护服务吗？\\n这将释放端口与 GPU 显存。')) return;
+
+      appendComfyLog('[Service] 正在终止本地 ComfyUI 守护进程树...');
+      const btn = document.getElementById('btn-comfy-stop');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 正在停止...'; }
+
+      try {
+        const res = await fetch('/balancer/api/comfyui/service/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const d = await res.json();
+        if (d.success) {
+          appendComfyLog('[Service] ' + (d.message || '服务已彻底终止'));
+          showToast(d.message || '本地 ComfyUI 服务已停止！', 'success');
+          await loadComfyUiPluginStatus(true);
+        } else {
+          appendComfyLog('[Service 停止失败] ' + (d.error || '未知错误'));
+          showToast('停止失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        appendComfyLog('[Service 停止异常] ' + e.message);
+        showToast('请求异常: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🛑 停止服务'; }
+      }
+    }
+
+    async function restartComfyUiService() {
+      if (!confirm('确定要平滑重启本地 ComfyUI 服务吗？')) return;
+
+      appendComfyLog('[Service] 正在重启本地 ComfyUI 服务...');
+      const btn = document.getElementById('btn-comfy-restart');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 正在重启...'; }
+
+      try {
+        const res = await fetch('/balancer/api/comfyui/service/restart', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({})
+        });
+        const d = await res.json();
+        if (d.success) {
+          appendComfyLog('[Service] ' + (d.message || '重启指令已派发'));
+          showToast(d.message || 'ComfyUI 服务重启已派发，正在重新建立连接...', 'success');
+          setTimeout(() => { loadComfyUiPluginStatus(true); }, 2500);
+          setTimeout(() => { loadComfyUiPluginStatus(true); }, 6000);
+        } else {
+          appendComfyLog('[Service 重启失败] ' + (d.error || '未知错误'));
+          showToast('重启失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        appendComfyLog('[Service 重启异常] ' + e.message);
+        showToast('请求异常: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 重启'; }
+      }
+    }
+
+    async function openComfyUiWebGui() {
+      const hostInput = document.getElementById('comfy-cfg-host');
+      const targetUrl = hostInput ? hostInput.value.trim() : 'http://127.0.0.1:8284';
+      try {
+        const res = await fetch('/balancer/api/comfyui/open-gui', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ url: targetUrl })
+        });
+        const d = await res.json();
+        if (d.success) {
+          showToast('已唤起无边框独立桌面 Web 界面！', 'success');
+        } else {
+          showToast('唤起失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, 'error');
+      }
+    }
+
+    async function syncComfyWorkflowsFromGitHub() {
+      const repoInput = document.getElementById('comfy-cfg-repo-url');
+      const dirInput = document.getElementById('comfy-cfg-dir');
+      const repoUrl = repoInput ? repoInput.value.trim() : 'https://github.com/deancyl/comfyui-agent-workflows';
+      const targetDir = dirInput ? dirInput.value.trim() : '';
+
+      appendComfyLog('[Sync] 开始从 GitHub 仓库同步: ' + repoUrl);
+      const btn = document.getElementById('btn-comfy-sync-github');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 同步中...'; }
+
+      try {
+        const res = await fetch('/balancer/api/comfyui/sync-workflows', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ repoUrl, targetDir })
+        });
+        const d = await res.json();
+        if (d.success) {
+          if (Array.isArray(d.logs)) {
+            d.logs.forEach(l => appendComfyLog(l));
+          }
+          if (dirInput && d.workflowsDir) dirInput.value = d.workflowsDir;
+          showToast('🎉 成功同步并载入 ' + (d.workflowsCount || 17) + ' 套工业级工作流！', 'success');
+          await loadComfyUiPluginStatus(true);
+        } else {
+          appendComfyLog('[Sync 失败] ' + (d.error || '未知错误'));
+          showToast('同步工作流失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        appendComfyLog('[Sync 异常] ' + e.message);
+        showToast('请求异常: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '📥 同步工作流'; }
+      }
+    }
+
+    async function detectComfyLocalDirs() {
+      const btn = document.getElementById('btn-comfy-detect-dirs');
+      const dirInput = document.getElementById('comfy-cfg-local-dir');
+      if (btn) { btn.disabled = true; btn.textContent = '🔍 探测中...'; }
+
+      try {
+        const res = await fetch('/balancer/api/comfyui/detect-dirs', { headers: apiHeaders() });
+        const d = await res.json();
+        if (d.success && Array.isArray(d.dirs) && d.dirs.length > 0) {
+          const chosen = d.dirs[0].path;
+          if (dirInput) dirInput.value = chosen;
+          appendComfyLog('[Detect] 自动探测到本地 ComfyUI 根目录: ' + chosen + ' (类型: ' + d.dirs[0].type + ')');
+          showToast('已自动匹配本地 ComfyUI 目录: ' + chosen, 'success');
+        } else {
+          appendComfyLog('[Detect] 未探测到默认路径下的 ComfyUI 根目录，请手动输入路径。');
+          showToast('未在常见位置自动匹配到 ComfyUI，请手动输入完整路径', 'error');
+        }
+      } catch (e) {
+        showToast('探测失败: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🔍 自动探测'; }
+      }
+    }
+
+    async function deployWorkflowsToLocalComfy() {
+      const localDirInput = document.getElementById('comfy-cfg-local-dir');
+      const dirInput = document.getElementById('comfy-cfg-dir');
+      const targetComfyDir = localDirInput ? localDirInput.value.trim() : '';
+      const workflowsDir = dirInput ? dirInput.value.trim() : '';
+
+      appendComfyLog('[Deploy] 开始一键部署工作流、自定义扩展节点与静默启动脚本至本地 ComfyUI...');
+      const btn = document.getElementById('btn-comfy-deploy-local');
+      if (btn) { btn.disabled = true; btn.textContent = '⚡ 正在部署...'; }
+
+      try {
+        const res = await fetch('/balancer/api/comfyui/deploy-to-comfyui', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ targetComfyDir, workflowsDir })
+        });
+        const d = await res.json();
+        if (d.success) {
+          if (Array.isArray(d.logs)) {
+            d.logs.forEach(l => appendComfyLog(l));
+          }
+          if (localDirInput && d.targetComfyDir) localDirInput.value = d.targetComfyDir;
+          showToast(d.message || '🎉 工作流与扩展套件已全部成功部署至本地 ComfyUI！', 'success');
+          await loadComfyUiPluginStatus(true);
+        } else {
+          appendComfyLog('[Deploy 失败] ' + (d.error || '未知错误'));
+          showToast('部署失败: ' + (d.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        appendComfyLog('[Deploy 异常] ' + e.message);
+        showToast('请求异常: ' + e.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '⚡ 一键部署'; }
+      }
+    }
+
     async function saveComfyUiConfig(andTest) {
       const hostInput = document.getElementById('comfy-cfg-host');
       const dirInput = document.getElementById('comfy-cfg-dir');
+      const localDirInput = document.getElementById('comfy-cfg-local-dir');
+      const repoUrlInput = document.getElementById('comfy-cfg-repo-url');
       const timeoutInput = document.getElementById('comfy-cfg-timeout');
 
       const comfyCfg = {
-        enabled: true,
+        enabled: comfyUiStatusData ? (comfyUiStatusData.enabled !== false) : true,
         host: hostInput ? hostInput.value.trim() : 'http://127.0.0.1:8284',
         workflowsDir: dirInput ? dirInput.value.trim() : '',
+        localDir: localDirInput ? localDirInput.value.trim() : '',
+        repoUrl: repoUrlInput ? repoUrlInput.value.trim() : 'https://github.com/deancyl/comfyui-agent-workflows',
         timeoutSec: timeoutInput ? (parseInt(timeoutInput.value, 10) || 180) : 180
       };
 
@@ -11846,6 +12367,11 @@ const server = http.createServer((req, res) => {
 
   // Circuit Breaker Status API
   if (reqUrl.pathname === '/balancer/api/circuit-status' && req.method === 'GET') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
+      return;
+    }
     const now = Date.now();
     const accountsData = config.accounts.map(acc => {
       const stat = accountStats.get(acc.id) || {};
@@ -11949,7 +12475,7 @@ const server = http.createServer((req, res) => {
       uiPassword: config.uiPassword || '',
       accounts: config.accounts,
       compression: config.compression || DEFAULT_CONFIG.compression,
-      comfyui: config.comfyui || DEFAULT_CONFIG.comfyui || { enabled: true, host: 'http://127.0.0.1:8284', workflowsDir: '', timeoutSec: 180 }
+      comfyui: config.comfyui || DEFAULT_CONFIG.comfyui || { enabled: true, host: 'http://127.0.0.1:8284', workflowsDir: '', localDir: '', repoUrl: 'https://github.com/deancyl/comfyui-agent-workflows', timeoutSec: 180 }
     }));
     return;
   }
@@ -12139,10 +12665,13 @@ const server = http.createServer((req, res) => {
             enabled: payload.comfyui.enabled !== false,
             host: (payload.comfyui.host !== undefined ? String(payload.comfyui.host).trim() : (prevComfy.host || 'http://127.0.0.1:8284')),
             workflowsDir: (payload.comfyui.workflowsDir !== undefined ? String(payload.comfyui.workflowsDir).trim() : (prevComfy.workflowsDir || '')),
+            localDir: (payload.comfyui.localDir !== undefined ? String(payload.comfyui.localDir).trim() : (prevComfy.localDir || '')),
+            repoUrl: (payload.comfyui.repoUrl !== undefined ? String(payload.comfyui.repoUrl).trim() : (prevComfy.repoUrl || 'https://github.com/deancyl/comfyui-agent-workflows')),
             timeoutSec: (Number(payload.comfyui.timeoutSec) && Number(payload.comfyui.timeoutSec) > 0) ? Number(payload.comfyui.timeoutSec) : (prevComfy.timeoutSec || 180)
           };
           if (typeof comfyuiAdapter !== 'undefined' && comfyuiAdapter) {
             comfyuiAdapter.config = newConfig;
+            comfyuiAdapter.enabled = newConfig.comfyui.enabled !== false;
             comfyuiAdapter.reloadManifest();
           }
         }
@@ -12500,8 +13029,9 @@ $ghost
 
     const assetsBaseDir = path.resolve(path.join(__dirname, 'assets'));
     const safeTarget = path.resolve(path.join(assetsBaseDir, decodedSubPath));
+    const assetsBasePrefix = assetsBaseDir.endsWith(path.sep) ? assetsBaseDir : (assetsBaseDir + path.sep);
 
-    if (!safeTarget.startsWith(assetsBaseDir)) {
+    if (safeTarget !== assetsBaseDir && !safeTarget.startsWith(assetsBasePrefix)) {
       res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ error: 'Access denied: Path traversal prohibited' }));
       return;
@@ -12864,6 +13394,11 @@ $ghost
 
   // Static Media Server for Generated Artifacts (Air-Gapped, No CORS / Protocol Issues for OpenChamber & Web)
   if (reqUrl.pathname.startsWith('/artifacts/images/') && (req.method === 'GET' || req.method === 'HEAD')) {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized: 请提供有效的访问密码或 API Key', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     const rawFilename = reqUrl.pathname.slice('/artifacts/images/'.length);
     const safeFilename = path.basename(decodeURIComponent(rawFilename));
     const targetFilePath = path.join(__dirname, 'artifacts', 'images', safeFilename);
@@ -12928,10 +13463,17 @@ $ghost
     const force = reqUrl.query?.force === 'true' || reqUrl.query?.force === '1';
     comfyuiAdapter.detectServer(force).then(status => {
       const wfs = comfyuiAdapter.manifest || {};
+      const isEnabled = config.comfyui?.enabled !== false && comfyuiAdapter.enabled !== false;
+      const detectedDirs = typeof comfyuiAdapter.detectLocalComfyUIDirs === 'function' ? comfyuiAdapter.detectLocalComfyUIDirs() : [];
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({
         success: true,
+        enabled: isEnabled,
         status,
+        detectedDirs,
+        workflowsDir: comfyuiAdapter.workflowsDir,
+        localDir: config.comfyui?.localDir || (detectedDirs[0]?.path || ''),
+        repoUrl: config.comfyui?.repoUrl || 'https://github.com/deancyl/comfyui-agent-workflows',
         workflowsCount: Object.keys(wfs).length,
         workflows: Object.entries(wfs).map(([id, meta]) => ({
           id,
@@ -12947,10 +13489,171 @@ $ghost
     return;
   }
 
+  // ComfyUI Plugin Toggle API (/balancer/api/comfyui/toggle)
+  if (reqUrl.pathname === '/balancer/api/comfyui/toggle' && req.method === 'POST') {
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
+      try {
+        const payload = JSON.parse(buf.toString('utf8'));
+        const newEnabled = payload.enabled !== false;
+        if (!config.comfyui) config.comfyui = { ...DEFAULT_CONFIG.comfyui };
+        config.comfyui.enabled = newEnabled;
+        if (comfyuiAdapter) comfyuiAdapter.enabled = newEnabled;
+        
+        // Atomic persist to config.json
+        if (fs.existsSync(CONFIG_FILE)) {
+          fs.copyFileSync(CONFIG_FILE, CONFIG_FILE + '.bak');
+        }
+        writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: true,
+          enabled: newEnabled,
+          message: newEnabled ? 'ComfyUI 视觉生图插件已成功启用' : 'ComfyUI 视觉生图插件已安全停用'
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Service Control: Start (/balancer/api/comfyui/service/start)
+  if (reqUrl.pathname === '/balancer/api/comfyui/service/start' && req.method === 'POST') {
+    readInternalBody(req, res).then(async (buf) => {
+      try {
+        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const result = await comfyuiAdapter.startService(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Service Control: Stop (/balancer/api/comfyui/service/stop)
+  if (reqUrl.pathname === '/balancer/api/comfyui/service/stop' && req.method === 'POST') {
+    readInternalBody(req, res).then(async (buf) => {
+      try {
+        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const result = await comfyuiAdapter.stopService(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Service Control: Restart (/balancer/api/comfyui/service/restart)
+  if (reqUrl.pathname === '/balancer/api/comfyui/service/restart' && req.method === 'POST') {
+    readInternalBody(req, res).then(async (buf) => {
+      try {
+        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const result = await comfyuiAdapter.restartService(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Open Web GUI (/balancer/api/comfyui/open-gui)
+  if (reqUrl.pathname === '/balancer/api/comfyui/open-gui' && req.method === 'POST') {
+    readInternalBody(req, res).then((buf) => {
+      try {
+        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const targetUrl = payload.url || config.comfyui?.host || 'http://127.0.0.1:8284';
+        const opened = comfyuiAdapter.openWebGui(targetUrl);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: opened, url: targetUrl, message: '已通过独立应用窗口呼出 ComfyUI Web 界面' }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Workflows Sync from GitHub (/balancer/api/comfyui/sync-workflows)
+  if (reqUrl.pathname === '/balancer/api/comfyui/sync-workflows' && req.method === 'POST') {
+    readInternalBody(req, res).then(async (buf) => {
+      try {
+        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const result = await comfyuiAdapter.syncWorkflowsFromGitHub(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Deploy Workflows & Patches to Local ComfyUI (/balancer/api/comfyui/deploy-to-comfyui)
+  if (reqUrl.pathname === '/balancer/api/comfyui/deploy-to-comfyui' && req.method === 'POST') {
+    readInternalBody(req, res).then(async (buf) => {
+      try {
+        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const result = await comfyuiAdapter.deployToComfyUI(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ComfyUI Detect Local Directories (/balancer/api/comfyui/detect-dirs)
+  if (reqUrl.pathname === '/balancer/api/comfyui/detect-dirs' && req.method === 'GET') {
+    // N5 Fix: Enforce LAN auth gatekeeper to prevent filesystem structure leakage
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    const dirs = typeof comfyuiAdapter.detectLocalComfyUIDirs === 'function' ? comfyuiAdapter.detectLocalComfyUIDirs() : [];
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, dirs }));
+    return;
+  }
+
   // Standard OpenAI Image Generation Endpoint (/v1/images/generations & /images/generations)
   if ((reqUrl.pathname === '/v1/images/generations' || reqUrl.pathname === '/images/generations') && req.method === 'POST') {
+    // N1 Fix: Enforce LAN auth gatekeeper to prevent unauthorized GPU resource consumption
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized: 请提供有效的访问密码或 API Key', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async buf => {
       if (!buf) return;
+
+      // Master switch check for ComfyUI plugin
+      if (config.comfyui?.enabled === false || (comfyuiAdapter && comfyuiAdapter.enabled === false)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          error: {
+            message: 'ComfyUI 视觉生图插件已被停用。如需使用生图，请在网关控制台“外挂与扩展插件中心”开启 ComfyUI 插件。',
+            type: 'plugin_disabled',
+            code: 'comfyui_disabled'
+          }
+        }));
+        return;
+      }
       let body = {};
       try {
         body = JSON.parse(buf.toString('utf8'));
@@ -13038,8 +13741,27 @@ $ghost
 
   // Image Interrogation Endpoint (/v1/images/interrogate & /images/interrogate)
   if ((reqUrl.pathname === '/v1/images/interrogate' || reqUrl.pathname === '/images/interrogate') && req.method === 'POST') {
+    // N1 Fix: Enforce LAN auth gatekeeper to prevent unauthorized GPU resource consumption
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized: 请提供有效的访问密码或 API Key', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async buf => {
       if (!buf) return;
+
+      // Master switch check for ComfyUI plugin
+      if (config.comfyui?.enabled === false || (comfyuiAdapter && comfyuiAdapter.enabled === false)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          error: {
+            message: 'ComfyUI 视觉生图插件已被停用。如需使用图片反推，请在网关控制台“外挂与扩展插件中心”开启 ComfyUI 插件。',
+            type: 'plugin_disabled',
+            code: 'comfyui_disabled'
+          }
+        }));
+        return;
+      }
       let body = {};
       try {
         body = JSON.parse(buf.toString('utf8'));
@@ -13049,6 +13771,18 @@ $ghost
         return;
       }
 
+      if (body.image_path && typeof body.image_path === 'string') {
+        const safeBaseDir = path.resolve(path.join(__dirname, 'artifacts', 'images'));
+        const resolvedPath = path.resolve(body.image_path);
+        const isInside = process.platform === 'win32'
+          ? resolvedPath.toLowerCase().startsWith(safeBaseDir.toLowerCase() + path.sep)
+          : resolvedPath.startsWith(safeBaseDir + path.sep);
+        if (!isInside) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: { message: 'Forbidden: 本地图片反推仅允许访问 artifacts/images 目录下的生成资产，其他图片请通过 image 字段以 Base64 上传。', type: 'invalid_request_error' } }));
+          return;
+        }
+      }
       const imageInput = body.image || body.image_path;
       if (!imageInput) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });

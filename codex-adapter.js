@@ -1413,13 +1413,34 @@ function balanceCodeBlocks(head, tail) {
  * Prunes and compresses an oversized Responses API payload (body.input) to fit within
  * the model's context window (e.g. 1M or 2M tokens).
  */
-function pruneResponsesPayload(body, sessionId = null) {
+
+function isCodeOrSensitiveContent(text) {
+  if (typeof text !== 'string') return false;
+  if (text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>') || text.includes('|||||||')) return true;
+  if (text.includes('diff --git ') || text.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(text)) return true;
+  if (text.includes('Traceback (most recent call last):') || /^\s+at\s+[\w\$.<>]+\s+\(/m.test(text)) return true;
+  if (/\b(?:TypeError|ReferenceError|SyntaxError|RuntimeError|RangeError|AssertionError|CompileError|ParserError):\s/i.test(text)) return true;
+  if (text.includes('npm ERR!') || text.includes('yarn error') || text.includes('cargo build') || text.includes('error[E0')) return true;
+  if (text.includes('```') || /^(?:import\s+[\w\s{},*]+from|from\s+[\w.]+\s+import|const\s+[\w\s{},*]+=\s*require\(|def\s+\w+\s*\(|class\s+\w+|public\s+(?:class|void|string|int)|func\s+\w+\s*\(|function\s+\w+\s*\(|#include\s+<|<\?php)/m.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function pruneResponsesPayload(body, sessionId = null, options = {}) {
   if (!body || typeof body !== 'object') {
     const res = body || {};
     if (typeof res === 'object') {
       Object.defineProperty(res, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
       Object.defineProperty(res, 'pruned', { value: res, writable: true, enumerable: false, configurable: true });
     }
+    return res;
+  }
+
+  if (options && options.enabled === false) {
+    const res = body;
+    Object.defineProperty(res, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(res, 'pruned', { value: res, writable: true, enumerable: false, configurable: true });
     return res;
   }
 
@@ -1548,6 +1569,7 @@ function pruneResponsesPayload(body, sessionId = null) {
     }
 
     // 1. Compress giant tool outputs (> 2000 chars) and giant message content (> 6000 chars)
+    // Rule 25: 100% absolute exemption for source code, diffs, patches, and compiler error stacks
     for (let i = 0; i < totalItems; i++) {
       const item = input[i];
       if (!item || typeof item !== 'object') continue;
@@ -1559,6 +1581,9 @@ function pruneResponsesPayload(body, sessionId = null) {
         (item.call_id && item.output !== undefined);
 
       if (isToolOutput && item.output) {
+        if (isCodeOrSensitiveContent(item.output)) {
+          continue;
+        }
         let outStr = sanitizeToolOutput(item.output);
         if (outStr.length > 2000) {
           const rawHead = safeUnicodeSlice(outStr, 0, 600);
@@ -1688,12 +1713,18 @@ function pruneResponsesPayload(body, sessionId = null) {
 /**
  * Prunes and compresses an oversized standard ChatCompletions messages array.
  */
-function pruneChatMessages(messages, maxTokens, sessionId = null) {
+function pruneChatMessages(messages, maxTokens, sessionId = null, options = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
     if (Array.isArray(messages)) {
       Object.defineProperty(messages, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
       Object.defineProperty(messages, 'pruned', { value: messages, writable: true, enumerable: false, configurable: true });
     }
+    return messages;
+  }
+
+  if (options && options.enabled === false) {
+    Object.defineProperty(messages, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(messages, 'pruned', { value: messages, writable: true, enumerable: false, configurable: true });
     return messages;
   }
 
@@ -1705,6 +1736,11 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
     const msg = result[i];
     if (!msg) continue;
     const isTool = msg.role === 'tool';
+    // Rule 25: 100% absolute exemption for source code, diffs, patches, and compiler error stacks
+    if (typeof msg.content === 'string' && isCodeOrSensitiveContent(msg.content)) {
+      continue;
+    }
+
     const isOversized = typeof msg.content === 'string' && msg.content.length > 2500;
     if (isOversized && (isTool || i < result.length - 1)) {
       if (msg.role === 'user') {
@@ -2193,7 +2229,12 @@ class StreamDegenerationDetector {
  * When running on Windows, automatically corrects "shell": "bash" in exec_command arguments to "powershell".
  */
 function autoCorrectToolArgs(toolName, argsStr) {
-  if (toolName !== 'exec_command' || !argsStr || typeof argsStr !== 'string') {
+  if (toolName !== 'exec_command' && toolName !== 'bash' && toolName !== 'powershell' && toolName !== 'execute_command') {
+    if (!argsStr || typeof argsStr !== 'string' || (!argsStr.includes('"command"') && !argsStr.includes('"cmd"'))) {
+      return argsStr;
+    }
+  }
+  if (!argsStr || typeof argsStr !== 'string') {
     return argsStr;
   }
   const isWindows = (process.platform === 'win32');
@@ -2202,8 +2243,25 @@ function autoCorrectToolArgs(toolName, argsStr) {
   try {
     const parsed = JSON.parse(argsStr);
     if (parsed && typeof parsed === 'object') {
+      let modified = false;
       if (parsed.shell === 'bash') {
         parsed.shell = 'powershell';
+        modified = true;
+      }
+      const cmdKey = parsed.command !== undefined ? 'command' : (parsed.cmd !== undefined ? 'cmd' : null);
+      if (cmdKey && typeof parsed[cmdKey] === 'string') {
+        try {
+          const powershellOptimizer = require('./powershell-optimizer');
+          if (powershellOptimizer && typeof powershellOptimizer.fixPowerShellCommandEscaping === 'function') {
+            const fixed = powershellOptimizer.fixPowerShellCommandEscaping(parsed[cmdKey]);
+            if (fixed && fixed !== parsed[cmdKey]) {
+              parsed[cmdKey] = fixed;
+              modified = true;
+            }
+          }
+        } catch (_) {}
+      }
+      if (modified) {
         return JSON.stringify(parsed);
       }
     }
@@ -3082,6 +3140,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               }
               textChunk = (pendingPrefixText ? pendingPrefixText : '') + after;
               pendingPrefixText = '';
+              closeReasoning();
             } else {
               let matchLen = 0;
               for (let len = Math.min(7, thinkBuffer.length); len >= 1; len--) {
@@ -3812,7 +3871,13 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
     const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
     if (thinkMatch) {
       reasoning = thinkMatch[1].trim();
-      content = content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      content = content.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim();
+    } else {
+      const unclosedMatch = content.match(/<think>([\s\S]*)$/);
+      if (unclosedMatch) {
+        reasoning = unclosedMatch[1].trim();
+        content = content.replace(/<think>[\s\S]*$/, '').trim();
+      }
     }
   }
   const output = [];
@@ -6318,12 +6383,30 @@ function resumeOrCleanCodexProcesses() {
   }
 
   try {
-    const psScript = `
-$procs = Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue
-if (-not $procs) {
-    Write-Output '0'
-    exit
-}
+    // 准则 4 & 准则 32：排查桌面客户端“秒退/打不开”时，第一优先级检测无窗口僵死进程组（visibleWindows === 0）
+    // 一旦确诊其霸占 SingleInstanceLock 互斥锁，自愈逻辑必须无条件强力终止全部残留进程树，彻底释放互斥锁！
+    if (status.visibleWindows === 0 && status.procCount > 0) {
+      execSync('powershell.exe -NoProfile -NonInteractive -Command "try { Get-Process -Name ChatGPT, codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}; exit 0"', {
+        timeout: 6000,
+        stdio: 'ignore'
+      });
+
+      // 清理孤立互斥锁与第三方残留死锁
+      const lockDir = path.join(process.env.USERPROFILE || '', '.codex', 'tmp', 'provider-sync.lock');
+      if (fs.existsSync(lockDir)) {
+        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch (_) {}
+      }
+
+      return {
+        success: true,
+        killed: true,
+        message: `已安全清理霸占 SingleInstanceLock 互斥锁的 ${status.procCount} 个无窗口僵死进程，互斥锁已彻底释放，可正常双击桌面图标启动`
+      };
+    }
+
+    // 若存在正常可见窗口，且仅为部分辅助线程被 Windows PLM 偶发挂起，尝试唤醒该辅助线程
+    if (status.hasSuspended && status.visibleWindows > 0) {
+      const psScript = `
 Add-Type @'
 using System;
 using System.Diagnostics;
@@ -6351,24 +6434,27 @@ public class SuspendedResumer {
 }
 '@
 $resumed = [SuspendedResumer]::ResumeAll()
-if ($resumed -eq 0) {
-    Get-Process -Name "ChatGPT" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
 Write-Output $resumed
 `;
-    const enc = Buffer.from(psScript, 'utf16le').toString('base64');
-    const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
-      encoding: 'utf8',
-      timeout: 6000,
-      stdio: ['pipe', 'pipe', 'ignore']
-    }).trim();
+      const enc = Buffer.from(psScript, 'utf16le').toString('base64');
+      const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
+        encoding: 'utf8',
+        timeout: 6000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      }).trim();
 
-    const resumedCount = parseInt(out, 10) || 0;
-    if (resumedCount > 0) {
-      return { success: true, resumed: resumedCount, message: `已成功唤醒 ${resumedCount} 个被 Windows PLM 挂起的 ChatGPT 线程，恢复窗口渲染` };
-    } else {
-      return { success: true, killed: true, message: '已安全清理霸占 SingleInstanceLock 互斥锁的无窗口僵死进程，可正常点击桌面图标秒开' };
+      const resumedCount = parseInt(out, 10) || 0;
+      if (resumedCount > 0) {
+        return { success: true, resumed: resumedCount, message: `已成功唤醒 ${resumedCount} 个被 Windows PLM 挂起的 ChatGPT 线程，恢复窗口渲染` };
+      }
     }
+
+    // 强力兜底清理
+    execSync('powershell.exe -NoProfile -NonInteractive -Command "try { Get-Process -Name ChatGPT, codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}; exit 0"', {
+      timeout: 6000,
+      stdio: 'ignore'
+    });
+    return { success: true, killed: true, message: '已彻底终止异常残留的 Codex / ChatGPT 进程组并释放互斥锁' };
   } catch (err) {
     return { success: false, error: err.message, message: '自愈挂起/僵死进程失败: ' + err.message };
   }
@@ -6667,6 +6753,14 @@ function checkCodexLocaleAndEnvironment(options = {}) {
 
   let hasCodexPlusPortConflict = false;
   let missingCodexPlusZhScript = false;
+  let hasProviderSyncLock = false;
+
+  if (process.platform === 'win32') {
+    const lockDir = path.join(process.env.USERPROFILE || '', '.codex', 'tmp', 'provider-sync.lock');
+    if (fs.existsSync(lockDir)) {
+      hasProviderSyncLock = true;
+    }
+  }
   if (process.platform === 'win32') {
     const codexPlusDir = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Codex++');
     const watcherLnk = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'CodexPlusPlusWatcher.lnk');

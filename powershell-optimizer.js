@@ -147,6 +147,7 @@ function detectPlatform(options = {}, req = null) {
  * @returns {boolean}
  */
 function isPowerShellOptimizerActive(options = {}, req = null) {
+  if (options && options.enabled === false) return false;
   const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...((options.modules && options.modules.powershell) || options.powershell || options.powershellOptimizer || options) };
   if (cfg.enabled === false) return false;
 
@@ -350,7 +351,7 @@ function fixPowerShellCommandEscaping(cmd, options = {}) {
     // 4. Fix && and || operators for Windows PowerShell 5.1 compatibility
     // In Windows PowerShell 5.1, '&&' throws ParserError: "The token '&&' is not a valid statement separator".
     // Safe transformation: outside quotes, replace ' && ' with '; if ($?) { ' and append ' }'
-    if (cfg.fixAndOperator !== false && result.includes(' && ') && !result.includes('; if ($?)')) {
+    if (cfg.fixAndOperator !== false && (result.includes(' && ') || result.includes(' || ')) && !result.includes('; if ($?)')) {
       // Simple parser state machine to ensure && is outside quotes
       let inSingleQuote = false;
       let inDoubleQuote = false;

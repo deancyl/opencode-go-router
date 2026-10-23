@@ -15,6 +15,30 @@ if (Test-Path -LiteralPath $cfgFile) {
     } catch { }
 }
 
+# 先行检测并清理可能霸占 AppProfile 的无窗口僵死浏览器进程 (单实例互斥锁深度自愈)
+$appProfileDir = Join-Path $env:LOCALAPPDATA "OpenCodeRouter\AppProfile"
+if (Test-Path -LiteralPath $appProfileDir) {
+    $lf = Join-Path $appProfileDir "lockfile"
+    if (Test-Path -LiteralPath $lf) {
+        $ghostProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { 
+            $_.CommandLine -like "*OpenCodeRouter*AppProfile*"
+        }
+        if ($ghostProcs) {
+            $hasWin = $false
+            foreach ($gp in $ghostProcs) {
+                $p = Get-Process -Id $gp.ProcessId -ErrorAction SilentlyContinue
+                if ($p -and $p.MainWindowHandle -ne 0) { $hasWin = $true; break }
+            }
+            if (-not $hasWin) {
+                foreach ($gp in $ghostProcs) {
+                    Stop-Process -Id $gp.ProcessId -Force -ErrorAction SilentlyContinue
+                }
+                Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 if (Test-Path -LiteralPath $appExe) {
     Start-Process -FilePath $appExe -WorkingDirectory $rootDir
     return

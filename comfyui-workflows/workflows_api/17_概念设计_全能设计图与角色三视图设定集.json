@@ -1,0 +1,255 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "anything-v5-PrtRE.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "【1】二次元巅峰底模 (Anything V5 / 可切 dreamshaper)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "masterpiece, best quality, ultra-detailed, 8k resolution, (character design sheet:1.4), (turnaround:1.3), front view, back view, side profile view, (1girl:1.2), solo, beautiful anime face, detailed expressive eyes with intricate pupils, sharp hair bangs, symmetrical front view, symmetrical back view, (cyberpunk tactical mechanical bodysuit:1.2), detailed joints, glowing neon power core on back, gloves with distinct fingers, mechanical boots, color palette swatches, facial expression emotion breakdown on right margin, clean vector anime lineart, sharp outlines, crisp 2D cel shading, solid plain light gray background, high contrast, concept art"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【模式 A·默认连入】角色人设三视图设定集 (工业高精)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "masterpiece, best quality, ultra-detailed, 8k resolution:1.2, (architectural concept rendering:1.35), modern minimalist luxury penthouse interior design, open floor plan, floor-to-ceiling glass panoramic windows overlooking Tokyo skyline, walnut wood paneling, Italian marble kitchen island, sleek designer lounge chairs, warm ambient recessed lighting, sharp clean lines, architectural visualization"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【模式 B·备选】室内空间与建筑效果图"
+    }
+  },
+  "4": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "masterpiece, best quality, ultra-detailed, 8k resolution:1.2, (industrial product design:1.35), sleek futuristic wireless bone-conduction audio headset, matte black aluminum and brushed titanium, ergonomic curves, product rendering, soft studio photography lighting, clean gradient light gray background, commercial advertising visualization, sharp edges"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【模式 C·备选】工业科技产品与UI图形"
+    }
+  },
+  "5": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "lowres, bad anatomy, bad hands, missing fingers, extra digits, extra limbs, fused fingers, deformed, disfigured, malformed limbs, blurry, bad eyes, poorly drawn face, mutated, cloned, watermark, text, signature, 3d render, cgi, sketch, scribbles, messy lines, dirty background, ghosting, chromatic aberration"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【负向词】防残缺防畸变防模糊"
+    }
+  },
+  "6": {
+    "inputs": {
+      "width": 832,
+      "height": 512,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "【画幅】832x512 宽幅高充沛原生画布"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ],
+      "seed": 123456,
+      "steps": 28,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高精采样 [MODE:QUALITY]】28步 DPM++ 2M Karras"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "upscale_method": "bicubic",
+      "scale_by": 1.5
+    },
+    "class_type": "LatentUpscaleBy",
+    "_meta": {
+      "title": "【潜空间 1.5x 宽幅放大】(至 1248x768)"
+    }
+  },
+  "9": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "8",
+        0
+      ],
+      "seed": 123456,
+      "steps": 15,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.52
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高分微雕 [MODE:QUALITY_REFINE]】15步 DPM++ (Denoise 0.52)"
+    }
+  },
+  "10": {
+    "inputs": {
+      "samples": [
+        "9",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【高精解码】VAEDecode"
+    }
+  },
+  "11": {
+    "inputs": {
+      "images": [
+        "10",
+        0
+      ],
+      "filename_prefix": "Character_Design_Sheet_Pro"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【成片输出 [OUTPUT:QUALITY]】"
+    }
+  },
+  "13": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "lora_name": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【旁路·极速引擎】Hyper-SD 蒸馏加载器"
+    }
+  },
+  "14": {
+    "inputs": {
+      "model": [
+        "13",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ],
+      "seed": 123456,
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler_name": "euler",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【快速预览 [MODE:PREVIEW]】8步极速采样"
+    }
+  },
+  "15": {
+    "inputs": {
+      "samples": [
+        "14",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【预览解码】VAEDecode"
+    }
+  },
+  "16": {
+    "inputs": {
+      "images": [
+        "15",
+        0
+      ],
+      "filename_prefix": "Preview_Character_Design_Sheet"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【预览输出 [OUTPUT:PREVIEW]】"
+    }
+  }
+}

@@ -1,0 +1,255 @@
+{
+  "version": "1.0.0",
+  "storage_root": "G:/ComfyUI/ComfyUI-aki/models/loras",
+  "fallback_storage": "C:/Users/deanc/ComfyUI-Zluda/models/loras",
+  "categories": {
+    "toys_and_mascots": {
+      "name": "潮玩萌物与手办流派",
+      "description": "专治动漫萌宠、宝可梦、吉祥物、潮玩手办，彻底摆脱 2D 扁平与畸变",
+      "styles": [
+        "blindbox",
+        "clay_animation",
+        "figma_figures",
+        "pixel_art",
+        "paper_cut"
+      ]
+    },
+    "eastern_guofeng": {
+      "name": "东方美学与国风古韵",
+      "description": "水墨写意、泼墨行书、国风彩墨与传统仙侠",
+      "styles": [
+        "moxin_chinese_ink",
+        "moxin_shukezouma",
+        "colorwater_guofeng"
+      ]
+    },
+    "master_illustration": {
+      "name": "顶级商业插画与大师流派",
+      "description": "宫崎骏童话、新海诚光影、Sam Yang半厚涂、机甲科幻与游戏立绘",
+      "styles": [
+        "ghibli_storybook",
+        "shinkai_twilight",
+        "sam_yang_digital_art",
+        "mecha_cyberpunk",
+        "tachie_character"
+      ]
+    },
+    "portraits_and_faces": {
+      "name": "人像素描与面容写真",
+      "description": "亚洲电影胶片质感、二次元灵动少女",
+      "styles": [
+        "korean_doll_likeness",
+        "cute_girl_mix"
+      ]
+    },
+    "utility_enhancers": {
+      "name": "渲染引擎与通用质感外挂",
+      "description": "微观毛孔雕刻、8步极速加速引擎、纯净背景控制",
+      "styles": [
+        "more_details",
+        "hyper_sd_8steps",
+        "simple_background"
+      ]
+    }
+  },
+  "loras": {
+    "blindbox": {
+      "filename": "blindbox_V1Mix.safetensors",
+      "category": "toys_and_mascots",
+      "name": "泡泡玛特盲盒公仔",
+      "description": "纯净圆润潮玩、工作室柔光、软萌质感，吉祥物与宝可梦绝配",
+      "trigger_words": "blindbox, full body, chibified, cute, plastic toy, smooth glossy finish",
+      "recommended_weight": 0.8,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zwich07/Civitailora/resolve/main/blindbox_V1Mix.safetensors",
+      "tags": ["盲盒", "泡泡玛特", "手办", "潮玩", "萌宠", "皮卡丘", "宝可梦", "Q版", "公仔", "blindbox", "chibi", "toy"]
+    },
+    "clay_animation": {
+      "filename": "ClayAnimationRedmond15-ClayAnimation-Clay.safetensors",
+      "category": "toys_and_mascots",
+      "name": "粘土泥塑定格动画",
+      "description": "阿德曼风格软陶泥塑定格动画质感，手工纹理、温润憨厚",
+      "trigger_words": "Clay Animation, claymation, plasticine texture, stop motion look",
+      "recommended_weight": 0.85,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/artificialguybr/clayanimationredmond-1-5-version-clay-animation-lora-for-sd-1-5/resolve/main/ClayAnimationRedmond15-ClayAnimation-Clay.safetensors",
+      "tags": ["粘土", "泥塑", "软陶", "定格动画", "阿德曼", "治愈", "clay", "claymation", "plasticine"]
+    },
+    "figma_figures": {
+      "filename": "figmaAnimeFigures_figma.safetensors",
+      "category": "toys_and_mascots",
+      "name": "日系手办与Figma雕像",
+      "description": "高精度手办喷涂、PVC材质、分件细节与展台光影",
+      "trigger_words": "figma, pvc figure, scale figure, painted figurine, display base",
+      "recommended_weight": 0.75,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zwich07/Civitailora/resolve/main/figmaAnimeFigures_figma.safetensors",
+      "tags": ["手办", "模型", "雕像", "Figma", "PVC", "展台", "figure", "figurine"]
+    },
+    "pixel_art": {
+      "filename": "PixelArtRedmond15V-PixelArt-PIXARFK.safetensors",
+      "category": "toys_and_mascots",
+      "name": "16-bit复古像素艺术",
+      "description": "街机像素风、点阵艺术、层次分明、复古情怀",
+      "trigger_words": "Pixel Art, 16-bit, pixelated, retro arcade game asset",
+      "recommended_weight": 0.85,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5/resolve/main/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors",
+      "tags": ["像素", "复古", "街机", "点阵", "8bit", "16bit", "pixel", "pixel art"]
+    },
+    "paper_cut": {
+      "filename": "KK_paperCut_v1.safetensors",
+      "category": "toys_and_mascots",
+      "name": "立体民间剪纸艺术",
+      "description": "层叠纸雕、立体阴影、传统窗花与纸艺童话",
+      "trigger_words": "paper cut, papercraft, layered paper, 3d shadow box art",
+      "recommended_weight": 0.8,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/KK_paperCut_v1.safetensors",
+      "tags": ["剪纸", "纸雕", "纸艺", "窗花", "折纸", "papercut", "papercraft"]
+    },
+    "moxin_chinese_ink": {
+      "filename": "Moxin_10.safetensors",
+      "category": "eastern_guofeng",
+      "name": "墨心·写意国风水墨",
+      "description": "东方写意水墨山水与花鸟、浓淡干湿水墨晕染、诗意留白",
+      "trigger_words": "(moxin:1.2), chinese traditional ink painting, ink wash, brush stroke, poetic atmosphere",
+      "recommended_weight": 0.85,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/Moxin_10.safetensors",
+      "tags": ["水墨", "国风", "墨心", "山水", "写意", "花鸟", "中国画", "古风", "ink", "chinese ink", "guofeng"]
+    },
+    "moxin_shukezouma": {
+      "filename": "Moxin_Shukezouma11.safetensors",
+      "category": "eastern_guofeng",
+      "name": "墨心·数客走马泼墨行书",
+      "description": "苍劲有力的行书笔法、飞白枯笔、水墨武侠与战意磅礴",
+      "trigger_words": "(shukezouma:1.2), dynamic chinese calligraphy brushwork, splashes of ink, wuxia martial arts atmosphere",
+      "recommended_weight": 0.8,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/Moxin_Shukezouma11.safetensors",
+      "tags": ["书法", "泼墨", "武侠", "走马", "水墨", "飞白", "动感", "calligraphy", "wuxia"]
+    },
+    "colorwater_guofeng": {
+      "filename": "Colorwater_v4.safetensors",
+      "category": "eastern_guofeng",
+      "name": "国风轻盈彩墨水彩",
+      "description": "通透典雅的彩墨水彩、灵动色彩晕染、柔和诗意仙境",
+      "trigger_words": "(colorwater:1.15), delicate watercolor wash, translucent ink bleed, ethereal pastel hues",
+      "recommended_weight": 0.75,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/Colorwater_v4.safetensors",
+      "tags": ["彩墨", "水彩", "轻盈", "唯美", "仙气", "晕染", "watercolor", "pastel"]
+    },
+    "sam_yang_digital_art": {
+      "filename": "samdoesartsSamYang_offsetRightFilesize.safetensors",
+      "category": "master_illustration",
+      "name": "Sam Yang 顶级商业半厚涂数码插画",
+      "description": "通透眼神、柔美轮廓光、高辨识度数字插画艺术风格",
+      "trigger_words": "sam yang style, samdoesarts, luminous skin, glowing rim light, stylized semi-realistic portrait",
+      "recommended_weight": 0.8,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/takinai/SamDoesArts_Sam_Yang_Style_LoRA/resolve/main/samdoesartsSamYang_offsetRightFilesize.safetensors",
+      "tags": ["半厚涂", "Sam Yang", "数码插画", "立绘", "商业插画", "光影", "samdoesarts", "illustration"]
+    },
+    "mecha_cyberpunk": {
+      "filename": "mecha(mjstyle).safetensors",
+      "category": "master_illustration",
+      "name": "机甲科幻与外骨骼装甲",
+      "description": "复杂机械结构、外骨骼装甲、碳纤维装甲板与赛博霓虹",
+      "trigger_words": "mecha, mechanical armor, exosuit, cybernetic parts, hard surface, intricate machinery",
+      "recommended_weight": 0.8,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/mecha(mjstyle).safetensors",
+      "tags": ["机甲", "科幻", "外骨骼", "机械", "赛博朋克", "装甲", "mecha", "cyberpunk", "robot"]
+    },
+    "tachie_character": {
+      "filename": "tachi-e.safetensors",
+      "category": "master_illustration",
+      "name": "二次元游戏纯净角色立绘",
+      "description": "清晰完整的全身立绘、服装配饰精细、纯白背景、游戏人设集标准",
+      "trigger_words": "tachi-e, character design sheet, full body standing, clean outline, game asset",
+      "recommended_weight": 0.75,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/tachi-e.safetensors",
+      "tags": ["立绘", "人设", "设定集", "全身", "纯白背景", "游戏资产", "tachie", "standing"]
+    },
+    "simple_background": {
+      "filename": "simple_background_v2.safetensors",
+      "category": "utility_enhancers",
+      "name": "纯净极简背景控制",
+      "description": "强制去除杂乱背景杂色与噪点，聚焦主体角色，纯色/淡影背景",
+      "trigger_words": "simple background, clean white background, minimalistic background",
+      "recommended_weight": 0.7,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "https://huggingface.co/zizhaotong/Lora_sd15_style/resolve/main/simple_background_v2.safetensors",
+      "tags": ["纯净背景", "极简", "白底", "去杂质", "电商", "立绘背景", "simple background", "clean"]
+    },
+    "ghibli_storybook": {
+      "filename": "ghibli_style_offset.safetensors",
+      "category": "master_illustration",
+      "name": "吉卜力水彩童话",
+      "description": "宫崎骏/男鹿和雄唯美水彩手绘，翠绿草坡与童话治愈",
+      "trigger_words": "(studio ghibli style:1.35), hayao miyazaki, watercolor storybook texture",
+      "recommended_weight": 0.85,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "local",
+      "tags": ["吉卜力", "宫崎骏", "童话", "治愈", "水彩", "手绘", "ghibli"]
+    },
+    "shinkai_twilight": {
+      "filename": "anime-lora-makoto-shinkai-anime-style.safetensors",
+      "category": "master_illustration",
+      "name": "新海诚光影日漫",
+      "description": "细腻黄昏天空、唯美积雨云、澄澈倒影与极致光斑",
+      "trigger_words": "(makoto shinkai style:1.35), cinematic anime movie, twilight sky",
+      "recommended_weight": 0.85,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "local",
+      "tags": ["新海诚", "日漫", "光影", "黄昏", "天空", "云彩", "shinkai"]
+    },
+    "korean_doll_likeness": {
+      "filename": "koreanDollLikeness_v10.safetensors",
+      "category": "portraits_and_faces",
+      "name": "亚洲电影写实肖像",
+      "description": "真实皮肤质感、微观毛孔、亚洲女性柔和五官写真",
+      "trigger_words": "korean doll likeness, realistic female portrait, 35mm photograph",
+      "recommended_weight": 0.7,
+      "base_model": "Realistic_Vision_V5.1.safetensors",
+      "download_url": "local",
+      "tags": ["真人", "写实", "肖像", "摄影", "女性", "写真", "korean", "portrait"]
+    },
+    "cute_girl_mix": {
+      "filename": "cuteGirlMix4_v10.safetensors",
+      "category": "portraits_and_faces",
+      "name": "二次元灵动甜美美少女",
+      "description": "纯正二次元动漫萌妹脸型、大眼睛、元气治愈",
+      "trigger_words": "cute girl, anime aesthetic, youthful face",
+      "recommended_weight": 0.65,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "local",
+      "tags": ["二次元", "美少女", "萌妹", "少女", "可爱", "cute girl", "anime"]
+    },
+    "more_details": {
+      "filename": "more_details.safetensors",
+      "category": "utility_enhancers",
+      "name": "8K微观细节雕刻",
+      "description": "超清晰边缘闭合、高光反光锐化、微观质感强化",
+      "trigger_words": "more details, ultra-detailed, 8k resolution, crisp lines",
+      "recommended_weight": 0.45,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "local",
+      "tags": ["细节", "微雕", "高清", "锐化", "质感", "details", "sharpness"]
+    },
+    "hyper_sd_8steps": {
+      "filename": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "category": "utility_enhancers",
+      "name": "8步极速加速引擎",
+      "description": "Hyper-SD 蒸馏加速，秒级出图探索",
+      "trigger_words": "fast draft",
+      "recommended_weight": 1.0,
+      "base_model": "anything-v5-PrtRE.safetensors",
+      "download_url": "local",
+      "tags": ["极速", "加速", "8步", "秒级", "抽卡", "fast", "hyper-sd"]
+    }
+  }
+}

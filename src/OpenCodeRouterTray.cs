@@ -532,7 +532,7 @@ namespace OpenCodeRouter
             }
             catch { }
 
-            string lightBrowserArgs = "--disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
+            string lightBrowserArgs = "--disable-background-mode --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
 
             // 方案 0.5: 优先使用本地嵌入纯净 Chromium 核心（若存在独立自包含包）
             try

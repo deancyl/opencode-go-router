@@ -1648,7 +1648,7 @@ function verifyStagedCodeIntegrity(stagingDir) {
   }
 
   // 必须存在的核心文件清单
-  const criticalFiles = ['server.js', 'updater.js', 'context-compactor.js'];
+  const criticalFiles = ['server.js', 'updater.js', 'context-compactor.js', 'codex-adapter.js', 'comfyui-adapter.js', 'mcp-comfyui.js', 'powershell-optimizer.js'];
   for (const cf of criticalFiles) {
     const fullP = path.join(stagingDir, cf);
     if (!fs.existsSync(fullP)) {

@@ -457,9 +457,10 @@ namespace OpenCodeRouter
                 string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
                 string targetUrl = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + hash;
 
+                CleanGhostBrowserInstances(appProfile);
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = browserExe;
-                psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
+                psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-background-mode --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
                 psi.UseShellExecute = true;
                 Process.Start(psi);
             }
@@ -482,10 +483,12 @@ namespace OpenCodeRouter
                         Directory.CreateDirectory(appProfile);
                     }
 
+                    CleanGhostBrowserInstances(appProfile);
+
                     ProcessStartInfo psi = new ProcessStartInfo();
                     psi.FileName = browserExe;
-                    // 原生超轻量受控应用模式：剥离 GPU 进程、限制单渲染器、限制 32MB 堆内存、禁用 HTTP 缓存、禁用扩展、极度收敛
-                    psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --window-size=1280,840 --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,InterestFeedContentSuggestions";
+                    // 原生超轻量受控应用模式：剥离 GPU 进程、限制单渲染器、限制 32MB 堆内存、禁用 HTTP 缓存、禁用扩展、极度收敛、禁用后台模式防僵死
+                    psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-background-mode --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --window-size=1280,840 --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,InterestFeedContentSuggestions";
                     psi.UseShellExecute = true; // 脱钩外壳启动，杜绝挂接在父级 Job 导致被终止
                     Process.Start(psi);
 
@@ -520,6 +523,59 @@ namespace OpenCodeRouter
                 }
                 catch { }
             }
+        }
+
+        private static void CleanGhostBrowserInstances(string appProfile)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(appProfile) || !Directory.Exists(appProfile)) return;
+
+                string lockfile = Path.Combine(appProfile, "lockfile");
+                bool isLocked = false;
+                if (File.Exists(lockfile))
+                {
+                    try
+                    {
+                        using (FileStream fs = File.Open(lockfile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                        {
+                            // Can open exclusively: file is not locked
+                        }
+                        try { File.Delete(lockfile); } catch { }
+                    }
+                    catch
+                    {
+                        // File is locked by a zombie process holding SingleInstanceLock!
+                        isLocked = true;
+                    }
+                }
+
+                // If lockfile is locked or exists, forcibly clean zombie browser processes
+                if (isLocked)
+                {
+                    try
+                    {
+                        ProcessStartInfo psi = new ProcessStartInfo();
+                        psi.FileName = "powershell.exe";
+                        psi.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -Command \"Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*OpenCodeRouter*AppProfile*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\"";
+                        psi.CreateNoWindow = true;
+                        psi.UseShellExecute = false;
+                        psi.WindowStyle = ProcessWindowStyle.Hidden;
+                        using (Process p = Process.Start(psi))
+                        {
+                            p.WaitForExit(2000);
+                        }
+                    }
+                    catch { }
+
+                    try
+                    {
+                        if (File.Exists(lockfile)) File.Delete(lockfile);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private static void TrimAppWorkingSet()

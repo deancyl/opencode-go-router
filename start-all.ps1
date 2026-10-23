@@ -34,11 +34,11 @@ if ($routerConn) {
 if (-not $alreadyRunning) {
     Write-Host "   正在静默拉起后台服务引擎..." -ForegroundColor Gray
     if (Test-Path -LiteralPath $trayExe) {
-        Start-Process -FilePath $trayExe -WorkingDirectory $routerDir
+        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$trayExe`""
     } elseif (Test-Path -LiteralPath $trayVbs) {
-        Start-Process "wscript.exe" -ArgumentList "`"$trayVbs`"" -WorkingDirectory $routerDir -WindowStyle Hidden
+        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$trayVbs`""
     } elseif (Test-Path -LiteralPath $silentVbs) {
-        Start-Process "wscript.exe" -ArgumentList "`"$silentVbs`"" -WorkingDirectory $routerDir -WindowStyle Hidden
+        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$silentVbs`""
     } elseif (Test-Path -LiteralPath $serverJs) {
         $nodeExe = "node.exe"
         if (Test-Path -LiteralPath "C:\Program Files\nodejs\node.exe") { $nodeExe = "C:\Program Files\nodejs\node.exe" }

@@ -1,0 +1,14 @@
+# Extra model paths configuration
+# Rename this file to extra_model_paths.yaml in your ComfyUI root directory
+# to share models with Stable Diffusion WebUI, Aki package, or another drive.
+
+a111:
+    base_path: G:/ComfyUI/ComfyUI-aki/ComfyUI-aki-v3.2/ComfyUI/models/
+    checkpoints: checkpoints
+    configs: configs
+    vae: vae
+    loras: loras
+    upscale_models: upscale_models
+    embeddings: embeddings
+    hypernetworks: hypernetworks
+    controlnet: controlnet

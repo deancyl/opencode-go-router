@@ -90,12 +90,8 @@ if (Test-Path $updaterJs) {
 
                     Write-Host "[2/3] 正在秒级复原配置与生态环境 (原子文件恢复)..." -ForegroundColor Yellow
 
-                    $rbCmd = if ($SnapshotId) {
-                        "node `"$updaterJs`" rollback `"$SnapshotId`""
-                    } else {
-                        "node `"$updaterJs`" rollback"
-                    }
-                    $rbResultRaw = Invoke-Expression $rbCmd
+                    $rbArgs = if ($SnapshotId) { @("rollback", $SnapshotId) } else { @("rollback") }
+                    $rbResultRaw = & node $updaterJs @rbArgs
                     $rbResult = $rbResultRaw | ConvertFrom-Json
 
                     if ($rbResult -and $rbResult.success) {

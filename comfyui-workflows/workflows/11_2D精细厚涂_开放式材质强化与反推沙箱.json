@@ -1,0 +1,1085 @@
+{
+  "last_node_id": 19,
+  "last_link_id": 36,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        40,
+        160
+      ],
+      "size": [
+        320,
+        98
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1,
+            20
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2,
+            21
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            7,
+            24
+          ],
+          "slot_index": 2
+        }
+      ],
+      "title": "【1】二次元底模 (Anything V5)",
+      "properties": {
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "anything-v5-PrtRE.safetensors"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoraLoader",
+      "pos": [
+        420,
+        160
+      ],
+      "size": [
+        320,
+        126
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            3,
+            14
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            4,
+            5,
+            29
+          ],
+          "slot_index": 1
+        }
+      ],
+      "title": "【2】微观细节强化 LoRA (More Details 0.45)",
+      "properties": {
+        "Node name for S&R": "LoraLoader"
+      },
+      "widgets_values": [
+        "more_details.safetensors",
+        0.45,
+        0.45
+      ]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        800,
+        20
+      ],
+      "size": [
+        440,
+        180
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【A·角色与主体层】填写主体关键词",
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "(masterpiece, best quality, ultra-detailed, 8k resolution:1.2), (2d concept art:1.2), 1girl, beautiful anime warrior maiden, long flowing azure hair, amethyst eyes, poised ready for battle"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        800,
+        240
+      ],
+      "size": [
+        440,
+        180
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【B·材质与光影层】薄纱/水光/金属高光强化",
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "(heavy gold ornate plate armor:1.3), polished mirror-like steel trim, translucent flowing white silk cape, intricate gemstones embedded in armor, glowing runic engravings, dramatic volumetric rim lighting, ray tracing reflections, rich brushwork texture"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "ConditioningCombine",
+      "pos": [
+        1280,
+        120
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "conditioning_1",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "conditioning_2",
+          "type": "CONDITIONING",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            9,
+            10,
+            22
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【双轨融合】主体 + 材质深度合并",
+      "properties": {
+        "Node name for S&R": "ConditioningCombine"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [
+        800,
+        460
+      ],
+      "size": [
+        440,
+        150
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 29
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            11,
+            12,
+            23
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【负向词】防畸变与防低模",
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "lowres, bad anatomy, bad hands, bad feet, missing fingers, extra digits, deformed, blurry, low quality, flat shading, dull, 3d render, cgi"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "EmptyLatentImage",
+      "pos": [
+        800,
+        650
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            13,
+            25
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【画幅】512x768 黄金竖屏",
+      "properties": {
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        512,
+        768,
+        1
+      ]
+    },
+    {
+      "id": 8,
+      "type": "KSampler",
+      "pos": [
+        1540,
+        80
+      ],
+      "size": [
+        320,
+        474
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 3
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 9
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 11
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【高精采样 [MODE:QUALITY]】26步 DPM++ 2M Karras",
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        33445566,
+        "randomize",
+        26,
+        7.0,
+        "dpmpp_2m",
+        "karras",
+        1.0
+      ]
+    },
+    {
+      "id": 9,
+      "type": "LatentUpscaleBy",
+      "pos": [
+        1920,
+        160
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【潜空间 1.35x 放大】(至 691x1036)",
+      "properties": {
+        "Node name for S&R": "LatentUpscaleBy"
+      },
+      "widgets_values": [
+        "bicubic",
+        1.35
+      ]
+    },
+    {
+      "id": 10,
+      "type": "KSampler",
+      "pos": [
+        2280,
+        80
+      ],
+      "size": [
+        320,
+        474
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 14
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 10
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 12
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【高分微雕 [MODE:QUALITY_REFINE]】14步 DPM++ (Denoise 0.44)",
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        33445566,
+        "randomize",
+        14,
+        7.0,
+        "dpmpp_2m",
+        "karras",
+        0.44
+      ]
+    },
+    {
+      "id": 11,
+      "type": "VAEDecode",
+      "pos": [
+        2640,
+        120
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 17
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            18
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【高精解码】VAEDecode",
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 12,
+      "type": "SaveImage",
+      "pos": [
+        2640,
+        220
+      ],
+      "size": [
+        440,
+        520
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 18
+        }
+      ],
+      "outputs": [],
+      "title": "【成片输出 [OUTPUT:QUALITY]】",
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "Material_Sandbox_Pro"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "MarkdownNote",
+      "pos": [
+        40,
+        320
+      ],
+      "size": [
+        340,
+        420
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "【使用指南】材质与反推沙箱",
+      "properties": {
+        "Node name for S&R": "MarkdownNote"
+      },
+      "widgets_values": [
+        "# 🛡️ 2D精细厚涂·开放式材质强化与反推沙箱 (双轨工业版)\n\n- **主连线 [OUTPUT:QUALITY]**：全精度 Anything V5 + More Details (0.45)，26步 DPM++ 2M Karras + 1.35x 微雕。\n- **双轨提示词融合**：主体层与材质层通过 ConditioningCombine 物理级融合，解算镜面反光与刺绣暗纹！\n- **反推工具集成**：搭载 WD14 NSFW 提示词反推仪，垫图即可逆向提取材质词！\n- **旁路 [OUTPUT:PREVIEW]**：8步 Hyper-SD 极速预览。"
+      ]
+    },
+    {
+      "id": 14,
+      "type": "LoadImage",
+      "pos": [
+        40,
+        780
+      ],
+      "size": [
+        340,
+        320
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            32
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "【参考图输入】上传图片即可一键反推",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png",
+        "image"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "NSFW_WD14_Interrogator",
+      "pos": [
+        420,
+        780
+      ],
+      "size": [
+        340,
+        280
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 32
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tags",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "character_tags",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "general_tags",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        }
+      ],
+      "title": "【WD14 NSFW 提示词反推仪】",
+      "properties": {
+        "Node name for S&R": "NSFW_WD14_Interrogator"
+      },
+      "widgets_values": [
+        "ConvNext",
+        0.35,
+        0.85,
+        0.85,
+        false
+      ]
+    },
+    {
+      "id": 16,
+      "type": "LoraLoader",
+      "pos": [
+        1540,
+        600
+      ],
+      "size": [
+        320,
+        126
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 20
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            26
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "【旁路·极速引擎】Hyper-SD 蒸馏加载器",
+      "properties": {
+        "Node name for S&R": "LoraLoader"
+      },
+      "widgets_values": [
+        "Hyper-SD15-8steps-CFG-lora.safetensors",
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "id": 17,
+      "type": "KSampler",
+      "pos": [
+        1920,
+        600
+      ],
+      "size": [
+        320,
+        474
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 26
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 22
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 23
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            27
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【快速预览 [MODE:PREVIEW]】8步极速采样",
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        33445566,
+        "randomize",
+        8,
+        2.0,
+        "euler",
+        "karras",
+        1.0
+      ]
+    },
+    {
+      "id": 18,
+      "type": "VAEDecode",
+      "pos": [
+        2280,
+        600
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 27
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 24
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            28
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "【预览解码】VAEDecode",
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 19,
+      "type": "SaveImage",
+      "pos": [
+        2280,
+        700
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 28
+        }
+      ],
+      "outputs": [],
+      "title": "【预览输出 [OUTPUT:PREVIEW]】",
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "Preview_Material_Sandbox"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      1,
+      1,
+      2,
+      1,
+      "CLIP"
+    ],
+    [
+      3,
+      2,
+      0,
+      8,
+      0,
+      "MODEL"
+    ],
+    [
+      4,
+      2,
+      1,
+      3,
+      0,
+      "CLIP"
+    ],
+    [
+      5,
+      2,
+      1,
+      4,
+      0,
+      "CLIP"
+    ],
+    [
+      6,
+      3,
+      0,
+      5,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      1,
+      2,
+      11,
+      1,
+      "VAE"
+    ],
+    [
+      8,
+      4,
+      0,
+      5,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      9,
+      5,
+      0,
+      8,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      10,
+      5,
+      0,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      11,
+      6,
+      0,
+      8,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      12,
+      6,
+      0,
+      10,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      13,
+      7,
+      0,
+      8,
+      3,
+      "LATENT"
+    ],
+    [
+      14,
+      2,
+      0,
+      10,
+      0,
+      "MODEL"
+    ],
+    [
+      15,
+      8,
+      0,
+      9,
+      0,
+      "LATENT"
+    ],
+    [
+      16,
+      9,
+      0,
+      10,
+      3,
+      "LATENT"
+    ],
+    [
+      17,
+      10,
+      0,
+      11,
+      0,
+      "LATENT"
+    ],
+    [
+      18,
+      11,
+      0,
+      12,
+      0,
+      "IMAGE"
+    ],
+    [
+      20,
+      1,
+      0,
+      16,
+      0,
+      "MODEL"
+    ],
+    [
+      21,
+      1,
+      1,
+      16,
+      1,
+      "CLIP"
+    ],
+    [
+      22,
+      5,
+      0,
+      17,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      23,
+      6,
+      0,
+      17,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      24,
+      1,
+      2,
+      18,
+      1,
+      "VAE"
+    ],
+    [
+      25,
+      7,
+      0,
+      17,
+      3,
+      "LATENT"
+    ],
+    [
+      26,
+      16,
+      0,
+      17,
+      0,
+      "MODEL"
+    ],
+    [
+      27,
+      17,
+      0,
+      18,
+      0,
+      "LATENT"
+    ],
+    [
+      28,
+      18,
+      0,
+      19,
+      0,
+      "IMAGE"
+    ],
+    [
+      29,
+      2,
+      1,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      32,
+      14,
+      0,
+      15,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

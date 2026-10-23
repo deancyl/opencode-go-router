@@ -1,0 +1,229 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "anything-v5-PrtRE.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "【1】底模 (可切换 Anything V5 或 dreamshaper_8)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "masterpiece, best quality, ultra-detailed, 8k resolution, (panoramic landscape photography:1.3), majestic snow-capped mountain peaks at golden hour, crystal clear alpine reflection lake, pine forest shore, dramatic clouds catching orange and magenta sunlight, volumetric rays, crystal clean atmosphere, crisp edges, wallpaper composition"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【2】正向词 (16:9唯美超清壁纸专属调优)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "lowres, blurry, bad anatomy, text, watermark, signature, oversaturated, amateur, noisy, jpeg artifacts, fog, smog"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【3】负向词 (防畸变与防低模)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "width": 896,
+      "height": 512,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "【4】画幅 (896x512 黄金16:9原生宽画幅)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ],
+      "seed": 11223344,
+      "steps": 26,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高精采样 [MODE:QUALITY]】26步 DPM++ 2M Karras"
+    }
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "upscale_method": "bicubic",
+      "scale_by": 1.35
+    },
+    "class_type": "LatentUpscaleBy",
+    "_meta": {
+      "title": "【潜空间 1.35x 放大】(至 1210x691)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ],
+      "seed": 11223344,
+      "steps": 14,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.44
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高分微雕 [MODE:QUALITY_REFINE]】14步 DPM++ (Denoise 0.44)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【高精解码】VAEDecode"
+    }
+  },
+  "9": {
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ],
+      "filename_prefix": "Widescreen_Wallpaper_Pro"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【成片输出 [OUTPUT:QUALITY]】"
+    }
+  },
+  "11": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "lora_name": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【旁路·极速引擎】Hyper-SD 蒸馏加载器"
+    }
+  },
+  "12": {
+    "inputs": {
+      "model": [
+        "11",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ],
+      "seed": 11223344,
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler_name": "euler",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【快速预览 [MODE:PREVIEW]】8步极速采样"
+    }
+  },
+  "13": {
+    "inputs": {
+      "samples": [
+        "12",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【预览解码】VAEDecode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "images": [
+        "13",
+        0
+      ],
+      "filename_prefix": "Preview_Widescreen_Wallpaper"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【预览输出 [OUTPUT:PREVIEW]】"
+    }
+  }
+}

@@ -1,0 +1,229 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "Realistic_Vision_V5.1.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "【1】真实系旗舰底模 (RealisticVision V5.1)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "raw candid photo, amateur POV shot, flash photography, foreground close-up of (a hand holding an illuminated smartphone screen:1.35), smartphone screen clearly displaying a candid intimate sensual photo of a woman, glass reflection and glare on phone screen, (background showing a gorgeous bride:1.3) smiling softly in a dimly lit bridal dressing room, sitting on dark leather couch in luxurious white lace wedding dress, groom in suit beside her, warm dramatic chiaroscuro ambient lighting, soft atmospheric dust, natural skin subsurface scattering, authentic amateur snapshot texture, realistic depth of field, 8k resolution"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【2】正向词 (POV画中画·手机反光与婚纱光影)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "lowres, bad anatomy, bad hands, bad feet, missing fingers, extra digits, extra limbs, fused fingers, deformed, disfigured, malformed limbs, blurry, bad eyes, poorly drawn face, mutated, cloned, watermark, text, signature, low quality, normal quality, jpeg artifacts, plastic skin, overly smooth, doll, fake, airbrushed, cartoon, anime, 3d render, cgi, flat lighting"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【3】负向屏蔽词 (防残缺手部/防塑料假面/防伪影)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "width": 512,
+      "height": 768,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "【4】初始画幅 (512x768 黄金手机竖屏)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ],
+      "seed": 5201314,
+      "steps": 26,
+      "cfg": 6.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高精采样 [MODE:QUALITY]】26步 DPM++ 2M Karras"
+    }
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "upscale_method": "bicubic",
+      "scale_by": 1.35
+    },
+    "class_type": "LatentUpscaleBy",
+    "_meta": {
+      "title": "【潜空间 1.35x 放大】(至 691x1036)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ],
+      "seed": 5201314,
+      "steps": 14,
+      "cfg": 6.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.44
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高分微雕 [MODE:QUALITY_REFINE]】14步 DPM++ (Denoise 0.44)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【高精解码】VAEDecode"
+    }
+  },
+  "9": {
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ],
+      "filename_prefix": "POV_Candid_Cinema_Pro"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【成片输出 [OUTPUT:QUALITY]】"
+    }
+  },
+  "11": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "lora_name": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【旁路·极速引擎】Hyper-SD 蒸馏加载器"
+    }
+  },
+  "12": {
+    "inputs": {
+      "model": [
+        "11",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ],
+      "seed": 5201314,
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler_name": "euler",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【快速预览 [MODE:PREVIEW]】8步极速采样"
+    }
+  },
+  "13": {
+    "inputs": {
+      "samples": [
+        "12",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【预览解码】VAEDecode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "images": [
+        "13",
+        0
+      ],
+      "filename_prefix": "Preview_POV_Candid"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【预览输出 [OUTPUT:PREVIEW]】"
+    }
+  }
+}

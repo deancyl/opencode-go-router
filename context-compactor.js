@@ -803,6 +803,23 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
   }
 }
 
+function safeSlice(str, start, end) {
+  if (typeof str !== 'string') return str;
+  const s = str.slice(start, end);
+  if (s.length > 0) {
+    const lastCode = s.charCodeAt(s.length - 1);
+    if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+      return s.slice(0, -1);
+    }
+  }
+  if (s.length > 0) {
+    const firstCode = s.charCodeAt(0);
+    if (firstCode >= 0xDC00 && firstCode <= 0xDFFF) {
+      return s.slice(1);
+    }
+  }
+  return s;
+}
 /**
  * Dynamic bilingual token estimation model.
  * - Chinese / CJK characters: ~1.25 chars / Token
@@ -3266,7 +3283,7 @@ function cleanSearchAndTreeOutput(text) {
         if (isMinifiedOrAsset) {
           modified = true;
           const omitted = line.length - 220;
-          return line.slice(0, 220) + ` ... [RTK Search: Minified/long line tail omitted (${omitted} chars)]`;
+          return safeSlice(line, 0, 220) + ` ... [RTK Search: Minified/long line tail omitted (${omitted} chars)]`;
         }
       }
       return line;
@@ -4076,7 +4093,7 @@ function isMultiLineSourceFileRead(text) {
   if (/^\s*\d+\s*[:|\t]\s*(?:\/\*|\/\/|#|import\b|export\b|const\b|let\b|var\b|function\b|class\b|package\b|def\b|pub\b|fn\b|using\b|#include\b|\[CmdletBinding|param\s*\(|\$[a-zA-Z_]\w*\s*=|return\b|if\b|for\b)/m.test(trimmed)) {
     return true;
   }
-  const sample = bodyText.length > 16000 ? bodyText.slice(0, 16000) : bodyText;
+  const sample = bodyText.length > 16000 ? safeSlice(bodyText, 0, 16000) : bodyText;
   const lines = sample.split(/\r?\n/);
   if (lines.length < 3) return false;
   let codeLines = 0;
@@ -4143,7 +4160,7 @@ function compactSystemPrompt(text, opts = {}, sessionId = null, hasMultiAgentOve
       out = out.replace(/^(-\s+[a-zA-Z0-9_:-]+:\s+)([^\r\n]+?)(\s*\(file:\s*[^)]+\))\s*$/gm, (full, prefix, desc, filePart) => {
         if (desc.length <= 120) return full;
         const firstSentence = desc.split(/\.\s+|\s+—\s+|;\s+/)[0].trim();
-        const shortDesc = firstSentence.length >= 35 && firstSentence.length <= 120 ? firstSentence : desc.slice(0, 120).trim();
+        const shortDesc = firstSentence.length >= 35 && firstSentence.length <= 120 ? firstSentence : safeSlice(desc, 0, 120).trim();
         return `${prefix}${shortDesc}${filePart}`;
       });
     }
@@ -5381,5 +5398,6 @@ module.exports = {
   isSourceDiffOrPatch,
   isCompilerDiagnosticOrStackTrace,
   isProtectedSourceOrDiagnostic,
-  normalizeMemoSessionId
+  normalizeMemoSessionId,
+  safeSlice
 };
