@@ -60,6 +60,7 @@ function Get-IssueRootCause {
         "omo_v2_wrapper_missing" { return "Oh My OpenAgent 缺少 OpenCode v2 上下文目录安全兼容包装" }
         "openchamber_ghost_process" { return "后台存在无窗口僵死 Electron 进程霸占 SingleInstanceLock 互斥锁" }
         "router_browser_ghost_process" { return "后台存在无窗口僵死浏览器进程霸占 AppProfile 单实例互斥锁" }
+        "appprofile_lockfile_deadlock" { return "Chromium 孤立无窗口僵死进程死锁 AppProfile\\lockfile SingleInstanceLock" }
         "stale_opencode_process" { return "OpenChamber 托管的 opencode serve 进程未载入最新配置" }
         "orphan_opencode_process" { return "孤立的 opencode serve 进程残留占用端口" }
         "orphan_shell_processes" { return "孤立测试外壳与记事本后台僵死进程占用系统物理内存" }
@@ -510,10 +511,10 @@ if ($chamberProcs) {
             Write-Host "  ❌ 发现智能网关桌面前端后台无界面僵死进程 ($($routerBrowserGhostProcs.Count) 个实例)" -ForegroundColor Red
             Write-Host "     (正死锁 Chromium AppProfile 单实例互斥锁，导致桌面双击图标无法打开或无反应)" -ForegroundColor Yellow
             $issuesFound.Add([PSCustomObject]@{
-                Id = "router_browser_ghost_process"
-                Title = "智能网关桌面前端后台无窗口僵死进程死锁单实例锁（导致桌面打不开）"
+                Id = "appprofile_lockfile_deadlock"
+                Title = "Chromium 孤立无窗口僵死进程死锁 AppProfile\\lockfile SingleInstanceLock"
                 Severity = "High"
-                FixDesc = "彻底清理后台残留浏览器僵死进程并释放 AppProfile 锁，恢复桌面秒开"
+                FixDesc = "自动终止 MainWindowHandle == 0 的残留浏览器进程并清理 AppProfile\\lockfile，恢复桌面快捷方式秒开"
             })
         }
     }
@@ -1183,7 +1184,7 @@ foreach ($iss in $issuesFound) {
                 SnapshotPoint = $globalSnapshotId
             })
         }
-        "router_browser_ghost_process" {
+        { $_ -in "router_browser_ghost_process", "appprofile_lockfile_deadlock" } {
             Write-Host " -> 正在终止后台无窗口僵死浏览器进程并释放 AppProfile 单实例锁..." -ForegroundColor Yellow
             try {
                 $browserProcs = Get-Process -Name "chrome", "msedge" -ErrorAction SilentlyContinue
@@ -1197,7 +1198,9 @@ foreach ($iss in $issuesFound) {
                 }
                 $appProfileDir = Join-Path $env:LOCALAPPDATA "OpenCodeRouter\AppProfile"
                 $lf = Join-Path $appProfileDir "lockfile"
+                $singletonLock = Join-Path $appProfileDir "SingletonLock"
                 if (Test-Path $lf) { Remove-Item $lf -Force -ErrorAction SilentlyContinue }
+                if (Test-Path $singletonLock) { Remove-Item $singletonLock -Force -ErrorAction SilentlyContinue }
                 Write-Host "    ✔ 后台僵死浏览器进程已清理，AppProfile 锁已释放" -ForegroundColor Green
             } catch {
                 Write-Host "    ⚠ 清理失败: $_" -ForegroundColor Red

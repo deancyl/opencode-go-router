@@ -2540,7 +2540,23 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     };
     upstreamRes.on('data', onSniffData);
 
-    upstreamRes.pipe(clientRes);
+    const isNativeResponsesStream = isResponsesReq && (parsedBody ? parsedBody.stream === true : Boolean(clientReq.headers && clientReq.headers.accept && clientReq.headers.accept.includes('text/event-stream')));
+    let nativeResponsesHasOutput = false;
+    let nativeResponsesHasCompleted = false;
+    if (isNativeResponsesStream) {
+      upstreamRes.on('data', (chunk) => {
+        const s = chunk.toString('utf8');
+        if (s.includes('response.output_item.') || s.includes('response.output_text.')) {
+          nativeResponsesHasOutput = true;
+        }
+        if (s.includes('response.completed') || s.includes('response.failed') || s.includes('response.incomplete')) {
+          nativeResponsesHasCompleted = true;
+        }
+      });
+      upstreamRes.pipe(clientRes, { end: false });
+    } else {
+      upstreamRes.pipe(clientRes);
+    }
 
     const onClientPipeError = () => {
       try {
@@ -2619,6 +2635,20 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       clientRes.removeListener('close', clientCloseHandler);
       if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
       finishRequest();
+      if (isNativeResponsesStream && !clientRes.writableEnded && !clientRes.destroyed) {
+        if (!nativeResponsesHasOutput && !nativeResponsesHasCompleted && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          const reqModel = parsedBody?.model || 'deepseek-v4.1-flash';
+          codexAdapter.dispatchResponsesStreamError(
+            clientRes,
+            reqModel,
+            parsedBody?.id,
+            new Error('Upstream native Responses stream ended prematurely with 0 output items'),
+            sessionId
+          );
+        } else {
+          try { clientRes.end(); } catch (_) {}
+        }
+      }
     });
   });
 
@@ -5035,6 +5065,43 @@ if (Test-Path $appProfileDir) {
   return results;
 }
 
+function isLoopbackRequest(req) {
+  const remoteIp = (req && req.socket && req.socket.remoteAddress) || '';
+  return remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1' || remoteIp === 'localhost';
+}
+
+function isTrustedManagementOrigin(origin) {
+  if (!origin) return true; // Direct non-browser calls (curl, scripts, local test suites)
+  const trimmed = String(origin).trim().toLowerCase();
+  if (trimmed === 'null') return true; // file:// or local sandboxed context
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname;
+    // Allow local loopback IPs and hostnames
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]') {
+      return true;
+    }
+    // Allow the configured router host if set
+    if (config.host && host === config.host.toLowerCase()) {
+      return true;
+    }
+    // Allow local desktop app protocols
+    if (parsed.protocol === 'vscode-webview:' || parsed.protocol === 'app:' || parsed.protocol === 'file:' || parsed.protocol === 'tauri:') {
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+function getManagementCorsOrigin(req) {
+  const reqOrigin = req && req.headers && req.headers['origin'];
+  if (!reqOrigin) return null;
+  if (isTrustedManagementOrigin(reqOrigin)) {
+    return reqOrigin;
+  }
+  return null;
+}
+
 function isAuthorized(req) {
   if (!config.uiPassword || !config.uiPassword.trim()) return true;
   const expected = config.uiPassword.trim();
@@ -5050,8 +5117,7 @@ function isAuthorized(req) {
   }
 
   // Determine if caller is strictly from local loopback (same-machine IPC)
-  const remoteIp = (req && req.socket && req.socket.remoteAddress) || '';
-  const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1' || remoteIp === 'localhost';
+  const isLoopback = isLoopbackRequest(req);
 
   // Helper to validate loopback-only internal token (e.g., 'local-router' used by OpenCode)
   // Remote/LAN callers cannot use 'local-router' to bypass uiPassword (Rule 28)
@@ -5276,6 +5342,108 @@ function renderLoginPage() {
       }
     });
   </script>
+</body>
+</html>`;
+}
+
+function renderLanForbiddenPage() {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>安全拦截 | OpenCode 智能路由网关</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+  <style>
+    :root {
+      --bg: #09090b;
+      --card-bg: #121215;
+      --border: #27272a;
+      --primary: #f59e0b;
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      max-width: 520px;
+      width: 100%;
+      padding: 2.5rem 2rem;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    .icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      line-height: 1;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin: 0 0 0.75rem;
+      color: #fbbf24;
+    }
+    p {
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin: 0 0 1.25rem;
+    }
+    .notice-box {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 8px;
+      padding: 1rem;
+      font-size: 0.88rem;
+      color: #fde68a;
+      text-align: left;
+      margin-bottom: 1.5rem;
+      line-height: 1.6;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.65rem 1.25rem;
+      background: #27272a;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    .btn:hover {
+      background: #3f3f46;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🛡️</div>
+    <h1>安全隔离拦截 (403 Forbidden)</h1>
+    <p>网关当前尚未配置管理员访问密码 (<code>uiPassword</code>)。</p>
+    <div class="notice-box">
+      <strong>🔒 安全隔离防护机制 (Air-Gapped Safety)：</strong><br>
+      为了保护您的账号凭据与本地系统安全，未设置密码时网关控制台已默认锁定为<strong>仅允许本机回路 (127.0.0.1)</strong> 访问。<br><br>
+      <strong>如何开启局域网/远程访问：</strong><br>
+      请直接在运行网关的宿主机浏览器中打开 <code>http://127.0.0.1:4010/balancer/ui</code>，在系统设置中配置 <code>uiPassword</code> 并保存，即可通过密码安全登录。
+    </div>
+    <a href="javascript:location.reload()" class="btn">🔄 刷新重试</a>
+  </div>
 </body>
 </html>`;
 }
@@ -12271,11 +12439,21 @@ const server = http.createServer((req, res) => {
 
   // Global CORS preflight (OPTIONS)
   if (req.method === 'OPTIONS') {
+    const isMgmt = reqUrl.pathname.startsWith('/balancer/api/');
+    const reqOrigin = req.headers['origin'];
+    if (isMgmt && reqOrigin && !isTrustedManagementOrigin(reqOrigin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: false, error: 'Forbidden: Untrusted Origin' }));
+      return;
+    }
+    const allowOrigin = (isMgmt && reqOrigin) ? reqOrigin : '*';
+    const varyHeader = (isMgmt && reqOrigin) ? { 'Vary': 'Origin' } : {};
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': allowOrigin,
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': '*',
-      'Access-Control-Max-Age': '86400'
+      'Access-Control-Max-Age': '86400',
+      ...varyHeader
     });
     res.end();
     return;
@@ -12446,20 +12624,47 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Auth gatekeeper for all /balancer/api/* endpoints
+  // Security Boundary & Auth Gatekeeper for all /balancer/api/* endpoints
   if (reqUrl.pathname.startsWith('/balancer/api/')) {
-    if (config.uiPassword && !isAuthorized(req)) {
-      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
+    // 1. Origin header CSRF & Cross-Site Data Leak Defense
+    const reqOrigin = req.headers['origin'];
+    if (reqOrigin && !isTrustedManagementOrigin(reqOrigin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: false, error: '安全拦截：禁止未受信任的跨域来源访问管理接口 (Cross-Origin Access Denied)' }));
       return;
+    }
+
+    // 2. Auth & Air-Gapped LAN Gatekeeper (Rule 28 & Air-Gapped Safety)
+    if (config.uiPassword && config.uiPassword.trim()) {
+      if (!isAuthorized(req)) {
+        const corsOrigin = getManagementCorsOrigin(req);
+        res.writeHead(401, {
+          'Content-Type': 'application/json; charset=utf-8',
+          ...(corsOrigin ? { 'Access-Control-Allow-Origin': corsOrigin, 'Vary': 'Origin' } : {})
+        });
+        res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
+        return;
+      }
+    } else {
+      // When uiPassword is not configured, strictly restrict control plane to local loopback (127.0.0.1)
+      if (!isLoopbackRequest(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          success: false,
+          error: '安全拦截：网关未设置 uiPassword 时，管理控制接口仅限本机 (127.0.0.1) 访问。如需局域网管理，请先在本机配置 uiPassword。'
+        }));
+        return;
+      }
     }
   }
 
   // Get full config API (for UI)
   if (reqUrl.pathname === '/balancer/api/config' && req.method === 'GET') {
+    const corsOrigin = getManagementCorsOrigin(req);
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
+      'Access-Control-Allow-Origin': corsOrigin || '*',
+      ...(corsOrigin ? { 'Vary': 'Origin' } : {})
     });
     res.end(JSON.stringify({
       port: config.port,
@@ -12492,18 +12697,46 @@ const server = http.createServer((req, res) => {
             throw new Error('至少需要保留一个账号配置');
           }
 
-          // Clean & validate accounts
-          newAccounts = payload.accounts.map((acc, index) => ({
-            id: acc.id || `account-${Date.now()}-${index}`,
-            name: (acc.name || `账号 ${index + 1}`).trim(),
-            apiKey: (acc.apiKey || '').trim(),
-            enabled: Boolean(acc.enabled)
-          }));
+          // Clean & validate accounts (Rule 28 & SSRF protocol hardening)
+          newAccounts = payload.accounts.map((acc, index) => {
+            let accUpstream = acc.upstream;
+            if (accUpstream && typeof accUpstream === 'string' && accUpstream.trim()) {
+              const u = new URL(accUpstream.trim());
+              if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+                throw new Error(`账号 [${acc.name || index + 1}] 自定义 upstream 仅支持 http:// 或 https://`);
+              }
+            }
+            return {
+              id: acc.id || `account-${Date.now()}-${index}`,
+              name: (acc.name || `账号 ${index + 1}`).trim(),
+              apiKey: (acc.apiKey || '').trim(),
+              enabled: Boolean(acc.enabled),
+              ...(accUpstream ? { upstream: accUpstream.trim() } : {})
+            };
+          });
+        }
+
+        let newUpstream = config.upstream;
+        if (payload.upstream !== undefined) {
+          const upStr = String(payload.upstream).trim();
+          if (!upStr) throw new Error('Upstream 地址不能为空');
+          try {
+            const parsedUp = new URL(upStr);
+            if (parsedUp.protocol !== 'http:' && parsedUp.protocol !== 'https:') {
+              throw new Error('Upstream 端点协议仅支持 http:// 或 https://');
+            }
+            if (!parsedUp.hostname) {
+              throw new Error('Upstream 端点主机名不能为空');
+            }
+            newUpstream = upStr;
+          } catch (e) {
+            throw new Error(`非法的 Upstream 地址: ${e.message}`);
+          }
         }
 
         const newConfig = {
           ...config,
-          upstream: (payload.upstream !== undefined ? String(payload.upstream).trim() : config.upstream),
+          upstream: newUpstream,
           defaultCooldownMs: payload.defaultCooldownMs !== undefined ? (Number(payload.defaultCooldownMs) || config.defaultCooldownMs) : config.defaultCooldownMs,
           maxFailoverRetries: payload.maxFailoverRetries !== undefined ? (Number(payload.maxFailoverRetries) || config.maxFailoverRetries) : config.maxFailoverRetries,
           sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
@@ -12661,12 +12894,30 @@ const server = http.createServer((req, res) => {
 
         if (payload.comfyui && typeof payload.comfyui === 'object') {
           const prevComfy = config.comfyui || DEFAULT_CONFIG.comfyui || {};
+          let validatedHost = prevComfy.host || 'http://127.0.0.1:8284';
+          if (payload.comfyui.host !== undefined) {
+            const hStr = String(payload.comfyui.host).trim();
+            if (hStr) {
+              const u = new URL(hStr);
+              if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('ComfyUI host 仅支持 http:// 或 https://');
+            }
+            validatedHost = hStr;
+          }
+          let validatedRepoUrl = prevComfy.repoUrl || 'https://github.com/deancyl/comfyui-agent-workflows';
+          if (payload.comfyui.repoUrl !== undefined) {
+            const rStr = String(payload.comfyui.repoUrl).trim();
+            if (rStr) {
+              const u = new URL(rStr);
+              if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('ComfyUI repoUrl 仅支持 http:// 或 https://');
+            }
+            validatedRepoUrl = rStr;
+          }
           newConfig.comfyui = {
             enabled: payload.comfyui.enabled !== false,
-            host: (payload.comfyui.host !== undefined ? String(payload.comfyui.host).trim() : (prevComfy.host || 'http://127.0.0.1:8284')),
+            host: validatedHost,
             workflowsDir: (payload.comfyui.workflowsDir !== undefined ? String(payload.comfyui.workflowsDir).trim() : (prevComfy.workflowsDir || '')),
             localDir: (payload.comfyui.localDir !== undefined ? String(payload.comfyui.localDir).trim() : (prevComfy.localDir || '')),
-            repoUrl: (payload.comfyui.repoUrl !== undefined ? String(payload.comfyui.repoUrl).trim() : (prevComfy.repoUrl || 'https://github.com/deancyl/comfyui-agent-workflows')),
+            repoUrl: validatedRepoUrl,
             timeoutSec: (Number(payload.comfyui.timeoutSec) && Number(payload.comfyui.timeoutSec) > 0) ? Number(payload.comfyui.timeoutSec) : (prevComfy.timeoutSec || 180)
           };
           if (typeof comfyuiAdapter !== 'undefined' && comfyuiAdapter) {
@@ -12993,8 +13244,12 @@ $ghost
             execSync(`powershell -NoProfile -NonInteractive -Command "${psGhostCheck.replace(/\\r?\\n/g, ' ')}"`, { timeout: 2000, stdio: 'ignore' });
           } catch (e) {}
 
-          // Use explorer.exe to launch cleanly decoupled
-          exec(`explorer.exe "${foundExe}"`);
+          // Use explorer.exe to launch cleanly decoupled (Rule 14 & Rule 28)
+          const child = spawn('explorer.exe', [foundExe], {
+            detached: true,
+            stdio: 'ignore'
+          });
+          child.unref();
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
           res.end(JSON.stringify({ success: true, mode: 'desktop', path: foundExe, message: '已安全唤起 OpenChamber 原生桌面客户端' }));
           return;
@@ -13817,10 +14072,19 @@ $ghost
 
   // Web UI Dashboard & Graphical Config Center
   if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {
-    if (config.uiPassword && !isAuthorized(req)) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(renderLoginPage());
-      return;
+    if (config.uiPassword && config.uiPassword.trim()) {
+      if (!isAuthorized(req)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(renderLoginPage());
+        return;
+      }
+    } else {
+      // Security Boundary: Restrict unauthenticated dashboard to local loopback (127.0.0.1)
+      if (!isLoopbackRequest(req)) {
+        res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(renderLanForbiddenPage());
+        return;
+      }
     }
     const u10579 = new URL(req.url || '/', 'http://localhost');
     const parsed = { pathname: u10579.pathname, query: Object.fromEntries(u10579.searchParams.entries()), searchParams: u10579.searchParams };
@@ -14085,6 +14349,10 @@ module.exports = {
   getEffectiveProxyForRequest,
   clearProxyAgentCache,
   isAuthorized,
+  isLoopbackRequest,
+  isTrustedManagementOrigin,
+  getManagementCorsOrigin,
+  renderLanForbiddenPage,
   writeFileSyncAtomic,
   CIRCUIT_STATE,
   DEFAULT_CIRCUIT_CONFIG,

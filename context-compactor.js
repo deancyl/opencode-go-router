@@ -1103,6 +1103,30 @@ function computeDerivedStats(stats) {
 
   // Compute byModel telemetry and dynamic weighted savedCostUSD
   stats.byModel = stats.byModel || {};
+  // Coalesce any un-normalized alias keys (e.g. deepseek-flash -> deepseek-v4.1-flash) before computing derived totals
+  for (const [rawKey, rawVal] of Object.entries(stats.byModel)) {
+    if (!rawVal || typeof rawVal !== 'object') continue;
+    const canonicalKey = normalizeModelName(rawKey) || rawKey;
+    if (canonicalKey !== rawKey) {
+      const target = stats.byModel[canonicalKey] || {
+        savedChars: 0,
+        savedTokens: 0,
+        savedCostUSD: 0,
+        originalChars: 0,
+        consumedTokens: 0,
+        consumedCostUSD: 0,
+        ratePer1M: getModelRate(canonicalKey)
+      };
+      target.savedChars = (Number(target.savedChars) || 0) + (Number(rawVal.savedChars) || 0);
+      target.savedTokens = (Number(target.savedTokens) || 0) + (Number(rawVal.savedTokens) || 0);
+      target.savedCostUSD = Number(((Number(target.savedCostUSD) || 0) + (Number(rawVal.savedCostUSD) || 0)).toFixed(7));
+      target.originalChars = (Number(target.originalChars) || 0) + (Number(rawVal.originalChars) || 0);
+      target.consumedTokens = (Number(target.consumedTokens) || 0) + (Number(rawVal.consumedTokens) || 0);
+      target.consumedCostUSD = Number(((Number(target.consumedCostUSD) || 0) + (Number(rawVal.consumedCostUSD) || 0)).toFixed(7));
+      stats.byModel[canonicalKey] = target;
+      delete stats.byModel[rawKey];
+    }
+  }
   pruneByModelEntriesIfNeeded();
   let modelTokensSum = 0;
   let modelCostSum = 0;
@@ -1342,13 +1366,18 @@ function loadStatsFromDisk() {
         for (const [m, data] of Object.entries(sourceStats.byModel)) {
           if (data && typeof data === 'object') {
             const cleanM = normalizeModelName(m) || m;
-            loadedByModel[cleanM] = {
-              savedChars: Number(data.savedChars) || 0,
-              savedTokens: Number(data.savedTokens) || 0,
-              savedCostUSD: Number(data.savedCostUSD) || 0,
-              originalChars: Number(data.originalChars) || 0,
+            const existing = loadedByModel[cleanM] || {
+              savedChars: 0,
+              savedTokens: 0,
+              savedCostUSD: 0,
+              originalChars: 0,
               ratePer1M: typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(cleanM)
             };
+            existing.savedChars += Number(data.savedChars) || 0;
+            existing.savedTokens += Number(data.savedTokens) || 0;
+            existing.savedCostUSD = Number((existing.savedCostUSD + (Number(data.savedCostUSD) || 0)).toFixed(7));
+            existing.originalChars += Number(data.originalChars) || 0;
+            loadedByModel[cleanM] = existing;
           }
         }
       }
@@ -1418,6 +1447,26 @@ function loadStatsFromDisk() {
         if (Array.isArray(bucketList)) {
           for (const b of bucketList) {
             if (b && typeof b === 'object') {
+              if (b.byModel && typeof b.byModel === 'object') {
+                const coalescedBucketModels = {};
+                for (const [rawKey, mData] of Object.entries(b.byModel)) {
+                  if (!mData || typeof mData !== 'object') continue;
+                  const cleanM = normalizeModelName(rawKey) || rawKey;
+                  const cur = coalescedBucketModels[cleanM] || {
+                    savedChars: 0,
+                    savedTokens: 0,
+                    savedCostUSD: 0,
+                    originalChars: 0,
+                    ratePer1M: getModelRate(cleanM)
+                  };
+                  cur.savedChars += Number(mData.savedChars) || 0;
+                  cur.savedTokens += Number(mData.savedTokens) || 0;
+                  cur.savedCostUSD = Number((cur.savedCostUSD + (Number(mData.savedCostUSD) || 0)).toFixed(7));
+                  cur.originalChars += Number(mData.originalChars) || 0;
+                  coalescedBucketModels[cleanM] = cur;
+                }
+                b.byModel = coalescedBucketModels;
+              }
               const origChars = Number(b.totalOriginalChars) || 0;
               const savedChars = Number(b.totalSavedChars) || 0;
               const modTokSum = Object.values(b.modules || {}).reduce((s, m) => s + (Number(m.savedTokens) || 0), 0);
@@ -5326,6 +5375,7 @@ module.exports = {
   COMPRESSION_PRESETS,
   normalizeCompressionOptions,
   getCompressionStats,
+  computeDerivedStats,
   resetCompressionStats,
   getStatsByRange,
   buildTimeSeries,

@@ -1207,7 +1207,8 @@ class ComfyUIAdapter {
           if (!fs.existsSync(targetDir)) {
             fs.mkdirSync(targetDir, { recursive: true });
           }
-          child_process.execSync(`git clone "${repoUrl}" "${targetDir}"`, { encoding: 'utf8', timeout: 60000 });
+          const cloneRes = child_process.spawnSync('git', ['clone', repoUrl, targetDir], { encoding: 'utf8', timeout: 60000, windowsHide: true });
+          if (cloneRes.status !== 0) throw new Error(cloneRes.stderr || cloneRes.error?.message || 'Git clone failed');
           log('[Git Clone 成功] 远端工作流库克隆完毕！');
           syncSuccess = true;
         } catch (cloneErr) {
@@ -1231,9 +1232,9 @@ class ComfyUIAdapter {
         const isWin = process.platform === 'win32';
         const extractTarget = `${targetDir}_extract`;
         if (isWin) {
-          child_process.execSync(`powershell.exe -NoProfile -Command "Expand-Archive -Path '${tempZip}' -DestinationPath '${extractTarget}' -Force"`, { timeout: 30000 });
+          child_process.spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', 'Expand-Archive', '-Path', tempZip, '-DestinationPath', extractTarget, '-Force'], { timeout: 30000, windowsHide: true });
         } else {
-          child_process.execSync(`unzip -o "${tempZip}" -d "${extractTarget}"`, { timeout: 30000 });
+          child_process.spawnSync('unzip', ['-o', tempZip, '-d', extractTarget], { timeout: 30000 });
         }
         const extractedRoot = path.join(extractTarget, 'comfyui-agent-workflows-main');
         if (fs.existsSync(extractedRoot)) {
@@ -1340,14 +1341,14 @@ class ComfyUIAdapter {
     const lnPatch = path.join(workflowsDir, 'patches', 'apply_zluda_ln_patch.py');
     if (fs.existsSync(lnPatch)) {
       try {
-        child_process.execSync(`"${pyExe}" "${lnPatch}" "${targetComfyDir}"`, { timeout: 10000, stdio: 'ignore' });
+        child_process.spawnSync(pyExe, [lnPatch, targetComfyDir], { timeout: 10000, stdio: 'ignore', windowsHide: true });
         log(`[Deploy 4/4] ZLUDA LayerNorm 硬件防崩溃补丁已生效`);
       } catch (_) {}
     }
     const utilsPatch = path.join(workflowsDir, 'patches', 'patch_utils.py');
     if (fs.existsSync(utilsPatch)) {
       try {
-        child_process.execSync(`"${pyExe}" "${utilsPatch}" "${targetComfyDir}"`, { timeout: 10000, stdio: 'ignore' });
+        child_process.spawnSync(pyExe, [utilsPatch, targetComfyDir], { timeout: 10000, stdio: 'ignore', windowsHide: true });
         log(`[Deploy 4/4] Safe Globals 序列化安全补丁已生效`);
       } catch (_) {}
     }

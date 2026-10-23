@@ -34,6 +34,8 @@ if (Test-Path -LiteralPath $appProfileDir) {
                     Stop-Process -Id $gp.ProcessId -Force -ErrorAction SilentlyContinue
                 }
                 Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue
+                $singletonLock = Join-Path $appProfileDir "SingletonLock"
+                if (Test-Path -LiteralPath $singletonLock) { Remove-Item -LiteralPath $singletonLock -Force -ErrorAction SilentlyContinue }
             }
         }
     }
@@ -54,7 +56,16 @@ $running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-O
     $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" -or $_.Name -eq "OpenCodeRouterTray.exe"
 }
 
-if (-not $running) {
+# 防 EADDRINUSE: 4010 端口探测：若 4010 网关未在线且无托盘进程，拉起守护进程
+$portOnline = $false
+try {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $ar = $tcp.BeginConnect("127.0.0.1", $port, $null, $null)
+    if ($ar.AsyncWaitHandle.WaitOne(200, $false) -and $tcp.Connected) { $portOnline = $true }
+    $tcp.Close()
+} catch {}
+
+if (-not $running -and -not $portOnline) {
     if (Test-Path -LiteralPath (Join-Path $rootDir "OpenCodeRouterTray.exe")) {
         Start-Process -FilePath (Join-Path $rootDir "OpenCodeRouterTray.exe") -WorkingDirectory $rootDir
     } elseif (Test-Path -LiteralPath $trayScript) {
@@ -71,7 +82,7 @@ if (-not $running) {
     $browserExe = $browserCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     $targetUrl = "http://127.0.0.1:$port/balancer/ui"
     if ($browserExe) {
-        Start-Process -FilePath $browserExe -ArgumentList "--app=$targetUrl"
+        Start-Process -FilePath $browserExe -ArgumentList "--app=`"$targetUrl`" --user-data-dir=`"$appProfileDir`" --disable-background-mode --no-first-run --no-default-browser-check"
     } else {
         Start-Process $targetUrl
     }

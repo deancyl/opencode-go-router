@@ -8891,8 +8891,207 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Doctor Diagnostic Engine, Staged Update & Rollback Atomicity (Test 163) passed');
 
+    // [Test 164] Top 5 Core High-Risk Issues Verification (Commit 5f52410 / v3.11.0)
+    console.log('\n[Test 164] Testing Top 5 Core High-Risk Issues (Commit 5f52410 / v3.11.0)...');
+
+    // 1. Issue 1: Master Switch compression.enabled: false & Source Code / Stack Trace Zero-Folding
+    const psOptMod = require('./powershell-optimizer');
+    assert.strictEqual(
+      psOptMod.isPowerShellOptimizerActive({ enabled: false, modules: { powershell: { enabled: true } } }),
+      false,
+      'PowerShell optimizer must respect global compression.enabled: false even if modules.powershell.enabled is true'
+    );
+    const bigToolPayload164 = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Inspect output' },
+        { type: 'function_call_output', call_id: 'call_disabled_164', output: 'X'.repeat(10000) }
+      ]
+    };
+    const disabledPruneResp = codexAdapter.pruneResponsesPayload(bigToolPayload164, 'sess_164_off', { enabled: false });
+    assert.strictEqual(disabledPruneResp.modified, false, 'pruneResponsesPayload must not modify payload when enabled === false');
+    assert.strictEqual(disabledPruneResp.input[1].output.length, 10000, 'Tool output must remain 100% intact when compression is disabled');
+
+    const disabledPruneChat = codexAdapter.pruneChatMessages(
+      [{ role: 'user', content: 'hi' }, { role: 'tool', tool_call_id: 'c1', content: 'Y'.repeat(10000) }],
+      4000,
+      'sess_164_off',
+      { enabled: false }
+    );
+    assert.strictEqual(disabledPruneChat.modified, false, 'pruneChatMessages must not modify messages when enabled === false');
+    assert.strictEqual(disabledPruneChat[1].content.length, 10000, 'Chat tool message must remain 100% intact when compression is disabled');
+
+    // Source code & stack trace protection in pruneResponsesPayload & pruneChatMessages
+    const longSourceCode164 = Array.from({ length: 120 }, (_, i) => `function handler_${i}(req, res) {\n  const val = req.headers["x-id-${i}"];\n  return res.json({ id: ${i}, val });\n}`).join('\n');
+    const longStackTrace164 = `TypeError: Cannot read properties of undefined (reading 'map')\n` +
+      Array.from({ length: 60 }, (_, i) => `    at Object.processItem (/app/src/services/worker_${i}.js:${i + 10}:15)`).join('\n');
+    assert.ok(longSourceCode164.length > 3500 && longStackTrace164.length > 3000);
+    const codePruneResp = codexAdapter.pruneResponsesPayload({
+      input: [
+        { type: 'message', role: 'user', content: 'Read file' },
+        { type: 'function_call_output', call_id: 'call_code_164', output: longSourceCode164 },
+        { type: 'function_call_output', call_id: 'call_stack_164', output: longStackTrace164 }
+      ]
+    }, 'sess_164_code');
+    assert.strictEqual(codePruneResp.input[1].output, longSourceCode164, 'Multi-line source code in tool output must never be folded by pruneResponsesPayload');
+    assert.strictEqual(codePruneResp.input[2].output, longStackTrace164, 'Compiler/runtime stack trace in tool output must never be folded by pruneResponsesPayload');
+
+    // 2. Issue 2: Chromium SingleInstanceLock & --disable-background-mode Verification
+    const appCsRaw = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeRouterApp.cs'), 'utf8');
+    assert.ok(appCsRaw.includes('--disable-background-mode'), 'OpenCodeRouterApp.cs must pass --disable-background-mode');
+    assert.ok(appCsRaw.includes('CleanupOrphanAppProfileProcesses') && appCsRaw.includes('lockfile'), 'OpenCodeRouterApp.cs must clean up orphan headless processes holding AppProfile\\lockfile');
+    const launcherPs1Raw = fs.readFileSync(path.join(__dirname, 'launcher.ps1'), 'utf8');
+    assert.ok(launcherPs1Raw.includes('--disable-background-mode') && launcherPs1Raw.includes('lockfile'), 'launcher.ps1 must pass --disable-background-mode and clean up AppProfile\\lockfile');
+    const doctorPs1Raw = fs.readFileSync(path.join(__dirname, 'doctor-repair.ps1'), 'utf8');
+    assert.ok(doctorPs1Raw.includes('appprofile_lockfile_deadlock'), 'doctor-repair.ps1 must detect and heal appprofile_lockfile_deadlock');
+
+    // 3. Issue 3: Model Alias Coalescing & xhigh 671B Flagship Lock
+    const mockSplitStats = {
+      totalOriginalChars: 20000,
+      totalSavedChars: 10000,
+      modules: { rtk: { savedChars: 10000 } },
+      byModel: {
+        'deepseek-flash': { savedChars: 4000, originalChars: 8000 },
+        'deepseek-v4.1-flash': { savedChars: 6000, originalChars: 12000 }
+      }
+    };
+    contextCompactor.computeDerivedStats(mockSplitStats);
+    assert.strictEqual(mockSplitStats.byModel['deepseek-flash'], undefined, 'Ghost alias deepseek-flash must be coalesced into canonical deepseek-v4.1-flash');
+    assert.strictEqual(mockSplitStats.byModel['deepseek-v4.1-flash'].savedChars, 10000, 'Coalesced canonical model must sum savedChars accurately');
+
+    const xhighResolved164 = codexAdapter.resolveCompatibleFallbackModel(
+      'gpt-6-luna',
+      'supported API model names are: qwen3.7-max, deepseek-v4-pro',
+      { reasoningEffort: 'xhigh' }
+    );
+    assert.strictEqual(xhighResolved164, 'deepseek-v4-pro', 'xhigh complex reasoning fallback must lock onto 671B flagship deepseek-v4-pro first');
+
+    // 4. Issue 4: Mid-Reasoning / Empty Stream Disconnection Self-Healing Closure
+    const midReasonChunks = [];
+    const mockMidClient = {
+      writableEnded: false,
+      writeHead: () => {},
+      write: (chunk) => midReasonChunks.push(chunk),
+      end: () => { mockMidClient.writableEnded = true; },
+      once: () => {},
+      removeListener: () => {}
+    };
+    const mockMidUp = new (require('events').EventEmitter)();
+    codexAdapter.bridgeAnthropicStream(mockMidUp, mockMidClient, 'claude-haiku-5-5', 'resp_mid_reason_164', () => {});
+    mockMidUp.emit('data', Buffer.from('data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n'));
+    mockMidUp.emit('data', Buffer.from('data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Thinking before sudden drop..."}}\n\n'));
+    mockMidUp.emit('end');
+    const midReasonJoined = midReasonChunks.join('');
+    assert.strictEqual(mockMidClient.writableEnded, true, 'Mid-reasoning disconnected stream must terminate cleanly');
+    assert.ok(midReasonJoined.includes('response.output_item.done') && midReasonJoined.includes('"role":"assistant"'), 'Mid-reasoning disconnect must inject assistant error message output_item.done');
+    assert.ok(midReasonJoined.includes('response.failed'), 'Mid-reasoning disconnect must emit response.failed instead of fake empty completion');
+
+    // 5. Issue 5: Atomic Tool Call Contiguity Across Interleaved User <image_resize_notice> & Split Function Calls
+    const interleavedUserNoticePayload = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Check two screenshots' },
+        { type: 'function_call', call_id: 'call_img_a', name: 'view_image', arguments: '{"path":"a.png"}' },
+        { type: 'message', role: 'user', content: '<image_resize_notice>Image A resized</image_resize_notice>' },
+        { type: 'function_call', call_id: 'call_img_b', name: 'view_image', arguments: '{"path":"b.png"}' },
+        { type: 'function_call_output', call_id: 'call_img_a', output: 'Image A ok' }
+        // call_img_b output missing -> must be auto-backfilled!
+      ]
+    };
+    const convertedChat164 = codexAdapter.convertResponsesToChatPayload(interleavedUserNoticePayload, { enabled: false }, 'sess_164_tool');
+    const msgs164 = convertedChat164.messages;
+    assert.strictEqual(msgs164[0].role, 'user');
+    assert.strictEqual(msgs164[1].role, 'assistant');
+    assert.strictEqual(msgs164[1].tool_calls.length, 2, 'Split function_call items across interleaved notice must coalesce into one atomic assistant.tool_calls');
+    assert.strictEqual(msgs164[2].role, 'tool');
+    assert.strictEqual(msgs164[2].tool_call_id, 'call_img_a');
+    assert.strictEqual(msgs164[3].role, 'tool');
+    assert.strictEqual(msgs164[3].tool_call_id, 'call_img_b');
+    assert.ok(msgs164[3].content.includes('completed without output'), 'Missing second tool call output must be auto-backfilled');
+    assert.strictEqual(msgs164[4].role, 'user');
+    assert.ok(msgs164[4].content.includes('<image_resize_notice>'), 'Interleaved user <image_resize_notice> must be deferred after all tool responses');
+    console.log('✓ Top 5 Core High-Risk Issues Verification (Test 164) passed');
+
+    // [Test 165] Full-Spectrum Security Boundaries & Attack Immunity Verification
+    console.log('\n[Test 165] Testing Full-Spectrum Security Boundaries & Attack Immunity...');
+
+    // 1. Loopback IPC Detection & LAN Isolation Unit Check
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '127.0.0.1' } }), true);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '::1' } }), true);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '::ffff:127.0.0.1' } }), true);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '192.168.1.100' } }), false);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '10.0.0.8' } }), false);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '172.16.0.2' } }), false);
+
+    // 2. Trusted Management Origin & CSRF Defense Unit Check
+    assert.strictEqual(serverMod.isTrustedManagementOrigin(undefined), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin(''), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://127.0.0.1:4010'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://localhost:3000'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('vscode-webview://12345'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('null'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('https://evil-attacker.com'), false);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://malicious-site.org'), false);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://attacker.com:4010'), false);
+
+    // 3. HTTP Management Plane CSRF & Data Leakage Defense
+    const evilOriginRes = await request('/balancer/api/config', {
+      headers: { 'Origin': 'https://evil-attacker.com' }
+    });
+    assert.strictEqual(evilOriginRes.statusCode, 403, 'Cross-origin request from untrusted origin must be rejected with 403 Forbidden');
+    const evilOriginJson = JSON.parse(evilOriginRes.body);
+    assert.strictEqual(evilOriginJson.success, false);
+
+    const evilOptionsRes = await request('/balancer/api/config', {
+      method: 'OPTIONS',
+      headers: { 'Origin': 'https://evil-attacker.com' }
+    });
+    assert.strictEqual(evilOptionsRes.statusCode, 403, 'OPTIONS preflight from untrusted origin must be rejected with 403 Forbidden');
+
+    const trustedOriginRes = await request('/balancer/api/config', {
+      headers: { 'Origin': 'http://127.0.0.1:3000' }
+    });
+    assert.strictEqual(trustedOriginRes.statusCode, 200, 'Request from trusted local origin must succeed');
+    assert.strictEqual(trustedOriginRes.headers['access-control-allow-origin'], 'http://127.0.0.1:3000');
+
+    // 4. SSRF Upstream Protocol Validation
+    const badProtoRes = await request('/balancer/api/config', {
+      method: 'POST',
+      body: JSON.stringify({ upstream: 'ftp://bad-upstream.com/v1' })
+    });
+    assert.strictEqual(badProtoRes.statusCode, 400, 'Non-HTTP(S) upstream protocol must be rejected');
+    const badProtoJson = JSON.parse(badProtoRes.body);
+    assert.ok(badProtoJson.error && badProtoJson.error.includes('http:// 或 https://'));
+
+    const badAccountProtoRes = await request('/balancer/api/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        accounts: [{ name: 'SSRF Attack', apiKey: 'sk-test', enabled: true, upstream: 'gopher://127.0.0.1:6379' }]
+      })
+    });
+    assert.strictEqual(badAccountProtoRes.statusCode, 400, 'Custom account non-HTTP(S) upstream must be rejected');
+
+    // 5. Parameterized Shell Subprocess Immunity Check
+    const serverJsRaw = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    assert.ok(!serverJsRaw.includes('exec(`explorer.exe'), 'server.js must not contain string-interpolated exec(explorer.exe)');
+    assert.ok(!serverJsRaw.includes('exec("explorer.exe'), 'server.js must not contain string-interpolated exec(explorer.exe)');
+
+    const comfyJsRaw = fs.readFileSync(path.join(__dirname, 'comfyui-adapter.js'), 'utf8');
+    assert.ok(!comfyJsRaw.includes('child_process.execSync(`git clone'), 'comfyui-adapter.js must use spawnSync array for git clone');
+    assert.ok(!comfyJsRaw.includes('child_process.execSync(`"${pyExe}"'), 'comfyui-adapter.js must use spawnSync array for Python patches');
+
+    const updaterJsRaw = fs.readFileSync(path.join(__dirname, 'updater.js'), 'utf8');
+    assert.ok(!updaterJsRaw.includes('Start-Sleep -Seconds 1; explorer.exe'), 'updater.js must not wrap explorer.exe in powershell -Command');
+
+    // 6. Air-Gapped Offline Office Preview Safety Check (Rule 5)
+    const officeEngineRaw = fs.readFileSync(path.join(__dirname, 'assets', 'office-preview-engine.js'), 'utf8');
+    assert.ok(!officeEngineRaw.includes('view.officeapps.live.com'), 'Office preview engine must not contain Microsoft OfficeApps cloud iframe');
+    assert.ok(!officeEngineRaw.includes('docs.google.com/viewer'), 'Office preview engine must not contain Google Docs cloud iframe');
+
+    console.log('✓ Full-Spectrum Security Boundaries & Attack Immunity (Test 165) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 163 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 165 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

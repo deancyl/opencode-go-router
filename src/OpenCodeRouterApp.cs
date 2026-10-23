@@ -525,6 +525,11 @@ namespace OpenCodeRouter
             }
         }
 
+        private static void CleanupOrphanAppProfileProcesses(string appProfile)
+        {
+            CleanGhostBrowserInstances(appProfile);
+        }
+
         private static void CleanGhostBrowserInstances(string appProfile)
         {
             try
@@ -532,6 +537,7 @@ namespace OpenCodeRouter
                 if (string.IsNullOrEmpty(appProfile) || !Directory.Exists(appProfile)) return;
 
                 string lockfile = Path.Combine(appProfile, "lockfile");
+                string singletonLock = Path.Combine(appProfile, "SingletonLock");
                 bool isLocked = false;
                 if (File.Exists(lockfile))
                 {
@@ -571,6 +577,11 @@ namespace OpenCodeRouter
                     try
                     {
                         if (File.Exists(lockfile)) File.Delete(lockfile);
+                    }
+                    catch { }
+                    try
+                    {
+                        if (File.Exists(singletonLock)) File.Delete(singletonLock);
                     }
                     catch { }
                 }

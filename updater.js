@@ -27,7 +27,7 @@ const path = require('node:path');
 const os = require('node:os');
 const https = require('node:https');
 const http = require('node:http');
-const { execSync, spawnSync } = require('node:child_process');
+const { execSync, spawnSync, spawn } = require('node:child_process');
 
 function writeFileSyncAtomic(targetFile, data, encoding = 'utf8') {
   const dir = path.dirname(targetFile);
@@ -2327,7 +2327,12 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
 
                 if (hadRunning) {
                   logs.push('正在安全重启全新的 OpenChamber 桌面端...');
-                  runCmd(`powershell -NoProfile -Command "Start-Sleep -Seconds 1; explorer.exe '${desktopExe}'"`, 5000);
+                  setTimeout(() => {
+                    try {
+                      const sub = spawn('explorer.exe', [desktopExe], { detached: true, stdio: 'ignore' });
+                      sub.unref();
+                    } catch (_) {}
+                  }, 1000);
                 }
               } else {
                 logs.push(`⚠ 未能下载到桌面安装包，已保留 Web 内核更新`);

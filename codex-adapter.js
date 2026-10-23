@@ -1209,8 +1209,10 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
         : rawCandidates.filter(c => getModelTier(c) <= allowableTier);
 
       if (candidates.length > 0) {
-        // 1.0 Flagship tier models (or upgrade allowed with high reasoning / Rule 19): match to pro/max/flagship candidate
+        // 1.0 Flagship tier models (or upgrade allowed with high reasoning / Rule 19): lock onto 671B flagship (deepseek-v4-pro) first, then pro/max/flagship candidate
         if (allowableTier === MODEL_TIERS.FLAGSHIP && (reqTier === MODEL_TIERS.FLAGSHIP || isHighReasoningTask || isHeterogeneousRule19)) {
+          const flagship671b = candidates.find(c => c.toLowerCase() === 'deepseek-v4-pro');
+          if (flagship671b) return flagship671b;
           const proHit = candidates.find(c => getModelTier(c) === MODEL_TIERS.FLAGSHIP);
           if (proHit) return proHit;
         }
@@ -1416,12 +1418,19 @@ function balanceCodeBlocks(head, tail) {
 
 function isCodeOrSensitiveContent(text) {
   if (typeof text !== 'string') return false;
-  if (text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>') || text.includes('|||||||')) return true;
-  if (text.includes('diff --git ') || text.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(text)) return true;
-  if (text.includes('Traceback (most recent call last):') || /^\s+at\s+[\w\$.<>]+\s+\(/m.test(text)) return true;
-  if (/\b(?:TypeError|ReferenceError|SyntaxError|RuntimeError|RangeError|AssertionError|CompileError|ParserError):\s/i.test(text)) return true;
-  if (text.includes('npm ERR!') || text.includes('yarn error') || text.includes('cargo build') || text.includes('error[E0')) return true;
-  if (text.includes('```') || /^(?:import\s+[\w\s{},*]+from|from\s+[\w.]+\s+import|const\s+[\w\s{},*]+=\s*require\(|def\s+\w+\s*\(|class\s+\w+|public\s+(?:class|void|string|int)|func\s+\w+\s*\(|function\s+\w+\s*\(|#include\s+<|<\?php)/m.test(text)) {
+  const sample = text.length > 4096 ? text.slice(0, 4096) : text;
+  if (sample.includes('<<<<<<<') || sample.includes('=======') || sample.includes('>>>>>>>') || sample.includes('|||||||')) return true;
+  if (sample.includes('diff --git ') || sample.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(sample)) return true;
+  if (sample.includes('Traceback (most recent call last):') || /^\s+at\s+[\w\$.<>]+\s+\(/m.test(sample)) return true;
+  if (/\b(?:TypeError|ReferenceError|SyntaxError|RuntimeError|RangeError|AssertionError|CompileError|ParserError):\s/i.test(sample)) return true;
+  if (sample.includes('npm ERR!') || sample.includes('yarn error') || sample.includes('cargo build') || sample.includes('error[E0')) return true;
+  if (sample.includes('```') || /(?:\bfunction\s|\bconst\s|\blet\s|\bclass\s|\bimport\s|\bexport\s|\bdef\s|#include|diff --git|^@@\s+-|\n\s+at\s+\S+|Traceback \(most recent)/m.test(sample)) {
+    try {
+      const contextCompactor = require('./context-compactor');
+      if (contextCompactor && typeof contextCompactor.isProtectedSourceOrDiagnostic === 'function') {
+        if (contextCompactor.isProtectedSourceOrDiagnostic(sample)) return true;
+      }
+    } catch (_) {}
     return true;
   }
   return false;
@@ -2065,12 +2074,28 @@ function sanitizeAndValidateChatMessages(messages) {
     const msg = messages[i];
 
     if (msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      result.push(msg);
+      const mergedAssistant = { ...msg, tool_calls: msg.tool_calls.slice() };
+      result.push(mergedAssistant);
 
-      const expectedIds = msg.tool_calls.map(tc => tc.id).filter(Boolean);
+      const expectedIds = mergedAssistant.tool_calls.map(tc => tc.id).filter(Boolean);
       const expectedIdSet = new Set(expectedIds);
       const foundToolMsgs = new Map(); // callId -> toolMsg
       const interleavedMsgs = [];      // non-tool messages or orphan tool messages
+
+      const hasPendingToolResponseAhead = (startIdx) => {
+        if (foundToolMsgs.size >= expectedIdSet.size) return false;
+        for (let k = startIdx; k < messages.length; k++) {
+          const futureMsg = messages[k];
+          if (!futureMsg) continue;
+          if (futureMsg.role === 'assistant' && (!Array.isArray(futureMsg.tool_calls) || futureMsg.tool_calls.length === 0)) {
+            return false;
+          }
+          if (futureMsg.role === 'tool' && futureMsg.tool_call_id && expectedIdSet.has(futureMsg.tool_call_id)) {
+            return true;
+          }
+        }
+        return false;
+      };
 
       let j = i + 1;
       // Scan forward to gather all responding tool messages for this assistant turn
@@ -2094,8 +2119,29 @@ function sanitizeAndValidateChatMessages(messages) {
             interleavedMsgs.push(nextMsg);
           }
           j++;
-        } else if (nextMsg.role === 'assistant' || nextMsg.role === 'user') {
-          break;
+        } else if (nextMsg.role === 'assistant') {
+          if (Array.isArray(nextMsg.tool_calls) && nextMsg.tool_calls.length > 0 && hasPendingToolResponseAhead(j + 1)) {
+            for (const tc of nextMsg.tool_calls) {
+              if (tc && tc.id && !expectedIdSet.has(tc.id)) {
+                mergedAssistant.tool_calls.push(tc);
+                expectedIds.push(tc.id);
+                expectedIdSet.add(tc.id);
+              }
+            }
+            if (nextMsg.content && !mergedAssistant.content) {
+              mergedAssistant.content = nextMsg.content;
+            }
+            j++;
+          } else {
+            break;
+          }
+        } else if (nextMsg.role === 'user') {
+          if (hasPendingToolResponseAhead(j + 1)) {
+            interleavedMsgs.push(nextMsg);
+            j++;
+          } else {
+            break;
+          }
         } else {
           interleavedMsgs.push(nextMsg);
           j++;
@@ -4878,8 +4924,8 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     closeReasoning();
     closeText();
 
-    if (fullText === '' && toolCallsMap.size === 0 && fullReasoning === '') {
-      if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
+    if (fullText === '' && toolCallsMap.size === 0) {
+      if (fullReasoning === '' && totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
         attemptReconnect(new Error('Empty stream before first token'), false);
         return;
       }
