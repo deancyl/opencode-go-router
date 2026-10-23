@@ -9103,8 +9103,34 @@ $ProgressPreference = 'SilentlyContinue'
 
     console.log('✓ Full-Spectrum Security Boundaries & Attack Immunity (Test 165) passed');
 
+    // [Test 166] Unified Tray Resilience, Non-Destructive Port Self-Healing & 413 Headers-Sent Immunity
+    console.log('\n[Test 166] Testing Unified Tray Resilience, Non-Destructive Port Self-Healing & 413 Headers-Sent Immunity...');
+
+    // 1. Verify tray-daemon.ps1 & OpenCodeRouterTray.cs unified TaskbarCreated + WM_RESTORE_OPENCODE_ROUTER_TRAY + Cold-Boot Reassertion
+    const trayPs1Raw = fs.readFileSync(path.join(__dirname, 'tray-daemon.ps1'), 'utf8');
+    assert.ok(trayPs1Raw.includes('TrayMessageSinkForm'), 'tray-daemon.ps1 must embed TrayMessageSinkForm');
+    assert.ok(trayPs1Raw.includes('cp.Parent = IntPtr.Zero') && trayPs1Raw.includes('SetVisibleCore(false)'), 'tray-daemon.ps1 TrayMessageSinkForm must be unparented top-level toolwindow to receive HWND_BROADCAST');
+    assert.ok(trayPs1Raw.includes('TaskbarCreated') && trayPs1Raw.includes('WM_RESTORE_OPENCODE_ROUTER_TRAY'), 'tray-daemon.ps1 must intercept TaskbarCreated and WM_RESTORE_OPENCODE_ROUTER_TRAY');
+    assert.ok(trayPs1Raw.includes('Reassert-TrayIcon $true'), 'tray-daemon.ps1 must force cycle Visible false/true in Reassert-TrayIcon');
+    assert.ok(trayPs1Raw.includes('GetActiveTcpListeners'), 'tray-daemon.ps1 must use fast IPGlobalProperties.GetActiveTcpListeners');
+    assert.ok(!/[^$]\(if\s*\(/.test(trayPs1Raw), 'tray-daemon.ps1 must not contain PowerShell 5.1 invalid (if (...)) expression without $');
+
+    const trayCsRaw = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeRouterTray.cs'), 'utf8');
+    assert.ok(trayCsRaw.includes('TrayMessageSinkForm') && trayCsRaw.includes('WM_RESTORE_OPENCODE_ROUTER_TRAY'), 'OpenCodeRouterTray.cs must include TrayMessageSinkForm and WM_RESTORE_OPENCODE_ROUTER_TRAY');
+    assert.ok(trayCsRaw.includes('cp.Parent = IntPtr.Zero') && trayCsRaw.includes('SetVisibleCore(false)'), 'OpenCodeRouterTray.cs TrayMessageSinkForm must be unparented top-level toolwindow to receive HWND_BROADCAST');
+    assert.ok(trayCsRaw.includes('Another instance is running. Activating dashboard and exiting.'), 'OpenCodeRouterTray.cs must preserve mutex log line for M3 adversarial suite');
+
+    const wizardCsRaw = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeWizard.cs'), 'utf8');
+    assert.ok(wizardCsRaw.includes('EnsureRouterRunning') && wizardCsRaw.includes('EnsureTrayRunning') && wizardCsRaw.includes('WM_RESTORE_OPENCODE_ROUTER_TRAY'), 'OpenCodeWizard.cs must act as full-stack launcher and broadcast tray restore');
+
+    // 2. Verify server.js non-destructive EADDRINUSE health probe & ComfyUI 413 headersSent guard
+    assert.ok(serverJsRaw.includes('probeExistingHealth') && serverJsRaw.includes('已有健康运行的网关实例在线'), 'server.js must probe /health before killing existing process on EADDRINUSE');
+    assert.ok(serverJsRaw.includes('if (!buf || res.headersSent || res.writableEnded) return;'), 'server.js ComfyUI POST endpoints must guard against null buf and headersSent after 413');
+
+    console.log('✓ Unified Tray Resilience, Non-Destructive Port Self-Healing & 413 Headers-Sent Immunity (Test 166) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 165 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 166 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

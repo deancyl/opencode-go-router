@@ -360,24 +360,42 @@ namespace OpenCodeRouter
             try
             {
                 uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                bool trayRunning = false;
                 Process[] trays = Process.GetProcessesByName("OpenCodeRouterTray");
                 if (trays != null && trays.Length > 0)
+                {
+                    trayRunning = true;
+                }
+                else
+                {
+                    try
+                    {
+                        using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayPSMutex_v2"))
+                        {
+                            trayRunning = true;
+                        }
+                    }
+                    catch { }
+                    if (!trayRunning)
+                    {
+                        try
+                        {
+                            using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayMutex_v2"))
+                            {
+                                trayRunning = true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (trayRunning)
                 {
                     // 广播唤醒已有托盘实例，强制重新断言向 Explorer 注册托盘图标
                     if (msgRestore != 0)
                     {
                         try { PostMessage(HWND_BROADCAST, msgRestore, IntPtr.Zero, IntPtr.Zero); } catch { }
                     }
-                    return;
-                }
-
-                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
-                if (File.Exists(trayExe))
-                {
-                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
-                    psi.WorkingDirectory = rootDir;
-                    psi.UseShellExecute = true;
-                    Process.Start(psi);
                     return;
                 }
 
@@ -388,6 +406,16 @@ namespace OpenCodeRouter
                     psi.WorkingDirectory = rootDir;
                     psi.CreateNoWindow = true;
                     psi.UseShellExecute = false;
+                    Process.Start(psi);
+                    return;
+                }
+
+                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
+                if (File.Exists(trayExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
                     Process.Start(psi);
                 }
             }
@@ -578,21 +606,26 @@ namespace OpenCodeRouter
                         psi.WindowStyle = ProcessWindowStyle.Hidden;
                         using (Process p = Process.Start(psi))
                         {
-                            p.WaitForExit(2000);
+                            p.WaitForExit(5000);
                         }
                     }
                     catch { }
 
-                    try
+                    for (int retry = 0; retry < 6; retry++)
                     {
-                        if (File.Exists(lockfile)) File.Delete(lockfile);
+                        try
+                        {
+                            if (File.Exists(lockfile)) File.Delete(lockfile);
+                        }
+                        catch { }
+                        try
+                        {
+                            if (File.Exists(singletonLock)) File.Delete(singletonLock);
+                        }
+                        catch { }
+                        if (!File.Exists(lockfile) && !File.Exists(singletonLock)) break;
+                        Thread.Sleep(100);
                     }
-                    catch { }
-                    try
-                    {
-                        if (File.Exists(singletonLock)) File.Delete(singletonLock);
-                    }
-                    catch { }
                 }
             }
             catch { }

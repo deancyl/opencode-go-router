@@ -13778,12 +13778,15 @@ $ghost
   // ComfyUI Service Control: Start (/balancer/api/comfyui/service/start)
   if (reqUrl.pathname === '/balancer/api/comfyui/service/start' && req.method === 'POST') {
     readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
       try {
-        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const payload = buf.length > 0 ? JSON.parse(buf.toString('utf8')) : {};
         const result = await comfyuiAdapter.startService(payload);
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, ...result }));
       } catch (err) {
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
@@ -13794,12 +13797,15 @@ $ghost
   // ComfyUI Service Control: Stop (/balancer/api/comfyui/service/stop)
   if (reqUrl.pathname === '/balancer/api/comfyui/service/stop' && req.method === 'POST') {
     readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
       try {
-        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const payload = buf.length > 0 ? JSON.parse(buf.toString('utf8')) : {};
         const result = await comfyuiAdapter.stopService(payload);
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, ...result }));
       } catch (err) {
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
@@ -13810,12 +13816,15 @@ $ghost
   // ComfyUI Service Control: Restart (/balancer/api/comfyui/service/restart)
   if (reqUrl.pathname === '/balancer/api/comfyui/service/restart' && req.method === 'POST') {
     readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
       try {
-        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const payload = buf.length > 0 ? JSON.parse(buf.toString('utf8')) : {};
         const result = await comfyuiAdapter.restartService(payload);
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, ...result }));
       } catch (err) {
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
@@ -13826,13 +13835,16 @@ $ghost
   // ComfyUI Open Web GUI (/balancer/api/comfyui/open-gui)
   if (reqUrl.pathname === '/balancer/api/comfyui/open-gui' && req.method === 'POST') {
     readInternalBody(req, res).then((buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
       try {
-        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const payload = buf.length > 0 ? JSON.parse(buf.toString('utf8')) : {};
         const targetUrl = payload.url || config.comfyui?.host || 'http://127.0.0.1:8284';
         const opened = comfyuiAdapter.openWebGui(targetUrl);
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: opened, url: targetUrl, message: '已通过独立应用窗口呼出 ComfyUI Web 界面' }));
       } catch (err) {
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
@@ -13843,12 +13855,15 @@ $ghost
   // ComfyUI Workflows Sync from GitHub (/balancer/api/comfyui/sync-workflows)
   if (reqUrl.pathname === '/balancer/api/comfyui/sync-workflows' && req.method === 'POST') {
     readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
       try {
-        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const payload = buf.length > 0 ? JSON.parse(buf.toString('utf8')) : {};
         const result = await comfyuiAdapter.syncWorkflowsFromGitHub(payload);
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, ...result }));
       } catch (err) {
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
@@ -13859,12 +13874,15 @@ $ghost
   // ComfyUI Deploy Workflows & Patches to Local ComfyUI (/balancer/api/comfyui/deploy-to-comfyui)
   if (reqUrl.pathname === '/balancer/api/comfyui/deploy-to-comfyui' && req.method === 'POST') {
     readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
       try {
-        const payload = buf ? JSON.parse(buf.toString('utf8')) : {};
+        const payload = buf.length > 0 ? JSON.parse(buf.toString('utf8')) : {};
         const result = await comfyuiAdapter.deployToComfyUI(payload);
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, ...result }));
       } catch (err) {
+        if (res.headersSent || res.writableEnded) return;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
@@ -14239,33 +14257,65 @@ server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`[OpenCode Go Router Error] Port ${config.port} is already in use by another process.`);
     const autoHeal = process.env.OPENCODE_ROUTER_AUTO_HEAL !== '0';
+    const forceRestart = process.argv.includes('--force-restart') || process.env.OPENCODE_ROUTER_FORCE_RESTART === '1';
     if (autoHeal && !server._hasRetriedHeal) {
       server._hasRetriedHeal = true;
-      console.log(`[Port Self-Healing] 正在尝试自动清理 ${config.port} 端口的残留冲突进程...`);
-      try {
-        if (process.platform === 'win32') {
-          execSync(`powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"`, { timeout: 4000, stdio: 'ignore' });
-        } else {
-          execSync(`(lsof -t -sTCP:LISTEN -i :${config.port} 2>/dev/null | xargs -r kill -9 2>/dev/null) || (ss -tlpn 'sport = :${config.port}' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | xargs -r kill -9 2>/dev/null) || true`, { timeout: 3000, stdio: 'ignore' });
+      const probeExistingHealth = () => new Promise((resolve) => {
+        if (forceRestart) return resolve(false);
+        const probeReq = http.get({
+          hostname: '127.0.0.1',
+          port: config.port,
+          path: '/health',
+          timeout: 600
+        }, (probeRes) => {
+          let raw = '';
+          probeRes.on('data', (c) => { raw += c; });
+          probeRes.on('end', () => {
+            try {
+              const parsed = JSON.parse(raw);
+              if (probeRes.statusCode === 200 && parsed && parsed.status === 'ok' && parsed.service === 'opencode-go-router') {
+                return resolve(true);
+              }
+            } catch (_) {}
+            resolve(false);
+          });
+        });
+        probeReq.on('error', () => resolve(false));
+        probeReq.on('timeout', () => { probeReq.destroy(); resolve(false); });
+      });
+
+      probeExistingHealth().then((isHealthyPeer) => {
+        if (isHealthyPeer) {
+          console.log(`[Port Self-Healing] 检测到端口 ${config.port} 已有健康运行的网关实例在线，当前重复启动实例安全退出 (0 干扰)。`);
+          process.exit(0);
+          return;
         }
-        setTimeout(() => {
-          console.log(`[Port Self-Healing] 端口已释放，正在重新启动监听 ${config.host}:${config.port}...`);
-          try {
-            server.listen(config.port, config.host, () => {
-              console.log(`[OpenCode Go Router] Successfully self-healed and running on http://${config.host}:${config.port}`);
-              console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
-              console.log(`[OpenCode Go Router] Web Dashboard: http://${config.host}:${config.port}/balancer/ui`);
-            });
-            return;
-          } catch (listenErr) {
-            console.error('[Port Self-Healing Listen Error]', listenErr.message);
-            process.exit(1);
+        console.log(`[Port Self-Healing] 正在尝试自动清理 ${config.port} 端口的残留/无响应冲突进程...`);
+        try {
+          if (process.platform === 'win32') {
+            execSync(`powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"`, { timeout: 4000, stdio: 'ignore' });
+          } else {
+            execSync(`(lsof -t -sTCP:LISTEN -i :${config.port} 2>/dev/null | xargs -r kill -9 2>/dev/null) || (ss -tlpn 'sport = :${config.port}' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | xargs -r kill -9 2>/dev/null) || true`, { timeout: 3000, stdio: 'ignore' });
           }
-        }, 1000);
-        return;
-      } catch (healErr) {
-        console.error('[Port Self-Healing Failed]', healErr.message);
-      }
+          setTimeout(() => {
+            console.log(`[Port Self-Healing] 端口已释放，正在重新启动监听 ${config.host}:${config.port}...`);
+            try {
+              server.listen(config.port, config.host, () => {
+                console.log(`[OpenCode Go Router] Successfully self-healed and running on http://${config.host}:${config.port}`);
+                console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
+                console.log(`[OpenCode Go Router] Web Dashboard: http://${config.host}:${config.port}/balancer/ui`);
+              });
+            } catch (listenErr) {
+              console.error('[Port Self-Healing Listen Error]', listenErr.message);
+              process.exit(1);
+            }
+          }, 1000);
+        } catch (healErr) {
+          console.error('[Port Self-Healing Failed]', healErr.message);
+          process.exit(1);
+        }
+      });
+      return;
     }
   } else {
     console.error('[OpenCode Go Router Server Error]', err.message);

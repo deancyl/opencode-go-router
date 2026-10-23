@@ -54,6 +54,13 @@ namespace OpenCodeWizard
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
         public const int SW_RESTORE = 9;
         public const int ASFW_ANY = -1;
 
@@ -227,16 +234,42 @@ namespace OpenCodeWizard
         {
             try
             {
+                uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                bool trayRunning = false;
                 Process[] trays = Process.GetProcessesByName("OpenCodeRouterTray");
-                if (trays != null && trays.Length > 0) return;
-
-                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
-                if (File.Exists(trayExe))
+                if (trays != null && trays.Length > 0)
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
-                    psi.WorkingDirectory = rootDir;
-                    psi.UseShellExecute = true;
-                    Process.Start(psi);
+                    trayRunning = true;
+                }
+                else
+                {
+                    try
+                    {
+                        using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayPSMutex_v2"))
+                        {
+                            trayRunning = true;
+                        }
+                    }
+                    catch { }
+                    if (!trayRunning)
+                    {
+                        try
+                        {
+                            using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayMutex_v2"))
+                            {
+                                trayRunning = true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (trayRunning)
+                {
+                    if (msgRestore != 0)
+                    {
+                        try { PostMessage(HWND_BROADCAST, msgRestore, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    }
                     return;
                 }
 
@@ -247,6 +280,16 @@ namespace OpenCodeWizard
                     psi.WorkingDirectory = rootDir;
                     psi.CreateNoWindow = true;
                     psi.UseShellExecute = false;
+                    Process.Start(psi);
+                    return;
+                }
+
+                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
+                if (File.Exists(trayExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
                     Process.Start(psi);
                 }
             }
@@ -372,17 +415,16 @@ namespace OpenCodeWizard
             string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
             string targetUrl = string.Format("http://127.0.0.1:{0}/balancer/ui{1}#/overview", port, authQuery);
 
-            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string appDataDir = Path.Combine(userProfile, @".opencode-go-router\AppProfile");
+            string appDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenCodeRouter", "AppProfile");
             try { if (!Directory.Exists(appDataDir)) Directory.CreateDirectory(appDataDir); } catch { }
 
-            string args = string.Format("--app=\"{0}\" --user-data-dir=\"{1}\" --window-size=1200,820 --no-first-run --no-default-browser-check --disable-background-mode", targetUrl, appDataDir);
+            string args = string.Format("--app=\"{0}\" --user-data-dir=\"{1}\" --window-size=1280,840 --no-first-run --no-default-browser-check --disable-background-mode", targetUrl, appDataDir);
 
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo(browserExe, args);
                 psi.WorkingDirectory = rootDir;
-                psi.UseShellExecute = false;
+                psi.UseShellExecute = true;
                 Process.Start(psi);
                 return true;
             }
@@ -738,26 +780,51 @@ namespace OpenCodeWizard
                 try
                 {
                     string cfgPath = Path.Combine(rootDir, "config.json");
-                    StringBuilder sb = new StringBuilder();
-                    sb.AppendLine("{");
-                    sb.AppendLine(string.Format("  \"port\": {0},", portStr));
-                    sb.AppendLine("  \"host\": \"127.0.0.1\",");
-                    sb.AppendLine(string.Format("  \"uiPassword\": \"{0}\",", passStr));
-                    sb.AppendLine("  \"accounts\": [");
-                    sb.AppendLine("    {");
-                    sb.AppendLine(string.Format("      \"apiKey\": \"{0}\",", k1));
-                    sb.AppendLine("      \"name\": \"Primary Account 1\"");
-                    sb.AppendLine("    }");
-                    if (!string.IsNullOrEmpty(k2))
+                    bool mergedViaNode = false;
+                    try
                     {
-                        sb.AppendLine("    ,{");
-                        sb.AppendLine(string.Format("      \"apiKey\": \"{0}\",", k2));
-                        sb.AppendLine("      \"name\": \"Secondary Account 2 (Failover)\"");
-                        sb.AppendLine("    }");
+                        string mergeScript = "const fs=require('fs'),p=process.argv[1];let c={};try{if(fs.existsSync(p))c=JSON.parse(fs.readFileSync(p,'utf8'));}catch(e){}c.port=parseInt(process.argv[2],10)||4010;c.host=c.host||'127.0.0.1';c.uiPassword=process.argv[3]||'';const k1=process.argv[4]||'';const k2=process.argv[5]||'';const accs=Array.isArray(c.accounts)?c.accounts:[];if(accs.length===0){accs.push({id:'account-1',name:'Primary Account 1',apiKey:k1,enabled:true});}else{accs[0].apiKey=k1;accs[0].enabled=true;}if(k2){if(accs.length<2){accs.push({id:'account-2',name:'Secondary Account 2 (Failover)',apiKey:k2,enabled:true});}else{accs[1].apiKey=k2;accs[1].enabled=true;}}c.accounts=accs;fs.writeFileSync(p,JSON.stringify(c,null,2),'utf8');";
+                        ProcessStartInfo psiNode = new ProcessStartInfo("node.exe", string.Format("-e \"{0}\" \"{1}\" \"{2}\" \"{3}\" \"{4}\" \"{5}\"", mergeScript, cfgPath, portStr, passStr, k1, k2));
+                        psiNode.WorkingDirectory = rootDir;
+                        psiNode.CreateNoWindow = true;
+                        psiNode.UseShellExecute = false;
+                        using (Process pNode = Process.Start(psiNode))
+                        {
+                            if (pNode != null && pNode.WaitForExit(3000) && pNode.ExitCode == 0)
+                            {
+                                mergedViaNode = true;
+                            }
+                        }
                     }
-                    sb.AppendLine("  ]");
-                    sb.AppendLine("}");
-                    File.WriteAllText(cfgPath, sb.ToString(), Encoding.UTF8);
+                    catch { }
+
+                    if (!mergedViaNode)
+                    {
+                        StringBuilder sb = new StringBuilder();
+                        sb.AppendLine("{");
+                        sb.AppendLine(string.Format("  \"port\": {0},", portStr));
+                        sb.AppendLine("  \"host\": \"127.0.0.1\",");
+                        sb.AppendLine(string.Format("  \"uiPassword\": \"{0}\",", passStr));
+                        sb.AppendLine("  \"accounts\": [");
+                        sb.AppendLine("    {");
+                        sb.AppendLine("      \"id\": \"account-1\",");
+                        sb.AppendLine(string.Format("      \"apiKey\": \"{0}\",", k1));
+                        sb.AppendLine("      \"name\": \"Primary Account 1\",");
+                        sb.AppendLine("      \"enabled\": true");
+                        sb.AppendLine("    }");
+                        if (!string.IsNullOrEmpty(k2))
+                        {
+                            sb.AppendLine("    ,{");
+                            sb.AppendLine("      \"id\": \"account-2\",");
+                            sb.AppendLine(string.Format("      \"apiKey\": \"{0}\",", k2));
+                            sb.AppendLine("      \"name\": \"Secondary Account 2 (Failover)\",");
+                            sb.AppendLine("      \"enabled\": true");
+                            sb.AppendLine("    }");
+                        }
+                        sb.AppendLine("  ]");
+                        sb.AppendLine("}");
+                        File.WriteAllText(cfgPath, sb.ToString(), Encoding.UTF8);
+                    }
 
                     string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
                     if (File.Exists(silentVbs))

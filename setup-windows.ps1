@@ -599,15 +599,23 @@ function Step-SetupCodex {
 
 # ----------------- 服务控制核心命令 -----------------
 function Step-Start {
-    if (Test-PortListening $port) {
-        Write-Host "✔ 智能网关服务已在运行 (端口: $port)" -ForegroundColor Green
-        return
-    }
-
     $silentVbs = Join-Path $rootDir "silent-start.vbs"
     $serverJs = Join-Path $rootDir "server.js"
     $trayVbs = Join-Path $rootDir "start-tray.vbs"
     $trayExe = Join-Path $rootDir "OpenCodeRouterTray.exe"
+
+    if (Test-PortListening $port) {
+        Write-Host "✔ 智能网关服务已在运行 (端口: $port)" -ForegroundColor Green
+        # 即使网关端口已监听，仍确保右下角托盘常驻或触发重注册恢复
+        if (-not $NoShortcuts -and $port -eq 4010) {
+            if (Test-Path $trayVbs) {
+                Start-Process "wscript.exe" -ArgumentList "`"$trayVbs`" -Silent" -WorkingDirectory $rootDir -WindowStyle Hidden
+            } elseif (Test-Path $trayExe) {
+                Start-Process -FilePath $trayExe -ArgumentList "-Silent" -WorkingDirectory $rootDir
+            }
+        }
+        return
+    }
 
     # 1. 优先通过原生静默引擎拉起后台路由器服务
     if (Test-Path $silentVbs) {

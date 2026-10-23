@@ -25,11 +25,31 @@ namespace OpenCodeRouter
         {
             this.Text = "OpenCodeRouterTrayMsgSink";
             this.FormBorderStyle = FormBorderStyle.None;
-            this.ShowInTaskbar = false;
             this.WindowState = FormWindowState.Minimized;
             this.Size = new Size(0, 0);
             this.Opacity = 0;
             this.ShowIcon = false;
+            IntPtr h = this.Handle;
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000080; // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                cp.Parent = IntPtr.Zero;
+                return cp;
+            }
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            base.SetVisibleCore(false);
+            if (!this.IsHandleCreated)
+            {
+                this.CreateHandle();
+            }
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -200,7 +220,7 @@ namespace OpenCodeRouter
                 Log("Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent);
                 if (!createdNew)
                 {
-                    Log("Another instance is running. Broadcasting restore message to existing tray...");
+                    Log("Another instance is running. Activating dashboard and exiting.");
                     uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
                     if (msgRestore != 0)
                     {
@@ -236,11 +256,14 @@ namespace OpenCodeRouter
                 notifyIcon.Text = statusText;
                 notifyIcon.Visible = true;
 
-                try
+                if (!isSilent)
                 {
-                    notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "已在系统托盘静默运行！若未显示，可展开任务栏右下角小箭头查看。", ToolTipIcon.Info);
+                    try
+                    {
+                        notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "已在系统托盘静默运行！若未显示，可展开任务栏右下角小箭头查看。", ToolTipIcon.Info);
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // Context Menu
                 ContextMenuStrip menu = new ContextMenuStrip();
@@ -323,8 +346,12 @@ namespace OpenCodeRouter
                         }
 
                         watchdogTickCount++;
-                        // 每 15 秒（3 个 tick）检查一次托盘可见性，防止 Windows 11 DWM 或任务栏刷新静默丢弃句柄
-                        if (watchdogTickCount % 3 == 0)
+                        // 冷开机后第 1 个 tick (+5s) 与第 3 个 tick (+15s) 强制执行一次 Shell_NotifyIcon 重注册，彻底解决 Windows 11 任务栏延迟初始化导致图标丢失
+                        if (watchdogTickCount == 1 || watchdogTickCount == 3)
+                        {
+                            ReassertTrayIcon(true);
+                        }
+                        else if (watchdogTickCount % 3 == 0)
                         {
                             ReassertTrayIcon(false);
                         }

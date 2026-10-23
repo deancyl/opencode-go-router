@@ -18,8 +18,114 @@ if (-not $rootDir -or -not (Test-Path (Join-Path $rootDir "server.js"))) {
 }
 
 $port = 4010
+$uiPassword = ""
 $icoPath = Join-Path $rootDir "assets\router.ico"
 $logPath = Join-Path $rootDir "tray.log"
+
+function Load-RouterConfig {
+    try {
+        $cfgPath = Join-Path $rootDir "config.json"
+        if (Test-Path $cfgPath) {
+            $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction SilentlyContinue
+            if ($cfg) {
+                if ($cfg.port -and [int]$cfg.port -gt 0 -and [int]$cfg.port -lt 65536) {
+                    $script:port = [int]$cfg.port
+                }
+                if ($null -ne $cfg.uiPassword) {
+                    $script:uiPassword = [string]$cfg.uiPassword
+                }
+            }
+        }
+    } catch { }
+}
+Load-RouterConfig
+
+$trayHostCs = @"
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+namespace OpenCodeTrayHost {
+    public static class Win32Helper {
+        public const uint MSGFLT_ADD = 1;
+        public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ChangeWindowMessageFilter(uint message, uint dwFlag);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        public static void BroadcastRestoreTray() {
+            try {
+                uint msg = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                if (msg != 0) {
+                    PostMessage(HWND_BROADCAST, msg, IntPtr.Zero, IntPtr.Zero);
+                }
+            } catch { }
+        }
+    }
+
+    public class TrayMessageSinkForm : Form {
+        private uint wmTaskbarCreated = 0;
+        private uint wmRestoreTray = 0;
+        public event EventHandler TrayRestoreRequested;
+
+        public TrayMessageSinkForm() {
+            this.Text = "OpenCodeRouterTrayMsgSink";
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.WindowState = FormWindowState.Minimized;
+            this.Size = new Size(0, 0);
+            this.Opacity = 0;
+            this.ShowIcon = false;
+            IntPtr h = this.Handle;
+        }
+
+        protected override CreateParams CreateParams {
+            get {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000080; // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                cp.Parent = IntPtr.Zero;
+                return cp;
+            }
+        }
+
+        protected override void SetVisibleCore(bool value) {
+            base.SetVisibleCore(false);
+            if (!this.IsHandleCreated) {
+                this.CreateHandle();
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e) {
+            base.OnHandleCreated(e);
+            try {
+                wmTaskbarCreated = Win32Helper.RegisterWindowMessage("TaskbarCreated");
+                if (wmTaskbarCreated != 0) Win32Helper.ChangeWindowMessageFilter(wmTaskbarCreated, Win32Helper.MSGFLT_ADD);
+                wmRestoreTray = Win32Helper.RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                if (wmRestoreTray != 0) Win32Helper.ChangeWindowMessageFilter(wmRestoreTray, Win32Helper.MSGFLT_ADD);
+            } catch { }
+        }
+
+        protected override void WndProc(ref Message m) {
+            if ((wmTaskbarCreated != 0 && m.Msg == (int)wmTaskbarCreated) ||
+                (wmRestoreTray != 0 && m.Msg == (int)wmRestoreTray)) {
+                if (TrayRestoreRequested != null) {
+                    try { TrayRestoreRequested(this, EventArgs.Empty); } catch { }
+                }
+            }
+            base.WndProc(ref m);
+        }
+    }
+}
+"@
+try {
+    Add-Type -TypeDefinition $trayHostCs -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction SilentlyContinue
+} catch { }
 
 function Write-TrayLog([string]$msg) {
     try {
@@ -31,10 +137,19 @@ function Write-TrayLog([string]$msg) {
 
 function Test-PortListening([int]$targetPort) {
     try {
-        $conn = Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue
-        return ($null -ne $conn)
-    } catch {
+        $props = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
+        $listeners = $props.GetActiveTcpListeners()
+        foreach ($ep in $listeners) {
+            if ($ep.Port -eq $targetPort) { return $true }
+        }
         return $false
+    } catch {
+        try {
+            $conn = Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue
+            return ($null -ne $conn)
+        } catch {
+            return $false
+        }
     }
 }
 
@@ -142,6 +257,7 @@ try {
 
 if (-not $createdNew) {
     Write-TrayLog "Another instance is running. Activating dashboard and exiting."
+    try { [OpenCodeTrayHost.Win32Helper]::BroadcastRestoreTray() } catch { }
     if (-not $Silent) {
         Open-Dashboard
     }
@@ -205,13 +321,23 @@ function Launch-OpenChamber {
     Open-Dashboard
 }
 
+function Get-AuthHeaders {
+    Load-RouterConfig
+    $headers = @{}
+    if ($script:uiPassword -and $script:uiPassword.Trim().Length -gt 0) {
+        $headers["x-ui-password"] = $script:uiPassword.Trim()
+        $headers["x-api-key"] = $script:uiPassword.Trim()
+    }
+    return $headers
+}
+
 function Check-RouterStatus {
     try {
         Ensure-RouterRunning
-        $res = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/account-quota" -TimeoutSec 4 -ErrorAction Stop
-        $model = if ($res.currentModel) { $res.currentModel } else { "opencode-go" }
-        $total = if ($res.totalAccounts) { $res.totalAccounts } else { 2 }
-        $notifyIcon.ShowBalloonTip(3000, "OpenCode 路由网关状态", "✔ 服务在线 (端口: $port)`n✔ 活跃账号数: $total`n✔ 当前主用模型: $model", [System.Windows.Forms.ToolTipIcon]::Info)
+        $headers = Get-AuthHeaders
+        $res = Invoke-RestMethod -Uri "http://127.0.0.1:$port/status" -Headers $headers -TimeoutSec 4 -ErrorAction Stop
+        $total = if ($res.accounts) { $res.accounts.Count } else { 2 }
+        $notifyIcon.ShowBalloonTip(3000, "OpenCode 路由网关状态", "✔ 服务在线 (端口: $port)`n✔ 活跃账号数: $total", [System.Windows.Forms.ToolTipIcon]::Info)
     } catch {
         $notifyIcon.ShowBalloonTip(3000, "OpenCode 路由网关状态", "⚠ 网关状态查询中，请稍候或直接打开控制台查看。", [System.Windows.Forms.ToolTipIcon]::Warning)
     }
@@ -220,7 +346,8 @@ function Check-RouterStatus {
 function Reset-Cooldown {
     try {
         Ensure-RouterRunning
-        $res = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/reset-cooldown" -Method Post -TimeoutSec 3 -ErrorAction Stop
+        $headers = Get-AuthHeaders
+        $res = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/reset-cooldown" -Method Post -Headers $headers -ContentType "application/json" -Body "{}" -TimeoutSec 3 -ErrorAction Stop
         $notifyIcon.ShowBalloonTip(2000, "限频冷却已重置", "✔ 所有账号的 429 限频锁定已清零，恢复正常轮询！", [System.Windows.Forms.ToolTipIcon]::Info)
     } catch {
         $notifyIcon.ShowBalloonTip(2000, "重置提示", "已发送重置信号至端口 $port", [System.Windows.Forms.ToolTipIcon]::Info)
@@ -258,7 +385,8 @@ function Run-DoctorRepair {
 function Bind-DesktopClients {
     [System.Threading.ThreadPool]::QueueUserWorkItem({
         try {
-            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/bind-desktop" -Method Post -ContentType "application/json" -Body "{}" -TimeoutSec 6
+            $headers = Get-AuthHeaders
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/balancer/api/bind-desktop" -Method Post -Headers $headers -ContentType "application/json" -Body "{}" -TimeoutSec 6
             $notifyIcon.ShowBalloonTip(4000, "OpenCode 智能路由", "✔ 本地网关已成功锁定为 OpenCode 与 OpenChamber 默认配置！", [System.Windows.Forms.ToolTipIcon]::Info)
         } catch {
             $notifyIcon.ShowBalloonTip(4000, "配置失败", $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Warning)
@@ -266,15 +394,24 @@ function Bind-DesktopClients {
     })
 }
 
-# --- 创建常驻隐形宿主窗体 (防止消息泵被 GC 回收) ---
-$hiddenForm = New-Object System.Windows.Forms.Form
-$hiddenForm.Text = "OpenCodeRouterTrayMsgSink"
-$hiddenForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
-$hiddenForm.ShowInTaskbar = $false
-$hiddenForm.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
-$hiddenForm.Size = New-Object System.Drawing.Size(0, 0)
-$hiddenForm.Opacity = 0
-$hiddenForm.ShowIcon = $false
+# --- 创建常驻隐形宿主窗体 (拦截 Explorer TaskbarCreated 与跨进程恢复消息) ---
+$hiddenForm = $null
+try {
+    $hiddenForm = New-Object OpenCodeTrayHost.TrayMessageSinkForm
+    $hiddenForm.add_TrayRestoreRequested({
+        Write-TrayLog "TaskbarCreated or WM_RESTORE_OPENCODE_ROUTER_TRAY received! Reasserting tray icon..."
+        Reassert-TrayIcon $true
+    })
+} catch {
+    $hiddenForm = New-Object System.Windows.Forms.Form
+    $hiddenForm.Text = "OpenCodeRouterTrayMsgSink"
+    $hiddenForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $hiddenForm.ShowInTaskbar = $false
+    $hiddenForm.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+    $hiddenForm.Size = New-Object System.Drawing.Size(0, 0)
+    $hiddenForm.Opacity = 0
+    $hiddenForm.ShowIcon = $false
+}
 
 function Exit-TrayApp {
     try {
@@ -337,11 +474,44 @@ function Update-TrayStatus([bool]$isOnline) {
             if ($global:notifyIcon.Icon -ne $targetIcon) {
                 $global:notifyIcon.Icon = $targetIcon
             }
-            $statusText = "OpenCode 订阅管理中心 (端口: $port - " + (if ($isOnline) { "在线" } else { "离线" }) + ")"
+            $stateLabel = if ($isOnline) { "在线" } else { "离线" }
+            $statusText = "OpenCode 订阅管理中心 (端口: $port - $stateLabel)"
             if ($statusText.Length -ge 64) { $statusText = $statusText.Substring(0, 63) }
-            $global:notifyIcon.Text = $statusText
+            if ($global:notifyIcon.Text -ne $statusText) {
+                $global:notifyIcon.Text = $statusText
+            }
         }
     } catch { }
+}
+
+function Reassert-TrayIcon([bool]$forceCycle) {
+    try {
+        if (-not $global:notifyIcon) { return }
+        $isOnline = Test-PortListening $port
+        $targetIcon = if ($isOnline) { $global:cachedGreenIcon } else { $global:cachedNormalIcon }
+        $stateLabel = if ($isOnline) { "在线" } else { "离线" }
+        $statusText = "OpenCode 订阅管理中心 (端口: $port - $stateLabel)"
+        if ($statusText.Length -ge 64) { $statusText = $statusText.Substring(0, 63) }
+
+        if ($forceCycle) {
+            $global:notifyIcon.Visible = $false
+            $global:notifyIcon.Icon = $targetIcon
+            $global:notifyIcon.Text = $statusText
+            $global:notifyIcon.Visible = $true
+        } else {
+            if (-not $global:notifyIcon.Visible) {
+                $global:notifyIcon.Visible = $true
+            }
+            if ($global:notifyIcon.Icon -ne $targetIcon) {
+                $global:notifyIcon.Icon = $targetIcon
+            }
+            if ($global:notifyIcon.Text -ne $statusText) {
+                $global:notifyIcon.Text = $statusText
+            }
+        }
+    } catch {
+        Write-TrayLog "Reassert-TrayIcon error: $_"
+    }
 }
 
 $global:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
@@ -407,11 +577,14 @@ $global:notifyIcon.add_Click({
     }
 })
 
-try {
-    $global:notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "本地 4010 智能网关在后台常驻运行，双击绿色托盘图标可随时唤出管理面板。", [System.Windows.Forms.ToolTipIcon]::Info)
-} catch { }
+if (-not $Silent) {
+    try {
+        $global:notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "本地 $port 智能网关在后台常驻运行，双击绿色托盘图标可随时唤出管理面板。", [System.Windows.Forms.ToolTipIcon]::Info)
+    } catch { }
+}
 
 # --- 后台自愈看门狗 (Watchdog) ---
+$script:watchdogTickCount = 0
 $watchdogTimer = New-Object System.Windows.Forms.Timer
 $watchdogTimer.Interval = 5000
 $watchdogTimer.add_Tick({
@@ -421,8 +594,12 @@ $watchdogTimer.add_Tick({
         if (-not $up) {
             Ensure-RouterRunning
         }
-        if ($global:notifyIcon -and -not $global:notifyIcon.Visible) {
-            $global:notifyIcon.Visible = $true
+        $script:watchdogTickCount++
+        # 冷开机后第 1 个 tick (+5s) 与第 3 个 tick (+15s) 强制执行一次 Shell_NotifyIcon 重注册，彻底解决 Windows 11 任务栏延迟初始化导致图标丢失
+        if ($script:watchdogTickCount -eq 1 -or $script:watchdogTickCount -eq 3) {
+            Reassert-TrayIcon $true
+        } else {
+            Reassert-TrayIcon $false
         }
     } catch { }
 })
