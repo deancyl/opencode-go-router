@@ -12,6 +12,61 @@ using Microsoft.Win32;
 
 namespace OpenCodeRouter
 {
+    public class TrayMessageSinkForm : Form
+    {
+        public const uint MSGFLT_ADD = 1;
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ChangeWindowMessageFilter(uint message, uint dwFlag);
+
+        public static uint WM_TASKBARCREATED = 0;
+        public static uint WM_RESTORE_ROUTER_TRAY = 0;
+
+        public TrayMessageSinkForm()
+        {
+            this.Text = "OpenCodeRouterTrayMsgSink";
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.ShowInTaskbar = false;
+            this.WindowState = FormWindowState.Minimized;
+            this.Size = new Size(0, 0);
+            this.Opacity = 0;
+            this.ShowIcon = false;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try
+            {
+                WM_TASKBARCREATED = Program.RegisterWindowMessage("TaskbarCreated");
+                if (WM_TASKBARCREATED != 0)
+                {
+                    ChangeWindowMessageFilter(WM_TASKBARCREATED, MSGFLT_ADD);
+                }
+                WM_RESTORE_ROUTER_TRAY = Program.RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                if (WM_RESTORE_ROUTER_TRAY != 0)
+                {
+                    ChangeWindowMessageFilter(WM_RESTORE_ROUTER_TRAY, MSGFLT_ADD);
+                }
+            }
+            catch { }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == (int)WM_TASKBARCREATED && WM_TASKBARCREATED != 0)
+            {
+                Program.Log("Explorer TaskbarCreated received! Reasserting tray icon...");
+                Program.ReassertTrayIcon(true);
+            }
+            else if (m.Msg == (int)WM_RESTORE_ROUTER_TRAY && WM_RESTORE_ROUTER_TRAY != 0)
+            {
+                Program.Log("Received WM_RESTORE_ROUTER_TRAY from peer instance! Restoring tray icon...");
+                Program.ReassertTrayIcon(true);
+            }
+            base.WndProc(ref m);
+        }
+    }
+
     static class Program
     {
         [DllImport("user32.dll")]
@@ -22,6 +77,13 @@ namespace OpenCodeRouter
 
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+        public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
 
         private const int SW_RESTORE = 9;
 
@@ -45,7 +107,7 @@ namespace OpenCodeRouter
         private static int isBindingClients = 0;
         private static int isEnsuringRunning = 0;
 
-        private static void Log(string msg)
+        public static void Log(string msg)
         {
             try
             {
@@ -138,7 +200,12 @@ namespace OpenCodeRouter
                 Log("Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent);
                 if (!createdNew)
                 {
-                    Log("Another instance is running. Activating dashboard and exiting.");
+                    Log("Another instance is running. Broadcasting restore message to existing tray...");
+                    uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                    if (msgRestore != 0)
+                    {
+                        try { PostMessage(HWND_BROADCAST, msgRestore, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    }
                     EnsureRouterRunning(false);
                     if (!isSilent)
                     {
@@ -164,12 +231,14 @@ namespace OpenCodeRouter
                 notifyIcon = new NotifyIcon();
                 bool isOnline = IsPortListening(port);
                 notifyIcon.Icon = isOnline ? cachedGreenIcon : cachedNormalIcon;
-                notifyIcon.Text = string.Format("OpenCode 订阅管理中心 (端口: {0})", port);
+                string statusText = string.Format("OpenCode 订阅管理中心 (端口: {0} - {1})", port, isOnline ? "在线" : "离线");
+                if (statusText.Length >= 64) statusText = statusText.Substring(0, 63);
+                notifyIcon.Text = statusText;
                 notifyIcon.Visible = true;
 
                 try
                 {
-                    notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已启动", "已在系统托盘静默运行！若未显示，可展开任务栏右下角小箭头查看。", ToolTipIcon.Info);
+                    notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "已在系统托盘静默运行！若未显示，可展开任务栏右下角小箭头查看。", ToolTipIcon.Info);
                 }
                 catch { }
 
@@ -247,34 +316,32 @@ namespace OpenCodeRouter
 
                         if (!listening)
                         {
-                            // Trigger background resurrection without blocking the UI thread
+                            // 触发后台静默复活
                             ThreadPool.QueueUserWorkItem(state => {
                                 try { EnsureRouterRunning(true); } catch { }
                             });
                         }
 
                         watchdogTickCount++;
-                        if (watchdogTickCount % 6 == 0) // 每 30 秒静默深度整理内存
+                        // 每 15 秒（3 个 tick）检查一次托盘可见性，防止 Windows 11 DWM 或任务栏刷新静默丢弃句柄
+                        if (watchdogTickCount % 3 == 0)
                         {
-                            try { TrimMemory(false); } catch { }
+                            ReassertTrayIcon(false);
+                        }
+
+                        // 仅每隔 30 分钟（360 个 tick）温和修剪托盘守护自身的私有内存，彻底杜绝每 30 秒高频刷盘
+                        if (watchdogTickCount % 360 == 0)
+                        {
+                            try { EmptyWorkingSet(Process.GetCurrentProcess().Handle); } catch { }
                         }
                     }
                     catch { }
                 };
                 watchdogTimer.Start();
 
-                // 创建常驻隐形宿主窗体 (防止消息泵被回收)
-                Form hiddenForm = new Form();
-                hiddenForm.Text = "OpenCodeRouterTrayMsgSink";
-                hiddenForm.FormBorderStyle = FormBorderStyle.None;
-                hiddenForm.ShowInTaskbar = false;
-                hiddenForm.WindowState = FormWindowState.Minimized;
-                hiddenForm.Size = new Size(0, 0);
-                hiddenForm.Opacity = 0;
-                hiddenForm.ShowIcon = false;
-
-                Log("Step 7: Entering Application.Run(hiddenForm)...");
-                Application.Run(hiddenForm);
+                // 使用注入了 TaskbarCreated 消息拦截的宿主窗体
+                Log("Step 7: Entering Application.Run(new TrayMessageSinkForm())...");
+                Application.Run(new TrayMessageSinkForm());
                 Log("Application.Run EXITED!");
             }
             catch (Exception ex)
@@ -303,6 +370,45 @@ namespace OpenCodeRouter
             if (cachedGreenIcon == null) cachedGreenIcon = SystemIcons.Application;
         }
 
+        public static void ReassertTrayIcon(bool forceCycle)
+        {
+            try
+            {
+                if (notifyIcon == null) return;
+                bool isOnline = IsPortListening(port);
+                Icon targetIcon = isOnline ? cachedGreenIcon : cachedNormalIcon;
+                string statusText = string.Format("OpenCode 订阅管理中心 (端口: {0} - {1})", port, isOnline ? "在线" : "离线");
+                if (statusText.Length >= 64) statusText = statusText.Substring(0, 63);
+
+                if (forceCycle)
+                {
+                    notifyIcon.Visible = false;
+                    notifyIcon.Icon = targetIcon;
+                    notifyIcon.Text = statusText;
+                    notifyIcon.Visible = true;
+                }
+                else
+                {
+                    if (!notifyIcon.Visible)
+                    {
+                        notifyIcon.Visible = true;
+                    }
+                    if (notifyIcon.Icon != targetIcon)
+                    {
+                        notifyIcon.Icon = targetIcon;
+                    }
+                    if (notifyIcon.Text != statusText)
+                    {
+                        notifyIcon.Text = statusText;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("ReassertTrayIcon error: " + ex.Message);
+            }
+        }
+
         private static void UpdateTrayStatus(bool isOnline)
         {
             try
@@ -316,7 +422,10 @@ namespace OpenCodeRouter
                     }
                     string statusText = string.Format("OpenCode 订阅管理中心 (端口: {0} - {1})", port, isOnline ? "在线" : "离线");
                     if (statusText.Length >= 64) statusText = statusText.Substring(0, 63);
-                    notifyIcon.Text = statusText;
+                    if (notifyIcon.Text != statusText)
+                    {
+                        notifyIcon.Text = statusText;
+                    }
                 }
             }
             catch { }
@@ -487,7 +596,7 @@ namespace OpenCodeRouter
                     try { EmptyWorkingSet(p.Handle); } catch { }
                 }
 
-                // 3. 仅精准查找拥有网关管理中心标题的窗口进程进行修剪，绝不误伤用户日常浏览器
+                // 3. 仅查找拥有网关管理中心标题的窗口进程进行修剪，绝不误伤用户日常浏览器
                 Process[] allProcs = Process.GetProcesses();
                 foreach (Process p in allProcs)
                 {

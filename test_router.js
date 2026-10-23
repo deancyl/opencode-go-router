@@ -11,15 +11,28 @@ const contextCompactor = require('./context-compactor');
 const psOptimizer = require('./powershell-optimizer');
 const serverMod = require('./server');
 
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = srv.address().port;
-      srv.close(() => resolve(port));
+// WHATWG Fetch restricted ports list (prevent random port 6000/etc. from causing "fetch failed: bad port")
+const RESTRICTED_FETCH_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104,
+  109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515,
+  526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049,
+  3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
+
+async function getFreePort() {
+  while (true) {
+    const port = await new Promise((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = srv.address().port;
+        srv.close(() => resolve(p));
+      });
+      srv.on('error', reject);
     });
-    srv.on('error', reject);
-  });
+    if (!RESTRICTED_FETCH_PORTS.has(port) && port > 1024) {
+      return port;
+    }
+  }
 }
 
 async function runTests() {

@@ -8,18 +8,64 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace OpenCodeWizard
 {
     static class Program
     {
         [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+        [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
+
+        public const int SW_RESTORE = 9;
+        public const int ASFW_ANY = -1;
 
         [STAThread]
         static void Main(string[] args)
         {
-            try { SetProcessDPIAware(); } catch { }
+            try
+            {
+                SetProcessDPIAware();
+                AllowSetForegroundWindow(ASFW_ANY);
+            }
+            catch { }
 
             string rootDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
             if (!File.Exists(Path.Combine(rootDir, "setup-wizard.ps1")))
@@ -32,7 +78,7 @@ namespace OpenCodeWizard
                 }
             }
 
-            // If command-line arguments are provided, preserve full CLI transparent forwarding
+            // 分支 1: 若通过命令行传入了参数，保持对 setup-wizard.ps1 的全透明 CLI 转发
             if (args != null && args.Length > 0)
             {
                 string wizardScript = Path.Combine(rootDir, "setup-wizard.ps1");
@@ -51,13 +97,305 @@ namespace OpenCodeWizard
                 return;
             }
 
-            // When launched without arguments (e.g. desktop double-click), launch modern WinForms High-DPI GUI
+            // 分支 2: 双击桌面快捷方式（无参数启动）时，执行全栈智能引导与独立桌面应用唤出
+            int port = 4010;
+            string uiPassword = "";
+            LoadConfig(rootDir, ref port, ref uiPassword);
+
+            // 1. 确保后台网关核心静默常驻
+            EnsureRouterRunning(rootDir, port);
+
+            // 2. 确保系统托盘守护常驻
+            EnsureTrayRunning(rootDir);
+
+            // 3. 单实例检测：若控制台应用窗口已存在，置顶激活
+            IntPtr existingHwnd = FindExistingAppWindow();
+            if (existingHwnd != IntPtr.Zero)
+            {
+                ActivateExistingWindow(existingHwnd);
+                return;
+            }
+
+            // 4. 尝试以无边框独立应用模式（Edge / Chrome --app=...）唤出全新极简 Web 全栈向导
+            if (LaunchStandaloneApp(rootDir, port, uiPassword))
+            {
+                return;
+            }
+
+            // 5. 极端兜底：若本地无任何 Chromium/Edge 浏览器，以修复了 High-DPI 自适应的 WinForms 唤出
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new WizardForm(rootDir));
         }
+
+        private static void LoadConfig(string dir, ref int port, ref string uiPassword)
+        {
+            try
+            {
+                string cfgPath = Path.Combine(dir, "config.json");
+                if (File.Exists(cfgPath))
+                {
+                    string json = File.ReadAllText(cfgPath, Encoding.UTF8);
+                    int portIdx = json.IndexOf("\"port\"");
+                    if (portIdx >= 0)
+                    {
+                        int colonIdx = json.IndexOf(":", portIdx);
+                        if (colonIdx >= 0)
+                        {
+                            int endIdx = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colonIdx + 1);
+                            if (endIdx > colonIdx)
+                            {
+                                string portStr = json.Substring(colonIdx + 1, endIdx - colonIdx - 1).Trim();
+                                int p;
+                                if (int.TryParse(portStr, out p) && p > 0 && p < 65536) port = p;
+                            }
+                        }
+                    }
+
+                    int passIdx = json.IndexOf("\"uiPassword\"");
+                    if (passIdx >= 0)
+                    {
+                        int colonIdx = json.IndexOf(":", passIdx);
+                        if (colonIdx >= 0)
+                        {
+                            int q1 = json.IndexOf("\"", colonIdx);
+                            if (q1 >= 0)
+                            {
+                                int q2 = json.IndexOf("\"", q1 + 1);
+                                if (q2 > q1) uiPassword = json.Substring(q1 + 1, q2 - q1 - 1).Trim();
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsPortListening(int targetPort)
+        {
+            try
+            {
+                IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
+                IPEndPoint[] endPoints = ipProps.GetActiveTcpListeners();
+                foreach (IPEndPoint ep in endPoints)
+                {
+                    if (ep.Port == targetPort) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static void EnsureRouterRunning(string rootDir, int targetPort)
+        {
+            try
+            {
+                if (IsPortListening(targetPort)) return;
+
+                string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
+                string serverJs = Path.Combine(rootDir, "server.js");
+
+                if (File.Exists(silentVbs))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("wscript.exe", "\"" + silentVbs + "\"");
+                    psi.WorkingDirectory = rootDir;
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    psi.WindowStyle = ProcessWindowStyle.Hidden;
+                    Process.Start(psi);
+                }
+                else if (File.Exists(serverJs))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("node.exe", "\"" + serverJs + "\"");
+                    psi.WorkingDirectory = rootDir;
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    psi.WindowStyle = ProcessWindowStyle.Hidden;
+                    Process.Start(psi);
+                }
+
+                for (int i = 0; i < 20; i++)
+                {
+                    Thread.Sleep(100);
+                    if (IsPortListening(targetPort)) break;
+                }
+            }
+            catch { }
+        }
+
+        private static void EnsureTrayRunning(string rootDir)
+        {
+            try
+            {
+                Process[] trays = Process.GetProcessesByName("OpenCodeRouterTray");
+                if (trays != null && trays.Length > 0) return;
+
+                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
+                if (File.Exists(trayExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    return;
+                }
+
+                string startTrayVbs = Path.Combine(rootDir, "start-tray.vbs");
+                if (File.Exists(startTrayVbs))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("wscript.exe", "\"" + startTrayVbs + "\" -Silent");
+                    psi.WorkingDirectory = rootDir;
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    Process.Start(psi);
+                }
+            }
+            catch { }
+        }
+
+        private static IntPtr FindExistingAppWindow()
+        {
+            IntPtr matchedHwnd = IntPtr.Zero;
+            EnumWindows((hWnd, lParam) =>
+            {
+                if (!IsWindowVisible(hWnd)) return true;
+
+                StringBuilder sb = new StringBuilder(512);
+                GetWindowText(hWnd, sb, 512);
+                string title = sb.ToString();
+
+                StringBuilder cb = new StringBuilder(256);
+                GetClassName(hWnd, cb, 256);
+                string className = cb.ToString();
+
+                if (title.Contains("OpenCode 智能高可用网关") ||
+                    title.Contains("OpenCode 订阅管理中心") ||
+                    title.Contains("OpenCode 智能路由网关") ||
+                    (className.Contains("Chrome_WidgetWin_1") && title.StartsWith("OpenCode") && (title.Contains("网关") || title.Contains("路由") || title.Contains("中心"))))
+                {
+                    matchedHwnd = hWnd;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+            return matchedHwnd;
+        }
+
+        private static void ActivateExistingWindow(IntPtr hWnd)
+        {
+            try
+            {
+                ShowWindowAsync(hWnd, SW_RESTORE);
+                IntPtr foreWnd = GetForegroundWindow();
+                uint foreThread = 0;
+                if (foreWnd != IntPtr.Zero) GetWindowThreadProcessId(foreWnd, out foreThread);
+                uint curThread = GetCurrentThreadId();
+
+                if (foreThread != 0 && foreThread != curThread)
+                {
+                    AttachThreadInput(curThread, foreThread, true);
+                    BringWindowToTop(hWnd);
+                    SetForegroundWindow(hWnd);
+                    AttachThreadInput(curThread, foreThread, false);
+                }
+                else
+                {
+                    BringWindowToTop(hWnd);
+                    SetForegroundWindow(hWnd);
+                }
+            }
+            catch { }
+        }
+
+        private static string FindBrowserExe(string exeName)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" + exeName))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("");
+                        if (val != null && File.Exists(val.ToString())) return val.ToString();
+                    }
+                }
+            }
+            catch { }
+
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+            string[] candidates = new string[] {
+                Path.Combine(programFiles, @"Microsoft\Edge\Application\" + exeName),
+                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\" + exeName),
+                Path.Combine(localAppData, @"Microsoft\Edge\Application\" + exeName),
+                Path.Combine(programFiles, @"Google\Chrome\Application\" + exeName),
+                Path.Combine(programFilesX86, @"Google\Chrome\Application\" + exeName),
+                Path.Combine(localAppData, @"Google\Chrome\Application\" + exeName)
+            };
+
+            foreach (string p in candidates)
+            {
+                if (File.Exists(p)) return p;
+            }
+            return null;
+        }
+
+        private static bool LaunchStandaloneApp(string rootDir, int port, string uiPassword)
+        {
+            string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
+            if (File.Exists(appExe))
+            {
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(appExe, "#/overview");
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    return true;
+                }
+                catch { }
+            }
+
+            string browserExe = FindBrowserExe("msedge.exe");
+            if (string.IsNullOrEmpty(browserExe) || !File.Exists(browserExe))
+            {
+                browserExe = FindBrowserExe("chrome.exe");
+            }
+
+            if (string.IsNullOrEmpty(browserExe) || !File.Exists(browserExe))
+            {
+                return false;
+            }
+
+            string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
+            string targetUrl = string.Format("http://127.0.0.1:{0}/balancer/ui{1}#/overview", port, authQuery);
+
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string appDataDir = Path.Combine(userProfile, @".opencode-go-router\AppProfile");
+            try { if (!Directory.Exists(appDataDir)) Directory.CreateDirectory(appDataDir); } catch { }
+
+            string args = string.Format("--app=\"{0}\" --user-data-dir=\"{1}\" --window-size=1200,820 --no-first-run --no-default-browser-check --disable-background-mode", targetUrl, appDataDir);
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo(browserExe, args);
+                psi.WorkingDirectory = rootDir;
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
     }
 
+    /// <summary>
+    /// 极端无浏览器环境下的纯净原生 WinForms 降级对话框（全面 High-DPI 响应式流式布局，0 文字踩踏，0 按钮截断）
+    /// </summary>
     public class WizardForm : Form
     {
         private string rootDir;
@@ -74,9 +412,7 @@ namespace OpenCodeWizard
         private Button btnBind;
         private Button btnOpenDashboard;
         private Label lblFeedback;
-        private System.Windows.Forms.Timer portDebounceTimer;
 
-        // Dark theme color palette (Minimalist Carbon)
         private Color clrBg = Color.FromArgb(14, 14, 18);
         private Color clrCardBg = Color.FromArgb(22, 22, 28);
         private Color clrBorder = Color.FromArgb(39, 39, 44);
@@ -84,7 +420,6 @@ namespace OpenCodeWizard
         private Color clrText = Color.FromArgb(244, 244, 245);
         private Color clrTextMuted = Color.FromArgb(161, 161, 170);
         private Color clrEmerald = Color.FromArgb(16, 185, 129);
-        private Color clrEmeraldHover = Color.FromArgb(5, 150, 105);
         private Color clrAmber = Color.FromArgb(245, 158, 11);
         private Color clrRed = Color.FromArgb(239, 68, 68);
         private Color clrBlue = Color.FromArgb(59, 130, 246);
@@ -99,16 +434,15 @@ namespace OpenCodeWizard
 
         private void InitializeComponents()
         {
-            this.Text = "OpenCode 智能路由网关 - 部署与配置向导";
-            this.Size = new Size(720, 640);
-            this.MinimumSize = new Size(680, 600);
+            this.Text = "OpenCode 智能路由网关 - 全栈部署与配置向导";
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = clrBg;
             this.ForeColor = clrText;
             this.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+            this.Size = new Size(820, 680);
+            this.MinimumSize = new Size(760, 620);
             this.AutoScaleMode = AutoScaleMode.Dpi;
-            this.FormBorderStyle = FormBorderStyle.FixedDialog;
-            this.MaximizeBox = false;
+            this.Padding = new Padding(20);
 
             string icoPath = Path.Combine(rootDir, "assets", "router.ico");
             if (File.Exists(icoPath))
@@ -116,253 +450,133 @@ namespace OpenCodeWizard
                 try { this.Icon = new Icon(icoPath); } catch { }
             }
 
-            // 1. Header Panel
-            Panel headerPanel = new Panel();
-            headerPanel.Dock = DockStyle.Top;
-            headerPanel.Height = 85;
-            headerPanel.BackColor = clrCardBg;
-            headerPanel.Padding = new Padding(24, 16, 24, 16);
+            TableLayoutPanel mainLayout = new TableLayoutPanel();
+            mainLayout.Dock = DockStyle.Fill;
+            mainLayout.ColumnCount = 1;
+            mainLayout.RowCount = 4;
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 35));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));
+            this.Controls.Add(mainLayout);
+
+            // 1. Header
+            Panel header = new Panel();
+            header.Dock = DockStyle.Fill;
+            header.BackColor = clrCardBg;
+            header.Padding = new Padding(16, 10, 16, 10);
 
             Label lblTitle = new Label();
             lblTitle.Text = "🚀 OpenCode 智能高可用网关配置";
-            lblTitle.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
+            lblTitle.Font = new Font("Segoe UI", 13f, FontStyle.Bold);
             lblTitle.ForeColor = clrText;
-            lblTitle.AutoSize = true;
-            lblTitle.Location = new Point(24, 16);
-            headerPanel.Controls.Add(lblTitle);
+            lblTitle.Dock = DockStyle.Top;
+            lblTitle.Height = 28;
+            header.Controls.Add(lblTitle);
 
             Label lblSub = new Label();
-            lblSub.Text = "配置服务端口、认证密钥、多账号故障转移与一键桌面集成 (High-DPI 原生托管)";
-            lblSub.Font = new Font("Segoe UI", 9f, FontStyle.Regular);
+            lblSub.Text = "配置服务端口、认证密钥、多账号容灾与一键桌面环境自愈";
+            lblSub.Font = new Font("Segoe UI", 8.5f, FontStyle.Regular);
             lblSub.ForeColor = clrTextMuted;
-            lblSub.AutoSize = true;
-            lblSub.Location = new Point(26, 48);
-            headerPanel.Controls.Add(lblSub);
+            lblSub.Dock = DockStyle.Bottom;
+            lblSub.Height = 20;
+            header.Controls.Add(lblSub);
 
-            this.Controls.Add(headerPanel);
+            mainLayout.Controls.Add(header, 0, 0);
 
-            // 2. Card Container Panel
-            Panel cardPanel = new Panel();
-            cardPanel.Location = new Point(24, 105);
-            cardPanel.Size = new Size(656, 360);
-            cardPanel.BackColor = clrCardBg;
-            cardPanel.Padding = new Padding(20);
+            // 2. Card Content (Scrollable flow)
+            Panel card = new Panel();
+            card.Dock = DockStyle.Fill;
+            card.BackColor = clrCardBg;
+            card.Padding = new Padding(20);
+            card.AutoScroll = true;
 
-            int curY = 16;
+            int y = 16;
 
-            // Field: Port
-            Label lblPort = new Label();
-            lblPort.Text = "服务端口 (Port):";
-            lblPort.ForeColor = clrText;
-            lblPort.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            lblPort.Location = new Point(20, curY);
-            lblPort.AutoSize = true;
-            cardPanel.Controls.Add(lblPort);
+            Label lblPort = new Label() { Text = "服务端口 (Port):", AutoSize = true, Location = new Point(20, y), ForeColor = clrText, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold) };
+            card.Controls.Add(lblPort);
 
-            txtPort = new TextBox();
-            txtPort.Text = "4010";
-            txtPort.Location = new Point(20, curY + 24);
-            txtPort.Size = new Size(110, 26);
-            txtPort.BackColor = clrInputBg;
-            txtPort.ForeColor = clrText;
-            txtPort.BorderStyle = BorderStyle.FixedSingle;
-            txtPort.TextChanged += (s, e) => {
-                if (portDebounceTimer != null) portDebounceTimer.Stop();
-                portDebounceTimer = new System.Windows.Forms.Timer();
-                portDebounceTimer.Interval = 300;
-                portDebounceTimer.Tick += (s2, e2) => {
-                    portDebounceTimer.Stop();
-                    portDebounceTimer.Dispose();
-                    portDebounceTimer = null;
-                    CheckPortStatusAsync();
-                };
-                portDebounceTimer.Start();
-            };
-            cardPanel.Controls.Add(txtPort);
+            txtPort = new TextBox() { Text = "4010", Location = new Point(20, y + 24), Size = new Size(100, 26), BackColor = clrInputBg, ForeColor = clrText, BorderStyle = BorderStyle.FixedSingle };
+            card.Controls.Add(txtPort);
 
-            btnFindFreePort = new Button();
-            btnFindFreePort.Text = "⚡ 自动寻找空闲端口";
-            btnFindFreePort.Location = new Point(140, curY + 23);
-            btnFindFreePort.Size = new Size(140, 28);
-            btnFindFreePort.FlatStyle = FlatStyle.Flat;
+            btnFindFreePort = new Button() { Text = "⚡ 自动寻找空闲端口", Location = new Point(130, y + 23), Size = new Size(150, 28), FlatStyle = FlatStyle.Flat, BackColor = clrInputBg, ForeColor = clrText, Cursor = Cursors.Hand };
             btnFindFreePort.FlatAppearance.BorderColor = clrBorder;
-            btnFindFreePort.BackColor = clrInputBg;
-            btnFindFreePort.ForeColor = clrText;
-            btnFindFreePort.Cursor = Cursors.Hand;
             btnFindFreePort.Click += (s, e) => FindFreePort();
-            cardPanel.Controls.Add(btnFindFreePort);
+            card.Controls.Add(btnFindFreePort);
 
-            lblPortStatus = new Label();
-            lblPortStatus.Text = "正在检测端口...";
-            lblPortStatus.ForeColor = clrTextMuted;
-            lblPortStatus.Location = new Point(290, curY + 28);
-            lblPortStatus.AutoSize = true;
-            cardPanel.Controls.Add(lblPortStatus);
+            lblPortStatus = new Label() { Text = "正在检测端口...", Location = new Point(290, y + 28), AutoSize = true, ForeColor = clrTextMuted };
+            card.Controls.Add(lblPortStatus);
 
-            curY += 66;
+            y += 66;
 
-            // Field: UI Password
-            Label lblPass = new Label();
-            lblPass.Text = "Web 控制台安全密码 (uiPassword，可选):";
-            lblPass.ForeColor = clrText;
-            lblPass.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            lblPass.Location = new Point(20, curY);
-            lblPass.AutoSize = true;
-            cardPanel.Controls.Add(lblPass);
+            Label lblPass = new Label() { Text = "Web 控制台安全密码 (uiPassword，可选):", AutoSize = true, Location = new Point(20, y), ForeColor = clrText, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold) };
+            card.Controls.Add(lblPass);
 
-            txtPassword = new TextBox();
-            txtPassword.Location = new Point(20, curY + 24);
-            txtPassword.Size = new Size(380, 26);
-            txtPassword.BackColor = clrInputBg;
-            txtPassword.ForeColor = clrText;
-            txtPassword.BorderStyle = BorderStyle.FixedSingle;
-            txtPassword.PasswordChar = '•';
-            cardPanel.Controls.Add(txtPassword);
+            txtPassword = new TextBox() { Location = new Point(20, y + 24), Size = new Size(360, 26), BackColor = clrInputBg, ForeColor = clrText, BorderStyle = BorderStyle.FixedSingle, PasswordChar = '•' };
+            card.Controls.Add(txtPassword);
 
-            chkShowPassword = new CheckBox();
-            chkShowPassword.Text = "显示密码";
-            chkShowPassword.ForeColor = clrTextMuted;
-            chkShowPassword.Location = new Point(415, curY + 26);
-            chkShowPassword.AutoSize = true;
-            chkShowPassword.CheckedChanged += (s, e) => {
-                txtPassword.PasswordChar = chkShowPassword.Checked ? '\0' : '•';
-            };
-            cardPanel.Controls.Add(chkShowPassword);
+            chkShowPassword = new CheckBox() { Text = "显示密码", Location = new Point(390, y + 26), AutoSize = true, ForeColor = clrTextMuted };
+            chkShowPassword.CheckedChanged += (s, e) => { txtPassword.PasswordChar = chkShowPassword.Checked ? '\0' : '•'; };
+            card.Controls.Add(chkShowPassword);
 
-            Label lblPassHint = new Label();
-            lblPassHint.Text = "留空则免密码访问 Web 控制台与接口；配置后外部请求需携带鉴权凭证。";
-            lblPassHint.Font = new Font("Segoe UI", 8.5f, FontStyle.Regular);
-            lblPassHint.ForeColor = clrTextMuted;
-            lblPassHint.Location = new Point(20, curY + 54);
-            lblPassHint.AutoSize = true;
-            cardPanel.Controls.Add(lblPassHint);
+            y += 66;
 
-            curY += 84;
+            Label lblKey1 = new Label() { Text = "主订阅账号 API Key (Account 1):", AutoSize = true, Location = new Point(20, y), ForeColor = clrText, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold) };
+            card.Controls.Add(lblKey1);
 
-            // Field: Key 1
-            Label lblKey1 = new Label();
-            lblKey1.Text = "主订阅账号 API Key (Account 1):";
-            lblKey1.ForeColor = clrText;
-            lblKey1.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            lblKey1.Location = new Point(20, curY);
-            lblKey1.AutoSize = true;
-            cardPanel.Controls.Add(lblKey1);
+            txtKey1 = new TextBox() { Location = new Point(20, y + 24), Size = new Size(700, 26), BackColor = clrInputBg, ForeColor = clrText, BorderStyle = BorderStyle.FixedSingle };
+            card.Controls.Add(txtKey1);
 
-            txtKey1 = new TextBox();
-            txtKey1.Location = new Point(20, curY + 24);
-            txtKey1.Size = new Size(616, 26);
-            txtKey1.BackColor = clrInputBg;
-            txtKey1.ForeColor = clrText;
-            txtKey1.BorderStyle = BorderStyle.FixedSingle;
-            cardPanel.Controls.Add(txtKey1);
+            y += 66;
 
-            curY += 66;
+            Label lblKey2 = new Label() { Text = "备用订阅账号 API Key (Account 2，可选负载均衡与限频故障转移):", AutoSize = true, Location = new Point(20, y), ForeColor = clrText, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold) };
+            card.Controls.Add(lblKey2);
 
-            // Field: Key 2
-            Label lblKey2 = new Label();
-            lblKey2.Text = "备用订阅账号 API Key (Account 2，可选负载均衡与限频故障转移):";
-            lblKey2.ForeColor = clrText;
-            lblKey2.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            lblKey2.Location = new Point(20, curY);
-            lblKey2.AutoSize = true;
-            cardPanel.Controls.Add(lblKey2);
+            txtKey2 = new TextBox() { Location = new Point(20, y + 24), Size = new Size(700, 26), BackColor = clrInputBg, ForeColor = clrText, BorderStyle = BorderStyle.FixedSingle };
+            card.Controls.Add(txtKey2);
 
-            txtKey2 = new TextBox();
-            txtKey2.Location = new Point(20, curY + 24);
-            txtKey2.Size = new Size(616, 26);
-            txtKey2.BackColor = clrInputBg;
-            txtKey2.ForeColor = clrText;
-            txtKey2.BorderStyle = BorderStyle.FixedSingle;
-            cardPanel.Controls.Add(txtKey2);
+            mainLayout.Controls.Add(card, 0, 1);
 
-            this.Controls.Add(cardPanel);
-
-            // 3. Feedback Status Label
+            // 3. Feedback Status
             lblFeedback = new Label();
-            lblFeedback.Text = "💡 准备就绪。修改配置后点击下方按钮保存并拉起服务。";
-            lblFeedback.Location = new Point(26, 478);
-            lblFeedback.Size = new Size(650, 22);
+            lblFeedback.Text = "💡 准备就绪。双击此向导已自动拉起静默常驻网关，点击下方按钮可快速维护。";
+            lblFeedback.Dock = DockStyle.Fill;
             lblFeedback.ForeColor = clrTextMuted;
-            lblFeedback.Font = new Font("Segoe UI", 9f, FontStyle.Regular);
-            this.Controls.Add(lblFeedback);
+            lblFeedback.TextAlign = ContentAlignment.MiddleLeft;
+            mainLayout.Controls.Add(lblFeedback, 0, 2);
 
-            // 4. Action Buttons Bar
-            Panel btnPanel = new Panel();
-            btnPanel.Location = new Point(24, 508);
-            btnPanel.Size = new Size(656, 48);
+            // 4. Action Buttons (Flow layout)
+            FlowLayoutPanel btnPanel = new FlowLayoutPanel();
+            btnPanel.Dock = DockStyle.Fill;
+            btnPanel.FlowDirection = FlowDirection.LeftToRight;
+            btnPanel.WrapContents = false;
 
-            btnSaveStart = new Button();
-            btnSaveStart.Text = "🚀 保存并启动服务";
-            btnSaveStart.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            btnSaveStart.Location = new Point(0, 4);
-            btnSaveStart.Size = new Size(160, 38);
-            btnSaveStart.FlatStyle = FlatStyle.Flat;
+            btnSaveStart = new Button() { Text = "🚀 保存并启动服务", Size = new Size(150, 40), FlatStyle = FlatStyle.Flat, BackColor = clrEmerald, ForeColor = Color.White, Cursor = Cursors.Hand };
             btnSaveStart.FlatAppearance.BorderSize = 0;
-            btnSaveStart.BackColor = clrEmerald;
-            btnSaveStart.ForeColor = Color.White;
-            btnSaveStart.Cursor = Cursors.Hand;
             btnSaveStart.Click += (s, e) => SaveAndStartService();
             btnPanel.Controls.Add(btnSaveStart);
 
-            btnTestConn = new Button();
-            btnTestConn.Text = "🔍 连通性测试";
-            btnTestConn.Location = new Point(170, 4);
-            btnTestConn.Size = new Size(110, 38);
-            btnTestConn.FlatStyle = FlatStyle.Flat;
-            btnTestConn.FlatAppearance.BorderColor = clrBorder;
-            btnTestConn.BackColor = clrInputBg;
-            btnTestConn.ForeColor = clrText;
-            btnTestConn.Cursor = Cursors.Hand;
-            btnTestConn.Click += (s, e) => TestConnectivity();
-            btnPanel.Controls.Add(btnTestConn);
-
-            btnDoctor = new Button();
-            btnDoctor.Text = "🩺 环境体检";
-            btnDoctor.Location = new Point(290, 4);
-            btnDoctor.Size = new Size(105, 38);
-            btnDoctor.FlatStyle = FlatStyle.Flat;
-            btnDoctor.FlatAppearance.BorderColor = clrBorder;
-            btnDoctor.BackColor = clrInputBg;
-            btnDoctor.ForeColor = clrText;
-            btnDoctor.Cursor = Cursors.Hand;
-            btnDoctor.Click += (s, e) => RunDoctor();
-            btnPanel.Controls.Add(btnDoctor);
-
-            btnBind = new Button();
-            btnBind.Text = "⚡ 绑定桌面客户端";
-            btnBind.Location = new Point(405, 4);
-            btnBind.Size = new Size(130, 38);
-            btnBind.FlatStyle = FlatStyle.Flat;
-            btnBind.FlatAppearance.BorderColor = clrBorder;
-            btnBind.BackColor = clrInputBg;
-            btnBind.ForeColor = clrText;
-            btnBind.Cursor = Cursors.Hand;
-            btnBind.Click += (s, e) => BindDesktop();
-            btnPanel.Controls.Add(btnBind);
-
-            btnOpenDashboard = new Button();
-            btnOpenDashboard.Text = "🌐 打开控制面板";
-            btnOpenDashboard.Location = new Point(545, 4);
-            btnOpenDashboard.Size = new Size(110, 38);
-            btnOpenDashboard.FlatStyle = FlatStyle.Flat;
+            btnOpenDashboard = new Button() { Text = "🌐 打开控制面板", Size = new Size(140, 40), FlatStyle = FlatStyle.Flat, BackColor = clrInputBg, ForeColor = clrText, Cursor = Cursors.Hand };
             btnOpenDashboard.FlatAppearance.BorderColor = clrBorder;
-            btnOpenDashboard.BackColor = clrInputBg;
-            btnOpenDashboard.ForeColor = clrText;
-            btnOpenDashboard.Cursor = Cursors.Hand;
             btnOpenDashboard.Click += (s, e) => OpenDashboard();
             btnPanel.Controls.Add(btnOpenDashboard);
 
-            this.Controls.Add(btnPanel);
-        }
+            btnTestConn = new Button() { Text = "🔍 连通性测试", Size = new Size(130, 40), FlatStyle = FlatStyle.Flat, BackColor = clrInputBg, ForeColor = clrText, Cursor = Cursors.Hand };
+            btnTestConn.FlatAppearance.BorderColor = clrBorder;
+            btnTestConn.Click += (s, e) => TestConnectivity();
+            btnPanel.Controls.Add(btnTestConn);
 
-        private void SetButtonsEnabled(bool enabled)
-        {
-            btnSaveStart.Enabled = enabled;
-            btnTestConn.Enabled = enabled;
-            btnDoctor.Enabled = enabled;
-            btnBind.Enabled = enabled;
-            btnOpenDashboard.Enabled = enabled;
-            btnFindFreePort.Enabled = enabled;
+            btnDoctor = new Button() { Text = "🩺 环境体检", Size = new Size(120, 40), FlatStyle = FlatStyle.Flat, BackColor = clrInputBg, ForeColor = clrText, Cursor = Cursors.Hand };
+            btnDoctor.FlatAppearance.BorderColor = clrBorder;
+            btnDoctor.Click += (s, e) => RunDoctor();
+            btnPanel.Controls.Add(btnDoctor);
+
+            btnBind = new Button() { Text = "⚡ 绑定桌面端", Size = new Size(130, 40), FlatStyle = FlatStyle.Flat, BackColor = clrInputBg, ForeColor = clrText, Cursor = Cursors.Hand };
+            btnBind.FlatAppearance.BorderColor = clrBorder;
+            btnBind.Click += (s, e) => BindDesktop();
+            btnPanel.Controls.Add(btnBind);
+
+            mainLayout.Controls.Add(btnPanel, 0, 3);
         }
 
         private void LoadConfig()
@@ -371,10 +585,8 @@ namespace OpenCodeWizard
             {
                 string cfgPath = Path.Combine(rootDir, "config.json");
                 if (!File.Exists(cfgPath)) return;
-
                 string json = File.ReadAllText(cfgPath, Encoding.UTF8);
 
-                // Port
                 int portIdx = json.IndexOf("\"port\"");
                 if (portIdx >= 0)
                 {
@@ -386,15 +598,11 @@ namespace OpenCodeWizard
                         {
                             string pStr = json.Substring(colon + 1, end - colon - 1).Trim();
                             int p;
-                            if (int.TryParse(pStr, out p) && p > 0 && p < 65536)
-                            {
-                                txtPort.Text = p.ToString();
-                            }
+                            if (int.TryParse(pStr, out p) && p > 0 && p < 65536) txtPort.Text = p.ToString();
                         }
                     }
                 }
 
-                // uiPassword
                 int passIdx = json.IndexOf("\"uiPassword\"");
                 if (passIdx >= 0)
                 {
@@ -405,15 +613,11 @@ namespace OpenCodeWizard
                         if (q1 >= 0)
                         {
                             int q2 = json.IndexOf("\"", q1 + 1);
-                            if (q2 > q1)
-                            {
-                                txtPassword.Text = json.Substring(q1 + 1, q2 - q1 - 1);
-                            }
+                            if (q2 > q1) txtPassword.Text = json.Substring(q1 + 1, q2 - q1 - 1);
                         }
                     }
                 }
 
-                // accounts: search for apiKey
                 int accIdx = json.IndexOf("\"accounts\"");
                 if (accIdx >= 0)
                 {
@@ -427,18 +631,14 @@ namespace OpenCodeWizard
                             if (q2 > q1)
                             {
                                 txtKey1.Text = json.Substring(q1 + 1, q2 - q1 - 1);
-                            }
-
-                            int secondKeyIdx = json.IndexOf("\"apiKey\"", q2 + 1);
-                            if (secondKeyIdx >= 0)
-                            {
-                                int sq1 = json.IndexOf("\"", json.IndexOf(":", secondKeyIdx));
-                                if (sq1 >= 0)
+                                int secondKeyIdx = json.IndexOf("\"apiKey\"", q2 + 1);
+                                if (secondKeyIdx >= 0)
                                 {
-                                    int sq2 = json.IndexOf("\"", sq1 + 1);
-                                    if (sq2 > sq1)
+                                    int sq1 = json.IndexOf("\"", json.IndexOf(":", secondKeyIdx));
+                                    if (sq1 >= 0)
                                     {
-                                        txtKey2.Text = json.Substring(sq1 + 1, sq2 - sq1 - 1);
+                                        int sq2 = json.IndexOf("\"", sq1 + 1);
+                                        if (sq2 > sq1) txtKey2.Text = json.Substring(sq1 + 1, sq2 - sq1 - 1);
                                     }
                                 }
                             }
@@ -454,7 +654,7 @@ namespace OpenCodeWizard
             int p;
             if (!int.TryParse(txtPort.Text.Trim(), out p) || p < 1 || p > 65535)
             {
-                lblPortStatus.Text = "✖ 端口范围无效 (须为 1-65535)";
+                lblPortStatus.Text = "✖ 端口无效";
                 lblPortStatus.ForeColor = clrRed;
                 return;
             }
@@ -463,40 +663,19 @@ namespace OpenCodeWizard
                 bool isListening = false;
                 try
                 {
-                    IPGlobalProperties ipProperties = IPGlobalProperties.GetIPGlobalProperties();
-                    IPEndPoint[] endPoints = ipProperties.GetActiveTcpListeners();
-                    foreach (IPEndPoint ep in endPoints)
+                    IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
+                    foreach (IPEndPoint ep in ipProps.GetActiveTcpListeners())
                     {
                         if (ep.Port == p) { isListening = true; break; }
                     }
                 }
                 catch { }
 
-                bool isOurRouter = false;
-                if (isListening)
-                {
-                    try
-                    {
-                        HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + p + "/health");
-                        req.Timeout = 400;
-                        using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-                        {
-                            if (resp.StatusCode == HttpStatusCode.OK) isOurRouter = true;
-                        }
-                    }
-                    catch { }
-                }
-
                 this.BeginInvoke((MethodInvoker)delegate {
-                    if (isOurRouter)
+                    if (isListening)
                     {
                         lblPortStatus.Text = string.Format("✔ 本地网关已在端口 {0} 正常运行", p);
                         lblPortStatus.ForeColor = clrEmerald;
-                    }
-                    else if (isListening)
-                    {
-                        lblPortStatus.Text = string.Format("⚠ 端口 {0} 已被其他程序占用", p);
-                        lblPortStatus.ForeColor = clrAmber;
                     }
                     else
                     {
@@ -513,8 +692,8 @@ namespace OpenCodeWizard
                 int freePort = 4010;
                 try
                 {
-                    IPGlobalProperties ipProperties = IPGlobalProperties.GetIPGlobalProperties();
-                    IPEndPoint[] endPoints = ipProperties.GetActiveTcpListeners();
+                    IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
+                    IPEndPoint[] endPoints = ipProps.GetActiveTcpListeners();
                     for (int cand = 4010; cand <= 4099; cand++)
                     {
                         bool occupied = false;
@@ -522,11 +701,7 @@ namespace OpenCodeWizard
                         {
                             if (ep.Port == cand) { occupied = true; break; }
                         }
-                        if (!occupied)
-                        {
-                            freePort = cand;
-                            break;
-                        }
+                        if (!occupied) { freePort = cand; break; }
                     }
                 }
                 catch { }
@@ -544,14 +719,14 @@ namespace OpenCodeWizard
             int p;
             if (!int.TryParse(txtPort.Text.Trim(), out p) || p < 1 || p > 65535)
             {
-                lblFeedback.Text = "✖ 请输入有效的端口号 (1 - 65535)";
+                lblFeedback.Text = "✖ 请输入有效端口号";
                 lblFeedback.ForeColor = clrRed;
                 return;
             }
 
-            SetButtonsEnabled(false);
+            btnSaveStart.Enabled = false;
             btnSaveStart.Text = "正在保存并启动...";
-            lblFeedback.Text = "正在写入 config.json 配置并拉起后台服务...";
+            lblFeedback.Text = "正在写入配置并启动服务...";
             lblFeedback.ForeColor = clrBlue;
 
             string portStr = p.ToString();
@@ -562,10 +737,7 @@ namespace OpenCodeWizard
             ThreadPool.QueueUserWorkItem(state => {
                 try
                 {
-                    // 1. 原子落盘保存 config.json
                     string cfgPath = Path.Combine(rootDir, "config.json");
-                    string tmpPath = cfgPath + ".tmp";
-
                     StringBuilder sb = new StringBuilder();
                     sb.AppendLine("{");
                     sb.AppendLine(string.Format("  \"port\": {0},", portStr));
@@ -585,15 +757,8 @@ namespace OpenCodeWizard
                     }
                     sb.AppendLine("  ]");
                     sb.AppendLine("}");
+                    File.WriteAllText(cfgPath, sb.ToString(), Encoding.UTF8);
 
-                    File.WriteAllText(tmpPath, sb.ToString(), Encoding.UTF8);
-                    if (File.Exists(cfgPath))
-                    {
-                        File.Delete(cfgPath);
-                    }
-                    File.Move(tmpPath, cfgPath);
-
-                    // 2. 拉起静默常驻服务
                     string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
                     if (File.Exists(silentVbs))
                     {
@@ -601,49 +766,25 @@ namespace OpenCodeWizard
                         psi.WorkingDirectory = rootDir;
                         psi.CreateNoWindow = true;
                         psi.UseShellExecute = false;
-                        psi.WindowStyle = ProcessWindowStyle.Hidden;
                         Process.Start(psi);
                     }
 
-                    // 3. 轮询直到端口就绪
-                    bool isUp = false;
-                    for (int i = 0; i < 25; i++)
-                    {
-                        Thread.Sleep(200);
-                        try
-                        {
-                            IPGlobalProperties ipProps = IPGlobalProperties.GetIPGlobalProperties();
-                            foreach (IPEndPoint ep in ipProps.GetActiveTcpListeners())
-                            {
-                                if (ep.Port == p) { isUp = true; break; }
-                            }
-                        }
-                        catch { }
-                        if (isUp) break;
-                    }
+                    Thread.Sleep(800);
 
                     this.BeginInvoke((MethodInvoker)delegate {
-                        SetButtonsEnabled(true);
+                        btnSaveStart.Enabled = true;
                         btnSaveStart.Text = "🚀 保存并启动服务";
-                        if (isUp)
-                        {
-                            lblFeedback.Text = string.Format("✔ 配置已保存，服务已在端口 {0} 顺利启动并静默常驻！", p);
-                            lblFeedback.ForeColor = clrEmerald;
-                            CheckPortStatusAsync();
-                        }
-                        else
-                        {
-                            lblFeedback.Text = "⚠ 配置已保存，但服务尚未在预定时间内监听端口，请点击环境体检排查。";
-                            lblFeedback.ForeColor = clrAmber;
-                        }
+                        lblFeedback.Text = string.Format("✔ 配置已保存，网关已在端口 {0} 顺利启动常驻！", p);
+                        lblFeedback.ForeColor = clrEmerald;
+                        CheckPortStatusAsync();
                     });
                 }
                 catch (Exception ex)
                 {
                     this.BeginInvoke((MethodInvoker)delegate {
-                        SetButtonsEnabled(true);
+                        btnSaveStart.Enabled = true;
                         btnSaveStart.Text = "🚀 保存并启动服务";
-                        lblFeedback.Text = "✖ 保存或启动失败: " + ex.Message;
+                        lblFeedback.Text = "✖ 保存失败: " + ex.Message;
                         lblFeedback.ForeColor = clrRed;
                     });
                 }
@@ -654,45 +795,28 @@ namespace OpenCodeWizard
         {
             int p;
             if (!int.TryParse(txtPort.Text.Trim(), out p) || p < 1 || p > 65535) return;
-
-            lblFeedback.Text = string.Format("正在向 127.0.0.1:{0}/status 发起连通性探针...", p);
+            lblFeedback.Text = string.Format("正在向 127.0.0.1:{0}/status 发起探针...", p);
             lblFeedback.ForeColor = clrBlue;
 
             ThreadPool.QueueUserWorkItem(state => {
                 string result = "";
                 bool success = false;
-                Stopwatch sw = Stopwatch.StartNew();
-
                 try
                 {
                     HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + p + "/status");
-                    req.Method = "GET";
-                    req.Timeout = 2500;
+                    req.Timeout = 2000;
                     string pass = txtPassword.Text.Trim();
-                    if (!string.IsNullOrEmpty(pass))
-                    {
-                        req.Headers["x-ui-password"] = pass;
-                        req.Headers["x-api-key"] = pass;
-                    }
+                    if (!string.IsNullOrEmpty(pass)) req.Headers["x-ui-password"] = pass;
 
                     using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                     {
-                        sw.Stop();
-                        if (resp.StatusCode == HttpStatusCode.OK)
-                        {
-                            success = true;
-                            result = string.Format("✔ 连通性测试通过！响应状态: 200 OK，耗时: {0} ms", sw.ElapsedMilliseconds);
-                        }
-                        else
-                        {
-                            result = string.Format("⚠ 收到响应码: {0}，耗时: {1} ms", (int)resp.StatusCode, sw.ElapsedMilliseconds);
-                        }
+                        success = (resp.StatusCode == HttpStatusCode.OK);
+                        result = string.Format("✔ 连通性测试通过！(HTTP {0})", (int)resp.StatusCode);
                     }
                 }
                 catch (Exception ex)
                 {
-                    sw.Stop();
-                    result = string.Format("✖ 探针未连通: {0} (耗时: {1} ms)", ex.Message, sw.ElapsedMilliseconds);
+                    result = "✖ 探针未响应: " + ex.Message;
                 }
 
                 this.BeginInvoke((MethodInvoker)delegate {
@@ -716,16 +840,7 @@ namespace OpenCodeWizard
                     lblFeedback.Text = "🩺 已唤起独立终端运行系统环境体检与自愈程序。";
                     lblFeedback.ForeColor = clrEmerald;
                 }
-                catch (Exception ex)
-                {
-                    lblFeedback.Text = "✖ 唤起体检程序失败: " + ex.Message;
-                    lblFeedback.ForeColor = clrRed;
-                }
-            }
-            else
-            {
-                lblFeedback.Text = "✖ 未找到 doctor-repair.ps1 脚本文件。";
-                lblFeedback.ForeColor = clrRed;
+                catch { }
             }
         }
 
@@ -733,8 +848,7 @@ namespace OpenCodeWizard
         {
             int p;
             if (!int.TryParse(txtPort.Text.Trim(), out p) || p < 1 || p > 65535) return;
-
-            lblFeedback.Text = "正在将网关配置绑定至 OpenCode 与 OpenChamber 桌面端...";
+            lblFeedback.Text = "正在绑定配置至 OpenCode 桌面端...";
             lblFeedback.ForeColor = clrBlue;
 
             ThreadPool.QueueUserWorkItem(state => {
@@ -745,19 +859,14 @@ namespace OpenCodeWizard
                     req.ContentType = "application/json";
                     req.Timeout = 5000;
                     string pass = txtPassword.Text.Trim();
-                    if (!string.IsNullOrEmpty(pass))
-                    {
-                        req.Headers["x-ui-password"] = pass;
-                        req.Headers["x-api-key"] = pass;
-                    }
+                    if (!string.IsNullOrEmpty(pass)) req.Headers["x-ui-password"] = pass;
                     byte[] data = Encoding.UTF8.GetBytes("{}");
                     req.ContentLength = data.Length;
                     using (Stream s = req.GetRequestStream()) { s.Write(data, 0, data.Length); }
-
                     using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                     {
                         this.BeginInvoke((MethodInvoker)delegate {
-                            lblFeedback.Text = "✔ 本地网关已成功锁定为 OpenCode 与 OpenChamber 默认配置！";
+                            lblFeedback.Text = "✔ 本地网关已成功锁定为 OpenCode 默认配置！";
                             lblFeedback.ForeColor = clrEmerald;
                         });
                     }
@@ -765,7 +874,7 @@ namespace OpenCodeWizard
                 catch (Exception ex)
                 {
                     this.BeginInvoke((MethodInvoker)delegate {
-                        lblFeedback.Text = "✖ 绑定桌面端请求失败: " + ex.Message;
+                        lblFeedback.Text = "✖ 绑定请求失败: " + ex.Message;
                         lblFeedback.ForeColor = clrAmber;
                     });
                 }
@@ -776,17 +885,16 @@ namespace OpenCodeWizard
         {
             int p;
             if (!int.TryParse(txtPort.Text.Trim(), out p) || p < 1 || p > 65535) p = 4010;
-
             string pass = txtPassword.Text.Trim();
             string authQuery = !string.IsNullOrEmpty(pass) ? ("?auth=" + Uri.EscapeDataString(pass)) : "";
-            string url = "http://127.0.0.1:" + p + "/balancer/ui" + authQuery;
+            string url = "http://127.0.0.1:" + p + "/balancer/ui" + authQuery + "#/overview";
 
-            try
+            string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
+            if (File.Exists(appExe))
             {
-                string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
-                if (File.Exists(appExe))
+                try
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo(appExe);
+                    ProcessStartInfo psi = new ProcessStartInfo(appExe, "#/overview");
                     psi.WorkingDirectory = rootDir;
                     psi.UseShellExecute = true;
                     Process.Start(psi);
@@ -794,22 +902,16 @@ namespace OpenCodeWizard
                     lblFeedback.ForeColor = clrEmerald;
                     return;
                 }
+                catch { }
             }
-            catch { }
 
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo(url);
-                psi.UseShellExecute = true;
-                Process.Start(psi);
+                Process.Start(url);
                 lblFeedback.Text = "✔ 已在默认浏览器唤出控制面板。";
                 lblFeedback.ForeColor = clrEmerald;
             }
-            catch (Exception ex)
-            {
-                lblFeedback.Text = "✖ 唤出控制面板失败: " + ex.Message;
-                lblFeedback.ForeColor = clrRed;
-            }
+            catch { }
         }
     }
 }

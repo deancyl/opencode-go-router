@@ -359,8 +359,17 @@ namespace OpenCodeRouter
         {
             try
             {
+                uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
                 Process[] trays = Process.GetProcessesByName("OpenCodeRouterTray");
-                if (trays != null && trays.Length > 0) return;
+                if (trays != null && trays.Length > 0)
+                {
+                    // 广播唤醒已有托盘实例，强制重新断言向 Explorer 注册托盘图标
+                    if (msgRestore != 0)
+                    {
+                        try { PostMessage(HWND_BROADCAST, msgRestore, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    }
+                    return;
+                }
 
                 string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
                 if (File.Exists(trayExe))
