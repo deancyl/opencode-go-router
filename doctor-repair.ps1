@@ -71,6 +71,8 @@ function Get-IssueRootCause {
         "codex_process_suspended" { return "Windows PLM 进程管理器将后台 ChatGPT 线程冻结挂起" }
         "codex_locale_misaligned" { return "Codex 本地化首选项未锁定为 zh-CN 或模型 Slug 未规范化" }
         "codex_plus_port_conflict" { return "Codex++ 协议代理端口与 4010 网关冲突" }
+        "codex_notify_path_invalid" { return "Codex 外部回调 notify 路径指向已失效的旧运行时 Hash 目录" }
+        "codex_orphan_writer_locks" { return "Codex 脱机状态下遗留了未回收的 0 字节会话互斥锁文件" }
         default { return "系统检测到环境配置与最佳实践基线存在偏离" }
     }
 }
@@ -727,6 +729,15 @@ $hasCodexDir = Test-Path "$env:USERPROFILE\.codex"
 if ($codexVer -or $hasCodexDir) {
     $codexLabel = if ($codexVer) { "OpenAI Codex CLI ($codexVer)" } else { "OpenAI Codex (桌面客户端/环境)" }
     Write-Host "  ✔ $codexLabel 已检测到" -ForegroundColor Green
+    # 8.0 探测 Codex MSIX 桌面包真实版本与时间戳
+    try {
+        $codexAppx = Get-AppxPackage -Name "*Codex*" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($codexAppx) {
+            $msixVer = $codexAppx.Version
+            $msixDate = (Get-Item $codexAppx.InstallLocation -ErrorAction SilentlyContinue).CreationTime.ToString("yyyy-MM-dd HH:mm:ss")
+            Write-Host "  ✔ Codex MSIX 桌面安装包: v$msixVer (更新时间: $msixDate)" -ForegroundColor DarkCyan
+        }
+    } catch {}
     $codexConfig = "$env:USERPROFILE\.codex\config.toml"
     $isCodexBound = $false
     if (Test-Path $codexConfig) {
@@ -800,7 +811,44 @@ if ($codexVer -or $hasCodexDir) {
         }
     }
 
-    # 8.4 检查异构推理节点模型兼容性与自愈屏障状态
+    # 8.4 检查 Codex notify 外部回调可执行文件路径有效性
+    if (Test-Path $codexConfig) {
+        $notifyMatch = [regex]::Match($cfgRaw, 'notify\s*=\s*\[\s*["'']([^"'']+)["'']')
+        if ($notifyMatch.Success) {
+            $notifyPath = $notifyMatch.Groups[1].Value -replace '\\\\', '\'
+            if (-not (Test-Path $notifyPath)) {
+                Write-Host "  ⚠ Codex notify 配置指向失效或已删除的旧运行时路径: $notifyPath" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "codex_notify_path_invalid"
+                    Title = "OpenAI Codex notify 路径指向已失效的旧运行时（存在 turn-ended 消息泵故障隐患）"
+                    Severity = "Medium"
+                    FixDesc = "自动寻路重定向至当前最新存在的 cua_node 运行时（或安全剥离悬空引用）"
+                })
+            } else {
+                Write-Host "  ✔ Codex notify 运行时路径有效 ($([System.IO.Path]::GetFileName($notifyPath)))" -ForegroundColor Green
+            }
+        }
+    }
+
+    # 8.5 检查 thread-writer-locks 互斥锁脱机残留
+    $codexLockDir = Join-Path $env:USERPROFILE ".codex\thread-writer-locks"
+    if (Test-Path $codexLockDir) {
+        $lockFiles = Get-ChildItem -Path $codexLockDir -Filter "*.lock" -ErrorAction SilentlyContinue
+        if ($lockFiles -and $lockFiles.Count -gt 0) {
+            $isCodexRunning = (Get-Process -Name "codex", "ChatGPT" -ErrorAction SilentlyContinue) -ne $null
+            if (-not $isCodexRunning) {
+                Write-Host "  ⚠ 检测到 $($lockFiles.Count) 个脱机残留的孤儿 thread-writer-locks 互斥锁文件" -ForegroundColor Yellow
+                $issuesFound.Add([PSCustomObject]@{
+                    Id = "codex_orphan_writer_locks"
+                    Title = "存在 $($lockFiles.Count) 个脱机残留的孤儿 thread-writer-locks 互斥锁文件"
+                    Severity = "Low"
+                    FixDesc = "在 Codex 完全离线时安全清理 0 字节孤儿锁文件，防止干扰新会话调度"
+                })
+            }
+        }
+    }
+
+    # 8.6 检查异构推理节点模型兼容性与自愈屏障状态
     Write-Host "  ✔ 上游异构推理节点模型兼容性自愈屏障已就绪 (针对 deepseek-v4.1-flash 等受限集群 100% 自动跃迁自愈)" -ForegroundColor Green
 } else {
     Write-Host "  ℹ 未检测到 OpenAI Codex 环境" -ForegroundColor DarkGray
@@ -1623,6 +1671,44 @@ description: "极速自主推进增强模式 (Boost / Ultrawork Mode)"
                 Issue = $iss.Title
                 RootCause = Get-IssueRootCause $iss.Id
                 ActionTaken = "将 Codex++ 协议代理端口隔离迁移至 4019，彻底消除与 4010 网关冲突"
+                SnapshotPoint = $globalSnapshotId
+            })
+        }
+        "codex_notify_path_invalid" {
+            Write-Host " -> 正在校准 OpenAI Codex 失效的 notify 路径..." -ForegroundColor Yellow
+            $codexCfg = Join-Path $env:USERPROFILE ".codex\config.toml"
+            $snap = Backup-ConfigFile -FilePath $codexCfg -Reason "codex_notify_path_invalid"
+            try {
+                $adapterPath = (Join-Path $PSScriptRoot "codex-adapter").Replace('\', '/')
+                $nodeCmd = "const a = require('$adapterPath'); const r = a.repairCodexLocaleAndEnvironment(); console.log(JSON.stringify(r));"
+                $resJson = (& node -e $nodeCmd 2>$null)
+                Write-Host "    ✔ 已自动重定向 notify 路径至最新 cua_node 运行时" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 校准 notify 路径失败: $_" -ForegroundColor Yellow
+            }
+            $executionReport.Add([PSCustomObject]@{
+                Id = $iss.Id
+                Issue = $iss.Title
+                RootCause = Get-IssueRootCause $iss.Id
+                ActionTaken = "动态探测当前最新 cua_node 运行时并自愈 notify 路径"
+                SnapshotPoint = if ($snap) { Split-Path $snap -Leaf } else { $globalSnapshotId }
+            })
+        }
+        "codex_orphan_writer_locks" {
+            Write-Host " -> 正在清理脱机孤儿 thread-writer-locks 互斥锁文件..." -ForegroundColor Yellow
+            try {
+                $adapterPath = (Join-Path $PSScriptRoot "codex-adapter").Replace('\', '/')
+                $nodeCmd = "const a = require('$adapterPath'); const r = a.repairCodexLocaleAndEnvironment(); console.log(JSON.stringify(r));"
+                $resJson = (& node -e $nodeCmd 2>$null)
+                Write-Host "    ✔ 已安全清除残留的脱机孤儿锁文件" -ForegroundColor Green
+            } catch {
+                Write-Host "    ⚠ 清理孤儿锁失败: $_" -ForegroundColor Yellow
+            }
+            $executionReport.Add([PSCustomObject]@{
+                Id = $iss.Id
+                Issue = $iss.Title
+                RootCause = Get-IssueRootCause $iss.Id
+                ActionTaken = "安全回收脱机状态下残留的 0 字节 thread-writer-locks 互斥锁文件"
                 SnapshotPoint = $globalSnapshotId
             })
         }

@@ -3027,7 +3027,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const cleanup = () => {
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
-    clientRes.removeListener('close', onCloseHandler);
+    if (typeof clientRes.removeListener === 'function') clientRes.removeListener('close', onCloseHandler);
     unbindUpstream(currentUpstream);
   };
 
@@ -4618,7 +4618,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    clientRes.write(': keep-alive\n\n');
+    try { clientRes.write(': keep-alive\n\n'); } catch (_) {}
   }, 10000);
 
   const isXHighReasoning = Boolean(reqModel && (
@@ -4685,7 +4685,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const cleanup = () => {
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
-    clientRes.removeListener('close', onCloseHandler);
+    if (typeof clientRes.removeListener === 'function') clientRes.removeListener('close', onCloseHandler);
     unbindUpstream(currentUpstream);
   };
 
@@ -5033,6 +5033,14 @@ function bridgeChatStream(upstreamRes, clientRes, reqModel, reqId, onFinished, s
   let totalChunks = 0;
   let collectedUsage = null;
 
+  const heartbeatTimer = setInterval(() => {
+    if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    try { clientRes.write(': keep-alive\n\n'); } catch (_) {}
+  }, 10000);
+
   const sendEvent = (data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
     try {
@@ -5060,6 +5068,7 @@ function bridgeChatStream(upstreamRes, clientRes, reqModel, reqId, onFinished, s
   };
 
   const sendFinalDone = (finishReason = 'stop') => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (hasSentDone || clientRes.writableEnded || clientRes.destroyed) return;
     hasSentDone = true;
     streamFinished = true;
@@ -5291,6 +5300,42 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
 }
 
 /**
+ * Dynamically resolves the latest existing cua_node executable
+ */
+function findLatestCuaNodeExecutable(codexDirOverride = null) {
+  const userProfile = process.env.USERPROFILE || os.homedir();
+  const cuaBase = path.join(userProfile, 'AppData', 'Local', 'OpenAI', 'Codex', 'runtimes', 'cua_node');
+  if (!fs.existsSync(cuaBase)) return null;
+
+  try {
+    const entries = fs.readdirSync(cuaBase, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory())
+      .map(e => {
+        const full = path.join(cuaBase, e.name);
+        let mtime = 0;
+        try { mtime = fs.statSync(full).mtimeMs; } catch (_) {}
+        return { name: e.name, full, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const dir of dirs) {
+      const candidates = [
+        path.join(dir.full, 'bin', 'node_modules', '@oai', 'sky', 'bin', 'windows', 'swift', 'x64', 'codex-computer-use-swift.exe'),
+        path.join(dir.full, 'bin', 'node_modules', '@oai', 'sky', 'bin', 'windows', 'codex-computer-use.exe'),
+        path.join(dir.full, 'bin', 'node_modules', '@oai', 'cua', 'bin', 'windows', 'codex-computer-use.exe')
+      ];
+      for (const cand of candidates) {
+        if (fs.existsSync(cand)) {
+          return cand;
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
  * Updates TOML config string preserving structure, comments, and existing sections
  */
 function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, routerUrl, catalogRelativePath }) {
@@ -5360,36 +5405,25 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
   filteredLines.push('stream_max_retries = 3');
   filteredLines.push('request_max_retries = 3');
 
-  // Safeguard: Always ensure [model_providers.custom] points to local router as well
-  // This prevents Codex from erroring out with "supported API model names are ... but you passed deepseek-v4.1-flash"
-  // if the user toggles provider back to "custom" in the UI.
-  let hasCustom = false;
-  inSection = false;
+  // Channel Isolation: Never hijack or overwrite user's direct [model_providers.custom]
+  // The gateway strictly operates within its dedicated [model_providers."opencode-go"] section.
+
+  // Check and dynamically heal notify executable path if present
   for (let i = 0; i < filteredLines.length; i++) {
     const l = filteredLines[i].trim();
-    if (l === '[model_providers.custom]') {
-      hasCustom = true;
-      inSection = true;
-      continue;
-    }
-    if (inSection) {
-      if (l.startsWith('[')) {
-        inSection = false;
-      } else if (l.startsWith('base_url =')) {
-        filteredLines[i] = `base_url = ${JSON.stringify(routerUrl)}`;
-      } else if (l.startsWith('wire_api =')) {
-        filteredLines[i] = 'wire_api = "responses"';
+    const mNotify = l.match(/^notify\s*=\s*\[\s*["']([^"']+)["']/);
+    if (mNotify) {
+      const rawNotifyPath = mNotify[1].replace(/\\\\/g, '\\');
+      if (!fs.existsSync(rawNotifyPath)) {
+        const latestExe = findLatestCuaNodeExecutable();
+        if (latestExe) {
+          const escaped = latestExe.replace(/\\/g, '\\\\');
+          filteredLines[i] = filteredLines[i].replace(mNotify[1], escaped);
+        } else {
+          filteredLines[i] = `# ${filteredLines[i]} # (disabled: runtime executable not found)`;
+        }
       }
     }
-  }
-
-  if (!hasCustom && provider === 'custom') {
-    filteredLines.push('');
-    filteredLines.push('[model_providers.custom]');
-    filteredLines.push('name = "custom"');
-    filteredLines.push('wire_api = "responses"');
-    filteredLines.push('requires_openai_auth = true');
-    filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
   }
 
   // Ensure [desktop] section has localeOverride = "zh-CN"
@@ -6915,6 +6949,25 @@ function repairCodexLocaleAndEnvironment(options = {}) {
         messages.push('已为 Codex Desktop 自动注册 ComfyUI 图像智能体 (mcp-comfyui.js)');
       }
 
+      // Check and dynamically heal notify executable path if present
+      const mNotify = raw.match(/^\s*notify\s*=\s*\[\s*["']([^"']+)["']/m);
+      if (mNotify) {
+        const currentNotifyExe = mNotify[1].replace(/\\\\/g, '\\');
+        if (!fs.existsSync(currentNotifyExe)) {
+          const latestExe = findLatestCuaNodeExecutable(codexDir);
+          if (latestExe) {
+            const escapedPath = latestExe.replace(/\\/g, '\\\\');
+            raw = raw.replace(/^\s*notify\s*=\s*\[\s*["'][^"']+["']/m, `notify = [ "${escapedPath}"`);
+            changed = true;
+            messages.push(`已自动校准失效的 notify 路径至最新运行时: ${latestExe}`);
+          } else {
+            raw = raw.replace(/^\s*notify\s*=/m, '# notify =');
+            changed = true;
+            messages.push('未发现可用 cua_node 运行时，已安全注释失效的 notify 引用');
+          }
+        }
+      }
+
       if (changed) {
         fs.writeFileSync(configPath, raw, 'utf8');
       }
@@ -7049,6 +7102,36 @@ function repairCodexLocaleAndEnvironment(options = {}) {
     messages.push(`Codex++ 汉化脚本修复提醒: ${err.message}`);
   }
 
+  // 6. Clean orphan thread-writer-locks if Codex is completely offline
+  try {
+    const lockDir = path.join(codexDir, 'thread-writer-locks');
+    if (fs.existsSync(lockDir)) {
+      let isCodexRunning = false;
+      try {
+        const { execSync } = require('child_process');
+        const out = execSync('tasklist /FI "IMAGENAME eq codex.exe" /NH', { encoding: 'utf8' });
+        if (out.includes('codex.exe')) isCodexRunning = true;
+      } catch (_) {}
+      if (!isCodexRunning) {
+        const lockFiles = fs.readdirSync(lockDir).filter(f => f.endsWith('.lock'));
+        let removedCount = 0;
+        for (const f of lockFiles) {
+          const fp = path.join(lockDir, f);
+          try {
+            const stat = fs.statSync(fp);
+            if (stat.size === 0) {
+              fs.unlinkSync(fp);
+              removedCount++;
+            }
+          } catch (_) {}
+        }
+        if (removedCount > 0) {
+          messages.push(`已安全清理 ${removedCount} 个离线孤儿 thread-writer-locks 互斥锁文件`);
+        }
+      }
+    }
+  } catch (_) {}
+
   return { success: true, messages };
 }
 
@@ -7136,6 +7219,7 @@ module.exports = {
   StreamDegenerationDetector,
   autoCorrectToolArgs,
   dispatchResponsesStreamError,
+  findLatestCuaNodeExecutable,
   setComfyUIAdapter,
   getComfyUIAdapter
 };
