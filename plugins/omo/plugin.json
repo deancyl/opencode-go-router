@@ -1,0 +1,50 @@
+{
+  "$schema": "https://opencode.ai/schemas/router-plugin-v1.json",
+  "id": "omo",
+  "name": "Oh My OpenAgent (OMO) 多智能体协同插件",
+  "version": "1.0.0",
+  "description": "为 OpenCode 提供高级多智能体协同外挂插件，支持 Sisyphus 等角色协同工作流、死锁清除与目录包装",
+  "author": "deancyl",
+  "entry": "index.js",
+  "category": "agent",
+
+  "system": {
+    "platforms": ["win32", "linux"],
+    "requiresNode": ">=18.0.0",
+    "ports": [],
+    "hardware": {
+      "gpu": false
+    },
+    "conflictsWith": [],
+    "requires": []
+  },
+
+  "clientScopes": {
+    "supported": ["opencode", "openchamber"],
+    "defaultEnabled": ["opencode", "openchamber"]
+  },
+
+  "capabilities": {
+    "service": null,
+    "tools": [],
+    "agents": [
+      {
+        "id": "sisyphus",
+        "name": "Sisyphus 计划编排智能体",
+        "description": "多步骤任务推演、计划拆解与子代理协同编排",
+        "mode": "primary"
+      },
+      {
+        "id": "hephaestus",
+        "name": "Hephaestus 架构工具制造代理",
+        "description": "自动化工具封装与代码脚手架生成",
+        "mode": "subagent"
+      }
+    ],
+    "routes": [],
+    "ui": {
+      "badge": "🤖 智能体插件",
+      "sandbox": false
+    }
+  }
+}

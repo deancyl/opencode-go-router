@@ -188,6 +188,9 @@ function loadConfig() {
       } else {
         config.proxy = { ...DEFAULT_CONFIG.proxy };
       }
+      if (!config.plugins || typeof config.plugins !== 'object') {
+        config.plugins = {};
+      }
       clearProxyAgentCache();
       codexAdapter.configureAdapter(config);
     } catch (err) {
@@ -237,6 +240,14 @@ loadConfig();
 const comfyuiAdapter = new ComfyUIAdapter({ rootDir: __dirname, config });
 if (typeof codexAdapter !== 'undefined' && codexAdapter && typeof codexAdapter.setComfyUIAdapter === 'function') {
   codexAdapter.setComfyUIAdapter(comfyuiAdapter);
+}
+let pluginManager = null;
+try {
+  const { PluginManager } = require('./plugin-manager');
+  pluginManager = new PluginManager({ rootDir: __dirname, config, routerPort: config.port || 4010 });
+  pluginManager.scanPlugins();
+} catch (e) {
+  console.warn('[PluginManager] 初始化异常:', e.message);
 }
 
 /**
@@ -8031,6 +8042,7 @@ function renderDashboardHtml(config) {
               <span class="status-pill">⚡ OpenAI 兼容 /v1/images 协议</span>
             </div>
             <div class="capsule-actions" style="display:flex; align-items:center; gap:6px;">
+              <button class="btn btn-secondary btn-sm" onclick="rescanPlugins(true)" title="重新扫描 plugins/ 目录与新增扩展">🔄 扫描本地扩展</button>
               <button class="btn btn-secondary btn-sm" onclick="loadComfyUiPluginStatus(true)" title="强制穿透缓存探测所有外挂插件状态">🔄 刷新插件状态</button>
             </div>
           </div>
@@ -8044,6 +8056,13 @@ function renderDashboardHtml(config) {
                 <span id="comfy-status-badge" class="badge badge-healthy">🟢 探测中...</span>
               </div>
               <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <div style="display:inline-flex; align-items:center; gap:8px; font-size:0.75rem; color:#a1a1aa; background:#09090b; padding:4px 8px; border-radius:6px; border:1px solid #27272a;">
+                  <span style="font-weight:600; color:#cbd5e1;">客户端分发:</span>
+                  <label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" id="scope-comfyui-opencode" onchange="updatePluginClientScope('comfyui', 'opencode', this.checked)" checked> OpenCode</label>
+                  <label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" id="scope-comfyui-openchamber" onchange="updatePluginClientScope('comfyui', 'openchamber', this.checked)" checked> OpenChamber</label>
+                  <label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" id="scope-comfyui-codex" onchange="updatePluginClientScope('comfyui', 'codex', this.checked)" checked> Codex</label>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="runPluginPreflight('comfyui')" title="4级静态拓扑预检 (端口/显存/工具命名防撞车/互斥)">🔍 拓扑预检</button>
                 <button class="btn btn-secondary btn-sm" onclick="loadComfyUiPluginStatus(true)" title="重新嗅探服务与重载工作流">🔄 探测重载</button>
                 <button class="btn btn-primary btn-sm" onclick="saveComfyUiConfig(true)" title="测试当前配置并持久化保存">⚡ 测试并保存</button>
                 <button class="btn btn-secondary btn-sm" onclick="bindCodexMcp()" title="自动为 OpenAI Codex 注入 ComfyUI MCP 智能体工具">🤖 接入 Codex MCP</button>
@@ -8233,6 +8252,13 @@ function renderDashboardHtml(config) {
                 <span class="badge" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3);">可选增强</span>
               </div>
               <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <div style="display:inline-flex; align-items:center; gap:8px; font-size:0.75rem; color:#a1a1aa; background:#09090b; padding:4px 8px; border-radius:6px; border:1px solid #27272a;">
+                  <span style="font-weight:600; color:#cbd5e1;">客户端分发:</span>
+                  <label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" id="scope-omo-opencode" onchange="updatePluginClientScope('omo', 'opencode', this.checked)" checked> OpenCode</label>
+                  <label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" id="scope-omo-openchamber" onchange="updatePluginClientScope('omo', 'openchamber', this.checked)" checked> OpenChamber</label>
+                  <label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" id="scope-omo-codex" onchange="updatePluginClientScope('omo', 'codex', this.checked)"> Codex</label>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="runPluginPreflight('omo')" title="4级静态拓扑预检">🔍 拓扑预检</button>
                 <button class="btn btn-secondary btn-sm" onclick="checkOmoPluginStatus(true)" title="检测 OMO 插件安装状态、配置与死锁情况">🔍 状态体检</button>
                 <button class="btn btn-primary btn-sm" onclick="repairOmoPlugin()" title="注入 OpenCode v2 安全目录包装器并清除 Effect-TS 死锁">🛠️ 注入补丁与自愈</button>
                 <span class="collapse-toggle" onclick="toggleCardCollapse('omo-collapse-body', this)">▼ 收起</span>
@@ -8260,6 +8286,9 @@ function renderDashboardHtml(config) {
               </div>
             </div>
           </div>
+
+          <!-- Dynamic / Custom Discovered Plugins Container -->
+          <div id="dynamic-plugins-container" style="margin-top:16px;"></div>
 
           <!-- Future Extension Slots (插槽化卡片流) -->
           <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; margin-top:16px;">
@@ -12136,8 +12165,152 @@ function renderDashboardHtml(config) {
         if (force) {
           showToast(isOnline ? 'ComfyUI 服务嗅探成功，工作流已实时重载！' : 'ComfyUI 未响应，请确认本地 8284/8188 端口是否已启动', isOnline ? 'success' : 'error');
         }
+
+        // Sync plugin center status and checkboxes
+        try {
+          fetch('/balancer/api/plugins', { headers: apiHeaders() }).then(r => r.json()).then(pData => {
+            if (pData && pData.success && Array.isArray(pData.plugins)) {
+              pData.plugins.forEach(p => {
+                const ocBox = document.getElementById('scope-' + p.id + '-opencode');
+                const chBox = document.getElementById('scope-' + p.id + '-openchamber');
+                const cdBox = document.getElementById('scope-' + p.id + '-codex');
+                if (ocBox && p.clients) ocBox.checked = p.clients.opencode !== false;
+                if (chBox && p.clients) chBox.checked = p.clients.openchamber !== false;
+                if (cdBox && p.clients) cdBox.checked = p.clients.codex !== false;
+              });
+              renderDiscoveredPlugins(pData.plugins);
+            }
+          }).catch(() => {});
+        } catch (_) {}
       } catch (e) {
         console.warn('获取 ComfyUI 状态失败:', e);
+      }
+    }
+
+    async function rescanPlugins(manual) {
+      try {
+        const res = await fetch('/balancer/api/plugins/rescan', {
+          method: 'POST',
+          headers: apiHeaders()
+        });
+        const d = await res.json();
+        if (d && d.success) {
+          if (manual) showToast('成功扫描 plugins/ 目录，发现 ' + d.count + ' 个扩展插件！', 'success');
+          renderDiscoveredPlugins(d.plugins || []);
+          await loadComfyUiPluginStatus(false);
+        } else {
+          showToast('扫描插件失败: ' + (d?.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('扫描请求异常: ' + e.message, 'error');
+      }
+    }
+
+    async function updatePluginClientScope(pluginId, client, checked) {
+      try {
+        const res = await fetch('/balancer/api/plugins/clients', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ id: pluginId, clients: { [client]: checked } })
+        });
+        const d = await res.json();
+        if (d && d.success) {
+          showToast('已' + (checked ? '为' : '从') + ' ' + client + ' ' + (checked ? '启用' : '禁用') + ' "' + pluginId + '" 插件能力', 'success');
+        } else {
+          showToast('修改客户端作用域失败: ' + (d?.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, 'error');
+      }
+    }
+
+    async function runPluginPreflight(pluginId) {
+      try {
+        const res = await fetch('/balancer/api/plugins/preflight', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ id: pluginId })
+        });
+        const d = await res.json();
+        if (d && d.success) {
+          const topo = d.topology || {};
+          let msg = '【' + pluginId + ' 静态拓扑预检报告】\\n';
+          msg += topo.ok ? '✔ 拓扑兼容性预检 100% 通过！\\n' : '❌ 存在阻断性拓扑冲突！\\n';
+          if (topo.errors && topo.errors.length > 0) {
+            msg += '\\n阻断项 (Errors):\\n' + topo.errors.map(function(e) { return ' • ' + e; }).join('\\n');
+          }
+          if (topo.warnings && topo.warnings.length > 0) {
+            msg += '\\n告警/自愈提示 (Warnings):\\n' + topo.warnings.map(function(w) { return ' • ' + w; }).join('\\n');
+          }
+          if (topo.ok && (!topo.warnings || topo.warnings.length === 0)) {
+            msg += '\\n✔ 端口、GPU/显存预算、MCP工具命名空间与依赖互斥校验完全就绪，可安全激活使用。';
+          }
+          alert(msg);
+        } else {
+          showToast('预检请求失败: ' + (d?.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, 'error');
+      }
+    }
+
+    function renderDiscoveredPlugins(plugins) {
+      const container = document.getElementById('dynamic-plugins-container');
+      if (!container) return;
+      const customPlugins = plugins.filter(function(p) { return p.id !== 'comfyui' && p.id !== 'omo'; });
+      if (customPlugins.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+
+      let html = '<div style="margin-bottom:8px; font-weight:600; font-size:0.85rem; color:#f4f4f5; display:flex; align-items:center; gap:6px;"><span>🧩 已扫描到的本地外部扩展 (' + customPlugins.length + ')</span></div>';
+      customPlugins.forEach(function(p) {
+        const isEnabled = p.enabled !== false;
+        html += '<div class="card" style="margin-bottom:12px; border:1px solid ' + (isEnabled ? '#3f3f46' : '#27272a') + '; background:#0e0e11;">';
+        html += '<div class="section-title" style="margin-bottom:8px;">';
+        html += '<div class="section-title-left" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">';
+        html += '<span style="font-size:0.95rem; font-weight:600; color:#f4f4f5;">🔌 ' + escapeHtml(p.name) + '</span>';
+        html += '<span class="badge ' + (isEnabled ? 'badge-healthy' : 'badge-disabled') + '">' + (isEnabled ? '🟢 已启用' : '⚪ 已停用') + '</span>';
+        html += '<span class="badge" style="background:#27272a; color:#a1a1aa;">v' + escapeHtml(p.version) + '</span>';
+        html += '<span class="badge" style="background:rgba(56,189,248,0.15); color:#38bdf8;">' + escapeHtml(p.category) + '</span>';
+        html += '</div>';
+        html += '<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">';
+        html += '<div style="display:inline-flex; align-items:center; gap:8px; font-size:0.75rem; color:#a1a1aa; background:#09090b; padding:4px 8px; border-radius:6px; border:1px solid #27272a;">';
+        html += '<span style="font-weight:600; color:#cbd5e1;">客户端:</span>';
+        html += '<label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" onchange="updatePluginClientScope(&quot;' + p.id + '&quot;, &quot;opencode&quot;, this.checked)" ' + (p.clients && p.clients.opencode ? 'checked' : '') + '> OpenCode</label>';
+        html += '<label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" onchange="updatePluginClientScope(&quot;' + p.id + '&quot;, &quot;openchamber&quot;, this.checked)" ' + (p.clients && p.clients.openchamber ? 'checked' : '') + '> OpenChamber</label>';
+        html += '<label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer;"><input type="checkbox" onchange="updatePluginClientScope(&quot;' + p.id + '&quot;, &quot;codex&quot;, this.checked)" ' + (p.clients && p.clients.codex ? 'checked' : '') + '> Codex</label>';
+        html += '</div>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="runPluginPreflight(&quot;' + p.id + '&quot;)">🔍 拓扑预检</button>';
+        html += '<button class="btn ' + (isEnabled ? 'btn-danger' : 'btn-primary') + ' btn-sm" onclick="toggleGenericPlugin(&quot;' + p.id + '&quot;, ' + (!isEnabled) + ')">' + (isEnabled ? '🛑 停用' : '⚡ 启用') + '</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '<div style="font-size:0.8rem; color:var(--muted); line-height:1.5; margin-bottom:8px;">' + escapeHtml(p.description || '暂无描述') + '</div>';
+        html += '<div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.75rem; color:#a1a1aa;">';
+        html += '<span>🛠️ 暴露工具: <strong style="color:#38bdf8;">' + (p.toolCount || 0) + ' 个</strong></span>';
+        html += '<span>🤖 智能体: <strong style="color:#c084fc;">' + (p.agentCount || 0) + ' 个</strong></span>';
+        html += '<span>⚡ 端口: <strong style="color:#f4f4f5;">' + ((p.system && p.system.ports) ? p.system.ports.join(', ') : '无') + '</strong></span>';
+        html += '</div></div>';
+      });
+      container.innerHTML = html;
+    }
+
+    async function toggleGenericPlugin(pluginId, targetEnabled) {
+      try {
+        const res = await fetch('/balancer/api/plugins/toggle', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ id: pluginId, enabled: targetEnabled })
+        });
+        const d = await res.json();
+        if (d && d.success) {
+          showToast(targetEnabled ? ('插件 "' + pluginId + '" 已成功启用！') : ('插件 "' + pluginId + '" 已停用'), 'success');
+          await rescanPlugins(false);
+        } else {
+          showToast('操作失败: ' + (d?.errors?.join('; ') || d?.error || '预检未通过'), 'error');
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, 'error');
       }
     }
 
@@ -14557,6 +14730,179 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
     return;
   }
 
+  // =========================================================================
+  // Plugin Center Microkernel APIs (/balancer/api/plugins/*)
+  // =========================================================================
+
+  // 1. List Plugins (/balancer/api/plugins)
+  if (reqUrl.pathname === '/balancer/api/plugins' && req.method === 'GET') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    const plugins = pluginManager ? pluginManager.listPlugins() : [];
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, count: plugins.length, plugins }));
+    return;
+  }
+
+  // 2. Rescan Plugins (/balancer/api/plugins/rescan)
+  if (reqUrl.pathname === '/balancer/api/plugins/rescan' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    const scanned = pluginManager ? pluginManager.scanPlugins() : [];
+    const plugins = pluginManager ? pluginManager.listPlugins() : [];
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, count: plugins.length, plugins }));
+    return;
+  }
+
+  // 3. Toggle Plugin Enable/Disable (/balancer/api/plugins/toggle)
+  if (reqUrl.pathname === '/balancer/api/plugins/toggle' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
+      try {
+        const payload = JSON.parse(buf.toString('utf8'));
+        const pluginId = payload.id || payload.pluginId;
+        const targetEnabled = payload.enabled !== false;
+        if (!pluginId) throw new Error('plugin id is required');
+
+        let result = null;
+        if (targetEnabled) {
+          result = await pluginManager.enablePlugin(pluginId, payload);
+        } else {
+          result = await pluginManager.disablePlugin(pluginId);
+        }
+
+        // Keep ComfyUI legacy configuration synchronized
+        if (pluginId === 'comfyui') {
+          if (!config.comfyui) config.comfyui = { ...DEFAULT_CONFIG.comfyui };
+          config.comfyui.enabled = targetEnabled;
+          if (comfyuiAdapter) comfyuiAdapter.enabled = targetEnabled;
+          try {
+            writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+          } catch (_) {}
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // 4. Update Client Scopes (/balancer/api/plugins/clients)
+  if (reqUrl.pathname === '/balancer/api/plugins/clients' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    readInternalBody(req, res).then((buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
+      try {
+        const payload = JSON.parse(buf.toString('utf8'));
+        const pluginId = payload.id || payload.pluginId;
+        const clients = payload.clients;
+        if (!pluginId || !clients) throw new Error('plugin id and clients object are required');
+
+        const updatedScopes = pluginManager.setClientScopes(pluginId, clients);
+        try {
+          const clientAdapterManager = require('./client-adapter-manager');
+          clientAdapterManager.syncPluginScopes(pluginId, updatedScopes, { routerPort: config.port });
+        } catch (_) {}
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, pluginId, clients: updatedScopes }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // 5. Pre-flight Topology Check (/balancer/api/plugins/preflight)
+  if (reqUrl.pathname === '/balancer/api/plugins/preflight' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
+      try {
+        const payload = JSON.parse(buf.toString('utf8'));
+        const pluginId = payload.id || payload.pluginId;
+        if (!pluginId) throw new Error('plugin id is required');
+
+        const topology = await pluginManager.checkTopology(pluginId, payload);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, pluginId, topology }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // 6. Plugin Service Daemon Control (/balancer/api/plugins/service)
+  if (reqUrl.pathname === '/balancer/api/plugins/service' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
+      try {
+        const payload = JSON.parse(buf.toString('utf8'));
+        const pluginId = payload.id || payload.pluginId;
+        const action = payload.action || 'start';
+        const mode = payload.mode || 'gpu';
+        if (!pluginId) throw new Error('plugin id is required');
+
+        let result = null;
+        if (action === 'start') {
+          result = await pluginManager.startService(pluginId, mode);
+        } else if (action === 'stop') {
+          result = await pluginManager.stopService(pluginId);
+        } else if (action === 'restart') {
+          await pluginManager.stopService(pluginId);
+          result = await pluginManager.startService(pluginId, mode);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // 7. Active Tools Discovery (/balancer/api/plugins/tools)
+  if (reqUrl.pathname === '/balancer/api/plugins/tools' && req.method === 'GET') {
+    const client = reqUrl.query?.client || null;
+    const tools = pluginManager ? pluginManager.getActiveTools(client) : [];
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: true, count: tools.length, tools }));
+    return;
+  }
+
   // Standard OpenAI Image Generation Endpoint (/v1/images/generations & /images/generations)
   if ((reqUrl.pathname === '/v1/images/generations' || reqUrl.pathname === '/images/generations') && req.method === 'POST') {
     // N1 Fix: Enforce LAN auth gatekeeper to prevent unauthorized GPU resource consumption
@@ -15090,5 +15436,6 @@ module.exports = {
   calculateJitteredBackoff,
   isAccountAvailable,
   selectAccount,
-  getCorsHeaders
+  getCorsHeaders,
+  pluginManager
 };

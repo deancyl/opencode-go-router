@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router/releases/tag/v3.12.0"><img src="https://img.shields.io/badge/Version-v3.12.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router/releases/tag/v3.13.0"><img src="https://img.shields.io/badge/Version-v3.13.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-167%2F167%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-194%2F194%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
@@ -32,6 +32,8 @@
    原生双向转换 OpenAI Responses ↔ ChatCompletions / Anthropic 协议；解锁全量深度思考等级；内置 **ComfyUI 15步极速微雕直出生图引擎** 与 **Air-Gapped 本地离线 Office 高保真安全预览沙箱**。
 4. **Windows / Linux 跨平台原生常驻与全链路自愈 (Self-Healing)**：
    Windows 下提供 **C# Win32 原生托盘守护（零控制台黑框打扰）** 与独立桌面 App 模式；Linux/NAS 下自动装配 systemd 用户级守护；具备端口占用无损自愈、单实例死锁释放与异构上游模型动态等位跃迁能力。
+5. **微内核外挂与扩展插件中心 (Plugin Center & Master-MCP)**：
+   基于微内核架构规范化纳管 ComfyUI 生图与 OMO 智能体扩展，支持 4 级静态拓扑冲突预检（端口/显存/依赖/工具命名空间），卡片级细粒度勾选分发至 OpenCode、OpenChamber 或 Codex；通过 Master-MCP 统一聚合总线实现多端零配置即刻调度，提供完备的本地插件接入扩展机制与《插件开发者指南》。
 
 ---
 
@@ -123,6 +125,7 @@ requires_openai_auth = true
 | 🩺 **[全链路体检与自愈 (Doctor & Repair)](docs/Doctor-Self-Healing.md)** | 端口冲突自愈、单实例互斥锁清理、异构模型等位跃迁 | 运维排障 |
 | 📦 **[组件更新与快照回滚 (Updater & Rollback)](docs/Updater-Rollback.md)** | 核心组件版本监测、全量快照与秒级无损回滚 | 长期维护 |
 | 🔌 **[API 核心接口清单 (API Reference)](docs/API-Reference.md)** | 网关控制台 API、配额监测、模型热同步与健康探针 | 二次开发 |
+| 🧩 **[插件开发者指南 (Plugin Developer Guide)](docs/PLUGIN_DEVELOPER_GUIDE.md)** | 微内核插件清单规范、4 级拓扑预检、Master-MCP 协议接入 | 插件开发与扩展 |
 | ❓ **[常见问题排查 (FAQ & Troubleshooting)](docs/FAQ-Troubleshooting.md)** | 高频报错排查速查表、上游限制应对、空流自愈 | 常见问题速查 |
 
 ---

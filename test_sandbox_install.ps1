@@ -78,6 +78,8 @@ $filesToCopy = @(
     "mcp-comfyui.js",
     "updater.js",
     "powershell-optimizer.js",
+    "plugin-manager.js",
+    "mcp-master.js",
     "package.json",
     "setup-windows.ps1",
     "setup-wizard.ps1",
@@ -104,6 +106,12 @@ foreach ($f in $filesToCopy) {
 $assetsSrc = Join-Path $scriptRoot "assets"
 if (Test-Path $assetsSrc) {
     Copy-Item -Path $assetsSrc -Destination $sandboxDir -Recurse -Force
+}
+
+# 复制 plugins 目录
+$pluginsSrc = Join-Path $scriptRoot "plugins"
+if (Test-Path $pluginsSrc) {
+    Copy-Item -Path $pluginsSrc -Destination $sandboxDir -Recurse -Force
 }
 
 Assert-SandboxTest "1.1 隔离沙箱文件装配" (Test-Path (Join-Path $sandboxDir "server.js")) "沙箱环境所需全部运行时组件复制就绪"

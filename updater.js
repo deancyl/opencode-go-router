@@ -1998,6 +1998,8 @@ function backupLocalCodeForRollback(destDir, snapshotDir) {
     'context-compactor.js',
     'codex-adapter.js',
     'mcp-comfyui.js',
+    'mcp-master.js',
+    'plugin-manager.js',
     'comfyui-adapter.js',
     'powershell-optimizer.js',
     'package.json',

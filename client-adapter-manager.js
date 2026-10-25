@@ -657,6 +657,43 @@ function syncAllClients(options = {}) {
   return results;
 }
 
+/**
+ * 6. 插件智能体与客户端作用域同步协调器
+ */
+function syncPluginScopes(pluginId, scopes = {}, options = {}) {
+  const routerPort = options.routerPort || 4010;
+  const targetClients = [];
+  const messages = [];
+
+  if (scopes.opencode) targetClients.push('opencode');
+  if (scopes.openchamber) targetClients.push('openchamber');
+  if (scopes.codex) targetClients.push('codex');
+
+  // 若为 OMO 插件且启用了 OpenCode，自动触发 OpenCode v2 运行时包装器与死锁自愈
+  if (pluginId === 'omo' && scopes.opencode) {
+    try {
+      const updater = require('./updater');
+      const patchRes = updater.patchOmoPluginV2();
+      if (patchRes && patchRes.success) {
+        messages.push('已为 OpenCode 同步 OMO v2 兼容包装器与智能体环境');
+      }
+    } catch (_) {}
+  }
+
+  // 刷新客户端状态缓存，使前端毫秒级感知
+  try {
+    invalidateClientStatusCache();
+  } catch (_) {}
+
+  return {
+    success: true,
+    pluginId,
+    targetClients,
+    messages,
+    syncedAt: Date.now()
+  };
+}
+
 // 支持 CLI 直接调用
 if (require.main === module) {
   const args = process.argv.slice(2);
@@ -693,6 +730,7 @@ module.exports = {
   syncOpenChamberConfig,
   syncCodexConfig,
   syncAllClients,
+  syncPluginScopes,
   parseJsonSafe,
   stripJsonComments
 };
