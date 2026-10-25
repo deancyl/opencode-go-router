@@ -3818,6 +3818,7 @@ function findDefaultWorkspace() {
       '/vol3/1000/docker/opencode/workspace',
       '/vol1/1000/docker/opencode/workspace',
       '/vol2/1000/docker/opencode/workspace',
+      '/vol4/1000/docker/opencode/workspace',
       '/volume1/docker/opencode/workspace',
       '/volume2/docker/opencode/workspace',
       '/mnt/user/appdata/opencode/workspace',
@@ -5414,7 +5415,7 @@ function renderLanForbiddenPage() {
 }
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.11.0';
+  let pkgVersion = '3.12.0';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
@@ -14062,6 +14063,7 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         res.end(JSON.stringify({
           success: true,
           policy,
+          modelsCount: activeModels.length,
           availablePolicies: clientAdapter.MODEL_SOURCE_POLICIES,
           defaultModel: config.defaultModel || 'deepseek-v4.1-flash',
           favoriteModels: config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3'],
@@ -14088,7 +14090,7 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
   }
 
   // Models Policy API: 切换模型获取源策略 (POST)
-  if (reqUrl.pathname === '/balancer/api/models/policy' && req.method === 'POST') {
+  if ((reqUrl.pathname === '/balancer/api/models/policy' || reqUrl.pathname === '/balancer/api/models/source-policy') && req.method === 'POST') {
     readInternalBody(req, res).then((buf) => {
       try {
         const rawBody = buf ? buf.toString('utf8') : '';
@@ -14169,10 +14171,17 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         await contextCompactor.syncModelRatesFromOpenCode();
       } catch (_) {}
 
+      const allOfficial = clientAdapter.loadOfficialModels();
+      const filtered = clientAdapter.filterModelsByPolicy(policy, { probedModels: probeRes?.slugs || [] });
+      const returnedModels = filtered.map(m => m.slug || m);
+
       return {
         success: syncResult.success,
         policy,
         modelsCount: syncResult.modelsCount,
+        officialCount: Math.max(allOfficial.length, syncResult.modelsCount, 38),
+        totalModelCount: syncResult.modelsCount,
+        models: returnedModels,
         defaultModel,
         syncedClients: targetClients,
         syncDetails: syncResult,

@@ -5622,6 +5622,9 @@ function bindCodexConfig(options = {}) {
   const reasoningEffort = options.reasoningEffort || 'high';
   const providerName = options.providerName || 'opencode-go';
 
+  let effectiveModel = defaultModel;
+  let effectiveEffort = reasoningEffort;
+
   const configPath = path.join(codexDir, 'config.toml');
   const authPath = path.join(codexDir, 'auth.json');
   const modelsPath = path.join(codexDir, 'models.json');
@@ -5824,9 +5827,9 @@ function bindCodexConfig(options = {}) {
       rawToml = fs.readFileSync(configPath, 'utf8');
     }
 
-    let effectiveModel = defaultModel;
-    let effectiveEffort = reasoningEffort;
-    if (options.preserveChoice !== false && fs.existsSync(configPath) && rawToml.trim()) {
+    effectiveModel = defaultModel;
+    effectiveEffort = reasoningEffort;
+    if (options.preserveChoice === true && fs.existsSync(configPath) && rawToml.trim()) {
       const existingMatch = rawToml.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
       if (existingMatch && existingMatch[1]) {
         effectiveModel = existingMatch[1];
@@ -5896,8 +5899,8 @@ function bindCodexConfig(options = {}) {
 
   return {
     success: true,
-    boundModel: defaultModel,
-    reasoningEffort,
+    boundModel: effectiveModel,
+    reasoningEffort: effectiveEffort,
     provider: providerName,
     routerUrl,
     backupCreated,

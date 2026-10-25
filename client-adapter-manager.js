@@ -212,14 +212,33 @@ function filterModelsByPolicy(policy = DEFAULT_POLICY, options = {}) {
 
 /**
  * 3. 客户端状态探测 (检测三大客户端安装与配置就绪状态)
+ * 带 10s 内存级防抖缓存 (Rule 7 Anti-Throttling)，避免 execSync 高频阻塞
  */
+let clientStatusCache = null;
+let lastClientStatusTime = 0;
+const CLIENT_STATUS_TTL_MS = 10000;
+
+function invalidateClientStatusCache() {
+  clientStatusCache = null;
+  lastClientStatusTime = 0;
+}
+
 function getClientStatus(options = {}) {
   const routerPort = options.routerPort || 4010;
+  const now = Date.now();
+  if (options.force !== true && clientStatusCache && (now - lastClientStatusTime < CLIENT_STATUS_TTL_MS) && clientStatusCache._port === routerPort) {
+    const cached = { ...clientStatusCache };
+    delete cached._port;
+    return cached;
+  }
   const homeDir = os.homedir();
 
   // 3.1 OpenCode 2.0 CLI
   const opencodeDir = options.opencodeConfigDir || process.env.OPENCODE_CONFIG_DIR || path.join(homeDir, '.config', 'opencode');
-  const opencodePath = path.join(opencodeDir, 'opencode.jsonc');
+  let opencodePath = path.join(opencodeDir, 'opencode.jsonc');
+  if (!fs.existsSync(opencodePath) && fs.existsSync(path.join(opencodeDir, 'opencode.json'))) {
+    opencodePath = path.join(opencodeDir, 'opencode.json');
+  }
   const opencodeStatus = {
     detected: false,
     configPath: opencodePath,
@@ -278,8 +297,8 @@ function getClientStatus(options = {}) {
     if (fs.existsSync(prefPath)) {
       try {
         const pref = parseJsonSafe(prefPath, {});
-        const favs = pref.fields?.favoriteModels?.value || [];
-        const recents = pref.fields?.recentModels?.value || [];
+        const favs = (Array.isArray(pref?.fields?.favoriteModels?.value) ? pref.fields.favoriteModels.value : []).filter(f => f && typeof f === 'object');
+        const recents = (Array.isArray(pref?.fields?.recentModels?.value) ? pref.fields.recentModels.value : []).filter(r => r && typeof r === 'object');
         openchamberStatus.favoriteModels = favs.map(f => `${f.providerID}/${f.modelID}`);
         openchamberStatus.recentModels = recents.map(r => `${r.providerID}/${r.modelID}`);
         if (favs.some(f => f.providerID === 'opencode-go')) {
@@ -326,12 +345,17 @@ function getClientStatus(options = {}) {
   codexStatus.exists = codexStatus.detected;
   codexStatus.configured = codexStatus.isBound;
 
-  return {
+  const resObj = {
     routerPort,
     opencode: opencodeStatus,
     openchamber: openchamberStatus,
     codex: codexStatus
   };
+
+  clientStatusCache = { ...resObj, _port: routerPort };
+  lastClientStatusTime = now;
+
+  return resObj;
 }
 
 /**
@@ -341,7 +365,12 @@ function getClientStatus(options = {}) {
 function syncOpencodeConfig(options = {}) {
   const routerPort = options.routerPort || 4010;
   const opencodeDir = options.targetPath ? path.dirname(options.targetPath) : (process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode'));
-  const configPath = options.targetPath || path.join(opencodeDir, 'opencode.jsonc');
+  let configPath = options.targetPath;
+  if (!configPath) {
+    const jsoncPath = path.join(opencodeDir, 'opencode.jsonc');
+    const jsonPath = path.join(opencodeDir, 'opencode.json');
+    configPath = (!fs.existsSync(jsoncPath) && fs.existsSync(jsonPath)) ? jsonPath : jsoncPath;
+  }
   const policy = options.policy || DEFAULT_POLICY;
   const models = (Array.isArray(options.models) && options.models.length > 0)
     ? options.models
@@ -410,9 +439,11 @@ function syncOpenChamberConfig(options = {}) {
     // 5.1 更新 preferences.json
     const prefPath = path.join(cDir, 'preferences.json');
     let pref = parseJsonSafe(prefPath, { version: 1, fields: {} });
-    if (!pref.fields) pref.fields = {};
+    if (!pref || typeof pref !== 'object') pref = { version: 1, fields: {} };
+    if (!pref.fields || typeof pref.fields !== 'object') pref.fields = {};
 
-    const existingRecents = pref.fields.recentModels?.value || [];
+    const rawRecents = Array.isArray(pref.fields.recentModels?.value) ? pref.fields.recentModels.value : [];
+    const existingRecents = rawRecents.filter(m => m && typeof m === 'object' && m.modelID);
     let topRecents = [];
     if (options.preserveChoice !== false && existingRecents.length > 0) {
       // 尊重用户已有活跃选择：保持第一位不变，将默认模型与收藏追加至其后
@@ -437,7 +468,8 @@ function syncOpenChamberConfig(options = {}) {
       value: topRecents
     };
 
-    const existingFavs = pref.fields.favoriteModels?.value || [];
+    const rawFavs = Array.isArray(pref.fields.favoriteModels?.value) ? pref.fields.favoriteModels.value : [];
+    const existingFavs = rawFavs.filter(m => m && typeof m === 'object' && m.modelID);
     const mergedFavs = [...existingFavs];
     for (const favSlug of [defaultModelSlug, ...favorites]) {
       if (!mergedFavs.some(m => m.providerID === 'opencode-go' && m.modelID === favSlug)) {
@@ -455,8 +487,10 @@ function syncOpenChamberConfig(options = {}) {
     const setPath = path.join(cDir, 'settings.json');
     if (fs.existsSync(setPath)) {
       try {
-        const settings = parseJsonSafe(setPath, {});
-        const sRecents = settings.recentModels || [];
+        let settings = parseJsonSafe(setPath, {});
+        if (!settings || typeof settings !== 'object') settings = {};
+        const rawSRecents = Array.isArray(settings.recentModels) ? settings.recentModels : [];
+        const sRecents = rawSRecents.filter(m => m && typeof m === 'object' && m.modelID);
         let sTopRecents = [];
         if (options.preserveChoice !== false && sRecents.length > 0) {
           const sActiveFirst = sRecents[0];
@@ -476,7 +510,8 @@ function syncOpenChamberConfig(options = {}) {
         }
         settings.recentModels = sTopRecents;
 
-        const sFavs = settings.favoriteModels || [];
+        const rawSFavs = Array.isArray(settings.favoriteModels) ? settings.favoriteModels : [];
+        const sFavs = rawSFavs.filter(m => m && typeof m === 'object' && m.modelID);
         const sMergedFavs = [...sFavs];
         for (const favSlug of [defaultModelSlug, ...favorites]) {
           if (!sMergedFavs.some(m => m.providerID === 'opencode-go' && m.modelID === favSlug)) {
@@ -618,6 +653,7 @@ function syncAllClients(options = {}) {
     }
   }
 
+  invalidateClientStatusCache();
   return results;
 }
 
@@ -652,6 +688,7 @@ module.exports = {
   loadOfficialModels,
   filterModelsByPolicy,
   getClientStatus,
+  invalidateClientStatusCache,
   syncOpencodeConfig,
   syncOpenChamberConfig,
   syncCodexConfig,

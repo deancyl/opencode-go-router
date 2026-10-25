@@ -13,9 +13,9 @@
   <a href="https://microsoft.com"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white" alt="Windows"></a>
   <a href="https://kernel.org"><img src="https://img.shields.io/badge/Platform-Linux%20%2F%20NAS-E95420.svg?logo=linux&logoColor=white" alt="Linux"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-18%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js"></a>
-  <a href="https://github.com/deancyl/opencode-go-router/releases/tag/v3.11.0"><img src="https://img.shields.io/badge/Version-v3.11.0-10b981.svg?style=flat" alt="Version"></a>
+  <a href="https://github.com/deancyl/opencode-go-router/releases/tag/v3.12.0"><img src="https://img.shields.io/badge/Version-v3.12.0-10b981.svg?style=flat" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-166%2F166%20Passing-brightgreen.svg" alt="Tests"></a>
+  <a href="test_router.js"><img src="https://img.shields.io/badge/Tests-167%2F167%20Passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 ---
