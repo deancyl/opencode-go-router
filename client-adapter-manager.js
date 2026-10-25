@@ -30,11 +30,12 @@ const DEFAULT_FAVORITES = ['deepseek-v4.1-flash', 'kimi-k3'];
 const DEFAULT_REASONING_EFFORT = 'high';
 
 /**
- * 稳妥解析 JSON (去除注释与 BOM)
+ * 稳妥解析 JSON (去除注释、尾随逗号与 BOM，保护字符串内部的 http:// 或 https:// URL)
  */
 function stripJsonComments(str) {
   if (typeof str !== 'string') return '';
-  return str.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const noComments = str.replace(/\\"|"(?:[^"\\]|\\.)*"|(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)/g, (m, g) => (g ? '' : m));
+  return noComments.replace(/,(\s*[}\]])/g, '$1');
 }
 
 function parseJsonSafe(filePath, defaultVal = {}) {
@@ -654,5 +655,7 @@ module.exports = {
   syncOpencodeConfig,
   syncOpenChamberConfig,
   syncCodexConfig,
-  syncAllClients
+  syncAllClients,
+  parseJsonSafe,
+  stripJsonComments
 };

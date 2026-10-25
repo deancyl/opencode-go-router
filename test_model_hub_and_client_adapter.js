@@ -463,6 +463,16 @@ async function runAsyncTest(name, fn) {
     assert(codexSlugs.includes('gemini-4-argon'), 'OPENCODE_GO_ALL_MODELS 必须收录 gemini-4-argon');
   });
 
+  runTest('4.9 parseJsonSafe 保护字符串内的 http:// 与 https:// 完整保留，不受注释剥离误杀', () => {
+    const jsoncFile = path.join(tmpTestDir, 'url_test.jsonc');
+    fs.writeFileSync(jsoncFile, `// 顶部注释\n{\n  "url": "http://127.0.0.1:4010/v1", // 行尾注释\n  "secure": "https://opencode.ai/config.json",\n  "count": 42\n}\n`, 'utf8');
+    const parsed = clientAdapter.parseJsonSafe ? clientAdapter.parseJsonSafe(jsoncFile) : JSON.parse(clientAdapter.stripJsonComments(fs.readFileSync(jsoncFile, 'utf8')));
+    assert(parsed, '解析结果不能为 null 或 defaultVal');
+    assert.strictEqual(parsed.url, 'http://127.0.0.1:4010/v1', 'http:// URL 不能被误杀截断');
+    assert.strictEqual(parsed.secure, 'https://opencode.ai/config.json', 'https:// URL 不能被误杀截断');
+    assert.strictEqual(parsed.count, 42);
+  });
+
   // 清理临时文件
   try {
     fs.rmSync(tmpTestDir, { recursive: true, force: true });
