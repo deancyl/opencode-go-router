@@ -21,6 +21,7 @@ param(
     [string]$Key2,
     [string]$Password,
     [string]$InstallDir,
+    [string]$ModelPolicy = "hybrid",
     [switch]$NoShortcuts
 )
 

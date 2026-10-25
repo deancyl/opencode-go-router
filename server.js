@@ -91,6 +91,9 @@ const DEFAULT_CONFIG = {
   uiPassword: '',
   allowModelAutoUpgrade: false,
   allowRegionFallback: false,
+  modelSourcePolicy: 'hybrid',
+  defaultModel: 'deepseek-v4.1-flash',
+  favoriteModels: ['deepseek-v4.1-flash', 'kimi-k3'],
   proxy: {
     enabled: false,
     url: '',
@@ -170,6 +173,9 @@ function loadConfig() {
       config.compression = contextCompactor.normalizeCompressionOptions(config.compression || DEFAULT_CONFIG.compression);
       config.allowModelAutoUpgrade = Boolean(config.allowModelAutoUpgrade);
       config.allowRegionFallback = Boolean(config.allowRegionFallback);
+      config.modelSourcePolicy = ['official_docs', 'api_probed', 'hybrid'].includes(config.modelSourcePolicy) ? config.modelSourcePolicy : 'hybrid';
+      config.defaultModel = config.defaultModel || 'deepseek-v4.1-flash';
+      config.favoriteModels = Array.isArray(config.favoriteModels) ? config.favoriteModels : ['deepseek-v4.1-flash', 'kimi-k3'];
       if (typeof config.proxy === 'string') {
         config.proxy = { enabled: Boolean(config.proxy.trim()), url: config.proxy.trim(), scope: 'all', models: [] };
       } else if (config.proxy && typeof config.proxy === 'object') {
@@ -1084,132 +1090,25 @@ async function bindDesktopConfig(options = {}) {
   const homeDir = os.homedir();
   const routerUrl = `http://127.0.0.1:${config.port}/v1`;
 
-  // 1. OpenCode (~/.config/opencode/opencode.jsonc)
+  // 1 & 2. OpenCode 2.0 CLI and OpenChamber Desktop (via unified client-adapter-manager)
   try {
-    const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(homeDir, '.config', 'opencode');
-    if (!fs.existsSync(opencodeDir)) fs.mkdirSync(opencodeDir, { recursive: true });
-    const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
-    const updater = require('./updater');
-
-    // 动态嗅探拉取官方最新模型（若在线），离线则自动使用 38 款基准字典兜底
-    let officialModels = options.officialModels || null;
-    if (!officialModels) {
-      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
-      if (validAccount) {
-        try {
-          const proxyInfo = getEffectiveProxyForRequest(null);
-          const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
-          officialModels = await updater.fetchOfficialModels(validAccount.apiKey, config.upstream, 2500, { agent: proxyAgent });
-        } catch (_) {}
-      }
-    }
-
-    const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port, { officialModels });
-    result.opencode = harmRes.success;
-    if (harmRes.modelPreserved) {
-      result.messages.push(`已保留当前 OpenCode 全局首选模型 (${harmRes.currentModel})`);
-    } else {
-      result.messages.push(`已将 OpenCode 全局首选模型设置为 ${harmRes.currentModel}`);
-    }
-    const syncTag = (officialModels && officialModels.length > 0) ? `已动态同步官方最新 ${harmRes.modelCount} 款模型` : `全量覆盖 ${harmRes.modelCount} 款官方基准模型`;
-    result.messages.push(`已规范单一 provider 链路，${syncTag}，无损消除单复数冲突`);
+    const clientAdapter = require('./client-adapter-manager');
+    const policy = options.policy || config.modelSourcePolicy || 'hybrid';
+    const defaultModel = options.defaultModel || config.defaultModel || 'deepseek-v4.1-flash';
+    const favorites = options.favorites || config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3'];
+    const syncRes = clientAdapter.syncAllClients({
+      routerPort: config.port,
+      policy,
+      defaultModel,
+      favorites,
+      clients: ['opencode', 'openchamber'],
+      preserveChoice: options.preserveChoice !== false
+    });
+    result.opencode = Boolean(syncRes.opencode?.success);
+    result.openchamber = Boolean(syncRes.openchamber?.success);
+    result.messages.push(...syncRes.messages);
   } catch (err) {
-    result.messages.push('OpenCode 配置失败: ' + err.message);
-  }
-
-  // 2. OpenChamber (~/.config/openchamber and OPENCHAMBER_DATA_DIR)
-  try {
-    const chamberDirs = [];
-    if (process.env.OPENCHAMBER_DATA_DIR && fs.existsSync(process.env.OPENCHAMBER_DATA_DIR)) {
-      chamberDirs.push(process.env.OPENCHAMBER_DATA_DIR);
-    }
-    const nasChamberCandidates = [
-      '/vol3/1000/docker/opencode/openchamber/data',
-      '/vol1/1000/docker/opencode/openchamber/data',
-      '/vol2/1000/docker/opencode/openchamber/data',
-      '/vol4/1000/docker/opencode/openchamber/data',
-      '/volume1/docker/openchamber/data',
-      '/volume1/docker/opencode/openchamber/data',
-      '/volume2/docker/openchamber/data',
-      '/volume2/docker/opencode/openchamber/data',
-      '/mnt/user/appdata/openchamber/data',
-      '/var/lib/openchamber/data'
-    ];
-    for (const cand of nasChamberCandidates) {
-      if (fs.existsSync(cand) && !chamberDirs.includes(cand)) {
-        chamberDirs.push(cand);
-      }
-    }
-    const standardChamberDir = path.join(homeDir, '.config', 'openchamber');
-    if (!chamberDirs.includes(standardChamberDir)) {
-      chamberDirs.push(standardChamberDir);
-    }
-
-    let chamberUpdated = false;
-    for (const cDir of chamberDirs) {
-      if (!fs.existsSync(cDir)) {
-        try { fs.mkdirSync(cDir, { recursive: true }); } catch (e) {}
-      }
-
-      // Update preferences.json
-      const prefPath = path.join(cDir, 'preferences.json');
-      let pref = parseJsonSafe(prefPath, { version: 1, fields: {} });
-      if (!pref.fields) pref.fields = {};
-
-      const prefRecents = pref.fields.recentModels?.value || [];
-      const filteredRecents = prefRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
-      pref.fields.recentModels = {
-        updatedAt: Date.now(),
-        value: [
-          { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
-          { providerID: 'opencode-go', modelID: 'kimi-k3' },
-          ...filteredRecents
-        ]
-      };
-
-      const favs = pref.fields.favoriteModels?.value || [];
-      if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
-        favs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
-      }
-      if (!favs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
-        favs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
-      }
-      pref.fields.favoriteModels = {
-        updatedAt: Date.now(),
-        value: favs
-      };
-      fs.writeFileSync(prefPath, JSON.stringify(pref, null, 2), 'utf8');
-
-      // Update settings.json if exists
-      const setPath = path.join(cDir, 'settings.json');
-      if (fs.existsSync(setPath)) {
-        try {
-          const settings = parseJsonSafe(setPath, {});
-          const sRecents = settings.recentModels || [];
-          const sFiltered = sRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === 'deepseek-v4.1-flash' || m.modelID === 'kimi-k3')));
-          settings.recentModels = [
-            { providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' },
-            { providerID: 'opencode-go', modelID: 'kimi-k3' },
-            ...sFiltered
-          ];
-          const sFavs = settings.favoriteModels || [];
-          if (!sFavs.some(m => m.providerID === 'opencode-go' && m.modelID === 'deepseek-v4.1-flash')) {
-            sFavs.unshift({ providerID: 'opencode-go', modelID: 'deepseek-v4.1-flash' });
-          }
-          if (!sFavs.some(m => m.providerID === 'opencode-go' && m.modelID === 'kimi-k3')) {
-            sFavs.push({ providerID: 'opencode-go', modelID: 'kimi-k3' });
-          }
-          settings.favoriteModels = sFavs;
-          fs.writeFileSync(setPath, JSON.stringify(settings, null, 2), 'utf8');
-        } catch (e) {}
-      }
-      chamberUpdated = true;
-    }
-
-    result.openchamber = chamberUpdated;
-    result.messages.push('已将 OpenChamber 桌面/Web 端首选默认模型设为 opencode-go / deepseek-v4.1-flash');
-  } catch (err) {
-    result.messages.push('OpenChamber 配置失败: ' + err.message);
+    result.messages.push('客户端适配同步提醒: ' + err.message);
   }
 
   // 3. OMO (~/.omo/omo.jsonc)
@@ -7868,9 +7767,9 @@ function renderDashboardHtml(config) {
         <section class="view-section" id="view-clients">
           <div class="banner status-capsule-bar">
             <div class="capsule-group">
-              <span class="status-pill status-pill-active">
+              <span class="status-pill status-pill-active" id="clients-pill-count">
                 <span class="status-dot-pulse"></span>
-                <span>38 款全量模型已就绪</span>
+                <span id="clients-model-count-text">44 款全量模型已就绪</span>
               </span>
               <span class="status-pill">🔄 Responses 协议桥</span>
               <span class="status-pill">⏱️ 5 分钟超时与断流自愈</span>
@@ -7880,6 +7779,148 @@ function renderDashboardHtml(config) {
               <span style="font-size:0.75rem; color:var(--muted);">支持任意 OpenAI API 兼容客户端无缝接驳</span>
             </div>
           </div>
+
+          <!-- 🧭 统一模型调度与客户端适配中心 (Unified Model Hub & Client Adapter) -->
+          <div class="card" id="model-hub-card">
+            <div class="section-title">
+              <div class="section-title-left" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span>🧭 统一模型调度与客户端适配中心 (Model Hub & Clients)</span>
+                <span id="hub-policy-badge" class="badge badge-healthy">策略: 智能推荐 (hybrid)</span>
+                <span id="hub-upstream-badge" class="badge">上游探测中...</span>
+                <span id="hub-models-count-badge" class="badge" style="background:#0284c7; color:#fff;">44 款基准模型就绪</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" onclick="loadModelsHubData(true)" title="强制穿透缓存探测上游模型并刷新">🔄 重新探测对齐</button>
+                <button class="btn btn-primary btn-sm" onclick="syncAllClientsAction()" title="将当前策略及模型目录一键同步至 OpenCode、OpenChamber 与 Codex">⚡ 一键同步全端</button>
+                <span class="collapse-toggle" onclick="toggleCardCollapse('model-hub-collapse-body', this)">▼ 收起</span>
+              </div>
+            </div>
+
+            <div id="model-hub-collapse-body">
+              <div class="plain-tip-box" style="border-left-color: #0284c7;">
+                💡 <strong>【白话通俗解释】</strong>：作为本地模型生态的“单一真实信源（SSOT）”，统筹管理 44 款官方结构化基准模型与上游实时探测清单。一键将模型名录、思考等级、上下文窗口及首选模型无缝分发同步至 OpenCode、OpenChamber 及 OpenAI Codex，彻底消除配置碎片化与版本漂移。
+              </div>
+
+              <!-- 策略调配与首选模型工具栏 -->
+              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:12px 14px; margin-bottom:14px;">
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; align-items:flex-end;">
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label style="display:block; font-size:0.78rem; font-weight:600; color:#a1a1aa; margin-bottom:4px;">
+                      模型获取源策略 (Model Source Policy)
+                    </label>
+                    <select id="hub-policy-select" class="form-control" style="background:#121215; border-color:#27272a; font-size:0.85rem;" onchange="handlePolicySelectChange(this.value)">
+                      <option value="hybrid">智能混合推荐 (hybrid) - 官方44款基准+上游动态对齐 (推荐)</option>
+                      <option value="official_docs">官方基准 SSOT (official_docs) - 严格遵循官方 44 款完整模型</option>
+                      <option value="api_probed">上游探测动态对齐 (api_probed) - 仅暴露当前上游探活在线模型</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label style="display:block; font-size:0.78rem; font-weight:600; color:#a1a1aa; margin-bottom:4px;">
+                      全局首选默认模型 (Default Model)
+                    </label>
+                    <div style="display:flex; gap:6px;">
+                      <select id="hub-default-model-select" class="form-control" style="flex:1; background:#121215; border-color:#27272a; font-size:0.85rem;">
+                        <option value="deepseek-v4.1-flash">deepseek-v4.1-flash (深度求索极速旗舰)</option>
+                        <option value="kimi-k3">kimi-k3 (月之暗面 Kimi K3)</option>
+                        <option value="claude-sonnet-4-6">claude-sonnet-4-6 (Anthropic 旗舰)</option>
+                        <option value="gpt-5.4">gpt-5.4 (OpenAI 旗舰)</option>
+                      </select>
+                      <button class="btn btn-primary btn-sm" style="white-space:nowrap;" onclick="applyHubPolicyAndDefault()" title="保存策略与首选模型并持久化">💾 保存策略</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="hub-upstream-detail" style="font-size:0.75rem; color:var(--muted); margin-top:8px; padding-top:6px; border-top:1px dashed #27272a;">
+                  探测就绪：上游健康，支持 44 款结构化模型分发。
+                </div>
+              </div>
+
+              <!-- 客户端适配矩阵 -->
+              <div style="margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                  <span style="font-size:0.85rem; font-weight:600; color:#f4f4f5;">💻 全生态客户端适配状态矩阵</span>
+                  <span style="font-size:0.73rem; color:var(--muted);">支持单端单独同步或全局一键分发</span>
+                </div>
+                <div id="hub-clients-matrix" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:10px;">
+                  <div style="background:#121215; border:1px solid #27272a; border-radius:6px; padding:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <span style="font-weight:600; font-size:0.82rem; color:#f1f5f9;">💻 OpenCode CLI</span>
+                      <span id="hub-client-opencode-badge" class="badge badge-healthy" style="font-size:0.7rem;">检测中</span>
+                    </div>
+                    <div style="font-size:0.73rem; color:var(--muted); line-height:1.4;" id="hub-client-opencode-info">~/.config/opencode/opencode.jsonc</div>
+                    <div style="margin-top:8px; display:flex; justify-content:flex-end;">
+                      <button class="btn btn-secondary btn-sm" style="font-size:0.72rem; padding:2px 8px;" onclick="syncSingleClientAction('opencode')">⚡ 同步 OpenCode</button>
+                    </div>
+                  </div>
+
+                  <div style="background:#121215; border:1px solid #27272a; border-radius:6px; padding:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <span style="font-weight:600; font-size:0.82rem; color:#f1f5f9;">🖥️ OpenChamber 桌面</span>
+                      <span id="hub-client-openchamber-badge" class="badge badge-healthy" style="font-size:0.7rem;">检测中</span>
+                    </div>
+                    <div style="font-size:0.73rem; color:var(--muted); line-height:1.4;" id="hub-client-openchamber-info">~/.config/openchamber/config.json</div>
+                    <div style="margin-top:8px; display:flex; justify-content:flex-end;">
+                      <button class="btn btn-secondary btn-sm" style="font-size:0.72rem; padding:2px 8px;" onclick="syncSingleClientAction('openchamber')">⚡ 同步 OpenChamber</button>
+                    </div>
+                  </div>
+
+                  <div style="background:#121215; border:1px solid #27272a; border-radius:6px; padding:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <span style="font-weight:600; font-size:0.82rem; color:#f1f5f9;">🤖 OpenAI Codex CLI</span>
+                      <span id="hub-client-codex-badge" class="badge badge-healthy" style="font-size:0.7rem;">检测中</span>
+                    </div>
+                    <div style="font-size:0.73rem; color:var(--muted); line-height:1.4;" id="hub-client-codex-info">~/.codex/config.toml</div>
+                    <div style="margin-top:8px; display:flex; justify-content:flex-end;">
+                      <button class="btn btn-secondary btn-sm" style="font-size:0.72rem; padding:2px 8px;" onclick="syncSingleClientAction('codex')">⚡ 同步 Codex</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 统一模型全景目录浏览与过滤 -->
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                  <span style="font-size:0.85rem; font-weight:600; color:#f4f4f5; display:flex; align-items:center; gap:6px;">
+                    <span>📋 当前生效模型全景目录</span>
+                    <span id="hub-active-count-tag" style="font-size:0.72rem; color:#38bdf8; font-family:monospace;">(44 款)</span>
+                  </span>
+                  <div style="display:flex; gap:6px; align-items:center;">
+                    <input type="text" id="hub-model-search" class="form-control" placeholder="🔍 搜索模型名称/厂商..." oninput="filterHubModelTable()" style="height:28px; font-size:0.75rem; width:160px; background:#121215; border-color:#27272a; padding:2px 8px;">
+                    <select id="hub-vendor-filter" class="form-control" onchange="filterHubModelTable()" style="height:28px; font-size:0.75rem; background:#121215; border-color:#27272a; padding:2px 6px;">
+                      <option value="all">全部厂商</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="google">Google</option>
+                      <option value="moonshot">Moonshot</option>
+                      <option value="qwen">Qwen (阿里)</option>
+                      <option value="minimax">MiniMax</option>
+                      <option value="zhipu">智谱 GLM</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div style="max-height:360px; overflow-y:auto; border:1px solid #27272a; border-radius:6px;">
+                  <table class="update-table" style="margin-bottom:0; font-size:0.76rem;">
+                    <thead>
+                      <tr>
+                        <th>模型标识 (Slug) 与全称</th>
+                        <th style="width:90px;">厂商</th>
+                        <th style="width:85px;">上下文窗口</th>
+                        <th style="width:110px;">思考等级</th>
+                        <th style="width:75px; text-align:center;">状态/信源</th>
+                      </tr>
+                    </thead>
+                    <tbody id="hub-models-table-body">
+                      <tr><td colspan="5" style="text-align:center; color:var(--muted); padding:16px;">正在载入模型目录...</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
 <!-- OpenAI Codex CLI 智能接入与全量模型调度卡片 -->
     <div class="card" id="codex-card">
       <div class="section-title">
@@ -8179,6 +8220,43 @@ function renderDashboardHtml(config) {
                   <!-- Dynamically populated -->
                 </div>
               </details>
+            </div>
+          </div>
+
+          <!-- Plugin Card 2: Oh My OpenAgent (OMO) 多智能体工作流扩展 (可选外挂) -->
+          <div class="card" id="omo-plugin-card">
+            <div class="section-title">
+              <div class="section-title-left" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span style="font-size:0.95rem; font-weight:600; color:#f4f4f5;">🤖 Oh My OpenAgent (OMO) 多智能体协同插件 (可选外挂)</span>
+                <span id="omo-status-badge" class="badge badge-healthy">检测中...</span>
+                <span class="badge" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3);">可选增强</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" onclick="checkOmoPluginStatus(true)" title="检测 OMO 插件安装状态、配置与死锁情况">🔍 状态体检</button>
+                <button class="btn btn-primary btn-sm" onclick="repairOmoPlugin()" title="注入 OpenCode v2 安全目录包装器并清除 Effect-TS 死锁">🛠️ 注入补丁与自愈</button>
+                <span class="collapse-toggle" onclick="toggleCardCollapse('omo-collapse-body', this)">▼ 收起</span>
+              </div>
+            </div>
+
+            <div id="omo-collapse-body">
+              <div class="plain-tip-box" style="border-left-color: #a855f7;">
+                💡 <strong>【白话通俗解释】</strong>：Oh My OpenAgent (OMO) 是为 OpenCode 打造的高级多智能体协同外挂插件，提供 Sisyphus、Hephaestus 等多角色协同工作流与计划编排。本插件已彻底从网关核心安装链路解耦，作为独立可选外挂维护；在此可一键检测插件完整性、消除 Effect-TS 死锁并注入 OpenCode v2 运行时兼容包装器。
+              </div>
+
+              <div style="background:#09090b; border:1px solid #27272a; border-radius:8px; padding:12px 14px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                  <div>
+                    <div style="font-weight:600; font-size:0.85rem; color:#f1f5f9;" id="omo-status-title">OMO 多智能体插件</div>
+                    <div style="font-size:0.75rem; color:var(--muted); margin-top:2px;" id="omo-status-desc">配置文件: ~/.omo/omo.jsonc</div>
+                  </div>
+                  <div style="display:flex; gap:6px;">
+                    <button class="btn btn-secondary btn-sm" onclick="openOmoConfigFile()" title="查看或生成 ~/.omo/omo.jsonc">⚙️ 检查配置</button>
+                  </div>
+                </div>
+                <div id="omo-integrity-details" style="margin-top:10px; font-size:0.75rem; color:#cbd5e1; line-height:1.5;">
+                  正在检测 OMO 插件与死锁状态...
+                </div>
+              </div>
             </div>
           </div>
 
@@ -8574,6 +8652,17 @@ function renderDashboardHtml(config) {
             renderCompressionTimeSeriesChart(cachedTimeSeriesData, cachedTimeSeriesRange, cachedTimeSeriesStats);
           }
         }, 60);
+      }
+
+      if (tabId === 'clients') {
+        if (typeof loadModelsHubData === 'function') {
+          loadModelsHubData(false);
+        }
+      }
+      if (tabId === 'plugins') {
+        if (typeof checkOmoPluginStatus === 'function') {
+          checkOmoPluginStatus(false);
+        }
       }
     }
 
@@ -12413,9 +12502,372 @@ function renderDashboardHtml(config) {
       }
     }
 
-    // Auto-load ComfyUI status on initialization
+    // ==========================================
+    // Unified Model Hub & Clients Adapter Engine
+    // ==========================================
+    let cachedHubData = null;
+
+    async function loadModelsHubData(force = false) {
+      const policyBadge = document.getElementById('hub-policy-badge');
+      const upstreamBadge = document.getElementById('hub-upstream-badge');
+      const countBadge = document.getElementById('hub-models-count-badge');
+      const upstreamDetail = document.getElementById('hub-upstream-detail');
+
+      if (policyBadge) policyBadge.innerText = '正在对齐...';
+      try {
+        const url = '/balancer/api/models/hub' + (force ? '?force=1' : '');
+        const res = await fetch(url, { headers: apiHeaders() });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || '获取 Hub 数据失败');
+        cachedHubData = data;
+        renderModelHubUI(data);
+      } catch (err) {
+        if (upstreamBadge) {
+          upstreamBadge.className = 'badge badge-cooling';
+          upstreamBadge.innerText = '探测受限/离线';
+        }
+        if (upstreamDetail) {
+          upstreamDetail.innerHTML = '<span style="color:var(--danger)">⚠️ 探测或加载失败: ' + err.message + '，已平滑采纳内置高保真官方基准。</span>';
+        }
+        showToast('模型调度中枢加载异常: ' + err.message, true);
+      }
+    }
+
+    function renderModelHubUI(data) {
+      if (!data) return;
+      const policyBadge = document.getElementById('hub-policy-badge');
+      const upstreamBadge = document.getElementById('hub-upstream-badge');
+      const countBadge = document.getElementById('hub-models-count-badge');
+      const policySelect = document.getElementById('hub-policy-select');
+      const defaultModelSelect = document.getElementById('hub-default-model-select');
+      const upstreamDetail = document.getElementById('hub-upstream-detail');
+      const activeCountTag = document.getElementById('hub-active-count-tag');
+      const bannerCountText = document.getElementById('clients-model-count-text');
+
+      if (policyBadge) {
+        policyBadge.className = 'badge badge-healthy';
+        const pNames = { hybrid: '智能混合推荐 (hybrid)', official_docs: '官方基准 SSOT (official_docs)', api_probed: '上游探测 (api_probed)' };
+        policyBadge.innerText = '策略: ' + (pNames[data.policy] || data.policy);
+      }
+      if (policySelect) policySelect.value = data.policy || 'hybrid';
+
+      if (upstreamBadge) {
+        if (data.upstreamStatus && data.upstreamStatus.healthy) {
+          upstreamBadge.className = 'badge badge-healthy';
+          upstreamBadge.innerText = '🟢 上游就绪 (' + data.counts.probedCount + ' 款在线)';
+        } else {
+          const diagType = (data.upstreamStatus && data.upstreamStatus.diagnostic && data.upstreamStatus.diagnostic.type) || 'PROBE_FAILED';
+          upstreamBadge.className = 'badge badge-cooling';
+          upstreamBadge.innerText = '🟡 上游兜底 (' + diagType + ')';
+        }
+      }
+
+      if (countBadge) {
+        countBadge.innerText = data.counts.activeCount + ' 款模型就绪';
+      }
+      if (activeCountTag) {
+        activeCountTag.innerText = '(' + data.counts.activeCount + ' 款)';
+      }
+      if (bannerCountText) {
+        bannerCountText.innerText = data.counts.activeCount + ' 款全量模型已就绪';
+      }
+
+      if (upstreamDetail) {
+        let diagMsg = '';
+        if (data.upstreamStatus && data.upstreamStatus.diagnostic && data.upstreamStatus.diagnostic.suggestion) {
+          diagMsg = ' 💡 ' + data.upstreamStatus.diagnostic.suggestion;
+        }
+        upstreamDetail.innerHTML = '<strong>数据信源状态：</strong>官方基准表 <strong>' + data.counts.officialCount + '</strong> 款，上游探活 <strong>' + data.counts.probedCount + '</strong> 款，当前策略激活 <strong>' + data.counts.activeCount + '</strong> 款。' + diagMsg;
+      }
+
+      // Populate default model dropdown
+      if (defaultModelSelect && Array.isArray(data.models)) {
+        const currentVal = defaultModelSelect.value || data.defaultModel;
+        defaultModelSelect.innerHTML = '';
+        data.models.forEach(function(m) {
+          const opt = document.createElement('option');
+          opt.value = m.slug;
+          opt.textContent = m.name + ' (' + m.slug + ')';
+          if (m.slug === currentVal || m.slug === data.defaultModel) opt.selected = true;
+          defaultModelSelect.appendChild(opt);
+        });
+      }
+
+      // Populate codex select as well if exists
+      const codexSelect = document.getElementById('codex-model-select');
+      if (codexSelect && Array.isArray(data.models)) {
+        const curCodexVal = codexSelect.value;
+        codexSelect.innerHTML = '';
+        data.models.forEach(function(m) {
+          const opt = document.createElement('option');
+          opt.value = m.slug;
+          opt.textContent = m.name + ' (' + m.slug + ')';
+          if (m.slug === curCodexVal) opt.selected = true;
+          codexSelect.appendChild(opt);
+        });
+      }
+
+      // Update clients status cards
+      if (data.clients) {
+        renderClientStatusItem('opencode', data.clients.opencode);
+        renderClientStatusItem('openchamber', data.clients.openchamber);
+        renderClientStatusItem('codex', data.clients.codex);
+      }
+
+      // Populate model table
+      renderHubModelTable(data.models || []);
+    }
+
+    function renderClientStatusItem(clientKey, clientObj) {
+      const badge = document.getElementById('hub-client-' + clientKey + '-badge');
+      const info = document.getElementById('hub-client-' + clientKey + '-info');
+      if (!clientObj) return;
+
+      if (badge) {
+        if (clientObj.configured) {
+          badge.className = 'badge badge-healthy';
+          badge.innerText = '🟢 已对齐网关 (' + (clientObj.modelCount || 0) + ' 款)';
+        } else if (clientObj.exists) {
+          badge.className = 'badge badge-cooling';
+          badge.innerText = '🟡 未接驳网关';
+        } else {
+          badge.className = 'badge';
+          badge.style.background = '#27272a';
+          badge.style.color = '#a1a1aa';
+          badge.innerText = '⚪ 配置文件不存在';
+        }
+      }
+      if (info) {
+        let txt = clientObj.configPath || '';
+        if (clientObj.defaultModel) txt += ' | 首选: ' + clientObj.defaultModel;
+        info.innerText = txt;
+      }
+    }
+
+    function renderHubModelTable(models) {
+      const tbody = document.getElementById('hub-models-table-body');
+      if (!tbody) return;
+      if (!models || models.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:16px;">无匹配模型</td></tr>';
+        return;
+      }
+      let html = '';
+      models.forEach(function(m) {
+        const vendorBadge = '<span class="badge" style="font-size:0.7rem; background:rgba(255,255,255,0.06); color:#cbd5e1;">' + (m.vendor || 'Unknown') + '</span>';
+        const ctxStr = m.context_window ? (Math.round(m.context_window / 1000) + 'k') : '-';
+        const reasoningLevels = Array.isArray(m.supported_reasoning_levels) && m.supported_reasoning_levels.length > 0
+          ? m.supported_reasoning_levels.join('/')
+          : '<span style="color:var(--muted)">不支持</span>';
+        const srcBadge = m.source === 'api_probed'
+          ? '<span class="badge badge-healthy" style="font-size:0.68rem;">在线探活</span>'
+          : '<span class="badge" style="font-size:0.68rem; background:rgba(2,132,199,0.18); color:#38bdf8; border:1px solid rgba(2,132,199,0.3);">官方基准</span>';
+
+        html += '<tr data-slug="' + m.slug + '" data-vendor="' + (m.vendor || '').toLowerCase() + '" data-name="' + (m.name || '').toLowerCase() + '">' +
+          '<td><div style="font-weight:600; color:#f1f5f9;">' + m.name + '</div><div style="font-family:monospace; color:#38bdf8; font-size:0.72rem;">' + m.slug + '</div></td>' +
+          '<td>' + vendorBadge + '</td>' +
+          '<td style="font-family:monospace; color:#cbd5e1;">' + ctxStr + '</td>' +
+          '<td style="font-size:0.72rem; color:#a1a1aa;">' + reasoningLevels + '</td>' +
+          '<td style="text-align:center;">' + srcBadge + '</td>' +
+        '</tr>';
+      });
+      tbody.innerHTML = html;
+      filterHubModelTable();
+    }
+
+    function filterHubModelTable() {
+      const searchInput = document.getElementById('hub-model-search');
+      const vendorInput = document.getElementById('hub-vendor-filter');
+      const search = (searchInput ? searchInput.value : '').toLowerCase().trim();
+      const vendor = (vendorInput ? vendorInput.value : 'all').toLowerCase().trim();
+      const rows = document.querySelectorAll('#hub-models-table-body tr[data-slug]');
+      let visible = 0;
+      rows.forEach(function(r) {
+        const rowSlug = r.getAttribute('data-slug') || '';
+        const rowVendor = r.getAttribute('data-vendor') || '';
+        const rowName = r.getAttribute('data-name') || '';
+
+        const matchSearch = !search || rowSlug.indexOf(search) !== -1 || rowName.indexOf(search) !== -1 || rowVendor.indexOf(search) !== -1;
+        const matchVendor = (vendor === 'all') || rowVendor.indexOf(vendor) !== -1;
+
+        if (matchSearch && matchVendor) {
+          r.style.display = '';
+          visible++;
+        } else {
+          r.style.display = 'none';
+        }
+      });
+      const activeCountTag = document.getElementById('hub-active-count-tag');
+      if (activeCountTag && cachedHubData && cachedHubData.models) {
+        activeCountTag.innerText = '(' + visible + ' / ' + cachedHubData.models.length + ' 款)';
+      }
+    }
+
+    function handlePolicySelectChange(policy) {}
+
+    async function applyHubPolicyAndDefault() {
+      const pSel = document.getElementById('hub-policy-select');
+      const dSel = document.getElementById('hub-default-model-select');
+      const policy = (pSel ? pSel.value : '') || 'hybrid';
+      const defaultModel = (dSel ? dSel.value : '') || 'deepseek-v4.1-flash';
+
+      showToast('正在保存模型获取策略【' + policy + '】...');
+      try {
+        const res = await fetch('/balancer/api/models/policy', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ policy: policy, defaultModel: defaultModel, syncClients: true })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✔ ' + data.message);
+          await loadModelsHubData(false);
+        } else {
+          showToast('保存策略失败: ' + (data.error || '未知错误'), true);
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e.message, true);
+      }
+    }
+
+    async function syncAllClientsAction() {
+      const pSel = document.getElementById('hub-policy-select');
+      const dSel = document.getElementById('hub-default-model-select');
+      const policy = (pSel ? pSel.value : '') || 'hybrid';
+      const defaultModel = (dSel ? dSel.value : '') || 'deepseek-v4.1-flash';
+
+      showToast('正在将模型目录与策略同步写入全端客户端...');
+      try {
+        const res = await fetch('/balancer/api/models/sync', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ policy: policy, defaultModel: defaultModel })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✔ ' + (data.message || '全端客户端同步成功！'));
+          await loadModelsHubData(false);
+        } else {
+          showToast('同步未完全成功: ' + (data.error || '部分失败'), true);
+        }
+      } catch (e) {
+        showToast('同步请求异常: ' + e.message, true);
+      }
+    }
+
+    async function syncSingleClientAction(clientKey) {
+      showToast('正在单独同步 ' + clientKey + ' 配置...');
+      try {
+        const res = await fetch('/balancer/api/models/sync', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ clients: [clientKey] })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✔ ' + clientKey + ' 配置同步成功！');
+          await loadModelsHubData(false);
+        } else {
+          showToast('同步失败: ' + (data.error || '未知错误'), true);
+        }
+      } catch (e) {
+        showToast('同步异常: ' + e.message, true);
+      }
+    }
+
+    // ==========================================
+    // OMO Plugin Status & Repair Functions
+    // ==========================================
+    async function checkOmoPluginStatus(manual = false) {
+      const badge = document.getElementById('omo-status-badge');
+      const details = document.getElementById('omo-integrity-details');
+      if (manual && badge) badge.innerText = '体检中...';
+
+      try {
+        const res = await fetch('/balancer/api/doctor', { headers: apiHeaders() });
+        const doc = await res.json();
+        const omoInteg = doc.omoIntegrity;
+
+        if (omoInteg && omoInteg.healthy) {
+          if (badge) {
+            badge.className = 'badge badge-healthy';
+            badge.innerText = '🟢 v2 安全兼容';
+          }
+          if (details) {
+            details.innerHTML = '<span style="color:var(--success)">✔ 插件完整且已注入安全目录包装器，无 Effect-TS 死锁标记。</span><br>' +
+              '<span style="color:var(--muted)">已探测目标文件: ' + (omoInteg.targets || 0) + ' 处</span>';
+          }
+        } else if (omoInteg && (omoInteg.hasDeadlockEffect || omoInteg.hasMissingWrapper)) {
+          if (badge) {
+            badge.className = 'badge badge-cooling';
+            badge.innerText = '⚠️ 存在兼容缺陷/死锁';
+          }
+          if (details) {
+            details.innerHTML = '<span style="color:var(--warning)">⚠️ 检测到 ' +
+              (omoInteg.hasDeadlockEffect ? '【Effect-TS 死锁标记】' : '') +
+              (omoInteg.hasMissingWrapper ? '【缺少 v2 运行时包装器】' : '') +
+              '，建议点击【🛠️ 注入补丁与自愈】一键修复。</span>';
+          }
+        } else {
+          if (badge) {
+            badge.className = 'badge';
+            badge.style.background = '#27272a';
+            badge.style.color = '#a1a1aa';
+            badge.innerText = '⚪ 未安装或未检测到';
+          }
+          if (details) {
+            details.innerHTML = '<span style="color:var(--muted)">未在 OpenCode 缓存中检测到 oh-my-openagent 模块。OMO 为可选外挂，不影响网关正常运转。</span>';
+          }
+        }
+        if (manual) showToast('OMO 状态体检完成');
+      } catch (e) {
+        if (details) details.innerHTML = '<span style="color:var(--danger)">体检异常: ' + e.message + '</span>';
+      }
+    }
+
+    async function repairOmoPlugin() {
+      showToast('正在自愈 OMO 插件并注入 v2 兼容包装...');
+      try {
+        const res = await fetch('/balancer/api/repair', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ scope: 'omo' })
+        });
+        const d = await res.json();
+        if (d.success) {
+          showToast('🎉 OMO 兼容补丁注入成功！');
+          await checkOmoPluginStatus(false);
+        } else {
+          showToast('自愈未完成: ' + (d.message || d.error), true);
+        }
+      } catch (e) {
+        showToast('自愈请求异常: ' + e.message, true);
+      }
+    }
+
+    async function openOmoConfigFile() {
+      try {
+        const res = await fetch('/balancer/api/repair', {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ scope: 'omo-config' })
+        });
+        const d = await res.json();
+        showToast('已确认 ~/.omo/omo.jsonc 配置文件就绪');
+        checkOmoPluginStatus(false);
+      } catch (e) {
+        showToast('检查异常: ' + e.message, true);
+      }
+    }
+
+    // Auto-load ComfyUI and Hub status on initialization
     setTimeout(function() {
       loadComfyUiPluginStatus(false);
+      if (getHashTab() === 'clients') {
+        loadModelsHubData(false);
+      }
+      if (getHashTab() === 'plugins') {
+        checkOmoPluginStatus(false);
+      }
     }, 400);
   </script>
 </body>
@@ -13568,73 +14020,186 @@ $ghost
     return;
   }
 
-  // Dynamic Official Models Sync API
-  if (reqUrl.pathname === '/balancer/api/models/sync') {
+  // Models Hub API: 获取模型调度中心全量元数据、上游深度诊断与多端状态 (GET)
+  if (reqUrl.pathname === '/balancer/api/models/hub' && req.method === 'GET') {
     (async () => {
-      let apiKey = '';
-      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
-      if (validAccount) apiKey = validAccount.apiKey.trim();
-
       try {
         const updater = require('./updater');
+        const clientAdapter = require('./client-adapter-manager');
         const proxyInfo = getEffectiveProxyForRequest(null);
         const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
-        const officialModels = await updater.fetchOfficialModels(apiKey, config.upstream, 5000, { agent: proxyAgent });
-        if (officialModels && officialModels.length > 0) {
-          const opencodeDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
-          const opencodeJsonPath = path.join(opencodeDir, 'opencode.jsonc');
-          const harmRes = updater.harmonizeOpencodeConfig(opencodeJsonPath, config.port, { officialModels });
-          
-          let codexSynced = false;
-          try {
-            const codex = require('./codex-adapter');
-            codex.syncDynamicModels(officialModels);
-            codexSynced = true;
-          } catch (_) {}
 
-          let compactorRatesSynced = false;
-          try {
-            const cr = await contextCompactor.syncModelRatesFromOpenCode();
-            compactorRatesSynced = Boolean(cr && cr.success);
-          } catch (_) {}
+        // 探测上游模型与深层故障诊断 (多账号故障转移轮询)
+        const probeRes = await updater.fetchOfficialModels(config.accounts, config.upstream, 3500, {
+          returnDetails: true,
+          agent: proxyAgent
+        });
 
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({
-            success: true,
-            upstream: config.upstream,
+        const policy = config.modelSourcePolicy || 'hybrid';
+        const officialModels = clientAdapter.loadOfficialModels();
+        const probedSlugs = probeRes?.slugs || [];
+        const activeModels = clientAdapter.filterModelsByPolicy(policy, {
+          officialModels,
+          probedModels: probedSlugs
+        });
+
+        const clientStatus = clientAdapter.getClientStatus({ routerPort: config.port });
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: true,
+          policy,
+          availablePolicies: clientAdapter.MODEL_SOURCE_POLICIES,
+          defaultModel: config.defaultModel || 'deepseek-v4.1-flash',
+          favoriteModels: config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3'],
+          upstreamStatus: {
+            healthy: Boolean(probeRes && probeRes.success),
+            probedCount: probedSlugs.length,
+            diagnostic: probeRes?.diagnostic || null,
+            accountsTested: probeRes?.accountsTested || 0
+          },
+          counts: {
             officialCount: officialModels.length,
-            totalModelCount: harmRes.modelCount,
-            currentModel: harmRes.currentModel,
-            codexSynced,
-            compactorRatesSynced,
-            models: officialModels,
-            message: `已成功从官方上游动态嗅探并同步 ${officialModels.length} 款模型，本地客户端配置已增量热更新！`
-          }, null, 2));
-        } else {
-          let compactorRatesSynced = false;
-          try {
-            const cr = await contextCompactor.syncModelRatesFromOpenCode();
-            compactorRatesSynced = Boolean(cr && cr.success);
-          } catch (_) {}
-
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({
-            success: true,
-            upstream: config.upstream,
-            officialCount: 38,
-            totalModelCount: 38,
-            fallback: true,
-            compactorRatesSynced,
-            models: updater.ALL_38_SLUGS,
-            message: '当前上游网络或密钥未就绪，已安全使用内置 38 款高保真基准模型字典兜底！'
-          }, null, 2));
-        }
-      } catch (syncErr) {
+            probedCount: probedSlugs.length,
+            activeCount: activeModels.length
+          },
+          models: activeModels,
+          clients: clientStatus
+        }, null, 2));
+      } catch (hubErr) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ success: false, error: syncErr.message }));
+        res.end(JSON.stringify({ success: false, error: hubErr.message }));
       }
     })();
     return;
+  }
+
+  // Models Policy API: 切换模型获取源策略 (POST)
+  if (reqUrl.pathname === '/balancer/api/models/policy' && req.method === 'POST') {
+    readInternalBody(req, res).then((buf) => {
+      try {
+        const rawBody = buf ? buf.toString('utf8') : '';
+        const body = rawBody ? JSON.parse(rawBody) : {};
+        const clientAdapter = require('./client-adapter-manager');
+        const targetPolicy = body.policy;
+        if (!clientAdapter.MODEL_SOURCE_POLICIES.includes(targetPolicy)) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          return res.end(JSON.stringify({ success: false, error: `无效策略: ${targetPolicy}，必须为: ${clientAdapter.MODEL_SOURCE_POLICIES.join(', ')}` }));
+        }
+
+        config.modelSourcePolicy = targetPolicy;
+        if (body.defaultModel) config.defaultModel = body.defaultModel;
+        if (Array.isArray(body.favoriteModels)) config.favoriteModels = body.favoriteModels;
+
+        // 原子持久化写入 config.json
+        writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+
+        // 若需要联动同步至各客户端
+        if (body.syncClients) {
+          clientAdapter.syncAllClients({
+            routerPort: config.port,
+            policy: targetPolicy,
+            defaultModel: config.defaultModel,
+            favorites: config.favoriteModels
+          });
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          success: true,
+          policy: targetPolicy,
+          defaultModel: config.defaultModel,
+          message: `模型获取源策略已成功切换为【${targetPolicy}】并已持久化保存！`
+        }, null, 2));
+      } catch (parseErr) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: parseErr.message }));
+      }
+    }).catch(err => {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    });
+    return;
+  }
+
+  // Dynamic Official Models Sync API
+  if (reqUrl.pathname === '/balancer/api/models/sync') {
+    const handleSync = async (body = {}) => {
+      const updater = require('./updater');
+      const clientAdapter = require('./client-adapter-manager');
+      const proxyInfo = getEffectiveProxyForRequest(null);
+      const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
+
+      const policy = body.policy || config.modelSourcePolicy || 'hybrid';
+      const defaultModel = body.defaultModel || config.defaultModel || 'deepseek-v4.1-flash';
+      const favorites = body.favorites || config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3'];
+      const targetClients = Array.isArray(body.clients) ? body.clients : ['opencode', 'openchamber', 'codex'];
+
+      // 探测上游
+      const probeRes = await updater.fetchOfficialModels(config.accounts, config.upstream, 4000, {
+        returnDetails: true,
+        agent: proxyAgent
+      });
+
+      const syncResult = clientAdapter.syncAllClients({
+        routerPort: config.port,
+        policy,
+        defaultModel,
+        favorites,
+        probedModels: probeRes?.slugs || [],
+        clients: targetClients,
+        preserveChoice: body.preserveChoice
+      });
+
+      // 同步 Token 压缩率
+      try {
+        await contextCompactor.syncModelRatesFromOpenCode();
+      } catch (_) {}
+
+      return {
+        success: syncResult.success,
+        policy,
+        modelsCount: syncResult.modelsCount,
+        defaultModel,
+        syncedClients: targetClients,
+        syncDetails: syncResult,
+        upstreamProbe: {
+          healthy: Boolean(probeRes && probeRes.success),
+          probedCount: probeRes?.slugs?.length || 0,
+          diagnostic: probeRes?.diagnostic || null
+        },
+        message: `全端模型目录与策略同步完成 (策略: ${policy}，已装配 ${syncResult.modelsCount} 款模型，首选: ${defaultModel})`
+      };
+    };
+
+    if (req.method === 'POST') {
+      readInternalBody(req, res).then(async (buf) => {
+        try {
+          const rawBody = buf ? buf.toString('utf8') : '';
+          const body = rawBody ? JSON.parse(rawBody) : {};
+          const result = await handleSync(body);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify(result, null, 2));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      }).catch(err => {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      });
+      return;
+    } else {
+      // GET fallback
+      handleSync().then(result => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(result, null, 2));
+      }).catch(e => {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      });
+      return;
+    }
   }
 
   // Updates Check API

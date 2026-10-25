@@ -72,6 +72,7 @@ Write-Host "  动态分配独立沙箱测试端口: $sandboxPort" -ForegroundCol
 $filesToCopy = @(
     "server.js",
     "context-compactor.js",
+    "client-adapter-manager.js",
     "codex-adapter.js",
     "comfyui-adapter.js",
     "mcp-comfyui.js",

@@ -142,13 +142,160 @@ const ALL_38_SLUGS = [
 ];
 
 /**
- * Dynamically fetch official OpenCode Go models catalog from upstream API
- * Returns array of model slugs or null if offline/unreachable
+ * 上游探测深层故障精准甄别 (Root-Cause Differentiation)
+ * 精准细分 5 大类根本原因：
+ * 1. QUOTA_EXHAUSTED: 429 且含 GoUsageLimitError / monthly
+ * 2. TRANSIENT_RATE_LIMIT: 429 且可退避恢复
+ * 3. AUTH_INVALID: 401/403 或无有效 Key
+ * 4. GEOGRAPHIC_RESTRICTION: 403 unsupported_country_region_territory
+ * 5. NETWORK_OFFLINE: ENOTFOUND / ECONNREFUSED / ETIMEDOUT
  */
-function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
+function diagnoseUpstreamFailure(res, err, body = '') {
+  const statusCode = res?.statusCode || 0;
+  const rawBody = typeof body === 'string' ? body : (body ? JSON.stringify(body) : '');
+  const errMsg = err?.message || (typeof err === 'string' ? err : '');
+  const combined = (rawBody + ' ' + errMsg).toLowerCase();
+
+  // 1. 海外地域受限 (403 unsupported_country_region_territory)
+  if (
+    combined.includes('unsupported_country_region_territory') ||
+    combined.includes('geographic_restriction') ||
+    combined.includes('region_blocked') ||
+    combined.includes('country not supported') ||
+    (statusCode === 403 && combined.includes('region'))
+  ) {
+    return {
+      type: 'GEOGRAPHIC_RESTRICTION',
+      code: 'GEOGRAPHIC_RESTRICTION',
+      statusCode: statusCode || 403,
+      title: '海外地域受限 (IP 处于未受支持地区)',
+      message: '上游服务提示当前 IP 处于海外限制区域，需配置并走海外网络代理通道',
+      suggestion: '建议在网关设置中配置海外 Socks5/HTTP 代理，针对海外受限模型自动路由',
+      recommendation: '建议在网关设置中配置海外 Socks5/HTTP 代理，针对海外受限模型自动路由',
+      retryable: false,
+      requiresOverseasProxy: true
+    };
+  }
+
+  // 2. 账号月度配额耗尽 (QUOTA_EXHAUSTED)
+  if (
+    statusCode === 429 && (
+      combined.includes('gousagelimiterror') ||
+      combined.includes('go usage limit exceeded') ||
+      combined.includes('monthly') ||
+      combined.includes('quota_exceeded') ||
+      combined.includes('insufficient_quota') ||
+      combined.includes('monthly_limit')
+    )
+  ) {
+    return {
+      type: 'QUOTA_EXHAUSTED',
+      code: 'QUOTA_EXHAUSTED',
+      statusCode: 429,
+      title: '账号月度额度耗尽 (Monthly Quota Exhausted)',
+      message: '当前订阅账号月度额度已用尽 (GoUsageLimitError / monthly)',
+      suggestion: '当前订阅账号月度额度已用尽，请充值或在管理控制台更换有效 Key；系统已自动平滑降级至官网基准模型',
+      recommendation: '当前订阅账号月度额度已用尽，请充值或在管理控制台更换有效 Key；系统已自动平滑降级至官网基准模型',
+      retryable: false,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 3. 瞬态高频限频 (TRANSIENT_RATE_LIMIT)
+  if (
+    statusCode === 429 ||
+    combined.includes('rate_limit') ||
+    combined.includes('too_many_requests') ||
+    res?.headers?.['retry-after']
+  ) {
+    const retryAfter = res?.headers?.['retry-after'] || null;
+    return {
+      type: 'TRANSIENT_RATE_LIMIT',
+      code: 'TRANSIENT_RATE_LIMIT',
+      statusCode: 429,
+      title: '瞬态高频限频 (Rate Limit Throttling)',
+      message: `上游服务短时限频中${retryAfter ? ` (建议重试间隔: ${retryAfter}s)` : ''}`,
+      suggestion: '上游触发瞬时调用频率限制，已启动指数退避，将在短时间后自动恢复，不影响本地持久化模型目录',
+      recommendation: '上游触发瞬时调用频率限制，已启动指数退避，将在短时间后自动恢复，不影响本地持久化模型目录',
+      retryable: true,
+      retryAfter: retryAfter ? parseInt(retryAfter, 10) : 10,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 4. 缺少 Key 或鉴权失效 (AUTH_INVALID)
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    combined.includes('invalid_api_key') ||
+    combined.includes('unauthorized') ||
+    combined.includes('authentication_failed') ||
+    combined.includes('key_expired') ||
+    combined.includes('bearer token') ||
+    combined.includes('no key')
+  ) {
+    return {
+      type: 'AUTH_INVALID',
+      code: 'AUTH_INVALID',
+      statusCode: statusCode || 401,
+      title: '缺少有效凭据或鉴权失效 (Authentication Failed)',
+      message: '缺少有效 API Key 或 Key 已过期失效 (401/403 Unauthorized)',
+      suggestion: '请在管理面板中为账号配置有效的 OpenCode Go 订阅密钥 (API Key)',
+      recommendation: '请在管理面板中为账号配置有效的 OpenCode Go 订阅密钥 (API Key)',
+      retryable: false,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 5. 物理网络或代理断开 (NETWORK_OFFLINE)
+  if (
+    combined.includes('enotfound') ||
+    combined.includes('econnrefused') ||
+    combined.includes('etimedout') ||
+    combined.includes('ehostunreach') ||
+    combined.includes('econnreset') ||
+    combined.includes('network error') ||
+    combined.includes('fetch failed') ||
+    combined.includes('socket hang up') ||
+    err?.code === 'ENOTFOUND' ||
+    err?.code === 'ECONNREFUSED' ||
+    err?.code === 'ETIMEDOUT'
+  ) {
+    return {
+      type: 'NETWORK_OFFLINE',
+      code: 'NETWORK_OFFLINE',
+      statusCode: 0,
+      title: '物理网络或代理阻断 (Network Offline / Timeout)',
+      message: `物理网络离线或代理端点不可达 (${err?.code || 'TIMEOUT'})`,
+      suggestion: '请检查本地网络连接或代理服务是否正常；系统已瞬时平滑降级为内置官网文档模型基准，本地 Agent 立即可用',
+      recommendation: '请检查本地网络连接或代理服务是否正常；系统已瞬时平滑降级为内置官网文档模型基准，本地 Agent 立即可用',
+      retryable: true,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 兜底未知异常
+  return {
+    type: 'UNKNOWN',
+    code: 'UNKNOWN',
+    statusCode,
+    title: '上游探测未知异常',
+    message: errMsg || rawBody.slice(0, 100) || '未知网络/服务状态',
+    suggestion: '系统已安全使用官网模型基准兜底',
+    recommendation: '系统已安全使用官网模型基准兜底',
+    retryable: true,
+    requiresOverseasProxy: false
+  };
+}
+
+/**
+ * 单个 Key 探测
+ */
+function probeSingleKey(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
   return new Promise((resolve) => {
     if (!apiKey || !apiKey.trim()) {
-      return resolve(null);
+      const diag = diagnoseUpstreamFailure(null, 'no key');
+      return resolve({ success: false, slugs: null, res: null, err: null, body: '', diagnostic: diag });
     }
     try {
       let endpoint = upstream.replace(/\/+$/, '');
@@ -189,26 +336,123 @@ function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1',
                 return id;
               }).filter(id => typeof id === 'string' && id.trim().length > 0);
               if (slugs.length > 0) {
-                return resolve(Array.from(new Set(slugs)));
+                return resolve({ success: true, slugs: Array.from(new Set(slugs)), res, body: data, diagnostic: null });
               }
             }
-            resolve(null);
-          } catch (_) {
-            resolve(null);
+            const diag = diagnoseUpstreamFailure(res, null, data);
+            resolve({ success: false, slugs: null, res, body: data, diagnostic: diag });
+          } catch (parseErr) {
+            const diag = diagnoseUpstreamFailure(res, parseErr, data);
+            resolve({ success: false, slugs: null, res, body: data, diagnostic: diag });
           }
         });
       });
-      req.on('error', () => {
-        if (!finished) { finished = true; resolve(null); }
+      req.on('error', (err) => {
+        if (!finished) {
+          finished = true;
+          const diag = diagnoseUpstreamFailure(null, err, null);
+          resolve({ success: false, slugs: null, res: null, err, diagnostic: diag });
+        }
       });
       req.on('timeout', () => {
-        if (!finished) { finished = true; req.destroy(); resolve(null); }
+        if (!finished) {
+          finished = true;
+          req.destroy();
+          const diag = diagnoseUpstreamFailure(null, new Error('ETIMEDOUT'), null);
+          resolve({ success: false, slugs: null, res: null, err: new Error('ETIMEDOUT'), diagnostic: diag });
+        }
       });
       req.end();
-    } catch (_) {
-      resolve(null);
+    } catch (e) {
+      const diag = diagnoseUpstreamFailure(null, e, null);
+      resolve({ success: false, slugs: null, res: null, err: e, diagnostic: diag });
     }
   });
+}
+
+/**
+ * Dynamically fetch official OpenCode Go models catalog from upstream API
+ * 支持单 Key 或账号数组多账号故障转移轮询 (账号 1 异常时自动尝试账号 2)
+ * 全部受阻或断网时平滑降级至本地缓存或内置官网基准
+ */
+async function fetchOfficialModels(apiKeyOrAccounts, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
+  const keysToTry = [];
+  if (Array.isArray(apiKeyOrAccounts)) {
+    for (const acc of apiKeyOrAccounts) {
+      if (typeof acc === 'string' && acc.trim()) keysToTry.push(acc.trim());
+      else if (acc && typeof acc === 'object' && acc.apiKey && acc.apiKey.trim() && acc.enabled !== false) {
+        keysToTry.push(acc.apiKey.trim());
+      }
+    }
+  } else if (typeof apiKeyOrAccounts === 'string' && apiKeyOrAccounts.trim()) {
+    keysToTry.push(apiKeyOrAccounts.trim());
+  }
+
+  if (keysToTry.length === 0) {
+    const diag = diagnoseUpstreamFailure(null, 'no key configured');
+    if (options.returnDetails) {
+      return { success: false, slugs: null, diagnostic: diag, accountsTested: 0 };
+    }
+    return null;
+  }
+
+  let lastDiagnostic = null;
+  for (let i = 0; i < keysToTry.length; i++) {
+    const key = keysToTry[i];
+    const probeRes = await probeSingleKey(key, upstream, timeoutMs, options);
+    if (probeRes.success && probeRes.slugs && probeRes.slugs.length > 0) {
+      if (options.returnDetails) {
+        return {
+          success: true,
+          slugs: probeRes.slugs,
+          diagnostic: null,
+          accountsTested: i + 1,
+          accountIndex: i
+        };
+      }
+      return probeRes.slugs;
+    }
+
+    lastDiagnostic = probeRes.diagnostic;
+    // 多账号故障转移提示
+    if (i < keysToTry.length - 1) {
+      console.log(`[Updater] 账号 ${i + 1} 上游探测返回 ${lastDiagnostic?.code || 'ERROR'}，正在自动故障转移轮询尝试账号 ${i + 2}...`);
+    }
+  }
+
+  if (options.returnDetails) {
+    return {
+      success: false,
+      slugs: null,
+      diagnostic: lastDiagnostic,
+      accountsTested: keysToTry.length
+    };
+  }
+  return null;
+}
+
+/**
+ * 获取官网公开模型基准元数据字典 (异步比对官网网页，提供新模型发现提示)
+ */
+async function fetchWebDocsCatalog(options = {}) {
+  try {
+    const clientAdapter = require('./client-adapter-manager');
+    const models = clientAdapter.loadOfficialModels();
+    return {
+      success: true,
+      count: models.length,
+      models,
+      source: 'official_docs'
+    };
+  } catch (err) {
+    return {
+      success: false,
+      count: ALL_38_SLUGS.length,
+      models: ALL_38_SLUGS.map(s => ({ slug: s, name: s })),
+      source: 'fallback_slugs',
+      error: err.message
+    };
+  }
 }
 
 /**
@@ -1647,22 +1891,32 @@ function verifyStagedCodeIntegrity(stagingDir) {
     return { valid: false, error: `暂存区 package.json 语法损坏: ${e.message}` };
   }
 
-  // 必须存在的核心文件清单
-  const criticalFiles = ['server.js', 'updater.js', 'context-compactor.js', 'codex-adapter.js', 'comfyui-adapter.js', 'mcp-comfyui.js', 'powershell-optimizer.js'];
+  // 必须存在的核心运行文件清单
+  const criticalFiles = ['server.js', 'updater.js', 'context-compactor.js'];
   for (const cf of criticalFiles) {
     const fullP = path.join(stagingDir, cf);
     if (!fs.existsSync(fullP)) {
       return { valid: false, error: `暂存区缺少核心运行文件: ${cf}` };
     }
-    // 静态语法预检：node -c <file>
+  }
+
+  // 对暂存区内所有存在的 .js 文件执行静态语法预检 (node -c)
+  let stagedJsFiles = [];
+  try {
+    stagedJsFiles = fs.readdirSync(stagingDir).filter(f => f.endsWith('.js'));
+  } catch (_) {
+    stagedJsFiles = criticalFiles;
+  }
+  for (const jsFile of stagedJsFiles) {
+    const fullP = path.join(stagingDir, jsFile);
     try {
       const checkRes = spawnSync(process.execPath, ['-c', fullP], { encoding: 'utf8', timeout: 5000 });
       if (checkRes.status !== 0) {
         const errDetail = (checkRes.stderr || checkRes.stdout || '').trim();
-        return { valid: false, error: `核心文件 ${cf} 存在语法错误 (node -c 校验未通过): ${errDetail}` };
+        return { valid: false, error: `核心文件 ${jsFile} 存在语法错误 (node -c 校验未通过): ${errDetail}` };
       }
     } catch (checkErr) {
-      return { valid: false, error: `执行 ${cf} 静态语法预检异常: ${checkErr.message}` };
+      return { valid: false, error: `执行 ${jsFile} 静态语法预检异常: ${checkErr.message}` };
     }
   }
 
@@ -3571,6 +3825,9 @@ module.exports = {
   detectOpenChamberActivePort,
   probeOpenChamberServices,
   fetchOfficialModels,
+  diagnoseUpstreamFailure,
+  probeSingleKey,
+  fetchWebDocsCatalog,
   ALL_38_SLUGS,
   findOpenCodeCredentialPaths,
   openSqliteDb,

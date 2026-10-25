@@ -5574,9 +5574,9 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     localeNotice: '已配置简体中文 (localeOverride = "zh-CN")。注意：Codex 桌面端 Web 界面内部汉化受制于官方该版本 Feature Gate (Statsig 72216192) 默认值冲突，官方放量或更新后将自动全面显示中文。',
     processHealth: checkCodexProcessHealth(),
     localeCheck: checkCodexLocaleAndEnvironment({ codexDir }),
-    availableModels: OPENCODE_GO_ALL_MODELS.map(m => ({
+    availableModels: ((routerPortOrDir && typeof routerPortOrDir === 'object' && Array.isArray(routerPortOrDir.models) && routerPortOrDir.models.length > 0) ? routerPortOrDir.models : OPENCODE_GO_ALL_MODELS).map(m => ({
       slug: m.slug,
-      display_name: m.display_name,
+      display_name: m.display_name || m.name,
       description: m.description,
       default_reasoning_level: m.default_reasoning_level,
       supported_reasoning_levels: m.supported_reasoning_levels
@@ -5713,7 +5713,9 @@ function bindCodexConfig(options = {}) {
     baseInstructions += '\n\n# 语言规范\n无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n';
   }
 
-  const catalogModels = OPENCODE_GO_ALL_MODELS.map(m => {
+  const targetModels = (Array.isArray(options.models) && options.models.length > 0) ? options.models : OPENCODE_GO_ALL_MODELS;
+
+  const catalogModels = targetModels.map(m => {
     const ctx = m.context_window || 1048576;
     const compactLimit = Math.floor(ctx * 0.85); // 85% of context window triggers Codex client-side auto-compaction
     return {
@@ -5732,7 +5734,7 @@ function bindCodexConfig(options = {}) {
 
   const catalogFile = path.join(catalogsDir, 'opencode-go-catalog.json');
   fs.writeFileSync(catalogFile, JSON.stringify({ models: catalogModels }, null, 2), 'utf8');
-  messages.push(`已生成 OpenCode Go 全量 38 款模型元数据目录 (${catalogFile})`);
+  messages.push(`已生成 OpenCode Go 全量 ${targetModels.length} 款模型元数据目录 (${catalogFile})`);
 
   // Step 3: Update models.json
   try {
@@ -5743,7 +5745,7 @@ function bindCodexConfig(options = {}) {
         if (Array.isArray(parsed.models)) existingModels = parsed.models;
       } catch (e) {}
     }
-    const enrichedOpencodeModels = OPENCODE_GO_ALL_MODELS.map(m => {
+    const enrichedOpencodeModels = targetModels.map(m => {
       const ctx = m.context_window || 1048576;
       return {
         ...baseTemplate,

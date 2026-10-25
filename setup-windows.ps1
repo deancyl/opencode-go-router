@@ -23,6 +23,7 @@ param(
     [string]$Password,
     [string]$InstallDir,
     [string]$OpencodeConfigDir = "",
+    [string]$ModelPolicy = "hybrid",
     [switch]$NoShortcuts
 )
 
@@ -296,6 +297,9 @@ function Step-SetupRouter {
         defaultCooldownMs = if ($existingObj -and $existingObj.defaultCooldownMs) { $existingObj.defaultCooldownMs } else { 60000 }
         maxFailoverRetries = if ($existingObj -and $existingObj.maxFailoverRetries) { $existingObj.maxFailoverRetries } else { 2 }
         sessionAffinityEnabled = $true
+        modelSourcePolicy = if ($existingObj -and $existingObj.modelSourcePolicy) { $existingObj.modelSourcePolicy } elseif ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+        defaultModel = if ($existingObj -and $existingObj.defaultModel) { $existingObj.defaultModel } else { "deepseek-v4.1-flash" }
+        favoriteModels = if ($existingObj -and $existingObj.favoriteModels) { $existingObj.favoriteModels } else { @("deepseek-v4.1-flash", "kimi-k3") }
         uiPassword = $curUiPass
         accounts = @(
             @{ id = "account-1"; name = "OpenCode Go (订阅账号 1)"; apiKey = $curKey1; enabled = $true },
@@ -315,14 +319,26 @@ function Step-SetupRouter {
     # 同步绑定 OpenCode 主配置文件 ~/.config/opencode/opencode.jsonc
     if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
     try {
-        $updaterScript = Join-Path $rootDir "updater.js"
-        if (Test-Path $updaterScript) {
-            $nodeCmd = "const p = require('path'); const u = require(p.resolve(process.argv[1])); u.harmonizeOpencodeConfig(process.argv[2], parseInt(process.argv[3], 10));"
-            & node -e $nodeCmd "$updaterScript" "$opencodeConfigFile" "$port"
+        $camScript = Join-Path $rootDir "client-adapter-manager.js"
+        if (Test-Path $camScript) {
+            $effectivePol = if ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+            $nodeCmd = "const p = require('path'); const cam = require(p.resolve(process.argv[1])); cam.syncOpencodeConfig({ routerPort: parseInt(process.argv[2], 10), policy: process.argv[3], targetPath: process.argv[4] });"
+            & node -e $nodeCmd "$camScript" "$port" "$effectivePol" "$opencodeConfigFile"
             if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
-                Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量 38 款模型、双轨规范与智能体定义就绪)" -ForegroundColor Green
+                Write-Host "✔ opencode.jsonc 已通过客户端适配管理器绑定本地网关 (策略: $effectivePol)" -ForegroundColor Green
             } else {
-                Write-Host "⚠ opencode.jsonc 绑定执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+                Write-Host "⚠ opencode.jsonc 适配执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+            }
+        } else {
+            $updaterScript = Join-Path $rootDir "updater.js"
+            if (Test-Path $updaterScript) {
+                $nodeCmd = "const p = require('path'); const u = require(p.resolve(process.argv[1])); u.harmonizeOpencodeConfig(process.argv[2], parseInt(process.argv[3], 10));"
+                & node -e $nodeCmd "$updaterScript" "$opencodeConfigFile" "$port"
+                if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
+                    Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量模型基准与智能体定义就绪)" -ForegroundColor Green
+                } else {
+                    Write-Host "⚠ opencode.jsonc 绑定执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+                }
             }
         }
     } catch {
@@ -602,14 +618,13 @@ function Step-SetupOpenChamber {
 # ----------------- 步骤 6: 全栈一键自动配置 -----------------
 function Step-RunAll {
     Write-Header "【全栈一键自动配置】"
-    Write-Host "将依次执行：OpenCode v2 检测 -> 智能网关部署 -> OMO 配置 -> Goal 插件配置 -> OpenChamber 配置 -> Office 离线预览挂载..." -ForegroundColor Cyan
+    Write-Host "将依次执行：OpenCode v2 检测 -> 智能网关部署 -> Goal 插件配置 -> OpenChamber 配置 -> Office 离线预览挂载 (注: OMO 为独立可选外挂，可通过菜单 [3] 单独配置)..." -ForegroundColor Cyan
     Step-InstallOpenCode
     Step-SetupRouter
-    Step-SetupOMO
     Step-SetupGoal
     Step-SetupOpenChamber
     Step-SetupOfficePreview
-    Write-Header "🎉 全套体系已全部配置就绪！"
+    Write-Header "🎉 全套核心体系已全部配置就绪！"
     Write-Host " 🌐 OpenChamber 工作台:    http://127.0.0.1:3000" -ForegroundColor White
     Write-Host " 📊 智能路由流量与监控面板: http://127.0.0.1:$port/balancer/ui" -ForegroundColor White
     Write-Host " 🎯 自主目标推进指令:      /goal <目标> 与 /boost <目标>" -ForegroundColor White
