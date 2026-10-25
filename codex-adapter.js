@@ -937,6 +937,29 @@ const OPENCODE_GO_ALL_MODELS = [
     priority: 680
   },
   {
+    slug: 'gemini-4-argon',
+    display_name: 'Gemini-4-Argon',
+    name: 'Gemini-4-Argon',
+    vendor: 'Google',
+    description: '多模态全景分析与长上下文复杂代码推导模型。',
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速轻量' },
+      { effort: 'medium', description: '标准分析' },
+      { effort: 'high', description: '深度思考' },
+      { effort: 'xhigh', description: '极限推理' }
+    ],
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    input_modalities: ['text', 'image'],
+    context_window: 1048576,
+    max_context_window: 1048576,
+    effective_context_window_percent: 95,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 885
+  },
+  {
     slug: 'gemini-4-argon-contributor',
     display_name: 'Gemini-4-Argon-Contributor',
     description: '多模态全景分析与长上下文复杂代码推导模型。',
@@ -5717,18 +5740,21 @@ function bindCodexConfig(options = {}) {
 
   const catalogModels = targetModels.map(m => {
     const ctx = m.context_window || 1048576;
-    const compactLimit = Math.floor(ctx * 0.85); // 85% of context window triggers Codex client-side auto-compaction
+    const effPercent = (typeof m.effective_context_window_percent === 'number' && m.effective_context_window_percent > 0) ? m.effective_context_window_percent : 95;
+    const compactLimit = Math.floor(ctx * (effPercent / 100)); // 95% of context window triggers Codex client-side auto-compaction
     return {
       ...baseTemplate,
       ...m,
+      display_name: m.display_name || m.name || m.slug,
       base_instructions: baseInstructions,
       context_window: ctx,
-      max_context_window: ctx,
+      max_context_window: m.max_context_window || ctx,
       auto_compact_token_limit: compactLimit,
-      effective_context_window_percent: 95,
+      effective_context_window_percent: effPercent,
       shell_type: 'shell_command',
       visibility: 'list',
-      supported_in_api: true
+      supported_in_api: true,
+      supports_parallel_tool_calls: true
     };
   });
 
@@ -5747,20 +5773,23 @@ function bindCodexConfig(options = {}) {
     }
     const enrichedOpencodeModels = targetModels.map(m => {
       const ctx = m.context_window || 1048576;
+      const effPercent = (typeof m.effective_context_window_percent === 'number' && m.effective_context_window_percent > 0) ? m.effective_context_window_percent : 95;
       return {
         ...baseTemplate,
         ...m,
+        display_name: m.display_name || m.name || m.slug,
         base_instructions: baseInstructions,
         context_window: ctx,
-        max_context_window: ctx,
-        auto_compact_token_limit: Math.floor(ctx * 0.85),
-        effective_context_window_percent: 95
+        max_context_window: m.max_context_window || ctx,
+        auto_compact_token_limit: Math.floor(ctx * (effPercent / 100)),
+        effective_context_window_percent: effPercent,
+        supports_parallel_tool_calls: true
       };
     });
     const newSlugs = new Set(enrichedOpencodeModels.map(m => m.slug));
     const retainedModels = existingModels.filter(m => !newSlugs.has(m.slug)).map(m => {
       if (!m.auto_compact_token_limit && m.context_window) {
-        m.auto_compact_token_limit = Math.floor(m.context_window * 0.85);
+        m.auto_compact_token_limit = Math.floor(m.context_window * 0.95);
       }
       return m;
     });
@@ -5794,15 +5823,29 @@ function bindCodexConfig(options = {}) {
     if (fs.existsSync(configPath)) {
       rawToml = fs.readFileSync(configPath, 'utf8');
     }
+
+    let effectiveModel = defaultModel;
+    let effectiveEffort = reasoningEffort;
+    if (options.preserveChoice !== false && fs.existsSync(configPath) && rawToml.trim()) {
+      const existingMatch = rawToml.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+      if (existingMatch && existingMatch[1]) {
+        effectiveModel = existingMatch[1];
+      }
+      const existingEffortMatch = rawToml.match(/^\s*model_reasoning_effort\s*=\s*["']([^"']+)["']/m);
+      if (existingEffortMatch && existingEffortMatch[1]) {
+        effectiveEffort = existingEffortMatch[1];
+      }
+    }
+
     const updatedToml = updateCodexTomlString(rawToml, {
-      model: defaultModel,
+      model: effectiveModel,
       provider: providerName,
-      reasoningEffort,
+      reasoningEffort: effectiveEffort,
       routerUrl,
       catalogRelativePath: 'model-catalogs/opencode-go-catalog.json'
     });
     fs.writeFileSync(configPath, updatedToml, 'utf8');
-    messages.push(`已更新 ${configPath}: model="${defaultModel}", provider="${providerName}", effort="${reasoningEffort}", base_url="${routerUrl}"`);
+    messages.push(`已更新 ${configPath}: model="${effectiveModel}", provider="${providerName}", effort="${effectiveEffort}", base_url="${routerUrl}"`);
   } catch (err) {
     messages.push(`更新 config.toml 失败: ${err.message}`);
     return { success: false, messages, error: err.message };

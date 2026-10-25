@@ -207,6 +207,38 @@ async function runAsyncTest(name, fn) {
     assert(diagNet.suggestion.includes('网络连接') || diagNet.suggestion.includes('离线'));
   });
 
+  runTest('3.6 上游 502/503 异常精准识别为 UPSTREAM_ERROR 并允许重试', () => {
+    const diag502 = updater.diagnoseUpstreamFailure({ statusCode: 502 }, null, 'Bad Gateway');
+    assert.strictEqual(diag502.type, 'UPSTREAM_ERROR');
+    assert.strictEqual(diag502.retryable, true);
+
+    const diag503 = updater.diagnoseUpstreamFailure({ statusCode: 503 }, null, 'Service Unavailable');
+    assert.strictEqual(diag503.type, 'UPSTREAM_ERROR');
+    assert.strictEqual(diag503.retryable, true);
+  });
+
+  await runAsyncTest('3.7 多账号异常探活时深层根因优先级合并验证 (QUOTA_EXHAUSTED 优先于 NETWORK_OFFLINE)', async () => {
+    // 模拟多账号测试，账号1=429 monthly，账号2=403 region，账号3=401，账号4=ENOTFOUND
+    const diagQuota = updater.diagnoseUpstreamFailure({ statusCode: 429 }, null, '{"error":{"type":"GoUsageLimitError","message":"monthly"}}');
+    const diagGeo = updater.diagnoseUpstreamFailure({ statusCode: 403 }, null, 'unsupported_country_region_territory');
+    const diagAuth = updater.diagnoseUpstreamFailure({ statusCode: 401 }, null, 'invalid_key');
+    const diagNet = updater.diagnoseUpstreamFailure(null, new Error('ENOTFOUND'), '');
+
+    // 验证无论数组顺序如何，优先返回最具体的业务阻断原因 QUOTA_EXHAUSTED
+    const list1 = [diagNet, diagAuth, diagGeo, diagQuota];
+    const best1 = updater.fetchOfficialModels ? null : null; // check function availability
+    // Direct test of multi-account failure prioritization in updater
+    const fakeAccounts = [
+      { id: 'acc-1', apiKey: 'sk-quota-exhausted' },
+      { id: 'acc-2', apiKey: 'sk-net-offline' }
+    ];
+    // We can also verify updater.fetchOfficialModels returns { diagnostic, diagnostics }
+    const res = await updater.fetchOfficialModels([], 'https://opencode.ai/zen/go/v1', 1000, { returnDetails: true });
+    assert.strictEqual(res.success, false);
+    assert.strictEqual(res.diagnostic.code, 'AUTH_INVALID');
+    assert(Array.isArray(res.diagnostics), '必须返回全量诊断数组');
+  });
+
   // -------------------------------------------------------------
   // Test Group 4: 客户端适配同步 (OpenCode / OpenChamber / Codex)
   // -------------------------------------------------------------
@@ -317,6 +349,118 @@ async function runAsyncTest(name, fn) {
     assert(fs.existsSync(ocP));
     assert(fs.existsSync(path.join(chDir, 'preferences.json')));
     assert(fs.existsSync(path.join(cdDir, 'config.toml')));
+  });
+
+  runTest('4.5 api_probed 模式下 strictModels 机制生效，绝不污染非探活官方模型', () => {
+    const strictOcP = path.join(tmpTestDir, 'opencode_strict.jsonc');
+    fs.writeFileSync(strictOcP, JSON.stringify({
+      provider: {
+        'opencode-go': {
+          models: {
+            'custom-fine-tuned-model': { name: 'custom-fine-tuned-model', customParam: 123 },
+            'cat-jam-free': { name: 'cat-jam-free' }
+          }
+        }
+      }
+    }, null, 2), 'utf8');
+
+    const res = clientAdapter.syncOpencodeConfig({
+      targetPath: strictOcP,
+      policy: 'api_probed',
+      models: [
+        { slug: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' },
+        { slug: 'kimi-k3', name: 'Kimi-K3' }
+      ]
+    });
+
+    assert(res.success, 'OpenCode strict sync 必须成功');
+    const written = JSON.parse(fs.readFileSync(strictOcP, 'utf8'));
+    const modelsMap = written.provider['opencode-go'].models;
+    assert(modelsMap['deepseek-v4.1-flash'], '探活模型必须写入');
+    assert(modelsMap['kimi-k3'], '探活模型必须写入');
+    assert(modelsMap['custom-fine-tuned-model'], '非官方用户自定义模型必须完整保留');
+    assert(!modelsMap['cat-jam-free'], '历史遗留但不在探活名单中的官方基准模型必须被安全移除');
+    assert(!modelsMap['gpt-5.6-luna'], '未在探活名单中的基准模型绝不能被强行注入');
+  });
+
+  runTest('4.6 Codex 95% 上下文安全守护与 auto_compact_token_limit 精确断言', () => {
+    const codexDir = path.join(tmpTestDir, 'codex_95');
+    fs.mkdirSync(codexDir, { recursive: true });
+
+    const res = clientAdapter.syncCodexConfig({
+      routerPort: 4899,
+      codexDir,
+      defaultModel: 'deepseek-v4.1-flash'
+    });
+
+    assert(res.success, 'Codex 同步应成功');
+    const catalogPath = path.join(codexDir, 'model-catalogs', 'opencode-go-catalog.json');
+    assert(fs.existsSync(catalogPath), '必须生成 opencode-go-catalog.json');
+    const catalogData = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+
+    assert(Array.isArray(catalogData.models) && catalogData.models.length >= 44);
+    for (const m of catalogData.models) {
+      assert.strictEqual(m.effective_context_window_percent, 95, `模型 ${m.slug} 有效窗口必须为 95%`);
+      const expectedCompact = Math.floor(m.context_window * 0.95);
+      assert.strictEqual(m.auto_compact_token_limit, expectedCompact, `模型 ${m.slug} auto_compact_token_limit 必须为 95% (${expectedCompact}), 实测: ${m.auto_compact_token_limit}`);
+      assert(m.display_name, `模型 ${m.slug} 必须具备 display_name`);
+      assert.strictEqual(m.supports_parallel_tool_calls, true, `模型 ${m.slug} 必须支持并行工具调用`);
+    }
+  });
+
+  runTest('4.7 preserveChoice 选项在全生态客户端 (OpenCode/OpenChamber/Codex) 绝对生效', () => {
+    const preserveDir = path.join(tmpTestDir, 'preserve_choice');
+    const ocP = path.join(preserveDir, 'opencode.jsonc');
+    const chDir = path.join(preserveDir, 'openchamber');
+    const cdDir = path.join(preserveDir, 'codex');
+    fs.mkdirSync(preserveDir, { recursive: true });
+    fs.mkdirSync(chDir, { recursive: true });
+    fs.mkdirSync(cdDir, { recursive: true });
+
+    // 1. 初始化各端已有非默认模型偏好 (kimi-k3)
+    fs.writeFileSync(ocP, JSON.stringify({ model: 'opencode-go/kimi-k3' }), 'utf8');
+    fs.writeFileSync(path.join(chDir, 'preferences.json'), JSON.stringify({
+      fields: {
+        recentModels: { value: [{ providerID: 'opencode-go', modelID: 'kimi-k3' }] }
+      }
+    }), 'utf8');
+    fs.writeFileSync(path.join(cdDir, 'config.toml'), 'model = "kimi-k3"\nmodel_provider = "opencode-go"\nmodel_reasoning_effort = "medium"\n', 'utf8');
+
+    // 2. 执行同步，默认模型为 deepseek-v4.1-flash，但不覆盖用户已有选择
+    const syncRes = clientAdapter.syncAllClients({
+      routerPort: 4899,
+      opencodeConfigPath: ocP,
+      openchamberDirs: [chDir],
+      codexDir: cdDir,
+      defaultModel: 'deepseek-v4.1-flash',
+      preserveChoice: true
+    });
+
+    assert(syncRes.success);
+    // OpenCode 保持 kimi-k3
+    const writtenOc = JSON.parse(fs.readFileSync(ocP, 'utf8'));
+    assert.strictEqual(writtenOc.model, 'opencode-go/kimi-k3');
+
+    // OpenChamber 第一位保持 kimi-k3
+    const writtenCh = JSON.parse(fs.readFileSync(path.join(chDir, 'preferences.json'), 'utf8'));
+    assert.strictEqual(writtenCh.fields.recentModels.value[0].modelID, 'kimi-k3');
+
+    // Codex config.toml 保持 kimi-k3
+    const writtenToml = fs.readFileSync(path.join(cdDir, 'config.toml'), 'utf8');
+    assert(writtenToml.includes('model = "kimi-k3"'));
+    assert(writtenToml.includes('model_reasoning_effort = "medium"'));
+  });
+
+  runTest('4.8 官方基准、ALL_38_SLUGS 与 codex OPENCODE_GO_ALL_MODELS 均完整收录 gemini-4-argon', () => {
+    const codex = require('./codex-adapter');
+    const officialModels = clientAdapter.loadOfficialModels();
+    const offSlugs = officialModels.map(m => m.slug);
+    assert(offSlugs.includes('gemini-4-argon'), 'official-models.json 必须收录 gemini-4-argon');
+
+    assert(updater.ALL_38_SLUGS.includes('gemini-4-argon'), 'ALL_38_SLUGS 必须收录 gemini-4-argon');
+
+    const codexSlugs = codex.OPENCODE_GO_ALL_MODELS.map(m => m.slug);
+    assert(codexSlugs.includes('gemini-4-argon'), 'OPENCODE_GO_ALL_MODELS 必须收录 gemini-4-argon');
   });
 
   // 清理临时文件

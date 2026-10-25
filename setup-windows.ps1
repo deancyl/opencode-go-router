@@ -518,6 +518,16 @@ function Step-SetupOpenChamber {
         } catch { }
     }
 
+    $camScript = Join-Path $rootDir "client-adapter-manager.js"
+    if (Test-Path $camScript) {
+        $effectivePol = if ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+        $nodeCmd = "const p = require('path'); const cam = require(p.resolve(process.argv[1])); cam.syncOpenChamberConfig({ policy: process.argv[2] });"
+        & node -e $nodeCmd "$camScript" "$effectivePol"
+        if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
+            Write-Host "✔ OpenChamber 桌面端配置已通过客户端适配管理器同步 (策略: $effectivePol)" -ForegroundColor Green
+        }
+    }
+
     $chamberPrefDir = "$env:USERPROFILE\.config\openchamber"
     $chamberPrefFile = Join-Path $chamberPrefDir "preferences.json"
     try {
@@ -665,6 +675,17 @@ function Step-ManageUpdates {
 # ----------------- 步骤 10: Codex 客户端接入 -----------------
 function Step-SetupCodex {
     Write-Header "【步骤 10】OpenAI Codex CLI 智能接入与模型调度"
+    $camScript = Join-Path $rootDir "client-adapter-manager.js"
+    if (Test-Path $camScript) {
+        $effectivePol = if ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+        $bindCmd = "const p = require('path'); const cam = require(p.resolve(process.argv[1])); const r = cam.syncCodexConfig({ routerPort: parseInt(process.argv[2], 10), policy: process.argv[3], defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
+        $rawRes = (& node -e $bindCmd "$camScript" "$port" "$effectivePol" 2>$null)
+        $bindRes = if ($rawRes) { try { $rawRes | ConvertFrom-Json } catch { $null } } else { $null }
+        if ($bindRes -and $bindRes.success) {
+            Write-Host "🎉 成功通过客户端适配管理器接入 Codex！(策略: $effectivePol / 默认: deepseek-v4.1-flash / 思考: high / 端口: $port)" -ForegroundColor Green
+            return
+        }
+    }
     $codexAdapterJs = Join-Path $rootDir "codex-adapter.js"
     if (-not (Test-Path $codexAdapterJs)) { return }
     $bindCmd = "const p = require('path'); const a = require(p.resolve(process.argv[1])); const r = a.bindCodexConfig({ routerPort: parseInt(process.argv[2], 10), defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"

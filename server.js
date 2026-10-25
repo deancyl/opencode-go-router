@@ -14020,6 +14020,10 @@ $ghost
     return;
   }
 
+let modelsHubProbeCache = null;
+let lastModelsHubProbeTime = 0;
+const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
+
   // Models Hub API: 获取模型调度中心全量元数据、上游深度诊断与多端状态 (GET)
   if (reqUrl.pathname === '/balancer/api/models/hub' && req.method === 'GET') {
     (async () => {
@@ -14029,11 +14033,20 @@ $ghost
         const proxyInfo = getEffectiveProxyForRequest(null);
         const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
 
-        // 探测上游模型与深层故障诊断 (多账号故障转移轮询)
-        const probeRes = await updater.fetchOfficialModels(config.accounts, config.upstream, 3500, {
-          returnDetails: true,
-          agent: proxyAgent
-        });
+        // 探测上游模型与深层故障诊断 (带 10s 内存级防抖缓存，支持 ?force=1 穿透刷新 - Rule 7)
+        const forceProbe = reqUrl.searchParams.get('force') === '1' || reqUrl.searchParams.get('force') === 'true';
+        const now = Date.now();
+        let probeRes = null;
+        if (!forceProbe && modelsHubProbeCache && (now - lastModelsHubProbeTime < MODELS_HUB_PROBE_TTL_MS)) {
+          probeRes = modelsHubProbeCache;
+        } else {
+          probeRes = await updater.fetchOfficialModels(config.accounts, config.upstream, 3500, {
+            returnDetails: true,
+            agent: proxyAgent
+          });
+          modelsHubProbeCache = probeRes;
+          lastModelsHubProbeTime = now;
+        }
 
         const policy = config.modelSourcePolicy || 'hybrid';
         const officialModels = clientAdapter.loadOfficialModels();

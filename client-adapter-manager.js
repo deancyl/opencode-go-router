@@ -341,7 +341,10 @@ function syncOpencodeConfig(options = {}) {
   const routerPort = options.routerPort || 4010;
   const opencodeDir = options.targetPath ? path.dirname(options.targetPath) : (process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode'));
   const configPath = options.targetPath || path.join(opencodeDir, 'opencode.jsonc');
-  const models = Array.isArray(options.models) && options.models.length > 0 ? options.models : loadOfficialModels();
+  const policy = options.policy || DEFAULT_POLICY;
+  const models = (Array.isArray(options.models) && options.models.length > 0)
+    ? options.models
+    : filterModelsByPolicy(policy, options);
   const defaultModelSlug = options.defaultModel || DEFAULT_MODEL;
 
   const messages = [];
@@ -356,7 +359,9 @@ function syncOpencodeConfig(options = {}) {
 
   const harmRes = updater.harmonizeOpencodeConfig(configPath, routerPort, {
     officialModels: officialSlugs,
-    preferredModel: options.preserveChoice === false ? preferredModelStr : undefined
+    preferredModel: options.preserveChoice === false ? preferredModelStr : undefined,
+    defaultModel: defaultModelSlug,
+    strictModels: policy === 'api_probed'
   });
 
   messages.push(`✔ OpenCode 2.0 配置已成功同步 (共 ${harmRes.modelCount} 款模型，首选模型: ${harmRes.currentModel})`);
@@ -374,7 +379,10 @@ function syncOpencodeConfig(options = {}) {
  * 双轨兼容，注入首选与置顶收藏夹 (favoriteModels & recentModels)
  */
 function syncOpenChamberConfig(options = {}) {
-  const models = Array.isArray(options.models) && options.models.length > 0 ? options.models : loadOfficialModels();
+  const policy = options.policy || DEFAULT_POLICY;
+  const models = (Array.isArray(options.models) && options.models.length > 0)
+    ? options.models
+    : filterModelsByPolicy(policy, options);
   const defaultModelSlug = options.defaultModel || DEFAULT_MODEL;
   const favorites = Array.isArray(options.favorites) && options.favorites.length > 0 ? options.favorites : DEFAULT_FAVORITES;
   const homeDir = os.homedir();
@@ -404,15 +412,28 @@ function syncOpenChamberConfig(options = {}) {
     if (!pref.fields) pref.fields = {};
 
     const existingRecents = pref.fields.recentModels?.value || [];
-    const filteredRecents = existingRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === defaultModelSlug || favorites.includes(m.modelID))));
+    let topRecents = [];
+    if (options.preserveChoice !== false && existingRecents.length > 0) {
+      // 尊重用户已有活跃选择：保持第一位不变，将默认模型与收藏追加至其后
+      const activeFirst = existingRecents[0];
+      const otherRecents = existingRecents.slice(1).filter(m => !(m.providerID === 'opencode-go' && (m.modelID === defaultModelSlug || favorites.includes(m.modelID))));
+      const newItems = [
+        { providerID: 'opencode-go', modelID: defaultModelSlug },
+        ...favorites.filter(f => f !== defaultModelSlug).map(f => ({ providerID: 'opencode-go', modelID: f }))
+      ].filter(item => !(item.providerID === activeFirst.providerID && item.modelID === activeFirst.modelID));
+      topRecents = [activeFirst, ...newItems, ...otherRecents];
+    } else {
+      const filteredRecents = existingRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === defaultModelSlug || favorites.includes(m.modelID))));
+      topRecents = [
+        { providerID: 'opencode-go', modelID: defaultModelSlug },
+        ...favorites.filter(f => f !== defaultModelSlug).map(f => ({ providerID: 'opencode-go', modelID: f })),
+        ...filteredRecents
+      ];
+    }
 
-    const topRecents = [
-      { providerID: 'opencode-go', modelID: defaultModelSlug },
-      ...favorites.filter(f => f !== defaultModelSlug).map(f => ({ providerID: 'opencode-go', modelID: f }))
-    ];
     pref.fields.recentModels = {
       updatedAt: Date.now(),
-      value: [...topRecents, ...filteredRecents]
+      value: topRecents
     };
 
     const existingFavs = pref.fields.favoriteModels?.value || [];
@@ -435,8 +456,24 @@ function syncOpenChamberConfig(options = {}) {
       try {
         const settings = parseJsonSafe(setPath, {});
         const sRecents = settings.recentModels || [];
-        const sFiltered = sRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === defaultModelSlug || favorites.includes(m.modelID))));
-        settings.recentModels = [...topRecents, ...sFiltered];
+        let sTopRecents = [];
+        if (options.preserveChoice !== false && sRecents.length > 0) {
+          const sActiveFirst = sRecents[0];
+          const sOther = sRecents.slice(1).filter(m => !(m.providerID === 'opencode-go' && (m.modelID === defaultModelSlug || favorites.includes(m.modelID))));
+          const sNewItems = [
+            { providerID: 'opencode-go', modelID: defaultModelSlug },
+            ...favorites.filter(f => f !== defaultModelSlug).map(f => ({ providerID: 'opencode-go', modelID: f }))
+          ].filter(item => !(item.providerID === sActiveFirst.providerID && item.modelID === sActiveFirst.modelID));
+          sTopRecents = [sActiveFirst, ...sNewItems, ...sOther];
+        } else {
+          const sFiltered = sRecents.filter(m => !(m.providerID === 'opencode-go' && (m.modelID === defaultModelSlug || favorites.includes(m.modelID))));
+          sTopRecents = [
+            { providerID: 'opencode-go', modelID: defaultModelSlug },
+            ...favorites.filter(f => f !== defaultModelSlug).map(f => ({ providerID: 'opencode-go', modelID: f })),
+            ...sFiltered
+          ];
+        }
+        settings.recentModels = sTopRecents;
 
         const sFavs = settings.favoriteModels || [];
         const sMergedFavs = [...sFavs];
@@ -468,20 +505,24 @@ function syncOpenChamberConfig(options = {}) {
  */
 function syncCodexConfig(options = {}) {
   const routerPort = options.routerPort || 4010;
-  const models = Array.isArray(options.models) && options.models.length > 0 ? options.models : loadOfficialModels();
+  const policy = options.policy || DEFAULT_POLICY;
+  const models = (Array.isArray(options.models) && options.models.length > 0)
+    ? options.models
+    : filterModelsByPolicy(policy, options);
   const defaultModelSlug = options.defaultModel || DEFAULT_MODEL;
   const effort = options.reasoningEffort || DEFAULT_REASONING_EFFORT;
   const codexDir = options.codexDir || path.join(os.homedir(), '.codex');
 
   const codex = require('./codex-adapter');
 
-  // 调用 codex-adapter.bindCodexConfig，传入策略过滤后的 models
+  // 调用 codex-adapter.bindCodexConfig，传入策略过滤后的 models 与 preserveChoice
   const bindRes = codex.bindCodexConfig({
     routerPort,
     defaultModel: defaultModelSlug,
     reasoningEffort: effort,
     codexDir,
-    models
+    models,
+    preserveChoice: options.preserveChoice
   });
 
   return {

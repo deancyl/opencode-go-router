@@ -128,7 +128,7 @@ function getRouterConfigPath() {
   return process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 }
 
-// 43 All Available OpenCode Go Models with zero-loss fallback
+// 44 All Available OpenCode Go Models with zero-loss fallback
 const ALL_38_SLUGS = [
   'deepseek-v4.1-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash',
   'deepseek-v4-flash-vision-exp', 'glm-5.1', 'glm-5.2', 'glm-5.3', 'glm-5.3-flash',
@@ -138,7 +138,7 @@ const ALL_38_SLUGS = [
   'mimo-v2.5-pro', 'mimo-v2.6-pro', 'minimax-m2.5', 'minimax-m2.7', 'minimax-m3',
   'space-bunny', 'longcat-2.0', 'longcat-2.5-preview-free', 'step-5-preview-free',
   'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.8-max', 'qwen3.8-flash',
-  'gemini-4-argon-contributor', 'step-5-preview', 'minimax-m3.1-flash-free', 'beam-free', 'cat-jam-free'
+  'gemini-4-argon', 'gemini-4-argon-contributor', 'step-5-preview', 'minimax-m3.1-flash-free', 'beam-free', 'cat-jam-free'
 ];
 
 /**
@@ -274,6 +274,21 @@ function diagnoseUpstreamFailure(res, err, body = '') {
     };
   }
 
+  // 6. 上游服务异常 (UPSTREAM_ERROR: 5xx)
+  if (statusCode >= 500 && statusCode < 600) {
+    return {
+      type: 'UPSTREAM_ERROR',
+      code: 'UPSTREAM_ERROR',
+      statusCode,
+      title: `上游服务异常 (HTTP ${statusCode})`,
+      message: `上游服务暂时不可用或处于维护中 (HTTP ${statusCode})`,
+      suggestion: '上游服务暂时响应异常，系统已平滑采纳官方基准模型兜底，建议稍后重试',
+      recommendation: '上游服务暂时响应异常，系统已平滑采纳官方基准模型兜底，建议稍后重试',
+      retryable: true,
+      requiresOverseasProxy: false
+    };
+  }
+
   // 兜底未知异常
   return {
     type: 'UNKNOWN',
@@ -288,6 +303,31 @@ function diagnoseUpstreamFailure(res, err, body = '') {
   };
 }
 
+const DIAGNOSTIC_PRIORITY = {
+  'QUOTA_EXHAUSTED': 100,
+  'GEOGRAPHIC_RESTRICTION': 90,
+  'AUTH_INVALID': 80,
+  'TRANSIENT_RATE_LIMIT': 70,
+  'UPSTREAM_ERROR': 60,
+  'NETWORK_OFFLINE': 50,
+  'UNKNOWN': 10
+};
+
+function selectBestDiagnostic(diagnostics) {
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) return null;
+  let best = diagnostics[0];
+  let bestScore = DIAGNOSTIC_PRIORITY[best?.code] || 0;
+  for (let i = 1; i < diagnostics.length; i++) {
+    const diag = diagnostics[i];
+    const score = DIAGNOSTIC_PRIORITY[diag?.code] || 0;
+    if (score > bestScore) {
+      best = diag;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 /**
  * 单个 Key 探测
  */
@@ -299,6 +339,9 @@ function probeSingleKey(apiKey, upstream = 'https://opencode.ai/zen/go/v1', time
     }
     try {
       let endpoint = upstream.replace(/\/+$/, '');
+      if (!/^https?:\/\//i.test(endpoint)) {
+        endpoint = 'https://' + endpoint;
+      }
       if (endpoint.endsWith('/models')) {
         // already ends with /models
       } else if (endpoint.endsWith('/v1')) {
@@ -331,7 +374,7 @@ function probeSingleKey(apiKey, upstream = 'https://opencode.ai/zen/go/v1', time
               const parsedRes = JSON.parse(data);
               const list = Array.isArray(parsedRes.data) ? parsedRes.data : [];
               const slugs = list.map(m => {
-                let id = m.id || m.name;
+                let id = typeof m === 'string' ? m : (m && typeof m === 'object' ? (m.id || m.name || m.slug) : '');
                 if (typeof id === 'string' && id.startsWith('opencode-go/')) id = id.slice(12);
                 return id;
               }).filter(id => typeof id === 'string' && id.trim().length > 0);
@@ -391,12 +434,12 @@ async function fetchOfficialModels(apiKeyOrAccounts, upstream = 'https://opencod
   if (keysToTry.length === 0) {
     const diag = diagnoseUpstreamFailure(null, 'no key configured');
     if (options.returnDetails) {
-      return { success: false, slugs: null, diagnostic: diag, accountsTested: 0 };
+      return { success: false, slugs: null, diagnostic: diag, diagnostics: [diag], accountsTested: 0 };
     }
     return null;
   }
 
-  let lastDiagnostic = null;
+  const allDiagnostics = [];
   for (let i = 0; i < keysToTry.length; i++) {
     const key = keysToTry[i];
     const probeRes = await probeSingleKey(key, upstream, timeoutMs, options);
@@ -406,6 +449,7 @@ async function fetchOfficialModels(apiKeyOrAccounts, upstream = 'https://opencod
           success: true,
           slugs: probeRes.slugs,
           diagnostic: null,
+          diagnostics: allDiagnostics,
           accountsTested: i + 1,
           accountIndex: i
         };
@@ -413,18 +457,23 @@ async function fetchOfficialModels(apiKeyOrAccounts, upstream = 'https://opencod
       return probeRes.slugs;
     }
 
-    lastDiagnostic = probeRes.diagnostic;
+    if (probeRes.diagnostic) {
+      allDiagnostics.push(probeRes.diagnostic);
+    }
     // 多账号故障转移提示
     if (i < keysToTry.length - 1) {
-      console.log(`[Updater] 账号 ${i + 1} 上游探测返回 ${lastDiagnostic?.code || 'ERROR'}，正在自动故障转移轮询尝试账号 ${i + 2}...`);
+      console.log(`[Updater] 账号 ${i + 1} 上游探测返回 ${probeRes.diagnostic?.code || 'ERROR'}，正在自动故障转移轮询尝试账号 ${i + 2}...`);
     }
   }
+
+  const primaryDiagnostic = selectBestDiagnostic(allDiagnostics);
 
   if (options.returnDetails) {
     return {
       success: false,
       slugs: null,
-      diagnostic: lastDiagnostic,
+      diagnostic: primaryDiagnostic,
+      diagnostics: allDiagnostics,
       accountsTested: keysToTry.length
     };
   }
@@ -678,7 +727,11 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   // 1. Build models map with dynamic models + fallback 38 models
   let baseSlugs = ALL_38_SLUGS;
   if (Array.isArray(options.officialModels) && options.officialModels.length > 0) {
-    baseSlugs = Array.from(new Set([...ALL_38_SLUGS, ...options.officialModels]));
+    if (options.strictModels) {
+      baseSlugs = Array.from(new Set(options.officialModels));
+    } else {
+      baseSlugs = Array.from(new Set([...ALL_38_SLUGS, ...options.officialModels]));
+    }
   }
   const allModelsMap = {};
   for (const s of baseSlugs) {
@@ -696,6 +749,9 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
           });
         }
       } else {
+        if (options.strictModels && ALL_38_SLUGS.includes(k)) {
+          continue;
+        }
         if (typeof v === 'object' && v !== null) {
           allModelsMap[k] = Object.assign({}, v, {
             name: v.name || v.modelID || k,
@@ -852,7 +908,11 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     data.model = options.preferredModel;
     modelPreserved = false;
   } else if (!data.model) {
-    data.model = options.useLuna ? 'opencode-go/gpt-5.6-luna' : 'opencode-go/deepseek-v4.1-flash';
+    if (options.defaultModel) {
+      data.model = options.defaultModel.includes('/') ? options.defaultModel : `opencode-go/${options.defaultModel}`;
+    } else {
+      data.model = options.useLuna ? 'opencode-go/gpt-5.6-luna' : 'opencode-go/deepseek-v4.1-flash';
+    }
     modelPreserved = false;
   }
 
