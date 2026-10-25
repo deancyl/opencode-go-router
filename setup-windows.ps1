@@ -22,6 +22,7 @@ param(
     [string]$Key2,
     [string]$Password,
     [string]$InstallDir,
+    [string]$OpencodeConfigDir = "",
     [switch]$NoShortcuts
 )
 
@@ -99,7 +100,10 @@ if ($Port -gt 0) { $effectivePort = $Port }
 if ($HostName) { $effectiveHost = $HostName }
 $port = $effectivePort
 
-$opencodeConfigDir = "$env:USERPROFILE\.config\opencode"
+$opencodeConfigDir = if ($OpencodeConfigDir) { $OpencodeConfigDir } elseif ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR } else { "$env:USERPROFILE\.config\opencode" }
+if ($OpencodeConfigDir) {
+    $env:OPENCODE_CONFIG_DIR = $OpencodeConfigDir
+}
 $opencodeConfigFile = "$opencodeConfigDir\opencode.jsonc"
 $omoConfigFile = "$env:USERPROFILE\.omo\omo.jsonc"
 $commandsDir = "$opencodeConfigDir\commands"
@@ -510,9 +514,12 @@ function Step-SetupOpenChamber {
 
         $recents = @()
         if ($prefObj.fields.recentModels -and $prefObj.fields.recentModels.value) {
-            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and $_.modelID -eq 'deepseek-v4.1-flash') })
+            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and ($_.modelID -eq 'deepseek-v4.1-flash' -or $_.modelID -eq 'kimi-k3')) })
         }
-        $newRecent = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $recents
+        $newRecent = @(
+            [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' },
+            [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }
+        ) + $recents
         if ($prefObj.fields.recentModels) {
             $prefObj.fields.recentModels.value = $newRecent
             $prefObj.fields.recentModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -523,8 +530,63 @@ function Step-SetupOpenChamber {
             })
         }
 
+        $favs = @()
+        if ($prefObj.fields.favoriteModels -and $prefObj.fields.favoriteModels.value) {
+            $favs = @($prefObj.fields.favoriteModels.value)
+        }
+        $hasFlash = $false
+        $hasKimi = $false
+        foreach ($m in $favs) {
+            if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'deepseek-v4.1-flash') { $hasFlash = $true }
+            if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'kimi-k3') { $hasKimi = $true }
+        }
+        if (-not $hasFlash) {
+            $favs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $favs
+        }
+        if (-not $hasKimi) {
+            $favs = $favs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' })
+        }
+        if ($prefObj.fields.favoriteModels) {
+            $prefObj.fields.favoriteModels.value = $favs
+            $prefObj.fields.favoriteModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        } else {
+            $prefObj.fields | Add-Member -NotePropertyName "favoriteModels" -NotePropertyValue ([PSCustomObject]@{
+                updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                value = $favs
+            })
+        }
+
         [System.IO.File]::WriteAllText($chamberPrefFile, ($prefObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-        Write-Host "✔ OpenChamber 桌面端首选默认模型已锁定为: opencode-go / deepseek-v4.1-flash" -ForegroundColor Green
+
+        $chamberSetFile = Join-Path $chamberPrefDir "settings.json"
+        if (Test-Path $chamberSetFile) {
+            try {
+                $setObj = Get-Content $chamberSetFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                $sRecents = if ($setObj.recentModels) { @($setObj.recentModels | Where-Object { -not ($_.providerID -eq 'opencode-go' -and ($_.modelID -eq 'deepseek-v4.1-flash' -or $_.modelID -eq 'kimi-k3')) }) } else { @() }
+                $setObj.recentModels = @(
+                    [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' },
+                    [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }
+                ) + $sRecents
+
+                $sFavs = if ($setObj.favoriteModels) { @($setObj.favoriteModels) } else { @() }
+                $sHasFlash = $false
+                $sHasKimi = $false
+                foreach ($m in $sFavs) {
+                    if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'deepseek-v4.1-flash') { $sHasFlash = $true }
+                    if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'kimi-k3') { $sHasKimi = $true }
+                }
+                if (-not $sHasFlash) {
+                    $sFavs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $sFavs
+                }
+                if (-not $sHasKimi) {
+                    $sFavs = $sFavs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' })
+                }
+                $setObj.favoriteModels = $sFavs
+                [System.IO.File]::WriteAllText($chamberSetFile, ($setObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+            } catch { }
+        }
+
+        Write-Host "✔ OpenChamber 桌面端首选默认模型与置顶收藏已锁定为: opencode-go (deepseek-v4.1-flash, kimi-k3)" -ForegroundColor Green
     } catch { }
 
     $importScript = Join-Path $rootDir "import_projects.py"
