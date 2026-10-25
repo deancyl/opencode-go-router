@@ -1273,9 +1273,11 @@ $ARGUMENTS
 
 function autoHealOpencodePortDrift(customPath = null, targetPort = config.port) {
   try {
+    const numericPort = parseInt(targetPort, 10) || config.port || 4010;
     // 防御深度：若运行于临时沙箱目录且未显式指定 OPENCODE_CONFIG_DIR，严禁触碰宿主配置
     const isTempSandbox = __dirname.toLowerCase().includes(os.tmpdir().toLowerCase()) ||
                           __dirname.toLowerCase().includes('\\temp\\') ||
+                          __dirname.toLowerCase().includes('/temp/') ||
                           __dirname.includes('沙箱');
     if (!customPath && !process.env.OPENCODE_CONFIG_DIR && isTempSandbox) {
       return false;
@@ -1300,12 +1302,12 @@ function autoHealOpencodePortDrift(customPath = null, targetPort = config.port) 
     const og = data.provider['opencode-go'];
     if (!og || typeof og !== 'object') return false;
 
-    const expectedBaseUrl = `http://127.0.0.1:${targetPort}/v1`;
+    const expectedBaseUrl = `http://127.0.0.1:${numericPort}/v1`;
     let modified = false;
 
     // 仅当探测到 provider['opencode-go'].options.baseURL 或 settings.baseURL 端口不匹配时单值纠偏
     if (og.options && typeof og.options === 'object' && og.options.baseURL) {
-      if (og.options.baseURL !== expectedBaseUrl) {
+      if (String(og.options.baseURL).trim() !== expectedBaseUrl) {
         const oldUrl = og.options.baseURL;
         og.options.baseURL = expectedBaseUrl;
         modified = true;
@@ -1314,7 +1316,7 @@ function autoHealOpencodePortDrift(customPath = null, targetPort = config.port) 
     }
 
     if (og.settings && typeof og.settings === 'object' && og.settings.baseURL) {
-      if (og.settings.baseURL !== expectedBaseUrl) {
+      if (String(og.settings.baseURL).trim() !== expectedBaseUrl) {
         const oldUrl = og.settings.baseURL;
         og.settings.baseURL = expectedBaseUrl;
         modified = true;
@@ -1325,7 +1327,7 @@ function autoHealOpencodePortDrift(customPath = null, targetPort = config.port) 
     if (modified) {
       // 绝对红线: 仅单值纠偏 baseURL，100% 保护第三方 provider (aixforge 等) 与模型、插件、智能体
       writeFileSyncAtomic(p, JSON.stringify(data, null, 2), 'utf8');
-      console.log(`[OpenCode Go Router] [Port Drift Self-Healing] 已成功自愈 ${p} 中的网关端口漂移 -> ${targetPort}`);
+      console.log(`[OpenCode Go Router] [Port Drift Self-Healing] 已成功自愈 ${p} 中的网关端口漂移 -> ${numericPort}`);
       return true;
     }
     return false;
@@ -14423,15 +14425,24 @@ function gracefulShutdown(signal) {
 }
 
 function start(port = config.port, host = config.host, callback) {
-  return server.listen(port, host, () => {
-    console.log(`[OpenCode Go Router] Running on http://${host}:${port}`);
+  if (typeof port === 'function') {
+    callback = port;
+    port = config.port;
+    host = config.host;
+  } else if (typeof host === 'function') {
+    callback = host;
+    host = config.host;
+  }
+  const targetPort = parseInt(port, 10) || config.port || 4010;
+  return server.listen(targetPort, host, () => {
+    console.log(`[OpenCode Go Router] Running on http://${host}:${targetPort}`);
     console.log(`[OpenCode Go Router] Upstream: ${config.upstream}`);
-    console.log(`[OpenCode Go Router] Web Dashboard: http://${host}:${port}/balancer/ui`);
+    console.log(`[OpenCode Go Router] Web Dashboard: http://${host}:${targetPort}/balancer/ui`);
     try {
       contextCompactor.syncModelRatesFromOpenCode().catch(() => {});
     } catch (_) {}
     try {
-      autoHealOpencodePortDrift(null, port);
+      autoHealOpencodePortDrift(null, targetPort);
     } catch (healErr) {
       console.warn('[OpenCode Go Router] autoHealOpencodePortDrift warning:', healErr.message);
     }

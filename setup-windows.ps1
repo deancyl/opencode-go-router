@@ -101,9 +101,10 @@ if ($HostName) { $effectiveHost = $HostName }
 $port = $effectivePort
 
 $opencodeConfigDir = if ($OpencodeConfigDir) { $OpencodeConfigDir } elseif ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR } else { "$env:USERPROFILE\.config\opencode" }
-if ($OpencodeConfigDir) {
-    $env:OPENCODE_CONFIG_DIR = $OpencodeConfigDir
+if ($opencodeConfigDir) {
+    try { $opencodeConfigDir = [System.IO.Path]::GetFullPath($opencodeConfigDir) } catch { }
 }
+$env:OPENCODE_CONFIG_DIR = $opencodeConfigDir
 $opencodeConfigFile = "$opencodeConfigDir\opencode.jsonc"
 $omoConfigFile = "$env:USERPROFILE\.omo\omo.jsonc"
 $commandsDir = "$opencodeConfigDir\commands"
@@ -527,7 +528,7 @@ function Step-SetupOpenChamber {
             $prefObj.fields | Add-Member -NotePropertyName "recentModels" -NotePropertyValue ([PSCustomObject]@{
                 updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                 value = $newRecent
-            })
+            }) -Force
         }
 
         $favs = @()
@@ -553,7 +554,7 @@ function Step-SetupOpenChamber {
             $prefObj.fields | Add-Member -NotePropertyName "favoriteModels" -NotePropertyValue ([PSCustomObject]@{
                 updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                 value = $favs
-            })
+            }) -Force
         }
 
         [System.IO.File]::WriteAllText($chamberPrefFile, ($prefObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))

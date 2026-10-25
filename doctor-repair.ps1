@@ -11,9 +11,10 @@ Write-Host "==========================================================" -Foregro
 
 $routerPort = 4010
 $chamberPort = 3000
-$opencodeConfig = "$env:USERPROFILE\.config\opencode\opencode.jsonc"
+$opencodeConfigDir = if ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR } else { "$env:USERPROFILE\.config\opencode" }
+$opencodeConfig = Join-Path $opencodeConfigDir "opencode.jsonc"
 $omoConfig = "$env:USERPROFILE\.omo\omo.jsonc"
-$boostCommand = "$env:USERPROFILE\.config\opencode\commands\boost.md"
+$boostCommand = Join-Path $opencodeConfigDir "commands\boost.md"
 $defaultWorkspace = "D:\opencode\default"
 
 $issuesFound = [System.Collections.Generic.List[PSObject]]::new()

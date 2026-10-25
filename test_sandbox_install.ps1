@@ -20,6 +20,9 @@ Write-Host "🧪 OpenCode Go Router 隔离沙箱全新冷启动安装测试启�
 Write-Host "代码基线目录: $scriptRoot" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 
+$hostOcPath = "$env:USERPROFILE\.config\opencode\opencode.jsonc"
+$hostInitialHash = if (Test-Path $hostOcPath) { (Get-FileHash -Path $hostOcPath -Algorithm SHA256).Hash } else { "" }
+
 $testResults = [ordered]@{}
 $stopwatch = [System.Diagnostics.Stopwatch]::New()
 
@@ -284,11 +287,11 @@ Remove-Item Env:OPENCODE_CONFIG_DIR -ErrorAction SilentlyContinue
 Assert-SandboxTest "8.1 沙箱环境干净回收" (-not (Test-PortActive $sandboxPort)) "端口 $sandboxPort 已归还系统，测试无污染"
 
 # 8.2 核验宿主全局配置零污染 (Air-Gapped Isolation Assertion)
-$hostOcPath = "$env:USERPROFILE\.config\opencode\opencode.jsonc"
 $hostConfigOk = $false
 $hostConfigDetail = ""
 if (Test-Path $hostOcPath) {
     try {
+        $hostFinalHash = (Get-FileHash -Path $hostOcPath -Algorithm SHA256).Hash
         $hostOcRaw = Get-Content $hostOcPath -Raw -Encoding UTF8
         $hostOcJson = $hostOcRaw | ConvertFrom-Json
         $baseUrls = @()
@@ -302,11 +305,12 @@ if (Test-Path $hostOcPath) {
         }
         $isPure4010 = ($baseUrls.Count -gt 0) -and (-not ($baseUrls | Where-Object { $_ -notlike "*127.0.0.1:4010*" }))
         $noSandboxPorts = (-not ($hostOcRaw -like "*:$sandboxPort*")) -and (-not ($hostOcRaw -like "*:$sandboxPort2*"))
-        if ($isPure4010 -and $noSandboxPorts) {
+        $hashUntouched = ($hostInitialHash -eq "" -or $hostInitialHash -eq $hostFinalHash)
+        if ($isPure4010 -and $noSandboxPorts -and $hashUntouched) {
             $hostConfigOk = $true
-            $hostConfigDetail = "宿主 opencode.jsonc 100% 保持纯净且稳妥指向 4010 生产网关 (未受沙箱端口 $sandboxPort / $sandboxPort2 污染)"
+            $hostConfigDetail = "宿主 opencode.jsonc 100% 保持纯净且未发生任何单字节漂移 (SHA256: $hostFinalHash, 未受沙箱端口 $sandboxPort / $sandboxPort2 污染)"
         } else {
-            $hostConfigDetail = "宿主 opencode.jsonc baseURL 异常或受沙箱污染: $($baseUrls -join ', ')"
+            $hostConfigDetail = "宿主 opencode.jsonc baseURL 异常或受沙箱污染: $($baseUrls -join ', ') (HashMatch: $hashUntouched)"
         }
     } catch {
         $hostConfigDetail = "解析宿主配置失败: $_"
