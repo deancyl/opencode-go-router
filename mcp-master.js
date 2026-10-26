@@ -21,7 +21,14 @@ const fs = require('fs');
 const { PluginManager } = require('./plugin-manager.js');
 
 const ROOT_DIR = __dirname;
+const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 const LOG_PATH = path.join(ROOT_DIR, 'mcp-master.log');
+
+let PKG_VERSION = '3.13.1';
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
+  if (pkg.version) PKG_VERSION = pkg.version;
+} catch (_) {}
 
 // Determine client caller from process environment or command line args
 const CLIENT_CALLER = (() => {
@@ -40,6 +47,7 @@ function logMasterMcp(level, msg, data = null) {
 
 const pluginManager = new PluginManager({
   rootDir: ROOT_DIR,
+  configPath: CONFIG_FILE,
   logger: {
     info: (m) => logMasterMcp('INFO', m),
     warn: (m) => logMasterMcp('WARN', m),
@@ -56,8 +64,7 @@ async function bootstrap() {
     const pluginsCfg = pluginManager.getPluginsConfig();
 
     for (const [id, manifest] of pluginManager.discoveredPlugins.entries()) {
-      const pCfg = pluginsCfg[id];
-      const shouldEnable = pCfg ? pCfg.enabled !== false : (manifest.clientScopes?.defaultEnabled?.length > 0);
+      const shouldEnable = pluginManager.isPluginEnabled(id, manifest, pluginsCfg);
       if (shouldEnable) {
         try {
           await pluginManager.enablePlugin(id);
@@ -124,7 +131,7 @@ async function handleRpcRequest(req) {
           },
           serverInfo: {
             name: 'opencode-go-master-mcp',
-            version: '3.13.0'
+            version: PKG_VERSION
           }
         }
       });

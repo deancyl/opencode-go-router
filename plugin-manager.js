@@ -181,6 +181,23 @@ class PluginManager {
   }
 
   /**
+   * Determine whether a plugin is enabled (Single Source of Truth)
+   */
+  isPluginEnabled(pluginId, manifest = null, pluginsCfg = null) {
+    const cfg = (pluginsCfg || this.getPluginsConfig())[pluginId];
+    if (cfg && cfg.enabled !== undefined) {
+      return Boolean(cfg.enabled);
+    }
+    const m = manifest || this.discoveredPlugins.get(pluginId);
+    if (!m) return false;
+    return Boolean(
+      (m.clientScopes?.defaultEnabled && m.clientScopes.defaultEnabled.length > 0) ||
+      m.category === 'service' ||
+      m.category === 'agent'
+    );
+  }
+
+  /**
    * Scan plugins from plugins/ and plugins/custom/
    */
   scanPlugins() {
@@ -207,7 +224,11 @@ class PluginManager {
             const raw = parseJsonSafe(manifestPath, null);
             if (raw) {
               const manifest = this.validateManifest(raw, pluginDir);
-              this.discoveredPlugins.set(manifest.id, manifest);
+              if (this.discoveredPlugins.has(manifest.id)) {
+                this.logger.warn(`[PluginManager] 发现重复插件 ID "${manifest.id}" (${pluginDir})，已跳过覆盖`);
+              } else {
+                this.discoveredPlugins.set(manifest.id, manifest);
+              }
             }
           } catch (err) {
             this.logger.warn(`[PluginManager] 解析插件 "${entry.name}" manifest 失败: ${err.message}`);
@@ -238,6 +259,7 @@ class PluginManager {
           resolve(false);
         });
         socket.once('error', () => {
+          socket.destroy();
           resolve(false);
         });
         socket.connect(p, '127.0.0.1');
@@ -294,8 +316,7 @@ class PluginManager {
       // Check against other enabled plugins
       for (const [otherId, otherManifest] of this.discoveredPlugins.entries()) {
         if (otherId === pluginId) continue;
-        const otherCfg = pluginsCfg[otherId];
-        const isOtherEnabled = otherCfg ? otherCfg.enabled !== false : false;
+        const isOtherEnabled = this.isPluginEnabled(otherId, otherManifest, pluginsCfg);
         if (!isOtherEnabled) continue;
 
         const otherRawPorts = (otherManifest.system.ports || []).concat(otherManifest.capabilities.service?.defaultPort ? [otherManifest.capabilities.service.defaultPort] : []);
@@ -420,6 +441,8 @@ class PluginManager {
       try {
         await pluginModule.init(context);
       } catch (err) {
+        this.unregisterTools(pluginId);
+        this.loadedPlugins.delete(pluginId);
         this.logger.error(`[PluginManager] 插件 "${pluginId}" init() 钩子执行异常: ${err.message}`);
         throw err;
       }
@@ -438,6 +461,8 @@ class PluginManager {
     let finalName = toolDef.name;
     if (topology && topology.collisionFixes && topology.collisionFixes[toolDef.name]) {
       finalName = topology.collisionFixes[toolDef.name];
+    } else if (this.activeTools.has(finalName) && this.activeTools.get(finalName).pluginId !== pluginId) {
+      finalName = `${pluginId}_${toolDef.name}`;
     }
 
     // Rule 13: Probe parameters, inputSchema, input_schema; never let {} mask definitions; ensure { type: 'object', properties: {} }
@@ -598,20 +623,43 @@ class PluginManager {
       toolEntry = this.activeTools.get(cleanName);
     }
     if (!toolEntry) {
+      // Lazy auto-activation: if an enabled plugin declared this tool but has not loaded yet
+      const cleanName = (toolName || '').replace(/^mcp__[a-zA-Z0-9_-]+__/, '');
+      for (const [id, manifest] of this.discoveredPlugins.entries()) {
+        const declaredTools = manifest.capabilities?.tools || [];
+        if (declaredTools.some(t => t.name === toolName || t.name === cleanName)) {
+          if (this.isPluginEnabled(id, manifest)) {
+            await this.enablePlugin(id);
+            toolEntry = this.activeTools.get(toolName) || this.activeTools.get(cleanName);
+            break;
+          }
+        }
+      }
+    }
+    if (!toolEntry) {
       throw new Error(`未找到工具 "${toolName}" 或其所属插件未启用`);
     }
 
     const { pluginId, originalName, handler } = toolEntry;
     const pluginsCfg = this.getPluginsConfig();
     const pluginCfg = pluginsCfg[pluginId];
+    const manifest = this.discoveredPlugins.get(pluginId);
 
-    if (!pluginCfg || pluginCfg.enabled === false) {
+    if (!this.isPluginEnabled(pluginId, manifest, pluginsCfg)) {
       throw new Error(`工具 "${toolName}" 所属插件 "${pluginId}" 已停用`);
     }
 
     // Client scope enforcement
-    if (clientCaller && pluginCfg.clients && pluginCfg.clients[clientCaller] === false) {
-      throw new Error(`工具 "${toolName}" 已在客户端 "${clientCaller}" 中被禁用`);
+    if (clientCaller) {
+      if (pluginCfg && pluginCfg.clients && pluginCfg.clients[clientCaller] !== undefined) {
+        if (!pluginCfg.clients[clientCaller]) {
+          throw new Error(`工具 "${toolName}" 已在客户端 "${clientCaller}" 中被禁用`);
+        }
+      } else if (manifest && manifest.clientScopes?.defaultEnabled) {
+        if (!manifest.clientScopes.defaultEnabled.includes(clientCaller)) {
+          throw new Error(`工具 "${toolName}" 已在客户端 "${clientCaller}" 中被禁用`);
+        }
+      }
     }
 
     const instance = this.loadedPlugins.get(pluginId);
@@ -636,11 +684,17 @@ class PluginManager {
     for (const [name, entry] of this.activeTools.entries()) {
       const { pluginId, description, parameters, inputSchema } = entry;
       const pluginCfg = pluginsCfg[pluginId];
-      if (!pluginCfg || pluginCfg.enabled === false) continue;
+      const manifest = this.discoveredPlugins.get(pluginId);
+
+      if (!this.isPluginEnabled(pluginId, manifest, pluginsCfg)) continue;
 
       // Filter by clientCaller if specified
-      if (clientCaller && pluginCfg.clients && pluginCfg.clients[clientCaller] === false) {
-        continue;
+      if (clientCaller) {
+        if (pluginCfg && pluginCfg.clients && pluginCfg.clients[clientCaller] !== undefined) {
+          if (!pluginCfg.clients[clientCaller]) continue;
+        } else if (manifest && manifest.clientScopes?.defaultEnabled) {
+          if (!manifest.clientScopes.defaultEnabled.includes(clientCaller)) continue;
+        }
       }
 
       tools.push({
@@ -763,7 +817,7 @@ class PluginManager {
 
     for (const [id, manifest] of this.discoveredPlugins.entries()) {
       const userCfg = pluginsCfg[id] || {};
-      const enabled = userCfg.enabled !== false && (userCfg.enabled === true || manifest.category === 'service' || manifest.category === 'agent');
+      const enabled = this.isPluginEnabled(id, manifest, pluginsCfg);
       const clients = userCfg.clients || {
         opencode: manifest.clientScopes.defaultEnabled.includes('opencode'),
         openchamber: manifest.clientScopes.defaultEnabled.includes('openchamber'),

@@ -244,8 +244,16 @@ if (typeof codexAdapter !== 'undefined' && codexAdapter && typeof codexAdapter.s
 let pluginManager = null;
 try {
   const { PluginManager } = require('./plugin-manager');
-  pluginManager = new PluginManager({ rootDir: __dirname, config, routerPort: config.port || 4010 });
+  pluginManager = new PluginManager({ rootDir: __dirname, configPath: CONFIG_FILE, routerPort: config.port || 4010 });
   pluginManager.scanPlugins();
+  const pluginsCfg = pluginManager.getPluginsConfig();
+  for (const [id, manifest] of pluginManager.discoveredPlugins.entries()) {
+    if (pluginManager.isPluginEnabled(id, manifest, pluginsCfg)) {
+      pluginManager.enablePlugin(id).catch(e => {
+        console.warn(`[PluginManager] 启动加载插件 "${id}" 失败:`, e.message);
+      });
+    }
+  }
 } catch (e) {
   console.warn('[PluginManager] 初始化异常:', e.message);
 }
@@ -12289,7 +12297,7 @@ function renderDashboardHtml(config) {
         html += '<div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.75rem; color:#a1a1aa;">';
         html += '<span>🛠️ 暴露工具: <strong style="color:#38bdf8;">' + (p.toolCount || 0) + ' 个</strong></span>';
         html += '<span>🤖 智能体: <strong style="color:#c084fc;">' + (p.agentCount || 0) + ' 个</strong></span>';
-        html += '<span>⚡ 端口: <strong style="color:#f4f4f5;">' + ((p.system && p.system.ports) ? p.system.ports.join(', ') : '无') + '</strong></span>';
+        html += '<span>⚡ 端口: <strong style="color:#f4f4f5;">' + escapeHtml((p.system && p.system.ports) ? p.system.ports.join(', ') : '无') + '</strong></span>';
         html += '</div></div>';
       });
       container.innerHTML = html;
@@ -13434,7 +13442,8 @@ const server = http.createServer((req, res) => {
           sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
           allowModelAutoUpgrade: payload.allowModelAutoUpgrade !== undefined ? Boolean(payload.allowModelAutoUpgrade) : Boolean(config.allowModelAutoUpgrade),
           allowRegionFallback: payload.allowRegionFallback !== undefined ? Boolean(payload.allowRegionFallback) : Boolean(config.allowRegionFallback),
-          accounts: newAccounts
+          accounts: newAccounts,
+          plugins: (payload.plugins && typeof payload.plugins === 'object') ? payload.plugins : ((pluginManager ? pluginManager.getPluginsConfig() : config.plugins) || {})
         };
         if (payload.proxy !== undefined) {
           if (typeof payload.proxy === 'string') {
@@ -14580,6 +14589,15 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         if (!config.comfyui) config.comfyui = { ...DEFAULT_CONFIG.comfyui };
         config.comfyui.enabled = newEnabled;
         if (comfyuiAdapter) comfyuiAdapter.enabled = newEnabled;
+
+        if (pluginManager) {
+          config.plugins = pluginManager.getPluginsConfig();
+          if (newEnabled) {
+            pluginManager.enablePlugin('comfyui').catch(() => {});
+          } else {
+            pluginManager.disablePlugin('comfyui').catch(() => {});
+          }
+        }
         
         // Atomic persist to config.json
         if (fs.existsSync(CONFIG_FILE)) {
@@ -14783,6 +14801,10 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
           result = await pluginManager.disablePlugin(pluginId);
         }
 
+        if (pluginManager) {
+          config.plugins = pluginManager.getPluginsConfig();
+        }
+
         // Keep ComfyUI legacy configuration synchronized
         if (pluginId === 'comfyui') {
           if (!config.comfyui) config.comfyui = { ...DEFAULT_CONFIG.comfyui };
@@ -14883,6 +14905,8 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         } else if (action === 'restart') {
           await pluginManager.stopService(pluginId);
           result = await pluginManager.startService(pluginId, mode);
+        } else if (action === 'status' || action === 'probe') {
+          result = await pluginManager.probeService(pluginId);
         }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, ...result }));
@@ -14896,10 +14920,41 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // 7. Active Tools Discovery (/balancer/api/plugins/tools)
   if (reqUrl.pathname === '/balancer/api/plugins/tools' && req.method === 'GET') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     const client = reqUrl.query?.client || null;
     const tools = pluginManager ? pluginManager.getActiveTools(client) : [];
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify({ success: true, count: tools.length, tools }));
+    return;
+  }
+
+  // 8. Execute Plugin Tool via REST (/balancer/api/plugins/execute)
+  if (reqUrl.pathname === '/balancer/api/plugins/execute' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
+    readInternalBody(req, res).then(async (buf) => {
+      if (!buf || res.headersSent || res.writableEnded) return;
+      try {
+        const payload = JSON.parse(buf.toString('utf8'));
+        const toolName = payload.name || payload.tool || payload.toolName;
+        const toolArgs = payload.arguments || payload.args || {};
+        const client = payload.client || null;
+        if (!toolName) throw new Error('tool name is required');
+        const result = await pluginManager.executeTool(toolName, toolArgs, client);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: true, tool: toolName, result }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
     return;
   }
 

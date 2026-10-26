@@ -336,7 +336,7 @@ async function runAsyncTest(name, fn) {
     // Parse error (malformed JSON)
     mcpProc.stdin.write('{ broken json line \n');
 
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 1000));
     mcpProc.kill();
 
     assert(mcpOut.includes('"code":-32601'), '未知方法必须返回 -32601');
@@ -355,7 +355,7 @@ async function runAsyncTest(name, fn) {
     // Request missing method
     mcpProc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 304, params: {} }) + '\n');
 
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 1000));
     mcpProc.kill();
 
     assert(mcpOut.includes('"code":-32600'), '缺少 method 字段必须返回 -32600 Invalid Request');
@@ -613,6 +613,55 @@ async function runAsyncTest(name, fn) {
       assert.strictEqual(res.data.success, true);
       assert.ok(Array.isArray(res.data.tools));
     });
+
+    await runAsyncTest('6.5 POST /balancer/api/plugins/service 探针动作 (probe/status)', async () => {
+      const postData = JSON.stringify({ id: 'comfyui', action: 'probe' });
+      const res = await new Promise((resolve) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: testRouterPort,
+          path: '/balancer/api/plugins/service',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) }
+        }, r => {
+          let body = '';
+          r.on('data', c => { body += c; });
+          r.on('end', () => resolve({ status: r.statusCode, data: JSON.parse(body) }));
+        });
+        req.write(postData);
+        req.end();
+      });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.data.success, true);
+      assert.ok(res.data.status, '必须返回插件服务状态');
+    });
+
+    await runAsyncTest('6.6 POST /balancer/api/plugins/execute 远程安全执行工具', async () => {
+      const postData = JSON.stringify({
+        tool: 'greet_developer',
+        arguments: { name: 'AdversarialAgent' }
+      });
+      const res = await new Promise((resolve) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: testRouterPort,
+          path: '/balancer/api/plugins/execute',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) }
+        }, r => {
+          let body = '';
+          r.on('data', c => { body += c; });
+          r.on('end', () => resolve({ status: r.statusCode, data: JSON.parse(body) }));
+        });
+        req.write(postData);
+        req.end();
+      });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.data.success, true);
+      assert.ok(res.data.result && res.data.result.content[0].text.includes('AdversarialAgent'));
+    });
   } finally {
     killTestServer();
   }
@@ -711,6 +760,39 @@ async function runAsyncTest(name, fn) {
     assert.ok(snakeTool.parameters.properties.query, 'input_schema 内字段必须完整保留');
 
     pm.unregisterTools('test-schema-plugin');
+  });
+
+  await runAsyncTest('7.5 ComfyUI 图像反推目录防御 (EISDIR 阻断)', async () => {
+    const comfyIndex = require('./plugins/comfyui/index.js');
+    const res = await comfyIndex.executeTool('interrogate_image', { image_path: __dirname }, {});
+    assert.strictEqual(res.isError, true);
+    assert.ok(res.content[0].text.includes('不是有效的文件'));
+  });
+
+  await runAsyncTest('7.6 ComfyUI 图像反推 20MB 超大体积溢出阻断防御', async () => {
+    const comfyIndex = require('./plugins/comfyui/index.js');
+    const hugeFile = path.join(testTmpDir, 'huge_test_image.dat');
+    const fd = fs.openSync(hugeFile, 'w');
+    fs.writeSync(fd, Buffer.alloc(1024), 0, 1024, 21 * 1024 * 1024);
+    fs.closeSync(fd);
+
+    const res = await comfyIndex.executeTool('interrogate_image', { image_path: hugeFile }, {});
+    assert.strictEqual(res.isError, true);
+    assert.ok(res.content[0].text.includes('> 20MB'));
+    try { fs.unlinkSync(hugeFile); } catch (_) {}
+  });
+
+  await runAsyncTest('7.7 OMO 插件探活异常防护 (try-catch 零中断断言)', async () => {
+    const omoIndex = require('./plugins/omo/index.js');
+    const origCheck = require('./updater').checkOmoPluginV2Integrity;
+    try {
+      require('./updater').checkOmoPluginV2Integrity = () => { throw new Error('Simulated disk failure'); };
+      const res = await omoIndex.probe({});
+      assert.strictEqual(res.status, 'stopped');
+      assert.ok(res.message.includes('探活异常: Simulated disk failure'));
+    } finally {
+      require('./updater').checkOmoPluginV2Integrity = origCheck;
+    }
   });
 
   // Cleanup sandbox

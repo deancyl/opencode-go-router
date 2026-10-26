@@ -19,32 +19,41 @@ module.exports = {
   },
 
   async probe(context) {
-    const omoInteg = updater.checkOmoPluginV2Integrity();
-    const isHealthy = omoInteg.healthy && !omoInteg.hasDeadlockEffect && !omoInteg.hasMissingWrapper;
+    try {
+      const omoInteg = updater.checkOmoPluginV2Integrity();
+      const isHealthy = omoInteg.healthy && !omoInteg.hasDeadlockEffect && !omoInteg.hasMissingWrapper;
 
-    let status = 'healthy';
-    let message = 'OMO 插件配置与运行环境健康';
+      let status = 'healthy';
+      let message = 'OMO 插件配置与运行环境健康';
 
-    if (omoInteg.hasDeadlockEffect) {
-      status = 'degraded';
-      message = '检测到 Effect-TS 死锁标记 (可能导致连接挂死)';
-    } else if (omoInteg.hasMissingWrapper) {
-      status = 'degraded';
-      message = '缺少 OpenCode v2 目录安全包装器';
-    } else if (!omoInteg.installed) {
-      status = 'stopped';
-      message = '未检测到本地 OMO 插件安装';
+      if (omoInteg.hasDeadlockEffect) {
+        status = 'degraded';
+        message = '检测到 Effect-TS 死锁标记 (可能导致连接挂死)';
+      } else if (omoInteg.hasMissingWrapper) {
+        status = 'degraded';
+        message = '缺少 OpenCode v2 目录安全包装器';
+      } else if (!omoInteg.installed) {
+        status = 'stopped';
+        message = '未检测到本地 OMO 插件安装';
+      }
+
+      return {
+        status,
+        installed: omoInteg.installed,
+        healthy: isHealthy,
+        hasDeadlockEffect: omoInteg.hasDeadlockEffect,
+        hasMissingWrapper: omoInteg.hasMissingWrapper,
+        targetsCount: omoInteg.targetsCount,
+        message
+      };
+    } catch (e) {
+      return {
+        status: 'stopped',
+        installed: false,
+        healthy: false,
+        message: `探活异常: ${e.message}`
+      };
     }
-
-    return {
-      status,
-      installed: omoInteg.installed,
-      healthy: isHealthy,
-      hasDeadlockEffect: omoInteg.hasDeadlockEffect,
-      hasMissingWrapper: omoInteg.hasMissingWrapper,
-      targetsCount: omoInteg.targetsCount,
-      message
-    };
   },
 
   async repair(context) {

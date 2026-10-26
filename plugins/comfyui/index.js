@@ -36,13 +36,16 @@ module.exports = {
 
   async probe(context) {
     const adapter = getAdapter(context);
-    const sniff = await adapter.sniffActiveServer(false);
+    const sniff = (typeof adapter.detectServer === 'function')
+      ? await adapter.detectServer(false)
+      : (typeof adapter.sniffActiveServer === 'function' ? await adapter.sniffActiveServer(false) : { isOnline: false });
+    const devName = sniff.deviceInfo?.name || (typeof sniff.deviceInfo === 'string' ? sniff.deviceInfo : null);
     return {
       status: sniff.isOnline ? 'healthy' : 'stopped',
-      isOnline: sniff.isOnline,
-      serverUrl: sniff.serverUrl,
-      deviceInfo: sniff.deviceInfo,
-      message: sniff.isOnline ? `ComfyUI 活跃在线 (${sniff.deviceInfo || '就绪'})` : 'ComfyUI 本地服务未运行'
+      isOnline: !!sniff.isOnline,
+      serverUrl: sniff.serverUrl || null,
+      deviceInfo: sniff.deviceInfo || null,
+      message: sniff.isOnline ? `ComfyUI 活跃在线 (${devName || '就绪'})` : 'ComfyUI 本地服务未运行'
     };
   },
 
@@ -102,7 +105,18 @@ module.exports = {
         const b64 = image_path.includes(',') ? image_path.split(',')[1] : image_path;
         imgBuf = Buffer.from(b64, 'base64');
       } else if (fs.existsSync(image_path)) {
-        imgBuf = fs.readFileSync(image_path);
+        try {
+          const stat = fs.statSync(image_path);
+          if (!stat.isFile()) {
+            return { isError: true, content: [{ type: 'text', text: `错误: 指定路径不是有效的文件: ${image_path}` }] };
+          }
+          if (stat.size > 20 * 1024 * 1024) {
+            return { isError: true, content: [{ type: 'text', text: `错误: 图像文件体积过大 (${(stat.size / 1024 / 1024).toFixed(1)}MB > 20MB)，无法执行反推。` }] };
+          }
+          imgBuf = fs.readFileSync(image_path);
+        } catch (e) {
+          return { isError: true, content: [{ type: 'text', text: `错误: 读取文件失败: ${e.message}` }] };
+        }
       } else {
         return { isError: true, content: [{ type: 'text', text: `错误: 找不到指定的本地文件: ${image_path}` }] };
       }

@@ -6809,7 +6809,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(packageJson140.version), 'package.json version must be valid');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -7055,7 +7055,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(packageJson141.version), 'package.json version must be valid');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7562,9 +7562,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1
+    // 4. Verify package.json version is 3.8.0+
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(pkgJson147.version), 'package.json version must be valid');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7641,7 +7641,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(pkgJson148.version), 'package.json version must be valid');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7650,9 +7650,9 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
     console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
 
-    // 1. Verify package.json declares v3.8.2, v3.8.3, v3.9.0, v3.10.0 or v3.10.1 and npm run setup script
+    // 1. Verify package.json declares valid version and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(pkgJson149.version), 'package.json version must be valid');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7674,16 +7674,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
     // [Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release
     console.log('\n[Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release...');
 
-    // 1. Verify package.json declares v3.8.3, v3.9.0, v3.10.0 or v3.10.1
+    // 1. Verify package.json declares valid version
     const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0, 3.10.0, 3.10.1, 3.11.0 or 3.12.0');
+    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(pkgJson150.version), 'package.json version must be valid');
 
     // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
     const routerModule = require('./server');
@@ -7708,8 +7708,8 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('process.argv'), 'setup-windows.ps1 must use process.argv for path-independent execution');
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
-    // 5. Verify Web UI renders v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro version badge');
+    // 5. Verify Web UI renders version badge
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
@@ -7984,11 +7984,11 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro') || uiRes153.body.includes('v3.12.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro') || uiRes153.body.includes('v3.12.0 Pro') || uiRes153.body.includes('v3.13.0 Pro') || uiRes153.body.includes('v3.13.1 Pro'), 'Web UI must render version badge');
 
-    // 6. Verify package.json declares 3.9.0, 3.10.0 or 3.10.1
+    // 6. Verify package.json declares valid version
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(pkgJson153.version), 'package.json version must be 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(pkgJson153.version), 'package.json version must be valid');
 
     console.log('✓ CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence verified');
 
@@ -8108,13 +8108,13 @@ $ProgressPreference = 'SilentlyContinue'
     const initialSaved = contextCompactor.getCompressionStats().totalSavedChars;
     assert.ok(initialSaved > 0, 'Initial compression must save characters');
 
-    // 7. Verify package.json declares 3.10.0 or 3.10.1 and Web UI renders badge
+    // 7. Verify package.json declares valid version and Web UI renders badge
     const pkgJson154 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.10.0', '3.10.1', '3.11.0', '3.12.0'].includes(pkgJson154.version), 'package.json version must be 3.10.0 or 3.10.1');
+    assert.ok(['3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1'].includes(pkgJson154.version), 'package.json version must be valid');
 
     const uiRes154 = await request('/balancer/ui', { method: 'GET' });
     assert.strictEqual(uiRes154.statusCode, 200);
-    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro') || uiRes154.body.includes('v3.12.0 Pro'), 'Web UI must render v3.10.0 Pro or v3.10.1 Pro badge');
+    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro') || uiRes154.body.includes('v3.12.0 Pro') || uiRes154.body.includes('v3.13.0 Pro') || uiRes154.body.includes('v3.13.1 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
 
     console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
@@ -8453,7 +8453,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(codexAdapter.CODEX_ZHCN_TRANSLATE_SCRIPT.includes('审查代码变更'), 'CODEX_ZHCN_TRANSLATE_SCRIPT must include Review changes translation');
     const uiRes156 = await request('/balancer/ui', { method: 'GET' });
     assert.ok(uiRes156.body.includes('toggleAllCompModuleBodies()'), 'Web UI must include 1-click advanced switches collapse toggle');
-    assert.ok(uiRes156.body.includes('v3.11.0 Pro') || uiRes156.body.includes('v3.12.0 Pro'), 'Web UI must render v3.11.0 Pro or v3.12.0 Pro version badge');
+    assert.ok(uiRes156.body.includes('v3.11.0 Pro') || uiRes156.body.includes('v3.12.0 Pro') || uiRes156.body.includes('v3.13.0 Pro') || uiRes156.body.includes('v3.13.1 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes156.body.includes('.comp-range-btn.active, .time-range-pill.active'), 'Web UI must style .time-range-pill.active buttons');
     assert.ok(uiRes156.body.includes("const overviewDocBadge = document.getElementById('doctor-overview-badge');"), 'runDoctorCheck must synchronize #doctor-overview-badge');
 
@@ -9176,14 +9176,65 @@ $ProgressPreference = 'SilentlyContinue'
     assert.strictEqual(resHub2.statusCode, 200);
     assert.ok(tElapsed < 150, `Second hub request must return from debounced cache instantaneously (took ${tElapsed}ms)`);
 
-    // 5. Verify Package version 3.12.0
+    // 5. Verify Package version
     const pkgJson167 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.strictEqual(pkgJson167.version, '3.12.0', 'package.json version must be 3.12.0');
+    assert.ok(['3.12.0', '3.13.0', '3.13.1'].includes(pkgJson167.version), 'package.json version must be valid');
 
     console.log('✓ Model Hub SSOT Dispatch, Multi-Client Adapter & Root-Cause Upstream Probing (Test 167) passed');
 
+    // [Test 168] Testing Plugin System Microkernel, Dynamic Tool Discovery & REST Execution (v3.13.0/v3.13.1)
+    console.log('\n[Test 168] Testing Plugin System Microkernel, Dynamic Tool Discovery & REST Execution (v3.13.0/v3.13.1)...');
+
+    // 1. GET /balancer/api/plugins
+    const resPlugins = await request('/balancer/api/plugins', { method: 'GET' });
+    assert.strictEqual(resPlugins.statusCode, 200);
+    const pluginsData = JSON.parse(resPlugins.body);
+    assert.strictEqual(pluginsData.success, true);
+    assert.ok(pluginsData.count >= 2);
+    const discoveredIds = pluginsData.plugins.map(p => p.id);
+    assert.ok(discoveredIds.includes('comfyui'), 'comfyui plugin must be discovered');
+    assert.ok(discoveredIds.includes('omo'), 'omo plugin must be discovered');
+
+    // 2. POST /balancer/api/plugins/preflight
+    const resPreflight = await request('/balancer/api/plugins/preflight', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'comfyui' })
+    });
+    assert.strictEqual(resPreflight.statusCode, 200);
+    const preflightData = JSON.parse(resPreflight.body);
+    assert.strictEqual(preflightData.success, true);
+    assert.strictEqual(typeof preflightData.topology.ok, 'boolean');
+
+    // 3. GET /balancer/api/plugins/tools
+    const resTools = await request('/balancer/api/plugins/tools?client=codex', { method: 'GET' });
+    assert.strictEqual(resTools.statusCode, 200);
+    const toolsData = JSON.parse(resTools.body);
+    assert.strictEqual(toolsData.success, true);
+    assert.ok(Array.isArray(toolsData.tools));
+
+    // 4. POST /balancer/api/plugins/execute (greet_developer tool)
+    const resExec = await request('/balancer/api/plugins/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: 'greet_developer',
+        arguments: { name: 'IntegrationBot' }
+      })
+    });
+    assert.strictEqual(resExec.statusCode, 200);
+    const execData = JSON.parse(resExec.body);
+    assert.strictEqual(execData.success, true);
+    assert.ok(execData.result && execData.result.content[0].text.includes('IntegrationBot'));
+
+    // 5. Verify Package version
+    const pkgJson168 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.ok(['3.12.0', '3.13.0', '3.13.1'].includes(pkgJson168.version), 'package.json version must be valid');
+
+    console.log('✓ Plugin System Microkernel, Dynamic Tool Discovery & REST Execution (Test 168) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 167 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 168 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

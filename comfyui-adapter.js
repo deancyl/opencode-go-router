@@ -176,6 +176,13 @@ class ComfyUIAdapter {
   }
 
   /**
+   * Alias for detectServer for backward compatibility and plugin probe interface
+   */
+  async sniffActiveServer(force = false) {
+    return await this.detectServer(force);
+  }
+
+  /**
    * Lookup and match workflow by ID, filename prefix, or semantic style tags
    */
   resolveWorkflow(identifierOrQuery, promptText = '') {
