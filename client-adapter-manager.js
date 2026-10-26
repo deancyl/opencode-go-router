@@ -246,7 +246,8 @@ function getClientStatus(options = {}) {
     currentModel: null,
     modelCount: 0,
     customProviders: [],
-    hasNativeAgents: false
+    hasNativeAgents: false,
+    hasMasterMcp: false
   };
 
   if (fs.existsSync(opencodePath)) {
@@ -267,6 +268,9 @@ function getClientStatus(options = {}) {
       }
       if (ocData.agent && ocData.agent.goal && ocData.agent['goal-verify']) {
         opencodeStatus.hasNativeAgents = true;
+      }
+      if (ocData.mcp && ocData.mcp['opencode-router']) {
+        opencodeStatus.hasMasterMcp = true;
       }
     } catch (_) {}
   }
@@ -317,6 +321,7 @@ function getClientStatus(options = {}) {
     currentModel: null,
     currentReasoningEffort: null,
     hasStreamIdleTimeout: false,
+    hasMasterMcp: false,
     processHealth: { runningProcesses: 0, healthy: true }
   };
 
@@ -331,6 +336,7 @@ function getClientStatus(options = {}) {
         currentModel: fullCodexStatus.currentModel,
         currentReasoningEffort: fullCodexStatus.currentReasoningEffort,
         hasStreamIdleTimeout: fullCodexStatus.hasStreamIdleTimeout,
+        hasMasterMcp: Boolean(fullCodexStatus.hasMasterMcp),
         processHealth: fullCodexStatus.processHealth || { runningProcesses: 0, healthy: true }
       };
     }
@@ -676,6 +682,32 @@ function syncPluginScopes(pluginId, scopes = {}, options = {}) {
       const patchRes = updater.patchOmoPluginV2();
       if (patchRes && patchRes.success) {
         messages.push('已为 OpenCode 同步 OMO v2 兼容包装器与智能体环境');
+      }
+    } catch (_) {}
+  }
+
+  // 确保已激活客户端出站挂载 Master-MCP 统一工具总线
+  if (scopes.codex) {
+    try {
+      const codex = require('./codex-adapter');
+      const st = codex.getCodexStatus(routerPort);
+      if (st && st.missingMasterMcp) {
+        codex.repairCodexLocaleAndEnvironment();
+        messages.push('已为 OpenAI Codex 挂载 Master-MCP 统一工具总线 (mcp-master.js)');
+      }
+    } catch (_) {}
+  }
+
+  if (scopes.opencode) {
+    try {
+      const updater = require('./updater');
+      const ocPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc');
+      if (fs.existsSync(ocPath)) {
+        const raw = fs.readFileSync(ocPath, 'utf8');
+        if (!raw.includes('opencode-router') || !raw.includes('mcp-master.js')) {
+          updater.harmonizeOpencodeConfig(ocPath, routerPort);
+          messages.push('已为 OpenCode 2.0 挂载 Master-MCP 统一工具总线 (mcp-master.js)');
+        }
       }
     } catch (_) {}
   }

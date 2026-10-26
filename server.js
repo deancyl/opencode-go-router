@@ -255,6 +255,9 @@ try {
     }
   }
   config.plugins = pluginsCfg;
+  if (typeof codexAdapter !== 'undefined' && codexAdapter && typeof codexAdapter.setPluginManager === 'function') {
+    codexAdapter.setPluginManager(pluginManager);
+  }
 } catch (e) {
   console.warn('[PluginManager] 初始化异常:', e.message);
 }

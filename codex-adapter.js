@@ -34,6 +34,74 @@ function setComfyUIAdapter(adapter) {
   _globalComfyAdapter = adapter;
 }
 
+let _globalPluginManager = null;
+
+function setPluginManager(pm) {
+  _globalPluginManager = pm;
+}
+
+function getPluginManager() {
+  if (_globalPluginManager) return _globalPluginManager;
+  try {
+    const s = require('./server.js');
+    if (s.pluginManager) {
+      _globalPluginManager = s.pluginManager;
+      return _globalPluginManager;
+    }
+  } catch (_) {}
+  try {
+    const { PluginManager } = require('./plugin-manager.js');
+    const ROOT_DIR = __dirname;
+    const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
+    _globalPluginManager = new PluginManager({ rootDir: ROOT_DIR, configPath: CONFIG_FILE });
+    _globalPluginManager.scanPlugins();
+    return _globalPluginManager;
+  } catch (_) {}
+  return null;
+}
+
+function normalizeUpstreamToolName(toolName, originalTools = []) {
+  if (!toolName || typeof toolName !== 'string') return '';
+  const trimmed = toolName.trim();
+
+  // 1. ComfyUI legacy aliases (rigid compatibility with test_tier5 & test_tier8)
+  if (trimmed === 'generate_image' || trimmed === 'image_gen') {
+    return 'mcp__comfyui__generate_image';
+  }
+  if (trimmed === 'interrogate_image') {
+    return 'mcp__comfyui__interrogate_image';
+  }
+  if (trimmed.startsWith('mcp__')) {
+    return trimmed;
+  }
+
+  // 2. Check if originalTools contains a matching prefixed tool
+  if (Array.isArray(originalTools) && originalTools.length > 0) {
+    const matched = originalTools.find(t => {
+      const tName = t.function?.name || t.name || '';
+      return tName === `mcp__opencode_router__${trimmed}` ||
+             tName === `mcp__comfyui__${trimmed}` ||
+             tName.endsWith(`__${trimmed}`);
+    });
+    if (matched) {
+      return matched.function?.name || matched.name;
+    }
+  }
+
+  // 3. Dynamic lookup from pluginManager active tools
+  const pm = getPluginManager();
+  if (pm) {
+    try {
+      const activeTools = pm.getActiveTools('codex');
+      if (Array.isArray(activeTools) && activeTools.some(t => t.name === trimmed)) {
+        return `mcp__opencode_router__${trimmed}`;
+      }
+    } catch (_) {}
+  }
+
+  return trimmed;
+}
+
 function isImageGenerationToolName(name) {
   if (!name || typeof name !== 'string') return false;
   const n = name.trim();
@@ -2663,6 +2731,31 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
     if ((hasToolSearch || isVisualIntent || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasGenerateImage) {
       chatPayload.tools.push(...COMFYUI_TOOLS);
     }
+
+    // Dynamic plugin tools injection for Codex (Master-MCP linkage)
+    const pm = getPluginManager();
+    if (pm && (hasToolSearch || (compressionOptions && compressionOptions.injectPluginTools))) {
+      try {
+        const dynamicTools = pm.getActiveTools('codex');
+        for (const dt of dynamicTools) {
+          if (dt.name === 'generate_image' || dt.name === 'interrogate_image') continue;
+          const exists = chatPayload.tools.some(t => {
+            const tName = t.function?.name || t.name || '';
+            return tName === dt.name || tName === `mcp__opencode_router__${dt.name}`;
+          });
+          if (!exists) {
+            chatPayload.tools.push({
+              type: 'function',
+              function: {
+                name: dt.name,
+                description: dt.description || '',
+                parameters: normalizeToolParameters(dt.parameters || dt.inputSchema)
+              }
+            });
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   // Windows Native PowerShell Environment Directive Injection
@@ -3395,10 +3488,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             if (!toolCallsMap.has(idx)) {
               const tcOutIdx = outputIndex++;
               const callId = tc.id || `call_${Date.now()}_${idx}`;
-              let funcName = tc.function?.name || '';
-              if (funcName === 'image_gen') {
-                funcName = 'generate_image';
-              }
+              let funcName = normalizeUpstreamToolName(tc.function?.name || '');
               const isCustomTool = (funcName === 'apply_patch');
               const rec = {
                 id: callId,
@@ -3427,12 +3517,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
             const rec = toolCallsMap.get(idx);
             if (tc.function?.name && !rec.name) {
-              let fName = tc.function.name;
-              if (fName === 'generate_image' || fName === 'image_gen') {
-                fName = 'mcp__comfyui__generate_image';
-              } else if (fName === 'interrogate_image') {
-                fName = 'mcp__comfyui__interrogate_image';
-              }
+              let fName = normalizeUpstreamToolName(tc.function.name);
               rec.name = fName;
               if (rec.name === 'apply_patch') {
                 rec.isCustomTool = true;
@@ -3973,12 +4058,7 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
 
   if (Array.isArray(msg.tool_calls)) {
     for (const tc of msg.tool_calls) {
-      let toolName = tc.function?.name || '';
-      if (toolName === 'generate_image' || toolName === 'image_gen') {
-        toolName = 'mcp__comfyui__generate_image';
-      } else if (toolName === 'interrogate_image') {
-        toolName = 'mcp__comfyui__interrogate_image';
-      }
+      let toolName = normalizeUpstreamToolName(tc.function?.name || '');
       const rawArgs = tc.function?.arguments || '{}';
       if (toolName === 'apply_patch') {
         const cleanInput = extractPatchInput(rawArgs);
@@ -4316,6 +4396,25 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
           input_schema: ct.function.parameters
         });
       }
+    }
+
+    // Dynamic plugin tools injection for Codex (Master-MCP linkage)
+    const pm = getPluginManager();
+    if (pm && (hasToolSearch || (compressionOptions && compressionOptions.injectPluginTools))) {
+      try {
+        const dynamicTools = pm.getActiveTools('codex');
+        for (const dt of dynamicTools) {
+          if (dt.name === 'generate_image' || dt.name === 'interrogate_image') continue;
+          const exists = payload.tools.some(t => t.name === dt.name || t.name === `mcp__opencode_router__${dt.name}`);
+          if (!exists) {
+            payload.tools.push({
+              name: dt.name,
+              description: dt.description || '',
+              input_schema: normalizeToolParameters(dt.parameters || dt.inputSchema)
+            });
+          }
+        }
+      } catch (_) {}
     }
   }
 
@@ -5233,12 +5332,7 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
           content: [{ type: 'reasoning_text', text: c.thinking || '' }]
         });
       } else if (c.type === 'tool_use') {
-        let toolName = c.name || 'custom_tool';
-        if (toolName === 'generate_image' || toolName === 'image_gen') {
-          toolName = 'mcp__comfyui__generate_image';
-        } else if (toolName === 'interrogate_image') {
-          toolName = 'mcp__comfyui__interrogate_image';
-        }
+        let toolName = normalizeUpstreamToolName(c.name || 'custom_tool');
         const rawArgs = typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {});
         if (toolName === 'apply_patch' || c.isCustomTool) {
           const cleanInput = extractPatchInput(rawArgs);
@@ -5481,6 +5575,48 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
     filteredLines.push('');
     filteredLines.push('[desktop]');
     filteredLines.push('localeOverride = "zh-CN"');
+  }
+
+  // Ensure Master-MCP Unified Tool Bus is configured under [mcp_servers.opencode_router]
+  const nodeExe = (process.execPath || 'C:\\Program Files\\nodejs\\node.exe').replace(/\\/g, '\\\\');
+  const masterMcpScript = path.join(__dirname, 'mcp-master.js').replace(/\\/g, '\\\\');
+
+  let hasMasterMcp = false;
+  let hasMcpServersHeader = false;
+  let legacyComfyIdx = -1;
+
+  for (let i = 0; i < filteredLines.length; i++) {
+    const l = filteredLines[i].trim();
+    if (l === '[mcp_servers]') hasMcpServersHeader = true;
+    if (l === '[mcp_servers.opencode_router]') {
+      hasMasterMcp = true;
+    }
+    if (l === '[mcp_servers.comfyui]') {
+      legacyComfyIdx = i;
+    }
+  }
+
+  // Smooth migration of legacy [mcp_servers.comfyui]
+  if (legacyComfyIdx !== -1 && !hasMasterMcp) {
+    filteredLines[legacyComfyIdx] = '[mcp_servers.opencode_router]';
+    for (let j = legacyComfyIdx + 1; j < filteredLines.length; j++) {
+      const jl = filteredLines[j].trim();
+      if (jl.startsWith('[')) break;
+      if (jl.startsWith('args =') || jl.startsWith('args=')) {
+        filteredLines[j] = `args = ["${masterMcpScript}", "--client=codex"]`;
+      }
+    }
+    hasMasterMcp = true;
+  } else if (!hasMasterMcp) {
+    if (!hasMcpServersHeader) {
+      filteredLines.push('');
+      filteredLines.push('[mcp_servers]');
+    }
+    filteredLines.push('');
+    filteredLines.push('[mcp_servers.opencode_router]');
+    filteredLines.push(`command = "${nodeExe}"`);
+    filteredLines.push(`args = ["${masterMcpScript}", "--client=codex"]`);
+    filteredLines.push('startup_timeout_sec = 60');
   }
 
   return filteredLines.join('\n');
@@ -6823,6 +6959,8 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   let missingDesktopLocale = false;
   let hasInvalidModelSlug = false;
   let missingComfyUiMcp = false;
+  let hasMasterMcp = false;
+  let missingMasterMcp = false;
   let currentModel = null;
 
   if (hasConfig) {
@@ -6830,6 +6968,8 @@ function checkCodexLocaleAndEnvironment(options = {}) {
       const raw = fs.readFileSync(configPath, 'utf8');
       const mLocale = raw.match(/localeOverride\s*=\s*["']([^"']+)["']/);
       missingComfyUiMcp = !raw.includes('[mcp_servers.comfyui]');
+      hasMasterMcp = raw.includes('[mcp_servers.opencode_router]');
+      missingMasterMcp = !hasMasterMcp;
       if (!mLocale || mLocale[1] !== 'zh-CN') {
         missingDesktopLocale = true;
       }
@@ -6944,6 +7084,8 @@ function checkCodexLocaleAndEnvironment(options = {}) {
     hasCodexPlusPortConflict,
     missingCodexPlusZhScript,
     missingComfyUiMcp,
+    hasMasterMcp,
+    missingMasterMcp,
     issues
   };
 }
@@ -6995,6 +7137,19 @@ function repairCodexLocaleAndEnvironment(options = {}) {
         }
         changed = true;
         messages.push('已为 Codex Desktop 自动注册 ComfyUI 图像智能体 (mcp-comfyui.js)');
+      }
+
+      // Ensure Master-MCP Unified Tool Bus is registered for Codex Desktop
+      const masterMcpScript = path.join(__dirname, 'mcp-master.js').replace(/\\/g, '\\\\');
+      if (!raw.includes('[mcp_servers.opencode_router]')) {
+        const masterBlock = `\n[mcp_servers.opencode_router]\ncommand = "${nodeExe}"\nargs = ["${masterMcpScript}", "--client=codex"]\nstartup_timeout_sec = 60\n`;
+        if (raw.includes('[mcp_servers]')) {
+          raw = raw.replace('[mcp_servers]', '[mcp_servers]' + masterBlock);
+        } else {
+          raw += `\n[mcp_servers]` + masterBlock;
+        }
+        changed = true;
+        messages.push('已为 Codex Desktop 自动注册 Master-MCP 统一工具总线 (mcp-master.js)');
       }
 
       // Check and dynamically heal notify executable path if present
@@ -7269,5 +7424,8 @@ module.exports = {
   dispatchResponsesStreamError,
   findLatestCuaNodeExecutable,
   setComfyUIAdapter,
-  getComfyUIAdapter
+  getComfyUIAdapter,
+  setPluginManager,
+  getPluginManager,
+  normalizeUpstreamToolName
 };

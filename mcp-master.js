@@ -24,7 +24,7 @@ const ROOT_DIR = __dirname;
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 const LOG_PATH = path.join(ROOT_DIR, 'mcp-master.log');
 
-let PKG_VERSION = '3.13.2';
+let PKG_VERSION = '3.13.3';
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
   if (pkg.version) PKG_VERSION = pkg.version;
@@ -56,35 +56,55 @@ const pluginManager = new PluginManager({
 });
 
 let isInitialized = false;
+let bootstrapPromise = null;
 
-async function bootstrap() {
-  if (isInitialized) return;
-  try {
-    pluginManager.scanPlugins();
-    const pluginsCfg = pluginManager.getPluginsConfig();
+function bootstrap() {
+  if (isInitialized) return Promise.resolve(pluginManager);
+  if (bootstrapPromise) return bootstrapPromise;
 
-    for (const [id, manifest] of pluginManager.discoveredPlugins.entries()) {
-      const shouldEnable = pluginManager.isPluginEnabled(id, manifest, pluginsCfg);
-      if (shouldEnable) {
-        try {
-          await pluginManager.enablePlugin(id, { persist: false });
-        } catch (e) {
-          logMasterMcp('WARN', `启用插件 "${id}" 预检或加载失败: ${e.message}`);
+  bootstrapPromise = (async () => {
+    try {
+      pluginManager.scanPlugins();
+      const pluginsCfg = pluginManager.getPluginsConfig();
+
+      for (const [id, manifest] of pluginManager.discoveredPlugins.entries()) {
+        const shouldEnable = pluginManager.isPluginEnabled(id, manifest, pluginsCfg);
+        if (shouldEnable) {
+          try {
+            await pluginManager.enablePlugin(id, { persist: false });
+          } catch (e) {
+            logMasterMcp('WARN', `启用插件 "${id}" 预检或加载失败: ${e.message}`);
+          }
         }
       }
+      isInitialized = true;
+      logMasterMcp('INFO', `Master-MCP 已就绪，激活工具数: ${pluginManager.activeTools.size}`);
+      return pluginManager;
+    } catch (err) {
+      logMasterMcp('ERROR', `Master-MCP 初始化失败: ${err.message}`);
+      throw err;
+    } finally {
+      bootstrapPromise = null;
     }
-    isInitialized = true;
-    logMasterMcp('INFO', `Master-MCP 已就绪，激活工具数: ${pluginManager.activeTools.size}`);
-  } catch (err) {
-    logMasterMcp('ERROR', `Master-MCP 初始化失败: ${err.message}`);
-  }
+  })();
+
+  return bootstrapPromise;
 }
 
 function sendJson(msg) {
   try {
-    process.stdout.write(JSON.stringify(msg) + '\n');
+    const serialized = JSON.stringify(msg);
+    process.stdout.write(serialized + '\n');
   } catch (err) {
     if (err && err.code === 'EPIPE') process.exit(0);
+    try {
+      const fallback = JSON.stringify({
+        jsonrpc: '2.0',
+        id: (msg && msg.id) ? msg.id : null,
+        error: { code: -32603, message: `Internal serialization error: ${err.message}` }
+      });
+      process.stdout.write(fallback + '\n');
+    } catch (_) {}
   }
 }
 
@@ -165,7 +185,7 @@ async function handleRpcRequest(req) {
           toolArgs = JSON.parse(toolArgs);
         } catch (_) {}
       }
-      if (!toolArgs || typeof toolArgs !== 'object') {
+      if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) {
         toolArgs = {};
       }
       logMasterMcp('INFO', `tools/call requested: "${toolName}"`, toolArgs);
@@ -230,53 +250,56 @@ async function handleRpcRequest(req) {
   }
 }
 
-// Start stdio interface
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  terminal: false
-});
+// Stdio JSON-RPC interface only starts when executed as standalone CLI process
+if (require.main === module) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+  });
 
-rl.on('line', (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  try {
-    const req = JSON.parse(trimmed);
-    handleRpcRequest(req).catch((err) => {
-      logMasterMcp('ERROR', `Unhandled RPC rejection: ${err.message}`);
-    });
-  } catch (err) {
-    sendJson({
-      jsonrpc: '2.0',
-      id: null,
-      error: { code: -32700, message: `Parse error: ${err.message}` }
-    });
-  }
-});
+  rl.on('line', (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const req = JSON.parse(trimmed);
+      handleRpcRequest(req).catch((err) => {
+        logMasterMcp('ERROR', `Unhandled RPC rejection: ${err.message}`);
+      });
+    } catch (err) {
+      sendJson({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32700, message: `Parse error: ${err.message}` }
+      });
+    }
+  });
 
-process.stdout.on('error', (err) => {
-  if (err && err.code === 'EPIPE') {
+  process.stdout.on('error', (err) => {
+    if (err && err.code === 'EPIPE') {
+      process.exit(0);
+    }
+  });
+
+  process.on('uncaughtException', (err) => {
+    if (err && err.code === 'EPIPE') process.exit(0);
+    logMasterMcp('FATAL', `Uncaught exception in mcp-master: ${err.message}`, err.stack);
+  });
+
+  process.on('SIGINT', () => {
+    logMasterMcp('INFO', 'mcp-master 收到 SIGINT 信号，退出中');
     process.exit(0);
-  }
-});
+  });
 
-process.on('uncaughtException', (err) => {
-  if (err && err.code === 'EPIPE') process.exit(0);
-  logMasterMcp('FATAL', `Uncaught exception in mcp-master: ${err.message}`, err.stack);
-});
-
-process.on('SIGINT', () => {
-  logMasterMcp('INFO', 'mcp-master 收到 SIGINT 信号，退出中');
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  logMasterMcp('INFO', 'mcp-master 收到 SIGTERM 信号，退出中');
-  process.exit(0);
-});
+  process.on('SIGTERM', () => {
+    logMasterMcp('INFO', 'mcp-master 收到 SIGTERM 信号，退出中');
+    process.exit(0);
+  });
+}
 
 module.exports = {
   bootstrap,
   handleRpcRequest,
+  sendJson,
   pluginManager
 };

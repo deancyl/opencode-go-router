@@ -656,15 +656,50 @@ class ComfyUIAdapter {
    */
   async interrogateImage(imageBufferOrPath, fallbackVisionFn) {
     let imgBuf = null;
-    if (typeof imageBufferOrPath === 'string') {
-      if (fs.existsSync(imageBufferOrPath)) {
-        imgBuf = fs.readFileSync(imageBufferOrPath);
-      } else if (imageBufferOrPath.startsWith('data:image')) {
-        const commaIdx = imageBufferOrPath.indexOf(',');
-        imgBuf = Buffer.from(imageBufferOrPath.slice(commaIdx + 1), 'base64');
-      }
-    } else if (Buffer.isBuffer(imageBufferOrPath)) {
+    if (Buffer.isBuffer(imageBufferOrPath)) {
       imgBuf = imageBufferOrPath;
+    } else if (typeof imageBufferOrPath === 'string') {
+      const trimmed = imageBufferOrPath.trim();
+      if (trimmed.startsWith('data:image')) {
+        const commaIdx = trimmed.indexOf(',');
+        if (commaIdx !== -1) {
+          const b64 = trimmed.slice(commaIdx + 1).replace(/\s+/g, '');
+          imgBuf = Buffer.from(b64, 'base64');
+        }
+      } else if (/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/.test(trimmed)) {
+        const m = trimmed.match(/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/);
+        if (m && m[1]) {
+          const cleanFilename = path.basename(m[1]);
+          const candidatePath = path.join(this.rootDir, 'artifacts', 'images', cleanFilename);
+          if (fs.existsSync(candidatePath)) {
+            try {
+              const stat = fs.statSync(candidatePath);
+              if (stat.isFile()) {
+                imgBuf = fs.readFileSync(candidatePath);
+              }
+            } catch (_) {}
+          }
+        }
+      } else if (fs.existsSync(trimmed)) {
+        try {
+          const stat = fs.statSync(trimmed);
+          if (stat.isFile()) {
+            if (stat.size > 20 * 1024 * 1024) {
+              throw new Error(`图像文件体积过大 (${(stat.size / 1024 / 1024).toFixed(1)}MB > 20MB)，无法执行反推。`);
+            }
+            imgBuf = fs.readFileSync(trimmed);
+          }
+        } catch (e) {
+          if (e.message.includes('20MB')) throw e;
+        }
+      } else {
+        const stripped = trimmed.replace(/\s+/g, '');
+        if (stripped.length >= 64 && /^[A-Za-z0-9+/]+=*$/.test(stripped)) {
+          try {
+            imgBuf = Buffer.from(stripped, 'base64');
+          } catch (_) {}
+        }
+      }
     }
 
     if (!imgBuf) {

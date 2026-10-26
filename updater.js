@@ -902,6 +902,22 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     }
   }
 
+  // 3.2 Master-MCP aggregator bus registration for OpenCode 2.0 (mcp-master.js)
+  if (!data.mcp || typeof data.mcp !== 'object') {
+    data.mcp = {};
+  }
+  const nodeExe = process.execPath || 'node';
+  const masterMcpScript = path.join(ROOT_DIR, 'mcp-master.js');
+  data.mcp['opencode-router'] = {
+    type: 'stdio',
+    command: nodeExe,
+    args: [masterMcpScript, '--client=opencode']
+  };
+  // Migrate legacy standalone comfyui MCP if present
+  if (data.mcp['comfyui']) {
+    delete data.mcp['comfyui'];
+  }
+
   // 4. Model selection: preserve user's valid choice, support Luna as preferred or fallback default
   let modelPreserved = true;
   if (options.preferredModel) {
@@ -2707,9 +2723,9 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     } else if (comp === 'opencode-go-router') {
       const localVers = detectLocalVersions();
       const isSandboxTest = Boolean(process.env.OPENCODE_SNAPSHOTS_DIR) || Boolean(process.env.OPENCODE_ROUTER_CONFIG && process.env.OPENCODE_ROUTER_CONFIG.includes('config.test-'));
-      let pkgVerFallback = '3.13.1';
+      let pkgVerFallback = '3.13.3';
       try {
-        pkgVerFallback = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version || '3.13.1';
+        pkgVerFallback = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version || '3.13.3';
       } catch (_) {}
       const localRouterVer = (localVers && localVers['opencode-go-router']) || pkgVerFallback;
       const remoteRouterVer = (allRemote && allRemote['opencode-go-router']) || null;

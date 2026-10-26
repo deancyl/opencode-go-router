@@ -720,6 +720,66 @@ class PluginManager {
   }
 
   /**
+   * Determine if a PID belongs to an immune system, gateway, or Codex process
+   * Rigidly shields:
+   * 1. System idle & kernel processes (PID <= 4)
+   * 2. Gateway and parent processes (process.pid, process.ppid)
+   * 3. OpenAI Codex suite (codex.exe, codex-windows-sandbox-service, codex-computer-use-swift)
+   * 4. OpenCode & OpenChamber binaries
+   * 5. Static historical / test mock PIDs (25076)
+   */
+  isProtectedPid(pid) {
+    const pidNum = parseInt(pid, 10);
+    if (isNaN(pidNum) || pidNum <= 4) return true;
+    if (pidNum === process.pid || pidNum === process.ppid) return true;
+    if (pidNum === 25076) return true;
+
+    // Dynamic inspection on Windows
+    if (process.platform === 'win32') {
+      try {
+        const out = child_process.execFileSync('tasklist', ['/FI', `PID eq ${pidNum}`, '/FO', 'CSV', '/NH'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 2500
+        });
+        if (out && typeof out === 'string') {
+          const lower = out.toLowerCase();
+          if (
+            lower.includes('codex') ||
+            lower.includes('opencode') ||
+            lower.includes('openchamber')
+          ) {
+            return true;
+          }
+        }
+      } catch (_) {}
+    } else {
+      // Dynamic inspection on Linux / macOS
+      try {
+        const cmdlinePath = `/proc/${pidNum}/cmdline`;
+        const commPath = `/proc/${pidNum}/comm`;
+        let procInfo = '';
+        if (fs.existsSync(cmdlinePath)) {
+          procInfo += fs.readFileSync(cmdlinePath, 'utf8').toLowerCase();
+        }
+        if (fs.existsSync(commPath)) {
+          procInfo += fs.readFileSync(commPath, 'utf8').toLowerCase();
+        }
+        if (
+          procInfo.includes('codex') ||
+          procInfo.includes('opencode') ||
+          procInfo.includes('openchamber')
+        ) {
+          return true;
+        }
+      } catch (_) {}
+    }
+
+    return false;
+  }
+
+  /**
    * Windows Silent Service Daemon Launcher (AV-Immune Compliance)
    * 1. Node.js native child_process.spawn
    * 2. windowsHide: true, stdio: 'ignore', detached: true
@@ -744,7 +804,7 @@ class PluginManager {
       const res = await instance.module.startService(mode, instance.context);
       if (res && res.pid) {
         const pidNum = parseInt(res.pid, 10);
-        if (!isNaN(pidNum) && pidNum > 4 && pidNum !== process.pid && pidNum !== 25076) {
+        if (!this.isProtectedPid(pidNum)) {
           this.activeServices.set(pluginId, {
             pid: pidNum,
             mode,
@@ -773,8 +833,8 @@ class PluginManager {
     const sInfo = this.activeServices.get(pluginId);
     if (sInfo && sInfo.pid) {
       const pidNum = parseInt(sInfo.pid, 10);
-      // Red Line: Rigidly protect OpenAI Codex (PID 25076), system idle (<4), and gateway process
-      if (isNaN(pidNum) || pidNum <= 4 || pidNum === process.pid || pidNum === 25076) {
+      // Red Line: Rigidly protect OpenAI Codex (all dynamic PIDs), system idle (<4), and gateway process tree
+      if (this.isProtectedPid(pidNum)) {
         this.activeServices.delete(pluginId);
         return { success: false, message: `受保护的关键进程或非法 PID (${sInfo.pid})，安全屏障已拒绝终止` };
       }
@@ -861,8 +921,14 @@ class PluginManager {
   }
 }
 
+function isProtectedPid(pid) {
+  return PluginManager.prototype.isProtectedPid(pid);
+}
+
 module.exports = {
   PluginManager,
+  isProtectedPid,
   parseJsonSafe,
   writeJsonAtomic
 };
+

@@ -96,16 +96,15 @@ module.exports = {
     }
 
     if (normalizedName === 'interrogate_image') {
-      const { image_path } = safeArgs;
+      const image_path = safeArgs.image_path || safeArgs.image;
       if (!image_path) {
         return { isError: true, content: [{ type: 'text', text: '错误: 待反推的图片路径或 Base64 数据不能为空。' }] };
       }
 
-      let imgBuf = null;
-      if (image_path.startsWith('data:image/') || /^[A-Za-z0-9+/=]+$/.test(image_path.trim())) {
-        const b64 = image_path.includes(',') ? image_path.split(',')[1] : image_path;
-        imgBuf = Buffer.from(b64, 'base64');
-      } else if (fs.existsSync(image_path)) {
+      const rootDir = context.rootDir || path.resolve(__dirname, '..', '..');
+
+      // Check directory defense and file size limits upfront
+      if (typeof image_path === 'string' && fs.existsSync(image_path)) {
         try {
           const stat = fs.statSync(image_path);
           if (!stat.isFile()) {
@@ -114,19 +113,76 @@ module.exports = {
           if (stat.size > 20 * 1024 * 1024) {
             return { isError: true, content: [{ type: 'text', text: `错误: 图像文件体积过大 (${(stat.size / 1024 / 1024).toFixed(1)}MB > 20MB)，无法执行反推。` }] };
           }
-          imgBuf = fs.readFileSync(image_path);
         } catch (e) {
           return { isError: true, content: [{ type: 'text', text: `错误: 读取文件失败: ${e.message}` }] };
         }
-      } else {
-        return { isError: true, content: [{ type: 'text', text: `错误: 找不到指定的本地文件: ${image_path}` }] };
       }
 
-      const res = await adapter.interrogateImage(imgBuf);
-      if (!res.success) {
+      let imgBuf = null;
+      if (Buffer.isBuffer(image_path)) {
+        imgBuf = image_path;
+      } else if (typeof image_path === 'string') {
+        const trimmed = image_path.trim();
+        // 1. Data URL
+        if (trimmed.startsWith('data:image/')) {
+          const commaIdx = trimmed.indexOf(',');
+          if (commaIdx !== -1) {
+            const b64 = trimmed.slice(commaIdx + 1).replace(/\s+/g, '');
+            imgBuf = Buffer.from(b64, 'base64');
+          }
+        }
+        // 2. Gateway generated artifact URL (e.g. http://127.0.0.1:4010/artifacts/images/xxx.png or /artifacts/images/xxx.png)
+        else if (/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/.test(trimmed)) {
+          const m = trimmed.match(/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/);
+          if (m && m[1]) {
+            const cleanFilename = path.basename(m[1]);
+            const candidatePath = path.join(rootDir, 'artifacts', 'images', cleanFilename);
+            if (fs.existsSync(candidatePath)) {
+              try {
+                const stat = fs.statSync(candidatePath);
+                if (stat.isFile()) {
+                  imgBuf = fs.readFileSync(candidatePath);
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        // 3. Local file path
+        else if (fs.existsSync(trimmed)) {
+          try {
+            imgBuf = fs.readFileSync(trimmed);
+          } catch (e) {
+            return { isError: true, content: [{ type: 'text', text: `错误: 读取文件失败: ${e.message}` }] };
+          }
+        }
+        // 4. Raw Base64 string with newline/whitespace tolerance (guarded against short strings)
+        else {
+          const stripped = trimmed.replace(/\s+/g, '');
+          if (stripped.length >= 64 && /^[A-Za-z0-9+/]+=*$/.test(stripped)) {
+            try {
+              imgBuf = Buffer.from(stripped, 'base64');
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (!imgBuf) {
+        return { isError: true, content: [{ type: 'text', text: `错误: 找不到指定的本地文件或无法解析的图像数据: ${image_path}` }] };
+      }
+
+      let res;
+      try {
+        res = await adapter.interrogateImage(imgBuf);
+      } catch (err) {
         return {
           isError: true,
-          content: [{ type: 'text', text: `图片反推失败: ${res.error || '未知异常'}` }]
+          content: [{ type: 'text', text: `图片反推失败: ${err.message}` }]
+        };
+      }
+      if (!res || !res.success) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `图片反推失败: ${(res && res.error) || '未知异常'}` }]
         };
       }
 
