@@ -43,8 +43,21 @@ function writeJsonAtomic(filePath, data) {
     return true;
   } catch (err) {
     try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (_) {}
-    fs.writeFileSync(filePath, content, 'utf8');
-    return true;
+    // Windows file lock (EBUSY / EPERM) resilience retry loop
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.writeFileSync(filePath, content, 'utf8');
+        return true;
+      } catch (writeErr) {
+        if ((writeErr.code === 'EBUSY' || writeErr.code === 'EPERM') && attempt < 4) {
+          const start = Date.now();
+          while (Date.now() - start < 20) {}
+          continue;
+        }
+        break;
+      }
+    }
+    return false;
   }
 }
 
@@ -752,6 +765,29 @@ class PluginManager {
           ) {
             return true;
           }
+          // Secondary defense: if node.exe, inspect command line to protect gateway and sub-agents
+          if (lower.includes('node')) {
+            try {
+              const cmdline = child_process.execFileSync('powershell.exe', [
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pidNum}" -ErrorAction SilentlyContinue).CommandLine`
+              ], {
+                encoding: 'utf8',
+                windowsHide: true,
+                timeout: 2500,
+                stdio: ['ignore', 'pipe', 'ignore']
+              });
+              const cmdLower = (cmdline || '').toLowerCase();
+              if (
+                cmdLower.includes('server.js') ||
+                cmdLower.includes('opencode') ||
+                cmdLower.includes('mcp-master') ||
+                cmdLower.includes('openchamber')
+              ) {
+                return true;
+              }
+            } catch (_) {}
+          }
         }
       } catch (_) {}
     } else {
@@ -769,7 +805,9 @@ class PluginManager {
         if (
           procInfo.includes('codex') ||
           procInfo.includes('opencode') ||
-          procInfo.includes('openchamber')
+          procInfo.includes('openchamber') ||
+          procInfo.includes('server.js') ||
+          procInfo.includes('mcp-master')
         ) {
           return true;
         }
@@ -823,6 +861,16 @@ class PluginManager {
    * Stop service daemon cleanly using standard taskkill
    */
   async stopService(pluginId) {
+    // Red Line: Rigidly verify PID protection upfront before any termination attempt
+    const sInfo = this.activeServices.get(pluginId);
+    if (sInfo && sInfo.pid) {
+      const pidNum = parseInt(sInfo.pid, 10);
+      if (this.isProtectedPid(pidNum)) {
+        this.activeServices.delete(pluginId);
+        return { success: false, message: `受保护的关键进程或非法 PID (${sInfo.pid})，安全屏障已拒绝终止` };
+      }
+    }
+
     const instance = this.loadedPlugins.get(pluginId);
     if (instance && typeof instance.module.stopService === 'function') {
       const res = await instance.module.stopService(instance.context);
@@ -830,15 +878,8 @@ class PluginManager {
       return res;
     }
 
-    const sInfo = this.activeServices.get(pluginId);
     if (sInfo && sInfo.pid) {
       const pidNum = parseInt(sInfo.pid, 10);
-      // Red Line: Rigidly protect OpenAI Codex (all dynamic PIDs), system idle (<4), and gateway process tree
-      if (this.isProtectedPid(pidNum)) {
-        this.activeServices.delete(pluginId);
-        return { success: false, message: `受保护的关键进程或非法 PID (${sInfo.pid})，安全屏障已拒绝终止` };
-      }
-
       if (process.platform === 'win32') {
         try {
           child_process.spawnSync('taskkill', ['/PID', String(pidNum), '/T', '/F'], {

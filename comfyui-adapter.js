@@ -666,8 +666,8 @@ class ComfyUIAdapter {
           const b64 = trimmed.slice(commaIdx + 1).replace(/\s+/g, '');
           imgBuf = Buffer.from(b64, 'base64');
         }
-      } else if (/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/.test(trimmed)) {
-        const m = trimmed.match(/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/);
+      } else if (/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/.test(trimmed.replace(/\\/g, '/'))) {
+        const m = trimmed.replace(/\\/g, '/').match(/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/);
         if (m && m[1]) {
           const cleanFilename = path.basename(m[1]);
           const candidatePath = path.join(this.rootDir, 'artifacts', 'images', cleanFilename);
@@ -675,9 +675,14 @@ class ComfyUIAdapter {
             try {
               const stat = fs.statSync(candidatePath);
               if (stat.isFile()) {
+                if (stat.size > 20 * 1024 * 1024) {
+                  throw new Error(`图像文件体积过大 (${(stat.size / 1024 / 1024).toFixed(1)}MB > 20MB)，无法执行反推。`);
+                }
                 imgBuf = fs.readFileSync(candidatePath);
               }
-            } catch (_) {}
+            } catch (e) {
+              if (e.message.includes('20MB')) throw e;
+            }
           }
         }
       } else if (fs.existsSync(trimmed)) {
@@ -1147,12 +1152,31 @@ class ComfyUIAdapter {
 
     if (isWin) {
       try {
-        const psCmd = `$conns = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue; if ($conns) { $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($p in $pids) { taskkill /F /T /PID $p } }`;
-        child_process.execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${psCmd}"`, {
-          timeout: 10000,
+        let isProtectedPidFn = null;
+        try {
+          const pm = require('./plugin-manager.js');
+          isProtectedPidFn = pm.isProtectedPid;
+        } catch (_) {}
+        const psCmd = `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`;
+        const pidsRaw = child_process.execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${psCmd}"`, {
+          timeout: 5000,
           windowsHide: true,
-          stdio: 'ignore'
+          stdio: ['ignore', 'pipe', 'ignore'],
+          encoding: 'utf8'
         });
+        const pids = (pidsRaw || '').trim().split(/\r?\n/).map(s => parseInt(s.trim(), 10)).filter(p => !isNaN(p) && p > 4);
+        for (const p of pids) {
+          if (p === process.pid || p === process.ppid || (typeof isProtectedPidFn === 'function' && isProtectedPidFn(p))) {
+            console.warn(`[ComfyUI Shield] 阻止向受保护 PID (${p}) 发送 taskkill 指令`);
+            continue;
+          }
+          try {
+            child_process.spawnSync('taskkill', ['/F', '/T', '/PID', String(p)], {
+              windowsHide: true,
+              stdio: 'ignore'
+            });
+          } catch (_) {}
+        }
       } catch (_) {}
     } else {
       try {

@@ -2546,7 +2546,10 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
 
       if (isToolCall) {
         const callId = item.call_id || item.id || `call_${Date.now()}`;
-        const funcName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        let funcName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        if (typeof funcName === 'string' && funcName.startsWith('mcp__opencode_router__')) {
+          funcName = funcName.slice(22);
+        }
         let funcArgs = '{}';
         if (typeof item.arguments === 'string') {
           funcArgs = item.arguments;
@@ -4174,7 +4177,10 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
 
       if (isToolCall) {
         const callId = item.call_id || item.id || `call_${Date.now()}`;
-        const toolName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        let toolName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        if (typeof toolName === 'string' && toolName.startsWith('mcp__opencode_router__')) {
+          toolName = toolName.slice(22);
+        }
         let inputObj = {};
         if (typeof item.arguments === 'string') {
           try { inputObj = JSON.parse(item.arguments); } catch (e) {}
@@ -4895,10 +4901,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             const bIdx = parsed.index ?? outputIndex;
             const tcOutIdx = outputIndex++;
             const callId = cb.id || `call_${Date.now()}_${bIdx}`;
-            let funcName = cb.name || 'custom_tool';
-            if (funcName === 'image_gen') {
-              funcName = 'generate_image';
-            }
+            let funcName = normalizeUpstreamToolName(cb.name || 'custom_tool');
             const isCustomTool = (funcName === 'apply_patch');
             const rec = { id: callId, name: funcName, args: '', outIdx: tcOutIdx, isCustomTool };
             toolCallsMap.set(bIdx, rec);
@@ -5607,6 +5610,12 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
       }
     }
     hasMasterMcp = true;
+  } else if (legacyComfyIdx !== -1 && hasMasterMcp) {
+    let endIdx = legacyComfyIdx + 1;
+    while (endIdx < filteredLines.length && !filteredLines[endIdx].trim().startsWith('[')) {
+      endIdx++;
+    }
+    filteredLines.splice(legacyComfyIdx, endIdx - legacyComfyIdx);
   } else if (!hasMasterMcp) {
     if (!hasMcpServersHeader) {
       filteredLines.push('');
@@ -5707,6 +5716,8 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     backupInfo = { timestamp: fs.statSync(configPath + '.router-bak').mtimeMs };
   }
 
+  const localeCheck = checkCodexLocaleAndEnvironment({ codexDir });
+
   return {
     codexDir,
     cliInstalled,
@@ -5722,6 +5733,8 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     hasValidAuthKey,
     hasBackup,
     backupInfo,
+    hasMasterMcp: Boolean(localeCheck && localeCheck.hasMasterMcp),
+    missingMasterMcp: Boolean(localeCheck && localeCheck.missingMasterMcp),
     desktopLocale: (function() {
       if (!fs.existsSync(configPath)) return null;
       try {
@@ -5732,7 +5745,7 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     })(),
     localeNotice: '已配置简体中文 (localeOverride = "zh-CN")。注意：Codex 桌面端 Web 界面内部汉化受制于官方该版本 Feature Gate (Statsig 72216192) 默认值冲突，官方放量或更新后将自动全面显示中文。',
     processHealth: checkCodexProcessHealth(),
-    localeCheck: checkCodexLocaleAndEnvironment({ codexDir }),
+    localeCheck,
     availableModels: ((routerPortOrDir && typeof routerPortOrDir === 'object' && Array.isArray(routerPortOrDir.models) && routerPortOrDir.models.length > 0) ? routerPortOrDir.models : OPENCODE_GO_ALL_MODELS).map(m => ({
       slug: m.slug,
       display_name: m.display_name || m.name,
@@ -6967,9 +6980,9 @@ function checkCodexLocaleAndEnvironment(options = {}) {
     try {
       const raw = fs.readFileSync(configPath, 'utf8');
       const mLocale = raw.match(/localeOverride\s*=\s*["']([^"']+)["']/);
-      missingComfyUiMcp = !raw.includes('[mcp_servers.comfyui]');
       hasMasterMcp = raw.includes('[mcp_servers.opencode_router]');
       missingMasterMcp = !hasMasterMcp;
+      missingComfyUiMcp = !raw.includes('[mcp_servers.comfyui]') && !hasMasterMcp;
       if (!mLocale || mLocale[1] !== 'zh-CN') {
         missingDesktopLocale = true;
       }
@@ -7067,8 +7080,8 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   if (hasCodexPlusPortConflict) {
     issues.push('Codex++ 汉化注入工具默认侦听 4010 端口与本地智能网关冲突，导致汉化插件闪退');
   }
-  if (missingComfyUiMcp) {
-    issues.push('config.toml 尚未挂载 ComfyUI 图像智能体 (mcp-comfyui.js)，一键修复即可激活原生生图与反推工具');
+  if (missingMasterMcp && missingComfyUiMcp) {
+    issues.push('config.toml 尚未挂载 Master-MCP 统一工具总线 (mcp-master.js)，一键修复即可激活全部插件与图像工具');
   }
   if (missingCodexPlusZhScript) {
     issues.push('Codex++ 界面汉化脚本存在语法错误或匹配失效，一键修复即可自动升级为最新高保真汉化补丁');
@@ -7125,10 +7138,10 @@ function repairCodexLocaleAndEnvironment(options = {}) {
         messages.push('已校准 config.toml 中非标准模型名为合法 Slug "deepseek-v4.1-flash"');
       }
 
-      // Ensure ComfyUI MCP Server is registered for Codex Desktop
+      // Ensure ComfyUI MCP Server is registered for Codex Desktop (if neither is present)
       const nodeExe = (process.execPath || 'C:\\Program Files\\nodejs\\node.exe').replace(/\\/g, '\\\\');
       const mcpScript = path.join(__dirname, 'mcp-comfyui.js').replace(/\\/g, '\\\\');
-      if (!raw.includes('[mcp_servers.comfyui]')) {
+      if (!raw.includes('[mcp_servers.comfyui]') && !raw.includes('[mcp_servers.opencode_router]')) {
         const mcpBlock = `\n[mcp_servers.comfyui]\ncommand = "${nodeExe}"\nargs = ["${mcpScript}"]\nstartup_timeout_sec = 60\n`;
         if (raw.includes('[mcp_servers]')) {
           raw = raw.replace('[mcp_servers]', '[mcp_servers]' + mcpBlock);

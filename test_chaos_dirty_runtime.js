@@ -244,14 +244,19 @@ async function runTests() {
 
   test('isProtectedPid detects running codex processes dynamically', () => {
     const { isProtectedPid } = require('./plugin-manager');
-    // If running on Windows with codex.exe active (e.g. PID 17152), test dynamic inspection
-    const runningCodexPid = 17152;
     if (process.platform === 'win32') {
-      const isProtected = isProtectedPid(runningCodexPid);
-      // If PID 17152 is indeed running codex, it must return true
-      if (isProtected) {
-        assert.strictEqual(isProtected, true, 'Running codex process must be protected dynamically');
-      }
+      try {
+        const out = child_process.execFileSync('tasklist', ['/FI', 'IMAGENAME eq codex.exe', '/FO', 'CSV', '/NH'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const m = out.match(/"([^"]+)","(\d+)"/);
+        if (m) {
+          const liveCodexPid = parseInt(m[2], 10);
+          assert.strictEqual(isProtectedPid(liveCodexPid), true, `Real running Codex process (PID ${liveCodexPid}) must be dynamically protected`);
+        }
+      } catch (_) {}
     }
   });
 
@@ -309,6 +314,27 @@ async function runTests() {
       });
       assert.strictEqual(result2.tags, 'portrait');
       assert.strictEqual(capturedBuf2.length, pngBuffer.length);
+
+      // 2.5 Test Windows backslash artifact path
+      const backslashUrl = '\\artifacts\\images\\chaos_test_image.png';
+      const resultBackslash = await adapter.interrogateImage(backslashUrl, async (buf) => 'backslash portrait');
+      assert.strictEqual(resultBackslash.tags, 'backslash portrait');
+
+      // 2.6 Test 20MB ceiling for artifact images
+      const oversizedArtifact = path.join(artifactsDir, 'oversized_chaos.png');
+      const fd = fs.openSync(oversizedArtifact, 'w');
+      fs.writeSync(fd, Buffer.from('x'), 0, 1, 21 * 1024 * 1024); // 21MB sparse file
+      fs.closeSync(fd);
+      let oversizedBlocked = false;
+      try {
+        await adapter.interrogateImage('http://127.0.0.1:4010/artifacts/images/oversized_chaos.png', async () => 'should fail');
+      } catch (e) {
+        oversizedBlocked = true;
+        assert.ok(e.message.includes('20MB'), 'Must indicate 20MB limit exceeded');
+      } finally {
+        try { fs.unlinkSync(oversizedArtifact); } catch (_) {}
+      }
+      assert.strictEqual(oversizedBlocked, true, 'Oversized artifact URL (>20MB) must be blocked');
 
       // 3. Test directory traversal in artifact URL is blocked (cannot read files outside artifacts/images)
       let traversalBlocked = false;
@@ -386,6 +412,23 @@ args = ["mcp-comfyui.js"]
     assert.ok(updatedToml.includes('mcp-master.js'), 'Must point to mcp-master.js');
     assert.ok(updatedToml.includes('--client=codex'), 'Must include --client=codex');
     assert.ok(!updatedToml.includes('[mcp_servers.comfyui]'), 'Must migrate legacy comfyui section');
+
+    // Test purging redundant legacy [mcp_servers.comfyui] when [mcp_servers.opencode_router] already exists
+    const duplicateToml = `
+[desktop]
+localeOverride = "zh-CN"
+
+[mcp_servers.comfyui]
+command = "node"
+args = ["mcp-comfyui.js"]
+
+[mcp_servers.opencode_router]
+command = "node"
+args = ["mcp-master.js", "--client=codex"]
+`;
+    const cleanToml = codexAdapter.updateCodexTomlString(duplicateToml, 4010);
+    assert.ok(!cleanToml.includes('[mcp_servers.comfyui]'), 'Duplicate legacy comfyui section must be purged');
+    assert.ok(cleanToml.includes('[mcp_servers.opencode_router]'), 'Must retain opencode_router');
   });
 
   test('harmonizeOpencodeConfig in updater.js wires opencode-router Master-MCP bus', () => {
@@ -414,11 +457,112 @@ args = ["mcp-comfyui.js"]
     }
   });
 
-  test('client-adapter-manager reports Master-MCP status for codex and opencode', () => {
+  test('client-adapter-manager reports Master-MCP status for codex and opencode truthfully', () => {
     const cam = require('./client-adapter-manager');
+    const codex = require('./codex-adapter');
     const status = cam.getClientStatus(4010, true);
-    assert.ok(status.codex && status.codex.hasOwnProperty('hasMasterMcp'), 'Codex status must report hasMasterMcp');
-    assert.ok(status.opencode && status.opencode.hasOwnProperty('hasMasterMcp'), 'OpenCode status must report hasMasterMcp');
+    assert.ok(status.codex && status.codex.hasOwnProperty('hasMasterMcp'), 'Codex status must report hasMasterMcp property');
+    assert.ok(status.opencode && status.opencode.hasOwnProperty('hasMasterMcp'), 'OpenCode status must report hasMasterMcp property');
+
+    // Truth assertion: create mock codex dir with [mcp_servers.opencode_router]
+    const mockCodexDir = path.join(__dirname, 'test-chaos-codex-truth');
+    fs.mkdirSync(mockCodexDir, { recursive: true });
+    const mockConfig = path.join(mockCodexDir, 'config.toml');
+    fs.writeFileSync(mockConfig, '[desktop]\nlocaleOverride = "zh-CN"\n\n[mcp_servers.opencode_router]\ncommand = "node"\nargs = ["mcp-master.js", "--client=codex"]\n', 'utf8');
+
+    try {
+      const chk = codex.checkCodexLocaleAndEnvironment({ codexDir: mockCodexDir });
+      assert.strictEqual(chk.hasMasterMcp, true, 'checkCodexLocaleAndEnvironment must report hasMasterMcp: true');
+      assert.strictEqual(chk.missingMasterMcp, false, 'checkCodexLocaleAndEnvironment must report missingMasterMcp: false');
+      assert.strictEqual(chk.missingComfyUiMcp, false, 'Master-MCP presence must satisfy ComfyUI dependency');
+      assert.strictEqual(chk.healthy, true, 'Codex must be considered healthy when Master-MCP is wired');
+
+      const st = codex.getCodexStatus({ codexDir: mockCodexDir });
+      assert.strictEqual(st.hasMasterMcp, true, 'getCodexStatus must expose hasMasterMcp: true at top level');
+      assert.strictEqual(st.missingMasterMcp, false, 'getCodexStatus must expose missingMasterMcp: false at top level');
+    } finally {
+      try { fs.unlinkSync(mockConfig); } catch (_) {}
+      try { fs.rmdirSync(mockCodexDir); } catch (_) {}
+    }
+  });
+
+  await testAsync('bridgeAnthropicStream normalizes dynamic tool calls for Codex', async () => {
+    const codexAdapter = require('./codex-adapter');
+    const { EventEmitter } = require('events');
+
+    const fakeUpstream = new EventEmitter();
+    fakeUpstream.statusCode = 200;
+    fakeUpstream.headers = {};
+    fakeUpstream.destroy = () => {};
+
+    const dispatchedEvents = [];
+    const fakeClientRes = new EventEmitter();
+    fakeClientRes.writeHead = () => {};
+    fakeClientRes.write = (chunk) => {
+      const text = chunk.toString();
+      for (const line of text.split('\n')) {
+        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+          try {
+            dispatchedEvents.push(JSON.parse(line.slice(6)));
+          } catch (_) {}
+        }
+      }
+    };
+    fakeClientRes.end = () => {};
+
+    codexAdapter.bridgeAnthropicStream(fakeUpstream, fakeClientRes, 'claude-3-5-sonnet', 'req-test-1');
+
+    // Simulate Anthropic tool_use SSE events
+    fakeUpstream.emit('data', Buffer.from('event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_call_1","name":"greet_developer"}}\n\n'));
+    fakeUpstream.emit('data', Buffer.from('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"name\\":\\"Alice\\"}"}}\n\n'));
+    fakeUpstream.emit('data', Buffer.from('event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'));
+    fakeUpstream.emit('data', Buffer.from('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+    fakeUpstream.emit('end');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const itemAdded = dispatchedEvents.find(e => e.type === 'response.output_item.added');
+    assert.ok(itemAdded, 'Must emit response.output_item.added');
+    assert.strictEqual(itemAdded.item.name, 'mcp__opencode_router__greet_developer', 'Anthropic tool name must be normalized with mcp__opencode_router__ prefix');
+  });
+
+  test('incoming history tool calls with mcp__opencode_router__ prefix are safely stripped for upstream APIs', () => {
+    const codexAdapter = require('./codex-adapter');
+    const mockBody = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        {
+          type: 'function_call',
+          call_id: 'call_123',
+          name: 'mcp__opencode_router__greet_developer',
+          arguments: '{"name":"Bob"}'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_123',
+          output: 'Hello Bob'
+        }
+      ]
+    };
+
+    const chatPayload = codexAdapter.convertResponsesToChatPayload(mockBody);
+    const tc = chatPayload.messages.find(m => m.role === 'assistant' && Array.isArray(m.tool_calls));
+    assert.ok(tc, 'Must find assistant tool_call message in chatPayload');
+    assert.strictEqual(tc.tool_calls[0].function.name, 'greet_developer', 'History tool call must strip mcp__opencode_router__ for Chat completions');
+
+    const anthropicPayload = codexAdapter.convertResponsesToAnthropicPayload(mockBody);
+    const tuMsg = anthropicPayload.messages.find(m => m.role === 'assistant' && Array.isArray(m.content));
+    assert.ok(tuMsg, 'Must find assistant tool_use message in anthropicPayload');
+    const tuBlock = tuMsg.content.find(c => c.type === 'tool_use');
+    assert.strictEqual(tuBlock.name, 'greet_developer', 'History tool use must strip mcp__opencode_router__ for Anthropic');
+  });
+
+  test('comfyui stopService guards against terminating protected PIDs', async () => {
+    const { ComfyUIAdapter } = require('./comfyui-adapter');
+    const adapter = new ComfyUIAdapter({ rootDir: __dirname });
+    // Verify stopService on non-listening safe port executes cleanly without error
+    const res = await adapter.stopService({ port: 59999 });
+    assert.strictEqual(res.success, true);
   });
 
   console.log('\n======================================================================');

@@ -24,7 +24,7 @@ const ROOT_DIR = __dirname;
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 const LOG_PATH = path.join(ROOT_DIR, 'mcp-master.log');
 
-let PKG_VERSION = '3.13.3';
+let PKG_VERSION = '3.13.4';
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
   if (pkg.version) PKG_VERSION = pkg.version;
@@ -108,7 +108,8 @@ function sendJson(msg) {
   }
 }
 
-async function handleRpcRequest(req) {
+async function handleRpcRequest(req, clientCaller = null) {
+  const effectiveCaller = clientCaller || CLIENT_CALLER;
   if (!req || typeof req !== 'object' || Array.isArray(req)) {
     return sendJson({
       jsonrpc: '2.0',
@@ -166,8 +167,8 @@ async function handleRpcRequest(req) {
     }
 
     case 'tools/list': {
-      const tools = pluginManager.getActiveTools(CLIENT_CALLER);
-      logMasterMcp('INFO', `tools/list returning ${tools.length} tools for client=${CLIENT_CALLER || 'all'}`);
+      const tools = pluginManager.getActiveTools(effectiveCaller);
+      logMasterMcp('INFO', `tools/list returning ${tools.length} tools for client=${effectiveCaller || 'all'}`);
       return sendJson({
         jsonrpc: '2.0',
         id,
@@ -199,7 +200,7 @@ async function handleRpcRequest(req) {
       }
 
       try {
-        const rawRes = await pluginManager.executeTool(toolName, toolArgs, CLIENT_CALLER);
+        const rawRes = await pluginManager.executeTool(toolName, toolArgs, effectiveCaller);
         // Normalize result to MCP content structure
         let content = [];
         let isError = false;

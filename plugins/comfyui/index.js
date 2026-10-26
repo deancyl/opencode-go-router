@@ -132,8 +132,8 @@ module.exports = {
           }
         }
         // 2. Gateway generated artifact URL (e.g. http://127.0.0.1:4010/artifacts/images/xxx.png or /artifacts/images/xxx.png)
-        else if (/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/.test(trimmed)) {
-          const m = trimmed.match(/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/);
+        else if (/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/.test(trimmed.replace(/\\/g, '/'))) {
+          const m = trimmed.replace(/\\/g, '/').match(/(?:https?:\/\/[^\/]+)?\/artifacts\/images\/([a-zA-Z0-9_\-\.]+)/);
           if (m && m[1]) {
             const cleanFilename = path.basename(m[1]);
             const candidatePath = path.join(rootDir, 'artifacts', 'images', cleanFilename);
@@ -141,6 +141,9 @@ module.exports = {
               try {
                 const stat = fs.statSync(candidatePath);
                 if (stat.isFile()) {
+                  if (stat.size > 20 * 1024 * 1024) {
+                    return { isError: true, content: [{ type: 'text', text: `错误: 图像文件体积过大 (${(stat.size / 1024 / 1024).toFixed(1)}MB > 20MB)，无法执行反推。` }] };
+                  }
                   imgBuf = fs.readFileSync(candidatePath);
                 }
               } catch (_) {}

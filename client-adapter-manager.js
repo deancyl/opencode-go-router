@@ -336,7 +336,7 @@ function getClientStatus(options = {}) {
         currentModel: fullCodexStatus.currentModel,
         currentReasoningEffort: fullCodexStatus.currentReasoningEffort,
         hasStreamIdleTimeout: fullCodexStatus.hasStreamIdleTimeout,
-        hasMasterMcp: Boolean(fullCodexStatus.hasMasterMcp),
+        hasMasterMcp: Boolean(fullCodexStatus.hasMasterMcp || (fullCodexStatus.localeCheck && fullCodexStatus.localeCheck.hasMasterMcp)),
         processHealth: fullCodexStatus.processHealth || { runningProcesses: 0, healthy: true }
       };
     }
@@ -691,7 +691,8 @@ function syncPluginScopes(pluginId, scopes = {}, options = {}) {
     try {
       const codex = require('./codex-adapter');
       const st = codex.getCodexStatus(routerPort);
-      if (st && st.missingMasterMcp) {
+      const isMissingMasterMcp = st ? (st.missingMasterMcp ?? st.localeCheck?.missingMasterMcp) : false;
+      if (isMissingMasterMcp) {
         codex.repairCodexLocaleAndEnvironment();
         messages.push('已为 OpenAI Codex 挂载 Master-MCP 统一工具总线 (mcp-master.js)');
       }

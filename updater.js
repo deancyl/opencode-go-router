@@ -2723,9 +2723,9 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     } else if (comp === 'opencode-go-router') {
       const localVers = detectLocalVersions();
       const isSandboxTest = Boolean(process.env.OPENCODE_SNAPSHOTS_DIR) || Boolean(process.env.OPENCODE_ROUTER_CONFIG && process.env.OPENCODE_ROUTER_CONFIG.includes('config.test-'));
-      let pkgVerFallback = '3.13.3';
+      let pkgVerFallback = '3.13.4';
       try {
-        pkgVerFallback = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version || '3.13.3';
+        pkgVerFallback = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version || '3.13.4';
       } catch (_) {}
       const localRouterVer = (localVers && localVers['opencode-go-router']) || pkgVerFallback;
       const remoteRouterVer = (allRemote && allRemote['opencode-go-router']) || null;
