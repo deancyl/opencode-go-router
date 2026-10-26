@@ -51,10 +51,11 @@ module.exports = {
 
   async executeTool(toolName, args = {}, context) {
     const adapter = getAdapter(context);
+    const safeArgs = (args && typeof args === 'object' && !Array.isArray(args)) ? args : {};
     const normalizedName = (toolName || '').replace(/^mcp__[a-zA-Z0-9_-]+__/, '');
 
     if (normalizedName === 'generate_image') {
-      const { prompt, workflow, negative, width, height, seed } = args;
+      const { prompt, workflow, negative, width, height, seed } = safeArgs;
       if (!prompt) {
         return { isError: true, content: [{ type: 'text', text: '错误: 生图提示词 (prompt) 不能为空。' }] };
       }
@@ -95,7 +96,7 @@ module.exports = {
     }
 
     if (normalizedName === 'interrogate_image') {
-      const { image_path } = args;
+      const { image_path } = safeArgs;
       if (!image_path) {
         return { isError: true, content: [{ type: 'text', text: '错误: 待反推的图片路径或 Base64 数据不能为空。' }] };
       }

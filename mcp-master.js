@@ -24,7 +24,7 @@ const ROOT_DIR = __dirname;
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 const LOG_PATH = path.join(ROOT_DIR, 'mcp-master.log');
 
-let PKG_VERSION = '3.13.1';
+let PKG_VERSION = '3.13.2';
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
   if (pkg.version) PKG_VERSION = pkg.version;
@@ -67,7 +67,7 @@ async function bootstrap() {
       const shouldEnable = pluginManager.isPluginEnabled(id, manifest, pluginsCfg);
       if (shouldEnable) {
         try {
-          await pluginManager.enablePlugin(id);
+          await pluginManager.enablePlugin(id, { persist: false });
         } catch (e) {
           logMasterMcp('WARN', `启用插件 "${id}" 预检或加载失败: ${e.message}`);
         }
@@ -265,8 +265,14 @@ process.on('uncaughtException', (err) => {
   logMasterMcp('FATAL', `Uncaught exception in mcp-master: ${err.message}`, err.stack);
 });
 
-process.on('unhandledRejection', (reason) => {
-  logMasterMcp('FATAL', `Unhandled rejection in mcp-master: ${reason}`);
+process.on('SIGINT', () => {
+  logMasterMcp('INFO', 'mcp-master 收到 SIGINT 信号，退出中');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  logMasterMcp('INFO', 'mcp-master 收到 SIGTERM 信号，退出中');
+  process.exit(0);
 });
 
 module.exports = {

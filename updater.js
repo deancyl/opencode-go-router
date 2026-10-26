@@ -2008,7 +2008,8 @@ function backupLocalCodeForRollback(destDir, snapshotDir) {
     'config.json',
     'OpenCodeRouterTray.exe',
     'OpenCodeRouterApp.exe',
-    'OpenCodeRouterApp.cs'
+    'OpenCodeRouterApp.cs',
+    'plugins'
   ];
 
   const backedUp = [];
@@ -2019,7 +2020,12 @@ function backupLocalCodeForRollback(destDir, snapshotDir) {
       const parent = path.dirname(dest);
       if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
       try {
-        fs.copyFileSync(src, dest);
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) {
+          fs.cpSync(src, dest, { recursive: true });
+        } else {
+          fs.copyFileSync(src, dest);
+        }
         backedUp.push(rel);
       } catch (_) {}
     }

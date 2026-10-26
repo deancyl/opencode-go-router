@@ -363,8 +363,9 @@ class PluginManager {
     // 4. Conflicts & Requirements
     if (Array.isArray(manifest.system.conflictsWith)) {
       for (const confId of manifest.system.conflictsWith) {
-        const confCfg = pluginsCfg[confId];
-        if (confCfg && confCfg.enabled) {
+        const confManifest = this.discoveredPlugins.get(confId);
+        const isConfEnabled = this.isPluginEnabled(confId, confManifest, pluginsCfg);
+        if (isConfEnabled) {
           errors.push(`互斥依赖冲突: 插件与已启用的 "${confId}" 存在互斥声明 (conflictsWith)，不能同时激活！`);
         }
       }
@@ -372,8 +373,9 @@ class PluginManager {
 
     if (Array.isArray(manifest.system.requires)) {
       for (const reqId of manifest.system.requires) {
-        const reqCfg = pluginsCfg[reqId];
-        if (!reqCfg || !reqCfg.enabled) {
+        const reqManifest = this.discoveredPlugins.get(reqId);
+        const isReqEnabled = this.isPluginEnabled(reqId, reqManifest, pluginsCfg);
+        if (!isReqEnabled) {
           errors.push(`缺失前置依赖: 插件需要 "${reqId}" 前置插件就绪，请先安装并启用该插件。`);
         }
       }
@@ -542,11 +544,13 @@ class PluginManager {
     };
 
     // Save state atomically
-    this.savePluginConfig(pluginId, {
-      enabled: true,
-      clients: clientScopes,
-      lastEnabledAt: Date.now()
-    });
+    if (options.persist !== false) {
+      this.savePluginConfig(pluginId, {
+        enabled: true,
+        clients: clientScopes,
+        lastEnabledAt: Date.now()
+      });
+    }
 
     return {
       success: true,
@@ -616,6 +620,7 @@ class PluginManager {
    * Execute an active tool
    */
   async executeTool(toolName, args = {}, clientCaller = null) {
+    const safeArgs = (args && typeof args === 'object' && !Array.isArray(args)) ? args : {};
     let toolEntry = this.activeTools.get(toolName);
     if (!toolEntry) {
       // Support clients that prefix tools with mcp__<server>__
@@ -629,7 +634,7 @@ class PluginManager {
         const declaredTools = manifest.capabilities?.tools || [];
         if (declaredTools.some(t => t.name === toolName || t.name === cleanName)) {
           if (this.isPluginEnabled(id, manifest)) {
-            await this.enablePlugin(id);
+            await this.enablePlugin(id, { persist: false });
             toolEntry = this.activeTools.get(toolName) || this.activeTools.get(cleanName);
             break;
           }
@@ -651,6 +656,9 @@ class PluginManager {
 
     // Client scope enforcement
     if (clientCaller) {
+      if (manifest?.clientScopes?.supported && !manifest.clientScopes.supported.includes(clientCaller)) {
+        throw new Error(`工具 "${toolName}" 所属插件 "${pluginId}" 不支持客户端 "${clientCaller}"`);
+      }
       if (pluginCfg && pluginCfg.clients && pluginCfg.clients[clientCaller] !== undefined) {
         if (!pluginCfg.clients[clientCaller]) {
           throw new Error(`工具 "${toolName}" 已在客户端 "${clientCaller}" 中被禁用`);
@@ -666,9 +674,9 @@ class PluginManager {
     const context = instance ? instance.context : { pluginId, routerPort: this.routerPort };
 
     if (typeof handler === 'function') {
-      return await handler(args, context);
+      return await handler(safeArgs, context);
     } else if (instance && typeof instance.module.executeTool === 'function') {
-      return await instance.module.executeTool(originalName || toolName, args, context);
+      return await instance.module.executeTool(originalName || toolName, safeArgs, context);
     }
 
     throw new Error(`插件 "${pluginId}" 无法处理工具调用 "${toolName}"`);
@@ -690,6 +698,9 @@ class PluginManager {
 
       // Filter by clientCaller if specified
       if (clientCaller) {
+        if (manifest?.clientScopes?.supported && !manifest.clientScopes.supported.includes(clientCaller)) {
+          continue;
+        }
         if (pluginCfg && pluginCfg.clients && pluginCfg.clients[clientCaller] !== undefined) {
           if (!pluginCfg.clients[clientCaller]) continue;
         } else if (manifest && manifest.clientScopes?.defaultEnabled) {

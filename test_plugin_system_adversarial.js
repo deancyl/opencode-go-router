@@ -263,6 +263,32 @@ async function runAsyncTest(name, fn) {
     pm.discoveredPlugins.delete('str-port-competitor');
   });
 
+  await runAsyncTest('2.7 前置依赖 (requires) 与互斥依赖 (conflictsWith) 深度 SSOT 校验 (默认激活插件就绪断言)', async () => {
+    // 1. Plugin requiring default-enabled 'omo' must pass topology check
+    pm.discoveredPlugins.set('omo-dependent', {
+      id: 'omo-dependent',
+      name: '依赖 OMO 的从属插件',
+      system: { ports: [], hardware: {}, conflictsWith: [], requires: ['omo'] },
+      capabilities: { service: null, tools: [], agents: [] }
+    });
+    const topoReq = await pm.checkTopology('omo-dependent');
+    assert.strictEqual(topoReq.ok, true, '前置依赖 OMO (默认启用) 必须校验通过，绝不能误判为未启用');
+
+    // 2. Plugin conflicting with default-enabled 'omo' must fail topology check
+    pm.discoveredPlugins.set('omo-rival', {
+      id: 'omo-rival',
+      name: '与 OMO 冲突的插件',
+      system: { ports: [], hardware: {}, conflictsWith: ['omo'], requires: [] },
+      capabilities: { service: null, tools: [], agents: [] }
+    });
+    const topoConf = await pm.checkTopology('omo-rival');
+    assert.strictEqual(topoConf.ok, false, '与默认启用插件存在 conflictsWith 声明必须被精准拦截');
+    assert(topoConf.errors.some(e => e.includes('互斥依赖冲突') && e.includes('omo')));
+
+    pm.discoveredPlugins.delete('omo-dependent');
+    pm.discoveredPlugins.delete('omo-rival');
+  });
+
   // ---------------------------------------------------------------------------
   // Group 3: Master-MCP Stdio JSON-RPC 2.0 Protocol & Execution
   // ---------------------------------------------------------------------------
@@ -424,6 +450,37 @@ async function runAsyncTest(name, fn) {
     assert.ok(prefixedRes.content[0].text.includes('Prefixed User'), '带 mcp 前缀调用必须能够命中原工具');
   });
 
+  await runAsyncTest('4.3 插件未声明客户端支持 (supported 外部白名单拦截)', async () => {
+    pm.discoveredPlugins.set('opencode-only-plugin', {
+      id: 'opencode-only-plugin',
+      name: '仅限 OpenCode 插件',
+      system: { ports: [], hardware: {}, conflictsWith: [], requires: [] },
+      capabilities: {
+        tools: [{ name: 'opencode_exclusive_tool', description: 'Exclusive to OpenCode' }],
+        service: null,
+        agents: []
+      },
+      clientScopes: {
+        supported: ['opencode'],
+        defaultEnabled: ['opencode']
+      }
+    });
+
+    pm.registerTool('opencode-only-plugin', { name: 'opencode_exclusive_tool' }, () => ({ text: 'exclusive' }));
+
+    // Codex must not see this tool
+    const codexTools = pm.getActiveTools('codex');
+    assert(!codexTools.some(t => t.name === 'opencode_exclusive_tool'), '未在 supported 白名单内的客户端严禁感知该工具');
+
+    // Codex calling tool directly must throw
+    await assert.rejects(async () => {
+      await pm.executeTool('opencode_exclusive_tool', {}, 'codex');
+    }, /不支持客户端 "codex"/);
+
+    pm.discoveredPlugins.delete('opencode-only-plugin');
+    pm.unregisterTools('opencode-only-plugin');
+  });
+
   // ---------------------------------------------------------------------------
   // Group 5: Windows Silent Daemon & AV-Immune Compliance
   // ---------------------------------------------------------------------------
@@ -480,6 +537,7 @@ async function runAsyncTest(name, fn) {
 
   const killTestServer = () => {
     try {
+      http.globalAgent.destroy();
       if (testServerProc && testServerProc.pid) {
         if (process.platform === 'win32') {
           require('child_process').execSync(`taskkill /PID ${testServerProc.pid} /T /F`, { stdio: 'ignore' });
@@ -662,6 +720,70 @@ async function runAsyncTest(name, fn) {
       assert.strictEqual(res.data.success, true);
       assert.ok(res.data.result && res.data.result.content[0].text.includes('AdversarialAgent'));
     });
+
+    await runAsyncTest('6.7 ComfyUI 核心管理接口鉴权屏障 (uiPassword 阻断未授权切换与服务调度)', async () => {
+      // 1. Enable uiPassword on the running test server via POST /balancer/api/config
+      const setPwdPayload = JSON.stringify({ uiPassword: 'plugin-adversarial-pwd' });
+      const resSetPwd = await new Promise((resolve) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: testRouterPort,
+          path: '/balancer/api/config',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(setPwdPayload) }
+        }, r => {
+          let body = '';
+          r.on('data', c => { body += c; });
+          r.on('end', () => resolve({ status: r.statusCode, data: JSON.parse(body) }));
+        });
+        req.write(setPwdPayload);
+        req.end();
+      });
+      assert.strictEqual(resSetPwd.status, 200);
+
+      // 2. Unauthenticated GET /balancer/api/comfyui/status must return 401
+      const resUnauthStatus = await new Promise((resolve) => {
+        http.get(`http://127.0.0.1:${testRouterPort}/balancer/api/comfyui/status`, r => {
+          resolve({ status: r.statusCode });
+        });
+      });
+      assert.strictEqual(resUnauthStatus.status, 401, '未授权访问 /balancer/api/comfyui/status 必须返回 401');
+
+      // 3. Unauthenticated POST /balancer/api/comfyui/toggle must return 401
+      const toggleData = JSON.stringify({ enabled: false });
+      const resUnauthToggle = await new Promise((resolve) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: testRouterPort,
+          path: '/balancer/api/comfyui/toggle',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(toggleData) }
+        }, r => resolve({ status: r.statusCode }));
+        req.write(toggleData);
+        req.end();
+      });
+      assert.strictEqual(resUnauthToggle.status, 401, '未授权访问 /balancer/api/comfyui/toggle 必须返回 401');
+
+      // 4. Restore uiPassword to empty
+      const clearPwdPayload = JSON.stringify({ uiPassword: '' });
+      const authHeader = 'Basic ' + Buffer.from(':plugin-adversarial-pwd').toString('base64');
+      const resClearPwd = await new Promise((resolve) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: testRouterPort,
+          path: '/balancer/api/config',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+            'Content-Length': Buffer.byteLength(clearPwdPayload)
+          }
+        }, r => resolve({ status: r.statusCode }));
+        req.write(clearPwdPayload);
+        req.end();
+      });
+      assert.strictEqual(resClearPwd.status, 200);
+    });
   } finally {
     killTestServer();
   }
@@ -793,6 +915,53 @@ async function runAsyncTest(name, fn) {
     } finally {
       require('./updater').checkOmoPluginV2Integrity = origCheck;
     }
+  });
+
+  await runAsyncTest('7.8 executeTool 入参 null/undefined 防解构 TypeError 安全兜底', async () => {
+    // 1. Direct executeTool on plugin manager with null args
+    const resPm = await pm.executeTool('greet_developer', null);
+    assert.ok(resPm && resPm.content && resPm.content[0].text.includes('开发者'), '传 null 必须安全回退为空对象，不崩溃');
+
+    // 2. ComfyUI executeTool with null args
+    const comfyIndex = require('./plugins/comfyui/index.js');
+    const resComfy = await comfyIndex.executeTool('generate_image', null, {});
+    assert.strictEqual(resComfy.isError, true, 'ComfyUI 传 null 必须安全处理并返回提示词缺失');
+    assert.ok(resComfy.content[0].text.includes('生图提示词 (prompt) 不能为空'));
+  });
+
+  runTest('7.9 updater.backupLocalCodeForRollback 包含 plugins 目录且支持递归快照', () => {
+    const updater = require('./updater');
+    const mockDest = path.join(testTmpDir, 'updater-mock-dest');
+    const mockSnapshot = path.join(testTmpDir, 'updater-mock-snapshot');
+    const mockPluginsDir = path.join(mockDest, 'plugins', 'sample-plugin');
+    fs.mkdirSync(mockPluginsDir, { recursive: true });
+    fs.writeFileSync(path.join(mockPluginsDir, 'plugin.json'), '{"id":"sample"}');
+
+    const backedUp = updater.backupLocalCodeForRollback(mockDest, mockSnapshot);
+    assert.ok(backedUp.includes('plugins'), 'filesToBackup 必须包含 plugins 目录');
+    const snapPluginJson = path.join(mockSnapshot, 'plugins', 'sample-plugin', 'plugin.json');
+    assert.ok(fs.existsSync(snapPluginJson), '插件目录必须被完整递归备份至快照目录中');
+    assert.strictEqual(fs.readFileSync(snapPluginJson, 'utf8'), '{"id":"sample"}');
+  });
+
+  await runAsyncTest('7.10 enablePlugin 支持 { persist: false } 纯内存激活 (杜绝磁盘 config.json 污染与写竞争)', async () => {
+    if (!fs.existsSync(pm.configPath)) {
+      fs.writeFileSync(pm.configPath, JSON.stringify({ plugins: {} }, null, 2));
+    }
+    const rawCfgBefore = fs.readFileSync(pm.configPath, 'utf8');
+    const mtimeBefore = fs.statSync(pm.configPath).mtimeMs;
+
+    // Small delay to ensure mtime difference if it were modified
+    await new Promise(r => setTimeout(r, 60));
+
+    const res = await pm.enablePlugin('example-greeter', { persist: false });
+    assert.strictEqual(res.success, true);
+
+    const rawCfgAfter = fs.readFileSync(pm.configPath, 'utf8');
+    const mtimeAfter = fs.statSync(pm.configPath).mtimeMs;
+
+    assert.strictEqual(rawCfgBefore, rawCfgAfter, 'persist: false 严禁篡改磁盘 config.json 内容');
+    assert.strictEqual(mtimeBefore, mtimeAfter, 'persist: false 严禁更新磁盘文件修改时间戳');
   });
 
   // Cleanup sandbox

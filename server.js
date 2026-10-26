@@ -249,11 +249,12 @@ try {
   const pluginsCfg = pluginManager.getPluginsConfig();
   for (const [id, manifest] of pluginManager.discoveredPlugins.entries()) {
     if (pluginManager.isPluginEnabled(id, manifest, pluginsCfg)) {
-      pluginManager.enablePlugin(id).catch(e => {
+      pluginManager.enablePlugin(id, { persist: false }).catch(e => {
         console.warn(`[PluginManager] 启动加载插件 "${id}" 失败:`, e.message);
       });
     }
   }
+  config.plugins = pluginsCfg;
 } catch (e) {
   console.warn('[PluginManager] 初始化异常:', e.message);
 }
@@ -12328,7 +12329,7 @@ function renderDashboardHtml(config) {
       try {
         const res = await fetch('/balancer/api/comfyui/toggle', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ enabled: targetEnabled })
         });
         const d = await res.json();
@@ -12364,7 +12365,7 @@ function renderDashboardHtml(config) {
       try {
         const res = await fetch('/balancer/api/comfyui/service/start', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ mode: mode || 'gpu', port: port, localDir: localDir })
         });
         const d = await res.json();
@@ -12396,7 +12397,7 @@ function renderDashboardHtml(config) {
       try {
         const res = await fetch('/balancer/api/comfyui/service/stop', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({})
         });
         const d = await res.json();
@@ -13639,6 +13640,16 @@ const server = http.createServer((req, res) => {
         clearProxyAgentCache();
         codexAdapter.configureAdapter(config);
 
+        if (pluginManager && payload.plugins && typeof payload.plugins === 'object') {
+          for (const [pId, pCfg] of Object.entries(payload.plugins)) {
+            if (pCfg && pCfg.enabled === false) {
+              pluginManager.disablePlugin(pId).catch(() => {});
+            } else if (pCfg && pCfg.enabled === true) {
+              pluginManager.enablePlugin(pId, { persist: false }).catch(() => {});
+            }
+          }
+        }
+
         console.log('[Config] Configuration successfully updated via Graphical UI!');
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: true, message: '配置已稳妥保存并实时生效！(若修改了端口或监听地址，将在服务重启后生效)' }));
@@ -14550,6 +14561,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Status API (/balancer/api/comfyui/status)
   if (reqUrl.pathname === '/balancer/api/comfyui/status' && req.method === 'GET') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     const force = reqUrl.query?.force === 'true' || reqUrl.query?.force === '1';
     comfyuiAdapter.detectServer(force).then(status => {
       const wfs = comfyuiAdapter.manifest || {};
@@ -14581,6 +14597,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Plugin Toggle API (/balancer/api/comfyui/toggle)
   if (reqUrl.pathname === '/balancer/api/comfyui/toggle' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then((buf) => {
       if (!buf) return;
       try {
@@ -14621,6 +14642,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Service Control: Start (/balancer/api/comfyui/service/start)
   if (reqUrl.pathname === '/balancer/api/comfyui/service/start' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async (buf) => {
       if (!buf || res.headersSent || res.writableEnded) return;
       try {
@@ -14640,6 +14666,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Service Control: Stop (/balancer/api/comfyui/service/stop)
   if (reqUrl.pathname === '/balancer/api/comfyui/service/stop' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async (buf) => {
       if (!buf || res.headersSent || res.writableEnded) return;
       try {
@@ -14659,6 +14690,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Service Control: Restart (/balancer/api/comfyui/service/restart)
   if (reqUrl.pathname === '/balancer/api/comfyui/service/restart' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async (buf) => {
       if (!buf || res.headersSent || res.writableEnded) return;
       try {
@@ -14678,6 +14714,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Open Web GUI (/balancer/api/comfyui/open-gui)
   if (reqUrl.pathname === '/balancer/api/comfyui/open-gui' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then((buf) => {
       if (!buf || res.headersSent || res.writableEnded) return;
       try {
@@ -14698,6 +14739,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Workflows Sync from GitHub (/balancer/api/comfyui/sync-workflows)
   if (reqUrl.pathname === '/balancer/api/comfyui/sync-workflows' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async (buf) => {
       if (!buf || res.headersSent || res.writableEnded) return;
       try {
@@ -14717,6 +14763,11 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
   // ComfyUI Deploy Workflows & Patches to Local ComfyUI (/balancer/api/comfyui/deploy-to-comfyui)
   if (reqUrl.pathname === '/balancer/api/comfyui/deploy-to-comfyui' && req.method === 'POST') {
+    if (config.uiPassword && !isAuthorized(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized', type: 'authentication_error', code: 401 } }));
+      return;
+    }
     readInternalBody(req, res).then(async (buf) => {
       if (!buf || res.headersSent || res.writableEnded) return;
       try {
@@ -14804,6 +14855,12 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         if (pluginManager) {
           config.plugins = pluginManager.getPluginsConfig();
         }
+
+        try {
+          const clientAdapterManager = require('./client-adapter-manager');
+          const currentScopes = targetEnabled ? (result?.clientScopes || {}) : { opencode: false, openchamber: false, codex: false };
+          clientAdapterManager.syncPluginScopes(pluginId, currentScopes, { routerPort: config.port });
+        } catch (_) {}
 
         // Keep ComfyUI legacy configuration synchronized
         if (pluginId === 'comfyui') {
