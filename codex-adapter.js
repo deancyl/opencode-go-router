@@ -2822,7 +2822,7 @@ function normalizeResponsesUsage(rawUsage, defaultInput = 20, defaultOutput = 20
   const outTokens = rawUsage?.output_tokens ?? rawUsage?.completion_tokens ?? defaultOutput;
   const totTokens = rawUsage?.total_tokens ?? (inTokens + outTokens);
   const reasoningTokens = rawUsage?.completion_tokens_details?.reasoning_tokens ?? rawUsage?.output_tokens_details?.reasoning_tokens ?? 0;
-  const cachedTokens = rawUsage?.prompt_tokens_details?.cached_tokens ?? rawUsage?.input_tokens_details?.cached_tokens ?? 0;
+  const cachedTokens = rawUsage?.prompt_tokens_details?.cached_tokens ?? rawUsage?.input_tokens_details?.cached_tokens ?? rawUsage?.cache_read_input_tokens ?? 0;
   return {
     input_tokens: inTokens,
     output_tokens: outTokens,
@@ -3411,6 +3411,16 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               Math.max(10, Math.round(fullText.length * 0.4)),
               Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
             );
+            try {
+              if (usageObj && typeof contextCompactor.recordRequestTelemetry === 'function') {
+                contextCompactor.recordRequestTelemetry({
+                  model: reqModel,
+                  inputTokens: usageObj.input_tokens,
+                  outputTokens: usageObj.output_tokens,
+                  cachedTokens: usageObj.input_tokens_details?.cached_tokens || 0
+                });
+              }
+            } catch (_) {}
             sendEvent('response.completed', {
               type: 'response.completed',
               sequence_number: seq++,
@@ -3819,6 +3829,17 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
     );
 
+    try {
+      if (usageObj && typeof contextCompactor.recordRequestTelemetry === 'function') {
+        contextCompactor.recordRequestTelemetry({
+          model: reqModel,
+          inputTokens: usageObj.input_tokens,
+          outputTokens: usageObj.output_tokens,
+          cachedTokens: usageObj.input_tokens_details?.cached_tokens || 0
+        });
+      }
+    } catch (_) {}
+
     sendEvent('response.completed', {
       type: 'response.completed',
       sequence_number: seq++,
@@ -4114,6 +4135,18 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
     };
   }
 
+  const finalUsage = normalizeResponsesUsage(chatJson.usage, 20, 20);
+  try {
+    if (finalUsage && typeof contextCompactor.recordRequestTelemetry === 'function') {
+      contextCompactor.recordRequestTelemetry({
+        model: reqModel,
+        inputTokens: finalUsage.input_tokens,
+        outputTokens: finalUsage.output_tokens,
+        cachedTokens: finalUsage.input_tokens_details?.cached_tokens || 0
+      });
+    }
+  } catch (_) {}
+
   return {
     id: respId,
     object: 'response',
@@ -4134,7 +4167,7 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
     error: null,
     incomplete_details: null,
     output,
-    usage: normalizeResponsesUsage(chatJson.usage, 20, 20),
+    usage: finalUsage,
     instructions: null,
     tool_choice: 'auto',
     tools: [],
@@ -5067,6 +5100,17 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
     );
 
+    try {
+      if (usageObj && typeof contextCompactor.recordRequestTelemetry === 'function') {
+        contextCompactor.recordRequestTelemetry({
+          model: reqModel,
+          inputTokens: usageObj.input_tokens,
+          outputTokens: usageObj.output_tokens,
+          cachedTokens: usageObj.input_tokens_details?.cached_tokens || 0
+        });
+      }
+    } catch (_) {}
+
     sendEvent('response.completed', {
       type: 'response.completed',
       sequence_number: seq++,
@@ -5389,6 +5433,18 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
     };
   }
 
+  const finalUsage = normalizeResponsesUsage(anthropicJson.usage, 20, 20);
+  try {
+    if (finalUsage && typeof contextCompactor.recordRequestTelemetry === 'function') {
+      contextCompactor.recordRequestTelemetry({
+        model: reqModel,
+        inputTokens: finalUsage.input_tokens,
+        outputTokens: finalUsage.output_tokens,
+        cachedTokens: finalUsage.input_tokens_details?.cached_tokens || 0
+      });
+    }
+  } catch (_) {}
+
   return {
     id: respId,
     object: 'response',
@@ -5409,7 +5465,7 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
     error: null,
     incomplete_details: null,
     output,
-    usage: normalizeResponsesUsage(anthropicJson.usage, 20, 20),
+    usage: finalUsage,
     instructions: null,
     tool_choice: 'auto',
     tools: [],
@@ -5424,7 +5480,9 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
  */
 function findLatestCuaNodeExecutable(codexDirOverride = null) {
   const userProfile = process.env.USERPROFILE || os.homedir();
-  const cuaBase = path.join(userProfile, 'AppData', 'Local', 'OpenAI', 'Codex', 'runtimes', 'cua_node');
+  const cuaBase = codexDirOverride
+    ? (fs.existsSync(path.join(codexDirOverride, 'runtimes', 'cua_node')) ? path.join(codexDirOverride, 'runtimes', 'cua_node') : codexDirOverride)
+    : path.join(userProfile, 'AppData', 'Local', 'OpenAI', 'Codex', 'runtimes', 'cua_node');
   if (!fs.existsSync(cuaBase)) return null;
 
   try {

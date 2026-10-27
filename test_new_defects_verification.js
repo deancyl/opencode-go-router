@@ -16,13 +16,19 @@ console.log('✓ Test 1 Passed: "||" operator correctly transformed for PowerShe
 // 2. Verify codexAdapter autoCorrectToolArgs
 console.log('\n[Test 2] Testing autoCorrectToolArgs Windows PowerShell Hook...');
 const codexAdapter = require('./codex-adapter');
-const toolArgInput = JSON.stringify({ shell: 'bash', command: 'git status && git pull || echo error' });
-const corrected = codexAdapter.autoCorrectToolArgs('exec_command', toolArgInput);
-const parsedCorrected = JSON.parse(corrected);
-assert.strictEqual(parsedCorrected.shell, 'powershell', 'Must change bash to powershell on Windows');
-assert.ok(parsedCorrected.command.includes('; if ($?) {'), 'Must fix && operator');
-assert.ok(parsedCorrected.command.includes('; if (-not $?) {'), 'Must fix || operator');
-console.log('✓ Test 2 Passed: autoCorrectToolArgs transforms bash to powershell with full escaping');
+const origPlat2 = process.platform;
+try {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  const toolArgInput = JSON.stringify({ shell: 'bash', command: 'git status && git pull || echo error' });
+  const corrected = codexAdapter.autoCorrectToolArgs('exec_command', toolArgInput);
+  const parsedCorrected = JSON.parse(corrected);
+  assert.strictEqual(parsedCorrected.shell, 'powershell', 'Must change bash to powershell on Windows');
+  assert.ok(parsedCorrected.command.includes('; if ($?) {'), 'Must fix && operator');
+  assert.ok(parsedCorrected.command.includes('; if (-not $?) {'), 'Must fix || operator');
+  console.log('✓ Test 2 Passed: autoCorrectToolArgs transforms bash to powershell with full escaping');
+} finally {
+  Object.defineProperty(process, 'platform', { value: origPlat2 });
+}
 
 // 3. Verify Anti-Downgrade Redline: Source code files > 2000 chars are 100% PRESERVED
 console.log('\n[Test 3] Testing Anti-Downgrade Code Preservation in pruneResponsesPayload & pruneChatMessages...');

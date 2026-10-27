@@ -1,7 +1,8 @@
 import json, os, base64, time
 
-settings_file = r'C:\Users\deanc\.config\openchamber\settings.json'
-projects_dir = r'C:\Users\deanc\.config\openchamber\projects'
+home_dir = os.path.expanduser('~')
+settings_file = os.environ.get('OPENCHAMBER_SETTINGS_FILE') or os.path.join(home_dir, '.config', 'openchamber', 'settings.json')
+projects_dir = os.environ.get('OPENCHAMBER_PROJECTS_DIR') or os.path.join(home_dir, '.config', 'openchamber', 'projects')
 
 with open(settings_file, 'r', encoding='utf-8') as f:
     settings = json.load(f)

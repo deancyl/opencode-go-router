@@ -4,6 +4,7 @@ After=network.target
 StartLimitIntervalSec=0
 
 [Service]
+StartLimitInterval=0
 Type=simple
 WorkingDirectory=%h/.opencode-go-router
 Environment="NODE_ENV=production"

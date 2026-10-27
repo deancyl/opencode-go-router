@@ -497,6 +497,38 @@ function normalizeCompressionOptions(input = {}) {
 
 const DEFAULT_MODEL_RATE_PER_1M = 0.25; // USD / 1M Tokens (fallback baseline)
 
+/**
+ * OpenCode 官方标准模型计价字典 (USD / 1M Tokens)
+ * 严格对齐 OpenCode 官方模型定义与三阶计费梯级 (Input, Prompt Cache Read, Output)
+ */
+const OPENCODE_OFFICIAL_PRICING = {
+  // DeepSeek 旗舰与主力
+  'deepseek-v4.1-flash': { input: 0.14, cacheRead: 0.014, output: 0.28 },
+  'deepseek-v4-pro':     { input: 0.55, cacheRead: 0.055, output: 2.19 },
+  'deepseek-flash':      { input: 0.14, cacheRead: 0.014, output: 0.28 },
+  'deepseek-v4-flash':   { input: 0.14, cacheRead: 0.014, output: 0.28 },
+
+  // Claude 系列 (OpenCode 配额基准)
+  'claude-3-7-sonnet':   { input: 3.00, cacheRead: 0.30,  output: 15.00 },
+  'claude-3-5-sonnet':   { input: 3.00, cacheRead: 0.30,  output: 15.00 },
+  'claude-haiku-5-5':    { input: 1.25, cacheRead: 0.125, output: 5.00 },
+
+  // GLM 系列
+  'glm-5.3':             { input: 0.35, cacheRead: 0.035, output: 0.70 },
+  'glm-5.3-flash':       { input: 0.10, cacheRead: 0.010, output: 0.20 },
+
+  // Kimi 系列
+  'kimi-k2.7-code':      { input: 0.45, cacheRead: 0.045, output: 1.20 },
+  'kimi-k3':             { input: 0.60, cacheRead: 0.060, output: 1.80 },
+
+  // Qwen 系列
+  'qwen3.7-plus':        { input: 0.40, cacheRead: 0.040, output: 1.20 },
+  'qwen3.8-max':         { input: 0.85, cacheRead: 0.085, output: 2.50 },
+
+  // 兜底基准
+  'default':             { input: 0.25, cacheRead: 0.025, output: 0.50 }
+};
+
 const OPENCODE_GO_MODEL_RATES = {
   // DeepSeek family (OpenCode Go primary agent models)
   'deepseek-v4.1-flash': 0.14,
@@ -578,7 +610,10 @@ const OPENCODE_GO_MODEL_RATES = {
   'codex-pro': 1.50
 };
 
-const dynamicModelRates = { ...OPENCODE_GO_MODEL_RATES };
+const dynamicModelRates = {
+  ...OPENCODE_GO_MODEL_RATES,
+  ...Object.fromEntries(Object.entries(OPENCODE_OFFICIAL_PRICING).map(([k, v]) => [k, { ...v }]))
+};
 
 const MAX_BY_MODEL_ENTRIES = 120;
 
@@ -648,32 +683,130 @@ function normalizeModelName(rawModel) {
   return clean || null;
 }
 
-function getModelRate(rawModel) {
-  const model = normalizeModelName(rawModel);
-  if (!model) return DEFAULT_MODEL_RATE_PER_1M;
-  if (typeof dynamicModelRates[model] === 'number') {
-    return dynamicModelRates[model];
-  }
-  // Longest-prefix match (LPM) on candidate keys sorted by length descending
-  const sortedEntries = Object.entries(dynamicModelRates).sort((a, b) => b[0].length - a[0].length);
-  for (const [key, rate] of sortedEntries) {
-    if (model === key || model.startsWith(key + '-') || (model.length >= 3 && key.startsWith(model + '-'))) {
-      return rate;
+function getModelPricing(rawModel) {
+  const model = normalizeModelName(rawModel) || (rawModel && typeof rawModel === 'string' ? rawModel.trim().toLowerCase() : null);
+  if (!model) return { ...OPENCODE_OFFICIAL_PRICING['default'] };
+
+  // 1. Dynamic rates configured by user or synchronized at runtime take highest precedence (Rule 6)
+  if (dynamicModelRates[model] !== undefined) {
+    const val = dynamicModelRates[model];
+    if (typeof val === 'object' && val !== null && typeof val.input === 'number') {
+      return {
+        input: val.input,
+        cacheRead: typeof val.cacheRead === 'number' ? val.cacheRead : Number((val.input * 0.1).toFixed(4)),
+        output: typeof val.output === 'number' ? val.output : Number((val.input * 2.5).toFixed(4))
+      };
+    }
+    if (typeof val === 'number') {
+      return {
+        input: val,
+        cacheRead: Number((val * 0.1).toFixed(4)),
+        output: Number((val * 2.5).toFixed(4))
+      };
     }
   }
-  return DEFAULT_MODEL_RATE_PER_1M;
+
+  // 2. OpenCode official 3-tier pricing dictionary
+  if (OPENCODE_OFFICIAL_PRICING[model]) {
+    return { ...OPENCODE_OFFICIAL_PRICING[model] };
+  }
+
+  // 3. Fallback to legacy single-rate dictionary if present
+  if (typeof OPENCODE_GO_MODEL_RATES[model] === 'number') {
+    const val = OPENCODE_GO_MODEL_RATES[model];
+    return {
+      input: val,
+      cacheRead: Number((val * 0.1).toFixed(4)),
+      output: Number((val * 2.5).toFixed(4))
+    };
+  }
+
+  // 4. Longest-prefix match (LPM) on candidate keys sorted by length descending
+  const candidates = Array.from(new Set([
+    ...Object.keys(dynamicModelRates),
+    ...Object.keys(OPENCODE_OFFICIAL_PRICING),
+    ...Object.keys(OPENCODE_GO_MODEL_RATES)
+  ])).sort((a, b) => b.length - a.length);
+
+  for (const key of candidates) {
+    if (model === key || model.startsWith(key + '-') || (model.length >= 3 && key.startsWith(model + '-'))) {
+      const dynVal = dynamicModelRates[key];
+      if (dynVal !== undefined) {
+        if (typeof dynVal === 'object' && dynVal !== null && typeof dynVal.input === 'number') {
+          return {
+            input: dynVal.input,
+            cacheRead: typeof dynVal.cacheRead === 'number' ? dynVal.cacheRead : Number((dynVal.input * 0.1).toFixed(4)),
+            output: typeof dynVal.output === 'number' ? dynVal.output : Number((dynVal.input * 2.5).toFixed(4))
+          };
+        }
+        if (typeof dynVal === 'number') {
+          return {
+            input: dynVal,
+            cacheRead: Number((dynVal * 0.1).toFixed(4)),
+            output: Number((dynVal * 2.5).toFixed(4))
+          };
+        }
+      }
+      if (OPENCODE_OFFICIAL_PRICING[key]) return { ...OPENCODE_OFFICIAL_PRICING[key] };
+      const val = OPENCODE_GO_MODEL_RATES[key];
+      if (typeof val === 'number') {
+        return {
+          input: val,
+          cacheRead: Number((val * 0.1).toFixed(4)),
+          output: Number((val * 2.5).toFixed(4))
+        };
+      }
+    }
+  }
+
+  return { ...OPENCODE_OFFICIAL_PRICING['default'] };
+}
+
+function getModelRate(rawModel) {
+  return getModelPricing(rawModel).input;
+}
+
+function calculateCost(model, inputTokens, outputTokens, cachedTokens, savedTokens = 0) {
+  const p = getModelPricing(model);
+  const inTok = Number(inputTokens) || 0;
+  const outTok = Number(outputTokens) || 0;
+  const cTok = Math.max(0, Number(cachedTokens) || 0);
+  // If inTok >= cTok, inTok is total prompt tokens (OpenAI / DeepSeek format)
+  // If inTok < cTok, inTok is uncached prompt tokens (Anthropic format where cached tokens are reported separately)
+  const regularInput = inTok >= cTok ? Math.max(0, inTok - cTok) : inTok;
+  const sTok = Number(savedTokens) || 0;
+
+  // 实际产生费用 (三阶定价模型)
+  const actualCost = Number((
+    ((regularInput / 1e6) * p.input) +
+    ((cTok / 1e6) * p.cacheRead) +
+    ((outTok / 1e6) * p.output)
+  ).toFixed(7));
+
+  // 压缩节约价值（按被压缩抵扣掉的 Input Prompt 单价核算）
+  const savedCost = Number(((sTok / 1e6) * p.input).toFixed(7));
+
+  return { actualCost, savedCost, pricing: p };
 }
 
 function updateModelRates(newRates) {
   if (!newRates || typeof newRates !== 'object') return dynamicModelRates;
   let updatedAny = false;
   for (const [rawModel, rate] of Object.entries(newRates)) {
-    const clean = normalizeModelName(rawModel);
-    if (clean && typeof rate === 'number' && rate > 0) {
-      dynamicModelRates[clean] = rate;
-      if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
-        compressionStats.byModel[clean].ratePer1M = rate;
-        updatedAny = true;
+    const clean = normalizeModelName(rawModel) || (rawModel && typeof rawModel === 'string' ? rawModel.trim().toLowerCase() : null);
+    if (clean) {
+      if (typeof rate === 'number' && rate > 0) {
+        dynamicModelRates[clean] = rate;
+        if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
+          compressionStats.byModel[clean].ratePer1M = rate;
+          updatedAny = true;
+        }
+      } else if (typeof rate === 'object' && rate !== null && typeof rate.input === 'number' && rate.input > 0) {
+        dynamicModelRates[clean] = rate;
+        if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
+          compressionStats.byModel[clean].ratePer1M = rate.input;
+          updatedAny = true;
+        }
       }
     }
   }
@@ -773,7 +906,10 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
                   if (mId && numCost !== null && !isNaN(numCost) && numCost > 0) {
                     const r = numCost < 0.005 ? Number((numCost * 1000000).toFixed(4)) : Number(numCost.toFixed(4));
                     const cleanId = normalizeModelName(mId);
-                    if (cleanId) fetchedRates[cleanId] = r;
+                    // Protect official 3-tier pricing baseline models from being degraded by external scalar rates
+                    if (cleanId && !OPENCODE_OFFICIAL_PRICING[cleanId]) {
+                      fetchedRates[cleanId] = r;
+                    }
                   }
                 }
                 if (Object.keys(fetchedRates).length > 0) {
@@ -868,17 +1004,36 @@ const HISTORY_FILE = process.env.COMPRESSION_HISTORY_FILE || (IS_TEST_ENV && pro
 const STATS_BAK_FILE = `${STATS_FILE}.bak`;
 const HISTORY_BAK_FILE = `${HISTORY_FILE}.bak`;
 
+/**
+ * 获取本地时区自然日（00:00:00）时间戳，彻底消除 UTC 跨天偏移
+ */
+function getLocalDayStartTimestamp(ts = Date.now()) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * 根据本地自然日与日偏移量计算目标日 00:00:00 时间戳，防御夏令时跨日抖动
+ */
+function getDaySlotTimestamp(currentSlotTs, dayOffset) {
+  const d = new Date(currentSlotTs);
+  d.setDate(d.getDate() - dayOffset);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
 const BUCKET_DEFINITIONS = {
   m5: { intervalMs: 5 * 60 * 1000, maxBuckets: 12, maxAgeMs: 60 * 60 * 1000 },
   h1: { intervalMs: 60 * 60 * 1000, maxBuckets: 24, maxAgeMs: 24 * 60 * 60 * 1000 },
-  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 30, maxAgeMs: 30 * 24 * 60 * 60 * 1000 }
+  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 90, maxAgeMs: 90 * 24 * 60 * 60 * 1000 }
 };
 
 const RANGE_CONFIG = {
   '1h': { tier: 'm5', windowMs: 60 * 60 * 1000, label: '过去 1 小时' },
   '24h': { tier: 'h1', windowMs: 24 * 60 * 60 * 1000, label: '过去 24 小时' },
   '7d': { tier: 'd1', windowMs: 7 * 24 * 60 * 60 * 1000, label: '过去 7 天' },
-  'all': { tier: 'd1', windowMs: 30 * 24 * 60 * 60 * 1000, label: '全部历史累计' }
+  'all': { tier: 'd1', windowMs: 90 * 24 * 60 * 60 * 1000, label: '全部历史累计' }
 };
 
 let compressionStats = {
@@ -946,7 +1101,9 @@ function pruneExpiredBuckets(now = Date.now()) {
       compressionHistory.buckets[tier] = [];
       continue;
     }
-    const cutoff = now - def.maxAgeMs;
+    const cutoff = tier === 'd1'
+      ? getLocalDayStartTimestamp(now - def.maxAgeMs)
+      : now - def.maxAgeMs;
     list = list.filter(b => b && typeof b.endTime === 'number' && b.endTime > cutoff && b.startTime <= now + def.intervalMs);
     list.sort((a, b) => a.startTime - b.startTime);
     if (list.length > def.maxBuckets) {
@@ -962,8 +1119,15 @@ function getOrCreateBucket(tier, ts, now = Date.now()) {
   const safeTs = (typeof ts === 'number' && Number.isFinite(ts) && !isNaN(ts)) ? ts : now;
   if (safeTs < now - def.maxAgeMs) return null;
 
-  const start = Math.floor(safeTs / def.intervalMs) * def.intervalMs;
-  const end = start + def.intervalMs;
+  let start;
+  let end;
+  if (tier === 'd1') {
+    start = getLocalDayStartTimestamp(safeTs);
+    end = start + def.intervalMs;
+  } else {
+    start = Math.floor(safeTs / def.intervalMs) * def.intervalMs;
+    end = start + def.intervalMs;
+  }
 
   let list = compressionHistory.buckets[tier];
   if (!Array.isArray(list)) {
@@ -1099,7 +1263,9 @@ function computeDerivedStats(stats) {
     stats.modules[modKey] = mod;
   }
 
-  stats.savedTokens = modulesTokenSum > 0 ? modulesTokenSum : estimateTokens(totalSavedChars);
+  stats.savedTokens = (modulesTokenSum > 0 || Number(stats.savedTokens) > 0)
+    ? Math.max(modulesTokenSum, Number(stats.savedTokens) || 0)
+    : estimateTokens(totalSavedChars);
 
   // Compute byModel telemetry and dynamic weighted savedCostUSD
   stats.byModel = stats.byModel || {};
@@ -1160,15 +1326,24 @@ function computeDerivedStats(stats) {
     if (data.consumedTokens === undefined || data.consumedTokens === null || data.consumedTokens === 0) {
       data.consumedTokens = estimateTokens(data.originalChars || 0);
     }
-    data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    if (data.consumedCostUSD === undefined || data.consumedCostUSD === null || data.consumedCostUSD === 0) {
+      data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    }
     modelConsumedTokensSum += data.consumedTokens;
     modelConsumedCostSum += data.consumedCostUSD;
   }
   const totalOrigTokens = estimateTokens(stats.totalOriginalChars);
-  stats.consumedTokens = Math.max(totalOrigTokens, modelConsumedTokensSum, stats.savedTokens);
+  const explicitConsumed = Number(stats.consumedTokens) || 0;
+  if (explicitConsumed > 0 || modelConsumedTokensSum > 0) {
+    stats.consumedTokens = Math.max(explicitConsumed, modelConsumedTokensSum);
+  } else {
+    stats.consumedTokens = Math.max(totalOrigTokens, stats.savedTokens);
+  }
   const unassignedConsumed = Math.max(0, stats.consumedTokens - modelConsumedTokensSum);
   const unassignedConsumedCost = (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
-  stats.consumedCostUSD = Number((modelConsumedCostSum + unassignedConsumedCost).toFixed(6));
+  if (modelConsumedCostSum > 0 || unassignedConsumedCost > 0) {
+    stats.consumedCostUSD = Number((modelConsumedCostSum + unassignedConsumedCost).toFixed(6));
+  }
 
   const rawRatio = (stats.totalOriginalChars > 0 && Number.isFinite(stats.totalOriginalChars))
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
@@ -1188,13 +1363,19 @@ function writeFileSyncAtomic(filePath, data, encoding = 'utf8') {
   } catch (err) {
     try {
       fs.copyFileSync(tmpPath, filePath);
-      fs.unlinkSync(tmpPath);
-    } catch (_) {}
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+    } catch (_) {
+      try { fs.writeFileSync(filePath, data, encoding); } catch (_) {}
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+    }
   }
 }
 
 function saveStatsToDisk() {
   try {
+    if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+      return;
+    }
     pruneExpiredBuckets();
 
     // Canonical Self-Healing Migration: coalesce aliases (e.g. deepseek-flash -> deepseek-v4.1-flash) in loaded stats and history
@@ -1638,6 +1819,156 @@ function recordCompressionEvent(event) {
   recordSavings(module, actualSaved, actualOrig, actualModel, timestamp);
 }
 
+/**
+ * 全量请求遥测接口 (Full Request Telemetry Hook)
+ * 接收模型名、真实 inputTokens、outputTokens、cachedTokens 以及压缩消除的 savings (savedTokens/savedChars)
+ * 同步更新全局统计与多级时序环形缓冲 (m5, h1, d1)
+ */
+function recordRequestTelemetry(telemetry = {}) {
+  if (!telemetry || typeof telemetry !== 'object') return;
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
+  const rawModel = telemetry.model || telemetry.modelName || 'default';
+  const model = normalizeModelName(rawModel) || rawModel || 'default';
+  const ts = (typeof telemetry.timestamp === 'number' && Number.isFinite(telemetry.timestamp)) ? telemetry.timestamp : Date.now();
+
+  const inputTokens = Math.max(0, Number(telemetry.inputTokens ?? telemetry.input_tokens ?? telemetry.prompt_tokens ?? 0));
+  const outputTokens = Math.max(0, Number(telemetry.outputTokens ?? telemetry.output_tokens ?? telemetry.completion_tokens ?? 0));
+  const cachedTokens = Math.max(0, Number(
+    telemetry.cachedTokens ??
+    telemetry.cached_tokens ??
+    telemetry.prompt_tokens_details?.cached_tokens ??
+    telemetry.input_tokens_details?.cached_tokens ??
+    0
+  ));
+
+  let savedTokens = 0;
+  let savedChars = 0;
+  let originalChars = 0;
+  if (typeof telemetry.savings === 'number') {
+    savedTokens = Math.max(0, telemetry.savings);
+    savedChars = Math.round(savedTokens * 3.8);
+  } else if (telemetry.savings && typeof telemetry.savings === 'object') {
+    savedTokens = Math.max(0, Number(telemetry.savings.savedTokens || telemetry.savings.tokens || 0));
+    savedChars = Math.max(0, Number(telemetry.savings.savedChars || telemetry.savings.chars || 0));
+    originalChars = Math.max(0, Number(telemetry.savings.originalChars || 0));
+    if (savedTokens === 0 && savedChars > 0) savedTokens = estimateTokens(savedChars);
+  } else {
+    savedTokens = Math.max(0, Number(telemetry.savedTokens || 0));
+    savedChars = Math.max(0, Number(telemetry.savedChars || 0));
+    if (savedTokens === 0 && savedChars > 0) savedTokens = estimateTokens(savedChars);
+  }
+
+  const cTok = Math.max(0, Number(cachedTokens) || 0);
+  const regularInput = inputTokens >= cTok ? Math.max(0, inputTokens - cTok) : inputTokens;
+  const consumedTokens = (inputTokens >= cTok ? inputTokens : (regularInput + cTok)) + outputTokens;
+  const { actualCost, savedCost, pricing } = calculateCost(model, inputTokens, outputTokens, cachedTokens, savedTokens);
+
+  // Update global compressionStats
+  compressionStats.consumedTokens = (Number(compressionStats.consumedTokens) || 0) + consumedTokens;
+  compressionStats.consumedCostUSD = Number(((Number(compressionStats.consumedCostUSD) || 0) + actualCost).toFixed(7));
+
+  if (savedTokens > 0) {
+    const modKey = telemetry.module || (telemetry.savings && telemetry.savings.module) || 'rtk';
+    if (compressionStats.modules && compressionStats.modules[modKey]) {
+      compressionStats.modules[modKey].savedTokens = (Number(compressionStats.modules[modKey].savedTokens) || 0) + savedTokens;
+      compressionStats.modules[modKey].savedChars = (Number(compressionStats.modules[modKey].savedChars) || 0) + savedChars;
+    }
+    compressionStats.savedTokens = (Number(compressionStats.savedTokens) || 0) + savedTokens;
+    compressionStats.savedCostUSD = Number(((Number(compressionStats.savedCostUSD) || 0) + savedCost).toFixed(7));
+  }
+  if (savedChars > 0) {
+    compressionStats.totalSavedChars = (Number(compressionStats.totalSavedChars) || 0) + savedChars;
+    compressionStats.totalOriginalChars = (Number(compressionStats.totalOriginalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+    compressionStats.totalCompressedChars = Math.max(0, compressionStats.totalOriginalChars - compressionStats.totalSavedChars);
+  }
+
+  // Update global byModel
+  if (!compressionStats.byModel) compressionStats.byModel = {};
+  if (!compressionStats.byModel[model]) {
+    compressionStats.byModel[model] = {
+      savedChars: 0,
+      savedTokens: 0,
+      savedCostUSD: 0,
+      originalChars: 0,
+      consumedTokens: 0,
+      consumedCostUSD: 0,
+      ratePer1M: pricing.input
+    };
+  }
+  const mEntry = compressionStats.byModel[model];
+  mEntry.consumedTokens = (Number(mEntry.consumedTokens) || 0) + consumedTokens;
+  mEntry.consumedCostUSD = Number(((Number(mEntry.consumedCostUSD) || 0) + actualCost).toFixed(7));
+  if (savedTokens > 0) {
+    mEntry.savedTokens = (Number(mEntry.savedTokens) || 0) + savedTokens;
+    mEntry.savedCostUSD = Number(((Number(mEntry.savedCostUSD) || 0) + savedCost).toFixed(7));
+  }
+  if (savedChars > 0) {
+    mEntry.savedChars = (Number(mEntry.savedChars) || 0) + savedChars;
+    mEntry.originalChars = (Number(mEntry.originalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+  }
+  mEntry.ratePer1M = pricing.input;
+
+  compressionStats.updatedAt = new Date().toISOString();
+  computeDerivedStats(compressionStats);
+
+  // Synchronously record to all 3 ring-buffer time tiers (m5, h1, d1)
+  for (const tier of ['m5', 'h1', 'd1']) {
+    const bucket = getOrCreateBucket(tier, ts);
+    if (bucket) {
+      bucket.consumedTokens = (Number(bucket.consumedTokens) || 0) + consumedTokens;
+      bucket.consumedCostUSD = Number(((Number(bucket.consumedCostUSD) || 0) + actualCost).toFixed(7));
+      if (savedTokens > 0) {
+        const modKey = telemetry.module || (telemetry.savings && telemetry.savings.module) || 'rtk';
+        if (bucket.modules && bucket.modules[modKey]) {
+          bucket.modules[modKey].savedTokens = (Number(bucket.modules[modKey].savedTokens) || 0) + savedTokens;
+          bucket.modules[modKey].savedChars = (Number(bucket.modules[modKey].savedChars) || 0) + savedChars;
+        }
+        bucket.savedTokens = (Number(bucket.savedTokens) || 0) + savedTokens;
+        bucket.savedCostUSD = Number(((Number(bucket.savedCostUSD) || 0) + savedCost).toFixed(7));
+      }
+      if (savedChars > 0) {
+        bucket.totalSavedChars = (Number(bucket.totalSavedChars) || 0) + savedChars;
+        bucket.totalOriginalChars = (Number(bucket.totalOriginalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+        bucket.totalCompressedChars = Math.max(0, bucket.totalOriginalChars - bucket.totalSavedChars);
+      }
+
+      if (!bucket.byModel) bucket.byModel = {};
+      if (!bucket.byModel[model]) {
+        bucket.byModel[model] = {
+          savedChars: 0,
+          savedTokens: 0,
+          savedCostUSD: 0,
+          originalChars: 0,
+          consumedTokens: 0,
+          consumedCostUSD: 0,
+          ratePer1M: pricing.input
+        };
+      }
+      const bM = bucket.byModel[model];
+      bM.consumedTokens = (Number(bM.consumedTokens) || 0) + consumedTokens;
+      bM.consumedCostUSD = Number(((Number(bM.consumedCostUSD) || 0) + actualCost).toFixed(7));
+      if (savedTokens > 0) {
+        bM.savedTokens = (Number(bM.savedTokens) || 0) + savedTokens;
+        bM.savedCostUSD = Number(((Number(bM.savedCostUSD) || 0) + savedCost).toFixed(7));
+      }
+      if (savedChars > 0) {
+        bM.savedChars = (Number(bM.savedChars) || 0) + savedChars;
+        bM.originalChars = (Number(bM.originalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+      }
+      bM.ratePer1M = pricing.input;
+    }
+  }
+
+  pruneExpiredBuckets();
+
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
+  persistStatsThrottled();
+}
+
 function formatTimeSeriesLabel(ts, range) {
   const d = new Date(ts);
   const pad = n => (n < 10 ? '0' + n : '' + n);
@@ -1725,28 +2056,35 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     intervalMs = 24 * 60 * 60 * 1000; // 1 day intervals
     count = 7;
   } else {
-    // 'all' tier: provide daily slots with dynamic history span (up to 30 days, min 7 days)
+    // 'all' tier: provide daily slots with dynamic history span (up to 90 days, min 7 days)
     intervalMs = 24 * 60 * 60 * 1000;
-    let daysSpan = 14;
+    let daysSpan = 7;
     if (Array.isArray(matchingBuckets) && matchingBuckets.length > 0) {
       const validStarts = matchingBuckets.map(b => b && b.startTime).filter(t => typeof t === 'number' && t > 0);
       if (validStarts.length > 0) {
         const earliest = Math.min(...validStarts);
-        if (earliest < now) {
-          const diffDays = Math.ceil((now - earliest) / intervalMs) + 1;
-          daysSpan = Math.min(30, Math.max(7, diffDays));
+        const earliestDay = getLocalDayStartTimestamp(earliest);
+        const currentDay = getLocalDayStartTimestamp(now);
+        if (earliestDay < currentDay) {
+          const diffDays = Math.round((currentDay - earliestDay) / intervalMs) + 1;
+          daysSpan = Math.min(90, Math.max(7, diffDays));
         }
       }
     }
     count = daysSpan;
   }
 
-  const currentSlot = Math.floor(now / intervalMs) * intervalMs;
+  const currentSlot = (normRange === '7d' || normRange === 'all')
+    ? getLocalDayStartTimestamp(now)
+    : Math.floor(now / intervalMs) * intervalMs;
+
   const bucketMap = new Map();
   if (Array.isArray(matchingBuckets)) {
     for (const b of matchingBuckets) {
       if (b && typeof b.startTime === 'number') {
-        const slotKey = Math.floor(b.startTime / intervalMs) * intervalMs;
+        const slotKey = (normRange === '7d' || normRange === 'all')
+          ? getLocalDayStartTimestamp(b.startTime)
+          : Math.floor(b.startTime / intervalMs) * intervalMs;
         if (bucketMap.has(slotKey)) {
           mergeBuckets(bucketMap.get(slotKey), b);
         } else {
@@ -1757,7 +2095,9 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
   }
 
   for (let i = count - 1; i >= 0; i--) {
-    const slotTime = currentSlot - (i * intervalMs);
+    const slotTime = (normRange === '7d' || normRange === 'all')
+      ? getDaySlotTimestamp(currentSlot, i)
+      : currentSlot - (i * intervalMs);
     const existing = bucketMap.get(slotTime);
     const label = formatTimeSeriesLabel(slotTime, normRange);
 
@@ -1786,8 +2126,12 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
           const mOrigChars = Math.max(Number(mInfo.originalChars) || 0, Number(mInfo.savedChars) || 0);
           const cTokens = Math.max(Number(mInfo.consumedTokens) || 0, estimateTokens(mOrigChars), sTokens);
           const rate = mInfo.ratePer1M || getModelRate(cleanM);
-          const sCost = Number(((sTokens / 1000000) * rate).toFixed(7));
-          const cCost = Number(((cTokens / 1000000) * rate).toFixed(7));
+          const sCost = (typeof mInfo.savedCostUSD === 'number' && mInfo.savedCostUSD > 0)
+            ? Number(mInfo.savedCostUSD.toFixed(7))
+            : Number(((sTokens / 1000000) * rate).toFixed(7));
+          const cCost = (typeof mInfo.consumedCostUSD === 'number' && mInfo.consumedCostUSD > 0)
+            ? Number(mInfo.consumedCostUSD.toFixed(7))
+            : Number(((cTokens / 1000000) * rate).toFixed(7));
 
           if (!byModelData[cleanM]) {
             byModelData[cleanM] = {
@@ -1847,24 +2191,6 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     }
   }
 
-  // If in 'all' mode and all buckets are 0 but global stats have savings or consumed, inject into latest point
-  if (normRange === 'all') {
-    const allZero = series.every(p => p.savedTokens === 0 && p.consumedTokens === 0);
-    if (allZero && (compressionStats.savedTokens > 0 || compressionStats.totalSavedChars > 0 || compressionStats.totalOriginalChars > 0)) {
-      const lastPoint = series[series.length - 1];
-      if (lastPoint) {
-        lastPoint.consumedTokens = compressionStats.consumedTokens || estimateTokens(compressionStats.totalOriginalChars);
-        lastPoint.consumedCostUSD = compressionStats.consumedCostUSD || Number(((lastPoint.consumedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
-        lastPoint.savedTokens = compressionStats.savedTokens;
-        lastPoint.savedCostUSD = compressionStats.savedCostUSD;
-        lastPoint.savedChars = compressionStats.totalSavedChars;
-        lastPoint.originalChars = compressionStats.totalOriginalChars;
-        lastPoint.consumedChars = compressionStats.totalOriginalChars;
-        lastPoint.byModel = JSON.parse(JSON.stringify(compressionStats.byModel || {}));
-      }
-    }
-  }
-
   return series;
 }
 
@@ -1909,6 +2235,10 @@ function getStatsByRange(range = 'all', now = Date.now()) {
   let totalOriginalChars = 0;
   let totalCompressedChars = 0;
   let totalSavedChars = 0;
+  let totalConsumedTokens = 0;
+  let totalConsumedCostUSD = 0;
+  let totalSavedTokens = 0;
+  let totalSavedCostUSD = 0;
   const modules = {
     rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
     headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
@@ -1922,6 +2252,10 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     totalOriginalChars += (Number(b.totalOriginalChars) || 0);
     totalCompressedChars += (Number(b.totalCompressedChars) || 0);
     totalSavedChars += (Number(b.totalSavedChars) || 0);
+    totalConsumedTokens += (Number(b.consumedTokens) || 0);
+    totalConsumedCostUSD += (Number(b.consumedCostUSD) || 0);
+    totalSavedTokens += (Number(b.savedTokens) || 0);
+    totalSavedCostUSD += (Number(b.savedCostUSD) || 0);
 
     for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
       if (b.modules && b.modules[modKey]) {
@@ -1946,12 +2280,17 @@ function getStatsByRange(range = 'all', now = Date.now()) {
             savedTokens: 0,
             savedCostUSD: 0,
             originalChars: 0,
+            consumedTokens: 0,
+            consumedCostUSD: 0,
             ratePer1M: getModelRate(cleanM)
           };
         }
         byModel[cleanM].savedChars += (Number(mData.savedChars) || 0);
         byModel[cleanM].savedTokens += (Number(mData.savedTokens) || 0);
+        byModel[cleanM].savedCostUSD = Number(((Number(byModel[cleanM].savedCostUSD) || 0) + (Number(mData.savedCostUSD) || 0)).toFixed(7));
         byModel[cleanM].originalChars += (Number(mData.originalChars) || 0);
+        byModel[cleanM].consumedTokens += (Number(mData.consumedTokens) || 0);
+        byModel[cleanM].consumedCostUSD = Number(((Number(byModel[cleanM].consumedCostUSD) || 0) + (Number(mData.consumedCostUSD) || 0)).toFixed(7));
       }
     }
   }
@@ -1987,7 +2326,7 @@ function getStatsByRange(range = 'all', now = Date.now()) {
       : 0;
   }
 
-  const savedTokens = Math.max(modulesTokenSum, estimateTokens(totalSavedChars));
+  const savedTokens = Math.max(totalSavedTokens, modulesTokenSum, estimateTokens(totalSavedChars));
 
   let modelTokensSum = 0;
   let modelCostSum = 0;
@@ -1996,26 +2335,36 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     data.savedTokens = Math.max(Number(data.savedTokens) || 0, estimateTokens(data.savedChars));
     const officialRate = getModelRate(m);
     data.ratePer1M = officialRate;
-    data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
+    if (typeof data.savedCostUSD !== 'number' || data.savedCostUSD === 0) {
+      data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
+    }
     modelTokensSum += data.savedTokens;
     modelCostSum += data.savedCostUSD;
   }
 
   const unassignedTokens = Math.max(0, savedTokens - modelTokensSum);
   const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
-  const savedCostUSD = Number((modelCostSum + unassignedCost).toFixed(6));
+  const savedCostUSD = (totalSavedCostUSD > 0 && totalSavedCostUSD >= modelCostSum)
+    ? Number(totalSavedCostUSD.toFixed(6))
+    : Number((modelCostSum + unassignedCost).toFixed(6));
 
   let modelConsumedTokensSum = 0;
   let modelConsumedCostSum = 0;
   for (const [m, data] of Object.entries(byModel)) {
-    data.consumedTokens = Math.max(Number(data.consumedTokens) || 0, estimateTokens(data.originalChars || 0));
-    data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    const sTokens = data.savedTokens || 0;
+    const mOrig = data.originalChars || 0;
+    data.consumedTokens = Math.max(Number(data.consumedTokens) || 0, estimateTokens(mOrig), sTokens);
+    if (typeof data.consumedCostUSD !== 'number' || data.consumedCostUSD === 0) {
+      data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    }
     modelConsumedTokensSum += data.consumedTokens;
     modelConsumedCostSum += data.consumedCostUSD;
   }
-  const consumedTokens = Math.max(estimateTokens(totalOriginalChars), modelConsumedTokensSum, savedTokens);
+  const consumedTokens = Math.max(totalConsumedTokens, modelConsumedTokensSum, estimateTokens(totalOriginalChars), savedTokens);
   const unassignedConsumed = Math.max(0, consumedTokens - modelConsumedTokensSum);
-  const consumedCostUSD = Number((modelConsumedCostSum + (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
+  const consumedCostUSD = (totalConsumedCostUSD > 0 && totalConsumedCostUSD >= modelConsumedCostSum)
+    ? Number(totalConsumedCostUSD.toFixed(6))
+    : Number((modelConsumedCostSum + (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
 
   const compressionRatio = totalOriginalChars > 0
     ? Number(((totalSavedChars / totalOriginalChars) * 100).toFixed(1))
@@ -5449,5 +5798,11 @@ module.exports = {
   isCompilerDiagnosticOrStackTrace,
   isProtectedSourceOrDiagnostic,
   normalizeMemoSessionId,
-  safeSlice
+  safeSlice,
+  recordRequestTelemetry,
+  OPENCODE_OFFICIAL_PRICING,
+  getModelPricing,
+  calculateCost,
+  getLocalDayStartTimestamp,
+  getDaySlotTimestamp
 };

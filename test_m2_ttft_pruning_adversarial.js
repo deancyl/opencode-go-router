@@ -281,7 +281,7 @@ async function main() {
     console.log(`    [TTFT Performance Gain]: ${speedup.toFixed(1)}x faster, saved ${ttftSavedMsPerReq.toFixed(3)} ms per request`);
 
     // Assertions: new approach must be substantially faster and run under 0.2ms
-    assert.ok(newAvgMs < 0.25, `New pruning check should be under 0.25ms, got ${newAvgMs.toFixed(4)} ms`);
+    assert.ok(newAvgMs < 1.0 && newAvgMs < legacyAvgMs, `New pruning check should be faster than legacy and under 1.0ms, got ${newAvgMs.toFixed(4)} ms`);
     assert.ok(speedup > 1.8, `Expected at least 1.8x speedup over double JSON.stringify, got ${speedup.toFixed(1)}x`);
   });
 

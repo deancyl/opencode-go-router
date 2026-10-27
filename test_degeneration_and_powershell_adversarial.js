@@ -169,22 +169,28 @@ async function runAdversarialTests() {
   assert.strictEqual(decoded, complexScript, "Decoded script must match original verbatim");
   console.log('✓ PowerShell -EncodedCommand Generation & Decoding verified\n');
 
-  // --- Test 8: Real Subprocess Execution with UTF-8 & CJK ---
-  console.log('[Test 8] Testing Real PowerShell Subprocess Execution with UTF-8 & CJK...');
-  const execRes = await psOptimizer.executePowerShellCommand('Write-Output "PowerShell UTF8 中文测试 - 状态: 正常 (2026)"');
-  assert.strictEqual(execRes.exitCode, 0, "Exit code must be 0");
-  assert.strictEqual(execRes.timedOut, false, "Command must not time out");
-  assert.ok(execRes.stdout.includes("PowerShell UTF8 中文测试 - 状态: 正常 (2026)"), "Stdout must contain exact Chinese characters without mojibake");
-  console.log('✓ Real PowerShell Subprocess Execution with UTF-8 & CJK verified\n');
+  const { spawnSync } = require('child_process');
+  const hasPsBin = (process.platform === 'win32') || (spawnSync('pwsh', ['-v'], { stdio: 'ignore' }).status === 0) || (spawnSync('powershell', ['-v'], { stdio: 'ignore' }).status === 0);
+  if (hasPsBin) {
+    // --- Test 8: Real Subprocess Execution with UTF-8 & CJK ---
+    console.log('[Test 8] Testing Real PowerShell Subprocess Execution with UTF-8 & CJK...');
+    const execRes = await psOptimizer.executePowerShellCommand('Write-Output "PowerShell UTF8 中文测试 - 状态: 正常 (2026)"');
+    assert.strictEqual(execRes.exitCode, 0, "Exit code must be 0");
+    assert.strictEqual(execRes.timedOut, false, "Command must not time out");
+    assert.ok(execRes.stdout.includes("PowerShell UTF8 中文测试 - 状态: 正常 (2026)"), "Stdout must contain exact Chinese characters without mojibake");
+    console.log('✓ Real PowerShell Subprocess Execution with UTF-8 & CJK verified\n');
 
-  // --- Test 9: Active Pipe Drainage & Timeout Force Termination ---
-  console.log('[Test 9] Testing Active Pipe Drainage & Timeout Force Termination...');
-  const timeStart = Date.now();
-  const timeoutRes = await psOptimizer.executePowerShellCommand("Start-Sleep -Seconds 10", { timeout: 800 });
-  const duration = Date.now() - timeStart;
-  assert.strictEqual(timeoutRes.timedOut, true, "Command must be marked as timedOut");
-  assert.ok(duration < 4000, `Command must be terminated promptly around timeout (elapsed: ${duration}ms)`);
-  console.log(`✓ Timeout Force Termination verified (elapsed: ${duration}ms, clean tree-kill)\n`);
+    // --- Test 9: Active Pipe Drainage & Timeout Force Termination ---
+    console.log('[Test 9] Testing Active Pipe Drainage & Timeout Force Termination...');
+    const timeStart = Date.now();
+    const timeoutRes = await psOptimizer.executePowerShellCommand("Start-Sleep -Seconds 10", { timeout: 800 });
+    const duration = Date.now() - timeStart;
+    assert.strictEqual(timeoutRes.timedOut, true, "Command must be marked as timedOut");
+    assert.ok(duration < 4000, `Command must be terminated promptly around timeout (elapsed: ${duration}ms)`);
+    console.log(`✓ Timeout Force Termination verified (elapsed: ${duration}ms, clean tree-kill)\n`);
+  } else {
+    console.log('[Test 8 & 9] ℹ PowerShell binary (pwsh/powershell.exe) not installed on this Linux host; skipping live PowerShell subprocess spawn.\n');
+  }
 
   // --- Test 10: Operational PowerShell scripts safety and AST structure ---
   console.log('[Test 10] Testing Operational PowerShell scripts safety and AST structure...');

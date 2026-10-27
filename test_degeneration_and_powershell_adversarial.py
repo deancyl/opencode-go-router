@@ -20,7 +20,7 @@ import time
 import urllib.request
 import json
 
-ROOT_DIR = r"C:\Users\deanc\.opencode-go-router"
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = 4010
 HEALTH_URL = f"http://127.0.0.1:{PORT}/health"
 
@@ -96,6 +96,11 @@ def main():
     """
     res = subprocess.run(["node", "-e", node_eval_code], cwd=ROOT_DIR, capture_output=True, text=True, errors="replace")
     assert_test("2.1 特殊路径与嵌套元字符转义", "STAGE_2_NODE_OK" in res.stdout, "Complex paths and metacharacters verified")
+
+    if sys.platform != 'win32':
+        print("\nℹ [SKIP] 非 Windows 宿主环境，跳过原生 powershell.exe 进程树与服务启停测试。")
+        log_header("🎉 角度七跨平台核心逻辑验证通过！")
+        return
 
     # =========================================================================
     # Part 3: 控制台编码与 CP936/UTF-8 乱码免疫实测

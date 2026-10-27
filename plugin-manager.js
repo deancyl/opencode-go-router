@@ -134,20 +134,26 @@ class PluginManager {
     if (typeof entry !== 'string') {
       throw new Error(`插件 "${id}" entry 必须为字符串`);
     }
-    const resolvedEntry = path.resolve(dirPath, entry);
-    const relEntry = path.relative(dirPath, resolvedEntry);
-    if (relEntry.startsWith('..') || path.isAbsolute(entry)) {
+    const isCrossPlatformUnsafePath = (p) => {
+      if (typeof p !== 'string' || !p.trim()) return true;
+      if (path.isAbsolute(p) || path.win32.isAbsolute(p) || path.posix.isAbsolute(p)) return true;
+      if (/^[a-zA-Z]:[\\/]|^[\\/]/.test(p)) return true;
+      const normPosix = path.posix.normalize(p.replace(/\\/g, '/'));
+      if (normPosix === '..' || normPosix.startsWith('../') || normPosix.includes('/../')) return true;
+      const resolved = path.resolve(dirPath, p.replace(/\\/g, path.sep));
+      const rel = path.relative(dirPath, resolved);
+      return rel.startsWith('..') || path.isAbsolute(rel);
+    };
+    if (isCrossPlatformUnsafePath(entry)) {
       throw new Error(`插件 "${id}" 入口 entry ("${entry}") 试图越权逃逸出插件目录`);
     }
-    const entryFullPath = resolvedEntry;
+    const entryFullPath = path.resolve(dirPath, entry.replace(/\\/g, path.sep));
 
     // Validate ui.cardComponent if specified
     if (rawManifest.capabilities?.ui?.cardComponent) {
       const cardComp = rawManifest.capabilities.ui.cardComponent;
       if (typeof cardComp === 'string') {
-        const resolvedCard = path.resolve(dirPath, cardComp);
-        const relCard = path.relative(dirPath, resolvedCard);
-        if (relCard.startsWith('..') || path.isAbsolute(cardComp)) {
+        if (isCrossPlatformUnsafePath(cardComp)) {
           throw new Error(`插件 "${id}" UI 组件路径 ("${cardComp}") 试图越权逃逸出插件目录`);
         }
       }

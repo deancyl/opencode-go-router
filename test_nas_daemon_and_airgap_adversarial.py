@@ -196,10 +196,16 @@ var compA = file => {
         orig_index_md5 = get_md5(index_file)
         orig_js_md5 = get_md5(js_file)
 
+        has_pwsh = shutil.which('pwsh') is not None or shutil.which('powershell.exe') is not None
+        ps_bin = 'pwsh' if shutil.which('pwsh') else 'powershell.exe'
         ps1_script = os.path.join(ROOT_DIR, 'patch-openchamber-office.ps1')
+        sh_script = os.path.join(ROOT_DIR, 'patch-openchamber-office.sh')
 
         for i in range(1, 6):
-            cmd = f'pwsh -ExecutionPolicy Bypass -File "{ps1_script}" -Install -TargetDir "{temp_dir}"'
+            if has_pwsh:
+                cmd = f'{ps_bin} -ExecutionPolicy Bypass -File "{ps1_script}" -Install -TargetDir "{temp_dir}"'
+            else:
+                cmd = f'bash "{sh_script}" --install --target "{temp_dir}"'
             res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             if res.returncode != 0:
                 print(f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}")
@@ -221,7 +227,10 @@ var compA = file => {
         assert os.path.exists(orig_bak_js) and get_md5(orig_bak_js) == orig_js_md5, "FilesView.js.orig 损坏或不匹配"
         print("  ✔ .orig 原厂基线备份校验完全一致！")
 
-        cmd_rollback = f'pwsh -ExecutionPolicy Bypass -File "{ps1_script}" -Rollback -TargetDir "{temp_dir}"'
+        if has_pwsh:
+            cmd_rollback = f'{ps_bin} -ExecutionPolicy Bypass -File "{ps1_script}" -Rollback -TargetDir "{temp_dir}"'
+        else:
+            cmd_rollback = f'bash "{sh_script}" --rollback --target "{temp_dir}"'
         res_rb = subprocess.run(cmd_rollback, shell=True, capture_output=True, text=True)
         assert res_rb.returncode == 0, f"回滚失败: {res_rb.stderr}"
 

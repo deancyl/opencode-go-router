@@ -24,7 +24,7 @@ const ROOT_DIR = __dirname;
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 const LOG_PATH = path.join(ROOT_DIR, 'mcp-master.log');
 
-let PKG_VERSION = '3.13.4';
+let PKG_VERSION = '3.13.5';
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
   if (pkg.version) PKG_VERSION = pkg.version;

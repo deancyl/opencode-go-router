@@ -20,6 +20,8 @@ namespace OpenCodeRouter
 
         public static uint WM_TASKBARCREATED = 0;
         public static uint WM_RESTORE_ROUTER_TRAY = 0;
+        private EventWaitHandle restoreEvent = null;
+        private RegisteredWaitHandle registeredWait = null;
 
         public TrayMessageSinkForm()
         {
@@ -30,6 +32,41 @@ namespace OpenCodeRouter
             this.Opacity = 0;
             this.ShowIcon = false;
             IntPtr h = this.Handle;
+
+            try {
+                bool createdNew;
+                restoreEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\OpenCodeRouterTrayRestoreEvent", out createdNew);
+                registeredWait = ThreadPool.RegisterWaitForSingleObject(restoreEvent, (state, timedOut) => {
+                    if (!timedOut) {
+                        try {
+                            if (this.IsHandleCreated && !this.IsDisposed) {
+                                this.BeginInvoke(new Action(() => {
+                                    Program.Log("Received WM_RESTORE_ROUTER_TRAY from peer instance! Restoring tray icon...");
+                                    Program.ReassertTrayIcon(true);
+                                }));
+                            }
+                        } catch { }
+                    }
+                }, null, -1, false);
+            } catch { }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try {
+                    if (registeredWait != null) {
+                        registeredWait.Unregister(null);
+                        registeredWait = null;
+                    }
+                    if (restoreEvent != null) {
+                        restoreEvent.Close();
+                        restoreEvent = null;
+                    }
+                } catch { }
+            }
+            base.Dispose(disposing);
         }
 
         protected override CreateParams CreateParams
@@ -221,6 +258,11 @@ namespace OpenCodeRouter
                 if (!createdNew)
                 {
                     Log("Another instance is running. Activating dashboard and exiting.");
+                    try {
+                        using (var evt = EventWaitHandle.OpenExisting("Local\\OpenCodeRouterTrayRestoreEvent")) {
+                            evt.Set();
+                        }
+                    } catch { }
                     uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
                     if (msgRestore != 0)
                     {

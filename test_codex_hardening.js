@@ -8,9 +8,21 @@ const codexAdapter = require('./codex-adapter');
 
 console.log('=== Starting Codex Hardening & Channel Isolation Tests ===\n');
 
-// 1. Test findLatestCuaNodeExecutable
+// 1. Test findLatestCuaNodeExecutable (with sandbox fixture fallback on non-Windows/clean hosts)
 console.log('Test 1: Testing findLatestCuaNodeExecutable...');
-const latestCua = codexAdapter.findLatestCuaNodeExecutable();
+const os = require('os');
+let mockProfileRoot = null;
+const origUserProfile = process.env.USERPROFILE;
+let latestCua = codexAdapter.findLatestCuaNodeExecutable();
+if (!latestCua) {
+  mockProfileRoot = path.join(os.tmpdir(), 'mock-codex-profile-' + Date.now());
+  const binDir = path.join(mockProfileRoot, 'AppData', 'Local', 'OpenAI', 'Codex', 'runtimes', 'cua_node', '9f8e7d6c5b4a3210', 'bin', 'node_modules', '@oai', 'sky', 'bin', 'windows');
+  fs.mkdirSync(binDir, { recursive: true });
+  const fakeExe = path.join(binDir, 'codex-computer-use.exe');
+  fs.writeFileSync(fakeExe, 'MZ-mock', 'utf8');
+  process.env.USERPROFILE = mockProfileRoot;
+  latestCua = codexAdapter.findLatestCuaNodeExecutable();
+}
 console.log('  Resolved latest CUA executable:', latestCua);
 assert(latestCua, 'Expected findLatestCuaNodeExecutable to return a valid path');
 assert(fs.existsSync(latestCua), `Expected path to exist on disk: ${latestCua}`);
@@ -50,6 +62,11 @@ assert(updated.includes('base_url = "http://127.0.0.1:4010/v1"'), 'Expected open
 console.log('Test 3: Testing notify auto-healing in updateCodexTomlString...');
 assert(!updated.includes('3dd31cfff853001c'), 'Expected old 3dd31cfff853001c path to be replaced');
 assert(updated.includes(latestCua.replace(/\\/g, '\\\\')), `Expected updated notify to contain ${latestCua}`);
+if (mockProfileRoot) {
+  if (origUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = origUserProfile;
+  try { fs.rmSync(mockProfileRoot, { recursive: true, force: true }); } catch (_) {}
+}
 console.log('  ✔ Test 2 & 3 Passed: custom provider channel protected & notify healed.\n');
 
 // 4. Test Stream Keep-Alive and Rule 33 Graceful Closure

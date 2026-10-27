@@ -49,6 +49,12 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
 
+let CURRENT_ROUTER_VERSION = '3.13.5';
+try {
+  const pkgData = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  if (pkgData && pkgData.version) CURRENT_ROUTER_VERSION = pkgData.version;
+} catch (_) {}
+
 function writeFileSyncAtomic(filePath, data, encoding = 'utf8') {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -1294,8 +1300,8 @@ function sendStandardizedError(clientRes, upstreamRes, statusCode, rawErrText) {
 /**
  * Centralized Upstream Error Classifier (Case-Insensitive & Multi-Status Protocol Safe)
  */
-function classifyUpstreamError(statusCode, rawErrText = '') {
-  const errText = typeof rawErrText === 'string' ? rawErrText : String(rawErrText || '');
+function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') {
+  const errText = typeof rawErrText === 'string' ? rawErrText : (typeof maybeThirdArg === 'string' && maybeThirdArg ? maybeThirdArg : String(rawErrText || ''));
   const lowerText = errText.toLowerCase();
 
   // 1. Detect Upstream Cluster Internal Glitch (e.g. node credential or availability failure masked as 401/500/502/503/504)
@@ -1554,7 +1560,7 @@ function handleRateLimitFailover({
 
   upstreamRes.on('end', () => {
     const errText = Buffer.concat(errorChunks).toString('utf8');
-    const classified = classifyUpstreamError(statusCode, upstreamRes.headers, errText);
+    const classified = classifyUpstreamError(statusCode, errText);
     if (classified && classified.isQuotaExhausted) {
       recordCooldown(account.id, 3600000, 'Quota / Balance Exhausted');
     }
@@ -1975,10 +1981,123 @@ function dispatchResponsesRequest(clientReq, clientRes, responsesBody, account, 
   }
 }
 
+/**
+ * 健壮提取响应体或缓冲区中的 usage 对象，完整支持嵌套对象（如 prompt_tokens_details: { cached_tokens: ... }）
+ */
+function extractUsageFromBuffer(bufferStr) {
+  if (!bufferStr || typeof bufferStr !== 'string' || !bufferStr.includes('"usage"')) return null;
+  let searchIdx = bufferStr.length;
+  while (searchIdx > 0) {
+    const usageIdx = bufferStr.lastIndexOf('"usage"', searchIdx);
+    if (usageIdx === -1) break;
+    const colonIdx = bufferStr.indexOf(':', usageIdx + 7);
+    if (colonIdx === -1) {
+      searchIdx = usageIdx - 1;
+      continue;
+    }
+    const braceStart = bufferStr.indexOf('{', colonIdx);
+    if (braceStart === -1) {
+      searchIdx = usageIdx - 1;
+      continue;
+    }
+    const between = bufferStr.slice(colonIdx + 1, braceStart).trim();
+    if (between.length > 0) {
+      searchIdx = usageIdx - 1;
+      continue;
+    }
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let parsed = null;
+    for (let i = braceStart; i < bufferStr.length; i++) {
+      const ch = bufferStr[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            try {
+              parsed = JSON.parse(bufferStr.slice(braceStart, i + 1));
+            } catch (_) {}
+            break;
+          }
+        }
+      }
+    }
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+    searchIdx = usageIdx - 1;
+  }
+  return null;
+}
+
+function mergeUsageObjects(existing, newUsage) {
+  if (!newUsage || typeof newUsage !== 'object') return existing;
+  if (!existing) return { ...newUsage };
+  const res = { ...existing, ...newUsage };
+  if (typeof newUsage.prompt_tokens === 'number' || typeof newUsage.input_tokens === 'number') {
+    res.prompt_tokens = newUsage.prompt_tokens ?? newUsage.input_tokens;
+    res.input_tokens = res.prompt_tokens;
+  }
+  if (typeof newUsage.completion_tokens === 'number' || typeof newUsage.output_tokens === 'number') {
+    res.completion_tokens = newUsage.completion_tokens ?? newUsage.output_tokens;
+    res.output_tokens = res.completion_tokens;
+  }
+  if (newUsage.prompt_tokens_details || newUsage.input_tokens_details) {
+    res.prompt_tokens_details = {
+      ...(existing.prompt_tokens_details || {}),
+      ...(newUsage.prompt_tokens_details || newUsage.input_tokens_details || {})
+    };
+  }
+  if (typeof newUsage.cache_read_input_tokens === 'number') {
+    res.cache_read_input_tokens = newUsage.cache_read_input_tokens;
+  }
+  return res;
+}
+
+/**
+ * 网关代理层全量请求遥测联动上报 (Usage Telemetry Hook)
+ * 捕获 upstream 返回的真实 usage 并与压缩引擎 savedTokens 联动
+ */
+function recordRequestUsageTelemetry(modelName, rawUsage, compSavings = null, timestamp = Date.now()) {
+  if (!rawUsage || !contextCompactor || typeof contextCompactor.recordRequestTelemetry !== 'function') return;
+  const inputTokens = Number(rawUsage.prompt_tokens ?? rawUsage.input_tokens ?? 0);
+  const outputTokens = Number(rawUsage.completion_tokens ?? rawUsage.output_tokens ?? 0);
+  const cachedTokens = Number(
+    rawUsage.prompt_tokens_details?.cached_tokens ??
+    rawUsage.input_tokens_details?.cached_tokens ??
+    rawUsage.cache_read_input_tokens ??
+    0
+  );
+
+  contextCompactor.recordRequestTelemetry({
+    model: modelName,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    savings: compSavings,
+    timestamp
+  });
+}
+
 function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedParsedBody = null) {
   triedAccountIds.add(account.id);
 
-  const upstreamUrl = new URL(config.upstream);
+  const effectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
+  const upstreamUrl = new URL(effectiveUpstream);
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
 
@@ -2061,6 +2180,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   }
 
   // Apply context and token compression for direct upstream requests (first attempt only)
+  let requestCompSavings = null;
   if (parsedBody && config.compression && config.compression.enabled !== false && (!attemptNumber || attemptNumber <= 1)) {
     try {
       const parsedModel = (parsedBody && typeof parsedBody.model === 'string') ? parsedBody.model.replace(/^opencode-go\//, '') : undefined;
@@ -2069,6 +2189,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         model: parsedModel,
         _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
       };
+      const origByteLen = reqBody ? reqBody.length : 0;
       if (isResponsesReq) {
         parsedBody = contextCompactor.compactResponsesPayload(parsedBody, compOpts, sessionId);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
@@ -2078,6 +2199,14 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       } else if (parsedBody.messages || targetPath.includes('/chat/completions')) {
         parsedBody = contextCompactor.compactChatPayload(parsedBody, compOpts, sessionId);
         reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+      }
+      if (origByteLen > 0 && reqBody && reqBody.length < origByteLen) {
+        const savedChars = origByteLen - reqBody.length;
+        requestCompSavings = {
+          savedChars,
+          savedTokens: contextCompactor.estimateTokens(savedChars),
+          originalChars: origByteLen
+        };
       }
     } catch (compErr) {
       console.warn('[Server Compression Sandbox] Direct proxy compression failed, bypassing safely:', compErr.message);
@@ -2528,6 +2657,33 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     };
     upstreamRes.on('data', onSniffData);
 
+    let capturedUsage = null;
+    let sniffedTailBuffer = '';
+    const onUsageSniff = (chunk) => {
+      const s = chunk.toString('utf8');
+      sniffedTailBuffer = (sniffedTailBuffer + s).slice(-32768);
+      if (s.includes('data:')) {
+        const lines = s.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data:') && !trimmed.includes('[DONE]')) {
+            try {
+              const parsed = JSON.parse(trimmed.slice(5).trim());
+              if (parsed.usage) capturedUsage = mergeUsageObjects(capturedUsage, parsed.usage);
+              else if (parsed.message?.usage) capturedUsage = mergeUsageObjects(capturedUsage, parsed.message.usage);
+              else if (parsed.response?.usage) capturedUsage = mergeUsageObjects(capturedUsage, parsed.response.usage);
+              else if (parsed.delta?.usage) capturedUsage = mergeUsageObjects(capturedUsage, parsed.delta.usage);
+            } catch (_) {}
+          }
+        }
+      }
+      if (s.includes('"usage"')) {
+        const directExt = extractUsageFromBuffer(sniffedTailBuffer);
+        if (directExt) capturedUsage = mergeUsageObjects(capturedUsage, directExt);
+      }
+    };
+    upstreamRes.on('data', onUsageSniff);
+
     const isNativeResponsesStream = isResponsesReq && (parsedBody ? parsedBody.stream === true : Boolean(clientReq.headers && clientReq.headers.accept && clientReq.headers.accept.includes('text/event-stream')));
     let nativeResponsesHasOutput = false;
     let nativeResponsesHasCompleted = false;
@@ -2623,6 +2779,13 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       clientRes.removeListener('close', clientCloseHandler);
       if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
       finishRequest();
+      if (!capturedUsage && sniffedTailBuffer) {
+        const directExt = extractUsageFromBuffer(sniffedTailBuffer);
+        if (directExt) capturedUsage = mergeUsageObjects(capturedUsage, directExt);
+      }
+      if (capturedUsage) {
+        recordRequestUsageTelemetry(reqModelName, capturedUsage);
+      }
       if (isNativeResponsesStream && !clientRes.writableEnded && !clientRes.destroyed) {
         if (!nativeResponsesHasOutput && !nativeResponsesHasCompleted && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
           const reqModel = parsedBody?.model || 'deepseek-v4.1-flash';
@@ -2735,7 +2898,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     stat.lastUsedAt = Date.now();
   }
 
-  const upstreamUrl = new URL(config.upstream);
+  const effectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
+  const upstreamUrl = new URL(effectiveUpstream);
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
 
@@ -3269,7 +3433,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 }
 
 function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedAnthropicPayload = null) {
-  const upstreamUrl = new URL(config.upstream);
+  const effectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
+  const upstreamUrl = new URL(effectiveUpstream);
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
 
@@ -9285,11 +9450,11 @@ function renderDashboardHtml(config) {
           const activeThemeColor = currentChartMetric === 'cost' ? '#10b981' : (currentChartMetric === 'chars' ? '#a78bfa' : '#38bdf8');
           const trackLegend = '<div style="display:flex;align-items:center;gap:8px;font-size:0.75rem;margin-right:8px;padding-right:8px;border-right:1px solid #27272a;">' +
             '<span style="display:inline-block;width:9px;height:9px;background:#52525b;border-radius:2px;"></span>' +
-            '<span style="color:#94a3b8;font-weight:500;">原本消耗 (左柱灰)</span>' +
+            '<span style="color:#94a3b8;font-weight:500;">理论总输入 (左柱灰)</span>' +
             '<span style="display:inline-block;width:9px;height:9px;background:#f59e0b;border-radius:2px;margin-left:4px;"></span>' +
-            '<span style="color:#f59e0b;font-weight:500;">实际使用 (右柱黄)</span>' +
+            '<span style="color:#f59e0b;font-weight:500;">实际发出消耗 (右柱实色)</span>' +
             '<span style="display:inline-block;width:9px;height:9px;background:rgba(56,189,248,0.22);border:1px dashed #38bdf8;border-radius:2px;margin-left:4px;"></span>' +
-            '<span style="color:#38bdf8;font-weight:500;">智能节约 (虚线帽)</span>' +
+            '<span style="color:#38bdf8;font-weight:500;">压缩节约 (虚线帽/节约带)</span>' +
             '</div>';
           legendsEl.innerHTML = trackLegend + activeModels.map((m, idx) => {
             const color = getModelColor(m, idx);
@@ -9417,41 +9582,42 @@ function renderDashboardHtml(config) {
           const origBarX = xCenter - barW - 1.5;
           const actBarX = xCenter + 1.5;
 
-          // 1) 原本总消耗柱 (左柱 - 中性炭灰)
+          // 1) 理论总输入柱 (左柱 - 中性炭灰)
           if (origVal > 0) {
             const origH = Math.max(2, (origVal / maxVal) * chartH);
             const origY = xBaseY - origH;
-            contentSvg += '<rect class="chart-bar-rect chart-bar-consumed" data-index="' + i + '" x="' + origBarX + '" y="' + origY + '" width="' + barW + '" height="' + origH + '" fill="' + consumedColor + '" opacity="0.85" rx="2" />';
+            contentSvg += '<rect class="chart-bar-rect chart-bar-consumed chart-bar-orig" data-index="' + i + '" x="' + origBarX + '" y="' + origY + '" width="' + barW + '" height="' + origH + '" fill="' + consumedColor + '" opacity="0.85" rx="2" />';
           } else {
             contentSvg += '<rect data-index="' + i + '" x="' + origBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
           }
 
-          // 2) 实际使用柱 + 顶部虚线节约帽 (右柱)
+          // 2) 实际使用柱 + 顶部虚线差额帽 (右柱)
           if (origVal > 0) {
             const modelEntries = Object.entries(pt.byModel || {});
             const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : (modelEntries.length > 1 ? getModelColor(modelEntries[0][0], 0) : '#f59e0b');
 
-            // 右柱实心下半截：实际处理消耗 (cVal)
-            if (cVal > 0) {
-              const cH = Math.max(2, (cVal / maxVal) * chartH);
+            const origH = Math.max(2, (origVal / maxVal) * chartH);
+            const cH = cVal > 0 ? Math.max(2, (cVal / maxVal) * chartH) : 0;
+
+            // 右柱实心下半截：实际发出消耗 (cVal)，高度对应实际发出
+            if (cH > 0) {
               const cY = xBaseY - cH;
               contentSvg += '<rect class="chart-bar-rect chart-bar-actual" data-index="' + i + '" x="' + actBarX + '" y="' + cY + '" width="' + barW + '" height="' + cH + '" fill="' + color + '" rx="2" ry="2" />';
             }
 
-            // 右柱虚线上半截：智能压缩节约 (sVal)
-            if (sVal > 0) {
-              const sH = Math.max(2, (sVal / maxVal) * chartH);
-              const cH = cVal > 0 ? (cVal / maxVal) * chartH : 0;
-              const sY = xBaseY - cH - sH;
-              contentSvg += '<rect class="chart-bar-rect chart-bar-saved" data-index="' + i + '" x="' + actBarX + '" y="' + sY + '" width="' + barW + '" height="' + sH + '" fill="rgba(56, 189, 248, 0.22)" stroke="#38bdf8" stroke-width="1" stroke-dasharray="2,2" rx="2" ry="2" />';
+            // 右柱顶部虚线差额帽：直观提示省下的部分 (sVal)，高度为 diffH
+            const diffH = Math.max(0, origH - cH);
+            if (sVal > 0 && diffH > 0) {
+              const sY = xBaseY - origH;
+              contentSvg += '<rect class="chart-bar-rect chart-bar-saved chart-bar-saved-cap" data-index="' + i + '" x="' + actBarX + '" y="' + sY + '" width="' + barW + '" height="' + diffH + '" fill="rgba(56, 189, 248, 0.18)" stroke="#38bdf8" stroke-width="1" stroke-dasharray="2,2" rx="2" ry="2" />';
             }
           } else {
             contentSvg += '<rect data-index="' + i + '" x="' + actBarX + '" y="' + (xBaseY - 2) + '" width="' + barW + '" height="2" fill="#27272a" opacity="0.4" rx="1" />';
           }
         });
       } else {
-        const savedPoints = series.map((pt, i) => {
-          const val = getSavedVal(pt);
+        const origPoints = series.map((pt, i) => {
+          const val = getConsumedVal(pt) + getSavedVal(pt);
           const x = padL + (i + 0.5) * (chartW / n);
           const y = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
           return { x, y, val };
@@ -9459,6 +9625,13 @@ function renderDashboardHtml(config) {
 
         const consumedPoints = series.map((pt, i) => {
           const val = getConsumedVal(pt);
+          const x = padL + (i + 0.5) * (chartW / n);
+          const y = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
+          return { x, y, val };
+        });
+
+        const savedPoints = series.map((pt, i) => {
+          const val = getSavedVal(pt);
           const x = padL + (i + 0.5) * (chartW / n);
           const y = isAllZero ? xBaseY : (xBaseY - (val / maxVal) * chartH);
           return { x, y, val };
@@ -9474,17 +9647,77 @@ function renderDashboardHtml(config) {
             const p2 = pts[i + 1];
             const p3 = i < pts.length - 2 ? pts[i + 2] : p2;
             const cp1x = p1.x + (p2.x - p0.x) / 6;
-            const cp1y = p1.y + (p2.y - p0.y) / 6;
+            let cp1y = p1.y + (p2.y - p0.y) / 6;
             const cp2x = p2.x - (p3.x - p1.x) / 6;
-            const cp2y = p2.y - (p3.y - p1.y) / 6;
+            let cp2y = p2.y - (p3.y - p1.y) / 6;
+            // 贝塞尔单调性与下界约束 (Clamp): 控制点 y 绝不能超过基线 xBaseY (杜绝负数下潜穿模)
+            if ((p1.val === 0 && p2.val === 0) || (p1.y >= xBaseY && p2.y >= xBaseY)) {
+              cp1y = xBaseY;
+              cp2y = xBaseY;
+            } else {
+              cp1y = Math.min(xBaseY, cp1y);
+              cp2y = Math.min(xBaseY, cp2y);
+            }
             pathD += ' C ' + cp1x.toFixed(1) + ' ' + cp1y.toFixed(1) + ', ' + cp2x.toFixed(1) + ' ' + cp2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
           }
           return pathD;
         };
 
+        const origPathD = buildSmoothPath(origPoints);
         const consumedPathD = buildSmoothPath(consumedPoints);
-        const savedPathD = buildSmoothPath(savedPoints);
-        const savedAreaD = savedPathD + ' L ' + savedPoints[savedPoints.length - 1].x + ' ' + xBaseY + ' L ' + savedPoints[0].x + ' ' + xBaseY + ' Z';
+        const consumedAreaD = consumedPathD + ' L ' + consumedPoints[consumedPoints.length - 1].x + ' ' + xBaseY + ' L ' + consumedPoints[0].x + ' ' + xBaseY + ' Z';
+
+        // 构造理论上限与实际使用之间的半透明节约带 (高保真平滑贝塞尔对齐)
+        const buildSmoothBand = (topPts, btmPts) => {
+          if (!topPts || topPts.length === 0 || !btmPts || btmPts.length === 0) return '';
+          const len = topPts.length;
+          if (len === 1) {
+            return 'M ' + (topPts[0].x - 8) + ' ' + topPts[0].y + ' L ' + (topPts[0].x + 8) + ' ' + topPts[0].y +
+                   ' L ' + (btmPts[0].x + 8) + ' ' + btmPts[0].y + ' L ' + (btmPts[0].x - 8) + ' ' + btmPts[0].y + ' Z';
+          }
+          let bandD = 'M ' + topPts[0].x + ' ' + topPts[0].y;
+          for (let i = 0; i < len - 1; i++) {
+            const p0 = i > 0 ? topPts[i - 1] : topPts[i];
+            const p1 = topPts[i];
+            const p2 = topPts[i + 1];
+            const p3 = i < len - 2 ? topPts[i + 2] : p2;
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            let cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            let cp2y = p2.y - (p3.y - p1.y) / 6;
+            if ((p1.val === 0 && p2.val === 0) || (p1.y >= xBaseY && p2.y >= xBaseY)) {
+              cp1y = xBaseY;
+              cp2y = xBaseY;
+            } else {
+              cp1y = Math.min(xBaseY, cp1y);
+              cp2y = Math.min(xBaseY, cp2y);
+            }
+            bandD += ' C ' + cp1x.toFixed(1) + ' ' + cp1y.toFixed(1) + ', ' + cp2x.toFixed(1) + ' ' + cp2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
+          }
+          bandD += ' L ' + btmPts[len - 1].x + ' ' + btmPts[len - 1].y;
+          for (let i = len - 2; i >= 0; i--) {
+            const p0 = i > 0 ? btmPts[i - 1] : btmPts[i];
+            const p1 = btmPts[i];
+            const p2 = btmPts[i + 1];
+            const p3 = i < len - 2 ? btmPts[i + 2] : p2;
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            let cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            let cp2y = p2.y - (p3.y - p1.y) / 6;
+            if ((p1.val === 0 && p2.val === 0) || (p1.y >= xBaseY && p2.y >= xBaseY)) {
+              cp1y = xBaseY;
+              cp2y = xBaseY;
+            } else {
+              cp1y = Math.min(xBaseY, cp1y);
+              cp2y = Math.min(xBaseY, cp2y);
+            }
+            bandD += ' C ' + cp2x.toFixed(1) + ' ' + cp2y.toFixed(1) + ', ' + cp1x.toFixed(1) + ' ' + cp1y.toFixed(1) + ', ' + p1.x.toFixed(1) + ' ' + p1.y.toFixed(1);
+          }
+          bandD += ' Z';
+          return bandD;
+        };
+
+        const savingsBandD = buildSmoothBand(origPoints, consumedPoints);
 
         const gradId = 'compAreaGrad_' + cfg.viewportId;
         contentSvg += '<defs>' +
@@ -9493,16 +9726,17 @@ function renderDashboardHtml(config) {
           '<stop offset="100%" stop-color="' + themeColor + '" stop-opacity="0.02"/>' +
           '</linearGradient>' +
           '</defs>' +
-          '<path d="' + consumedPathD + '" fill="none" stroke="' + consumedColor + '" stroke-width="1.8" stroke-dasharray="4,3" stroke-linecap="round" stroke-linejoin="round" opacity="0.75" />' +
-          '<path d="' + savedAreaD + '" fill="url(#' + gradId + ')" />' +
-          '<path d="' + savedPathD + '" fill="none" stroke="' + themeColor + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />';
+          '<path d="' + savingsBandD + '" fill="rgba(56, 189, 248, 0.16)" />' +
+          '<path d="' + origPathD + '" fill="none" stroke="' + consumedColor + '" stroke-width="1.8" stroke-dasharray="4,3" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" />' +
+          '<path d="' + consumedAreaD + '" fill="url(#' + gradId + ')" />' +
+          '<path d="' + consumedPathD + '" fill="none" stroke="' + themeColor + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />';
 
-        consumedPoints.forEach(p => {
+        origPoints.forEach(p => {
           if (p.val > 0) {
             contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="2.8" fill="' + consumedColor + '" stroke="#121215" stroke-width="1.5" />';
           }
         });
-        savedPoints.forEach(p => {
+        consumedPoints.forEach(p => {
           if (p.val > 0) {
             contentSvg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="' + themeColor + '" stroke="#121215" stroke-width="1.8" />';
           }
@@ -9548,7 +9782,9 @@ function renderDashboardHtml(config) {
           const slotW = chartW / n;
           const xPos = padL + (idx + 0.5) * slotW;
           const sVal = getSavedVal(pt);
-          const yPos = isAllZero ? xBaseY : (xBaseY - (sVal / maxVal) * chartH);
+          const cVal = getConsumedVal(pt);
+          const origVal = cVal + sVal;
+          const yPos = isAllZero ? xBaseY : (xBaseY - (cVal / maxVal) * chartH);
 
           crosshairGroup.style.display = 'block';
           if (crosshairLine) {
@@ -9593,7 +9829,7 @@ function renderDashboardHtml(config) {
             '</div>' +
             '<div style="display:flex;flex-direction:column;gap:3px;font-size:0.74rem;">' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#94a3b8;">' +
-            '<span>📊 原本总需求 (未压缩):</span>' +
+            '<span>📊 理论总输入 (未压缩):</span>' +
             '<span style="font-family:monospace;color:#94a3b8;">~' + totalTokens.toLocaleString() + ' T</span>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#f59e0b;font-weight:500;">' +
@@ -9607,6 +9843,10 @@ function renderDashboardHtml(config) {
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#34d399;font-size:0.72rem;border-top:1px dashed #27272a;padding-top:3px;margin-top:2px;">' +
             '<span>📈 动态节约率 (实省比例):</span>' +
             '<span style="font-family:monospace;font-weight:600;color:#34d399;">' + ratioStr + '</span>' +
+            '</div>' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;color:#10b981;font-size:0.72rem;">' +
+            '<span>💰 节省金额 (USD):</span>' +
+            '<span style="font-family:monospace;font-weight:600;color:#10b981;">$' + sCost.toFixed(5) + '</span>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;gap:12px;color:#71717a;font-size:0.7rem;">' +
             '<span>📝 处理字符数:</span>' +
@@ -13177,6 +13417,8 @@ const server = http.createServer((req, res) => {
     });
     res.end(JSON.stringify({
       status: 'ok',
+      service: 'opencode-go-router',
+      version: CURRENT_ROUTER_VERSION,
       port: config.port,
       healthyAccounts: healthyAccounts.length,
       totalAccounts: config.accounts.length
@@ -13234,6 +13476,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'online',
       port: config.port,
+      defaultModel: config.defaultModel || 'deepseek-v4.1-flash',
       upstream: config.upstream,
       sessionAffinityEnabled: config.sessionAffinityEnabled,
       defaultCooldownMs: config.defaultCooldownMs,
@@ -13299,7 +13542,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (reqUrl.pathname === '/balancer/api/auth' && req.method === 'POST') {
+  if (reqUrl.pathname === '/balancer/api/auth/logout' && (req.method === 'POST' || req.method === 'GET')) {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Set-Cookie': 'router_auth=; Path=/; Max-Age=0; SameSite=Lax',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.end(JSON.stringify({ success: true, message: '已安全注销登录并清除凭证' }));
+    return;
+  }
+
+  if ((reqUrl.pathname === '/balancer/api/auth' || reqUrl.pathname === '/balancer/api/auth/login') && req.method === 'POST') {
     readInternalBody(req, res).then((buf) => {
       if (!buf) return;
       try {
@@ -13365,6 +13618,16 @@ const server = http.createServer((req, res) => {
   // Get full config API (for UI)
   if (reqUrl.pathname === '/balancer/api/config' && req.method === 'GET') {
     const corsOrigin = getManagementCorsOrigin(req);
+    const shouldMask = reqUrl.searchParams.get('mask') === '1' || reqUrl.searchParams.get('mask') === 'true' || reqUrl.searchParams.get('desensitize') === '1';
+    const maskSecret = (s) => {
+      if (!s || typeof s !== 'string') return '';
+      const t = s.trim();
+      if (t.length <= 6) return '******';
+      return t.slice(0, 3) + '****' + t.slice(-4);
+    };
+    const outAccounts = shouldMask
+      ? (config.accounts || []).map(a => ({ ...a, apiKey: a.apiKey ? maskSecret(a.apiKey) : '' }))
+      : config.accounts;
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': corsOrigin || '*',
@@ -13381,8 +13644,8 @@ const server = http.createServer((req, res) => {
       allowRegionFallback: Boolean(config.allowRegionFallback),
       proxy: config.proxy || { enabled: false, url: '', scope: 'all', models: [] },
       hasUiPassword: Boolean(config.uiPassword && config.uiPassword.trim()),
-      uiPassword: config.uiPassword || '',
-      accounts: config.accounts,
+      uiPassword: shouldMask ? (config.uiPassword ? '******' : '') : (config.uiPassword || ''),
+      accounts: outAccounts,
       compression: config.compression || DEFAULT_CONFIG.compression,
       comfyui: config.comfyui || DEFAULT_CONFIG.comfyui || { enabled: true, host: 'http://127.0.0.1:8284', workflowsDir: '', localDir: '', repoUrl: 'https://github.com/deancyl/comfyui-agent-workflows', timeoutSec: 180 }
     }));
@@ -13786,19 +14049,22 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Account Quota & Usage API
-  if (reqUrl.pathname === '/balancer/api/account-quota' && req.method === 'POST') {
-    readInternalBody(req, res).then(async (buf) => {
-      if (!buf) return;
+  // Account Quota & Usage API (Supports both GET query params and POST JSON payload)
+  if (reqUrl.pathname === '/balancer/api/account-quota' && (req.method === 'POST' || req.method === 'GET')) {
+    const handleQuotaQuery = async (payload = {}) => {
       try {
-        const payload = JSON.parse(buf.toString('utf8'));
-        const targetUpstream = (payload.upstream || config.upstream).trim();
         let apiKey = (payload.apiKey || '').trim();
         const targetAccountId = payload.accountId || payload.account_id || payload.id;
-        if (!apiKey && targetAccountId) {
-          const acc = config.accounts.find(a => a.id === targetAccountId);
-          if (acc) apiKey = acc.apiKey.trim();
+        let matchedAcc = null;
+        if (targetAccountId) {
+          matchedAcc = config.accounts.find(a => a.id === targetAccountId);
+        } else if (!apiKey && config.accounts.length > 0) {
+          matchedAcc = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim()) || config.accounts[0];
         }
+        if (!apiKey && matchedAcc && matchedAcc.apiKey) {
+          apiKey = matchedAcc.apiKey.trim();
+        }
+        const targetUpstream = (payload.upstream || (matchedAcc && matchedAcc.upstream) || config.upstream).trim();
 
         if (!apiKey) {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -13806,7 +14072,7 @@ const server = http.createServer((req, res) => {
           return;
         }
 
-        const force = Boolean(payload.force);
+        const force = payload.force === true || payload.force === '1' || payload.force === 'true';
         const result = await fetchAccountUsage(targetUpstream, apiKey, force);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(result));
@@ -13814,6 +14080,16 @@ const server = http.createServer((req, res) => {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
+    };
+    if (req.method === 'GET') {
+      handleQuotaQuery(reqUrl.query || {});
+      return;
+    }
+    readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
+      let payload = {};
+      try { if (buf.length > 0) payload = JSON.parse(buf.toString('utf8')); } catch (_) {}
+      handleQuotaQuery(payload);
     });
     return;
   }
