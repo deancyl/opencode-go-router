@@ -86,7 +86,17 @@ async function runLiveVerification() {
   // Stage 0: 采集前置统计基线 (保护生产历史累积数据不被清零)
   // ---------------------------------------------------------------------------
   console.log('📋 [Stage 0] 采集前置统计基线 (保护生产历史累积数据)...');
-  const initialStatsRes = await httpRequest({ path: '/balancer/api/compression/stats', method: 'GET' });
+  let initialStatsRes;
+  try {
+    initialStatsRes = await httpRequest({ path: '/balancer/api/compression/stats', method: 'GET' });
+  } catch (err) {
+    if (err && (err.code === 'ECONNREFUSED' || String(err.message).includes('ECONNREFUSED'))) {
+      console.log(`\n⚠️  [SKIP] 本地 4010 网关未运行 (${err.message})，优雅跳过实机连通性检测。`);
+      console.log('   提示：如需执行实机全链路检测，请先启动网关（powershell -File start-all.ps1）。\n');
+      process.exit(0);
+    }
+    throw err;
+  }
   const initialJson = JSON.parse(initialStatsRes.body);
   const initialStats = initialJson.stats || initialJson;
   console.log(`   ✔ 当前大盘统计基线: totalOriginal=${initialStats.totalOriginalChars}, savedChars=${initialStats.totalSavedChars}, savedTokens=${initialStats.savedTokens}`);

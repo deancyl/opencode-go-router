@@ -54,6 +54,14 @@ console.log('================================================================');
 
 const contextCompactor = require('./context-compactor');
 
+let todayConsumedBefore = 0;
+try {
+  const parsedBefore = JSON.parse(prodHistContentBefore);
+  const todayStartTs = contextCompactor.getLocalDayStartTimestamp();
+  const todayB = parsedBefore.buckets?.d1?.find(b => b.startTime === todayStartTs);
+  todayConsumedBefore = todayB ? (todayB.consumedTokens || 0) : 0;
+} catch (_) {}
+
 // --- Test 1: OpenCode 3-Tier Pricing Model ---
 console.log('\n--- TEST 1: OpenCode 3-Tier Pricing Model ---');
 {
@@ -168,10 +176,13 @@ console.log('\n--- TEST 5: Elimination of Today Single-Point Burst Bug ---');
   console.log('[PASS] Test 5: Single-point burst bug elimination verified');
 }
 
-// --- Test 6: Frontend Dual-Track SVG and Tooltip Markup in server.js ---
-console.log('\n--- TEST 6: Frontend Dual-Track SVG and Tooltip Markup in server.js ---');
+// --- Test 6: Frontend Dual-Track SVG and Tooltip Markup (Decoupled public/index.html & server.js) ---
+console.log('\n--- TEST 6: Frontend Dual-Track SVG and Tooltip Markup in server.js & public/index.html ---');
 {
-  const serverCode = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const publicPath = path.join(__dirname, 'public', 'index.html');
+  const serverPath = path.join(__dirname, 'server.js');
+  const serverCode = (fs.existsSync(publicPath) ? fs.readFileSync(publicPath, 'utf8') : '') +
+                     fs.readFileSync(serverPath, 'utf8');
 
   // Legends
   assert.ok(serverCode.includes('理论总输入 (左柱灰)'), 'Legends must include 理论总输入 (左柱灰)');
@@ -303,17 +314,18 @@ console.log('\n--- TEST 10: getDaySlotTimestamp DST Resilience & Alignment ---')
 // --- Test 11: Bezier Curve Lower Bound Clamp (Anti-Negative Overshoot) & Band Smoothing ---
 console.log('\n--- TEST 11: Bezier Curve Lower Bound Clamp (Anti-Negative Overshoot) & Band Smoothing ---');
 {
-  const serverCode = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const appJsPath = path.join(__dirname, 'public', 'js', 'app.js');
+  const serverCode = fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 
-  // Verify server.js contains the clamp logic in both buildSmoothPath and buildSmoothBand
+  // Verify server.js / app.js contains the clamp logic in both buildSmoothPath and buildSmoothBand
   assert.ok(serverCode.includes('cp1y = Math.min(xBaseY, cp1y)'), 'buildSmoothPath must clamp cp1y to xBaseY');
   assert.ok(serverCode.includes('cp2y = Math.min(xBaseY, cp2y)'), 'buildSmoothPath must clamp cp2y to xBaseY');
   assert.ok(serverCode.includes('if ((p1.val === 0 && p2.val === 0) || (p1.y >= xBaseY && p2.y >= xBaseY))'), 'Must flatten baseline when adjacent points are 0');
 
   const xBaseY = 220;
   const vm = require('vm');
-  const smoothFnCode = serverCode.match(/const buildSmoothPath = \([\s\S]+?\n        \};/)[0];
-  const smoothBandCode = serverCode.match(/const buildSmoothBand = \([\s\S]+?\n        \};/)[0];
+  const smoothFnCode = serverCode.match(/const buildSmoothPath = \([\s\S]+?\n\s*\};/)[0];
+  const smoothBandCode = serverCode.match(/const buildSmoothBand = \([\s\S]+?\n\s*\};/)[0];
 
   const verifyPathCurves = (pathD, expectedCurveCount, desc) => {
     assert.ok(pathD, `${desc} must return non-empty path`);
@@ -417,11 +429,18 @@ console.log('\n--- TEST 11: Bezier Curve Lower Bound Clamp (Anti-Negative Oversh
 // --- Test 12: Historical Days Slots Alignment & 100% Mathematical Conservation ---
 console.log('\n--- TEST 12: Historical Days Slots Alignment & 100% Mathematical Conservation ---');
 {
-  const hist = JSON.parse(prodHistContentBefore);
-  const d1Buckets = hist.buckets?.d1 || [];
+  const backupPath = path.join(__dirname, 'compression-history.prod.backup.json');
+  let histData;
+  if (fs.existsSync(backupPath)) {
+    histData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+  } else {
+    histData = JSON.parse(prodHistContentBefore);
+  }
+  const d1Buckets = histData.buckets?.d1 || [];
   assert.strictEqual(d1Buckets.length, 10, 'd1 buckets must contain exactly 10 historical days (10-18 to 10-27)');
 
-  const testNow = Date.now();
+  // Fix baseline time to the 10th bucket day (10-27) noon UTC to decouple from real wall-clock drift
+  const testNow = d1Buckets.length >= 10 ? (d1Buckets[9].startTime + 43200000) : Date.now();
   const allSeries = contextCompactor.buildTimeSeries('all', d1Buckets, testNow);
   assert.strictEqual(allSeries.length, 10, 'all timeSeries must contain exactly 10 daily slots without phantom leading day');
   assert.strictEqual(allSeries[0].label, '10-18', 'First slot must be 10-18');
@@ -492,7 +511,7 @@ console.log('\n--- TEST 13: Production Disk Files Zero-Pollution Verification --
   const todayStartTs = contextCompactor.getLocalDayStartTimestamp();
   const todayBucket = liveHist.buckets.d1.find(b => b.startTime === todayStartTs);
   if (todayBucket) {
-    assert.strictEqual(todayBucket.consumedTokens, 0, 'Today bucket in production must have 0 consumed tokens');
+    assert.strictEqual(todayBucket.consumedTokens, todayConsumedBefore, 'Today bucket in production must remain unpolluted by test tokens');
   }
 
   console.log('[PASS] Test 13: Production files 100% byte-for-byte unpolluted and untouched');

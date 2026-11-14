@@ -1,4 +1,4 @@
-<#
+﻿<#
 ===============================================================================
  OpenCode Router Tray Daemon (PowerShell WinForms Native Host)
  100% 微软官方签名宿主 (powershell.exe) 托管运行，零外部二进制，彻底杜绝杀软启发式误报

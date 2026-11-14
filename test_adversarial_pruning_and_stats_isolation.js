@@ -69,7 +69,7 @@ async function runAll() {
 
     assert.ok(input.length > 25, `Original input count must be > 25, got ${input.length}`);
 
-    const res = codexAdapter.pruneResponsesPayload({ input }, 'session-crosstalk-test');
+    const res = codexAdapter.pruneResponsesPayload({ input }, 'session-crosstalk-test', { forceSlidingWindow: true });
     assert.strictEqual(res.modified, true, 'Sliding window must trigger');
     assert.ok(res.input.length < input.length, 'Pruned input count must be less than original');
 
@@ -125,7 +125,7 @@ async function runAll() {
 
     assert.ok(messages.length > 20, `Input messages count must be > 20, got ${messages.length}`);
 
-    const res = codexAdapter.pruneChatMessages(messages, 4000, 'chat-session-test');
+    const res = codexAdapter.pruneChatMessages(messages, 4000, 'chat-session-test', { forceSlidingWindow: true });
     assert.strictEqual(res.modified, true, 'Chat sliding window must trigger');
     assert.ok(res.length < messages.length, 'Pruned messages count must be smaller');
 
@@ -213,7 +213,8 @@ async function runAll() {
   // =========================================================================
   await runTest('4.1 Model Color Precision: Distinct colors for deepseek-v4-pro vs deepseek-v4.1-flash', () => {
     // Extract getModelColor from server.js to verify frontend logic
-    const serverCode = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const appJsPath = path.join(__dirname, 'public', 'js', 'app.js');
+    const serverCode = fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
     const funcMatch = serverCode.match(/function getModelColor\([^)]*\)\s*\{[\s\S]*?\n    \}/);
     assert.ok(funcMatch, 'getModelColor function must exist in server.js');
 
@@ -330,7 +331,7 @@ async function runAll() {
 
     assert.ok(messages.length > 25, `Messages length must exceed 25, got ${messages.length}`);
 
-    const pruned = codexAdapter.pruneChatMessages(messages, 4000, 'topology-session-test');
+    const pruned = codexAdapter.pruneChatMessages(messages, 4000, 'topology-session-test', { forceSlidingWindow: true });
     assert.strictEqual(pruned.modified, true);
 
     // Verify Topological Integrity:

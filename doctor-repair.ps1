@@ -1,4 +1,4 @@
-# doctor-repair.ps1: OpenCode 全链路健康体检与智能修复脚本
+﻿# doctor-repair.ps1: OpenCode 全链路健康体检与智能修复脚本
 param(
     [switch]$CheckOnly,
     [switch]$AutoFix

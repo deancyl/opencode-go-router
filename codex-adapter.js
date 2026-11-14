@@ -1727,6 +1727,10 @@ function pruneResponsesPayload(body, sessionId = null, options = {}) {
         (curItem.tool_calls && curItem.tool_calls.length > 0)
       );
       if (curItem && !isCurUser && !isCurToolResponse && !isCurToolCall && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
+        // Zero Degradation & Anti-Downgrade Invariant: 100% absolute exemption for source code, diffs, patches, and compiler/runtime error stacks
+        if (isCodeOrSensitiveContent(curItem.content)) {
+          continue;
+        }
         const rawHead = safeUnicodeSlice(curItem.content, 0, 1500);
         const rawTail = safeUnicodeSlice(curItem.content, -1500);
         const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
@@ -1747,9 +1751,14 @@ function pruneResponsesPayload(body, sessionId = null, options = {}) {
       }
     }
 
-    // 2. Sliding window: if input length > 18, prune intermediate items with turn-boundary safety
+    // 2. Sliding window: prune intermediate items with turn-boundary safety
     // User Instruction Exemption: ALL user messages (role === 'user') are 100% preserved!
-    if (input.length > 18) {
+    // Anti-Downgrade Invariant: NEVER drop intermediate assistant/tool causal chains on normal requests
+    // based on message count alone! Dropping intermediate interactions is strictly gated by options.emergency === true
+    // (triggered exclusively upon upstream context_length_exceeded self-healing) or explicit forceSlidingWindow option.
+    const inputTokenEstimate = Math.ceil(JSON.stringify(input).length / 3.5);
+    const isResponsesBudgetExceeded = typeof options.maxTokens === 'number' && options.maxTokens > 0 && inputTokenEstimate > options.maxTokens;
+    if ((options.emergency === true || Boolean(options.forceSlidingWindow) || isResponsesBudgetExceeded) && input.length > 18) {
       const headItems = input.slice(0, 2);
       let tailStartIndex = Math.max(2, input.length - 12);
       // Turn-Aware: Never split inside an atomic tool call / tool output sequence
@@ -1867,7 +1876,13 @@ function pruneChatMessages(messages, maxTokens, sessionId = null, options = {}) 
     }
   }
 
-  if (result.length > 18) {
+  // Anti-Downgrade Invariant: NEVER drop intermediate assistant/tool causal chains on normal requests
+  // based on message count alone! Dropping intermediate interactions is strictly gated by options.emergency === true
+  // (triggered exclusively upon upstream context_length_exceeded self-healing) or explicit forceSlidingWindow option.
+  const chatTokenEstimate = Math.ceil(JSON.stringify(result).length / 3.5);
+  const isChatBudgetExceeded = (typeof maxTokens === 'number' && maxTokens > 0 && chatTokenEstimate > maxTokens) ||
+    (typeof options.maxTokens === 'number' && options.maxTokens > 0 && chatTokenEstimate > options.maxTokens);
+  if ((options.emergency === true || Boolean(options.forceSlidingWindow) || isChatBudgetExceeded) && result.length > 18) {
     const sysMsgs = result.filter(m => m && (m.role === 'system' || m.role === 'developer'));
     const nonSys = result.filter(m => !m || (m.role !== 'system' && m.role !== 'developer'));
     

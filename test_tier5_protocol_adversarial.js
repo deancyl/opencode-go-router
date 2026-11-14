@@ -197,7 +197,7 @@ async function runTier5AdversarialSuite() {
     assert.ok(result[1].content.includes('智能网关自愈：已自动折叠'));
   });
 
-  await test('1.7 Pruning Boundary: Exact 18 items boundary vs 19 items sliding window', () => {
+  await test('1.7 Pruning Boundary: Exact 18 items boundary vs 19 items sliding window & Anti-Downgrade Invariant', () => {
     const makeItems = (n) => {
       const items = [{ type: 'message', role: 'user', content: 'Start task' }];
       for (let i = 1; i < n; i++) {
@@ -210,10 +210,16 @@ async function runTier5AdversarialSuite() {
     assert.strictEqual(p18.input.length, 18);
     assert.strictEqual(p18.modified, false);
 
-    const p19 = codexAdapter.pruneResponsesPayload({ input: makeItems(19) });
-    assert.ok(p19.input.length < 19, '19 items must be folded by sliding window');
-    assert.strictEqual(p19.modified, true);
-    assert.ok(p19.input.some(item => item.content && item.content.includes('滑动窗口折叠')));
+    // Anti-Downgrade Check: Normal requests without emergency MUST NOT drop intermediate causal chains
+    const p19Normal = codexAdapter.pruneResponsesPayload({ input: makeItems(19) });
+    assert.strictEqual(p19Normal.input.length, 19, 'Normal requests MUST NOT drop items on count alone');
+    assert.strictEqual(p19Normal.modified, false);
+
+    // Emergency Self-Healing Check: Under emergency/force mode, sliding window folds safely
+    const p19Emergency = codexAdapter.pruneResponsesPayload({ input: makeItems(19) }, null, { emergency: true });
+    assert.ok(p19Emergency.input.length < 19, '19 items must be folded by sliding window under emergency');
+    assert.strictEqual(p19Emergency.modified, true);
+    assert.ok(p19Emergency.input.some(item => item.content && item.content.includes('滑动窗口折叠')));
   });
 
   await test('1.8 Tool Schema Deep Normalization: Handles empty, null, and complex definitions (Rule 13)', () => {

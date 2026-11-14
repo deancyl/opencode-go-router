@@ -3996,14 +3996,12 @@ function slimDescription(desc) {
     // 1. Strip markdown code blocks, but ONLY verbose ones (> 500 chars)
     // P3-M2: Short code examples (< 500 chars) are preserved to maintain tool parameter formatting guidance
     text = text.replace(/```[\s\S]*?```/g, (match) => match.length > 500 ? '' : match);
-    // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...") while preserving trailing safety rules
-    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
-    // 3. Strip trailing example sections at the end of description
-    const strippedExamples = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '').trim();
-    if (strippedExamples && strippedExamples.length >= 1) {
-      text = strippedExamples;
-    }
-    // 3. Collapse multiple consecutive empty lines and trailing whitespace
+    // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...")
+    // Anti-Downgrade Invariant: Strictly limit to Examples/Sample keywords; NEVER match Usage or Detailed Description which contain vital constraints!
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
+    // 3. Strip trailing example sections ONLY if bounded by double-newlines or next section title; NEVER consume following rules or parameters
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:```[\s\S]*?```|[^\r\n]+(?:\r?\n(?!\r?\n|[A-Z][a-zA-Z\s]+:|\s*#+)[^\r\n]+)*)(?=\r?\n\r?\n|\r?\n[A-Z][a-zA-Z\s]+:|\s*#+|$)/gi, '\n');
+    // 4. Collapse multiple consecutive empty lines and trailing whitespace
     text = text.replace(/\r?\n\s*\r?\n\s*\r?\n+/g, '\n\n').trim();
 
     return text || desc;
@@ -4553,13 +4551,11 @@ function compactSystemPrompt(text, opts = {}, sessionId = null, hasMultiAgentOve
       out = 'You are `/root`, the primary agent. All agents share the same container, filesystem, and current working directory.';
     }
 
-    // 2. Compact <skills_instructions> verbose descriptions (safety threshold: 120 chars) while preserving 100% of skill names & file paths
+    // 2. Zero Degradation & Anti-Downgrade Invariant: 100% preserve skill descriptions and trigger conditions.
+    // NEVER truncate skill descriptions to 120 chars; trigger keywords (Use when/Trigger on) are vital for tool calling.
     if (out.includes('<skills_instructions>') && out.includes('### Available skills')) {
-      out = out.replace(/^(-\s+[a-zA-Z0-9_:-]+:\s+)([^\r\n]+?)(\s*\(file:\s*[^)]+\))\s*$/gm, (full, prefix, desc, filePart) => {
-        if (desc.length <= 120) return full;
-        const firstSentence = desc.split(/\.\s+|\s+—\s+|;\s+/)[0].trim();
-        const shortDesc = firstSentence.length >= 35 && firstSentence.length <= 120 ? firstSentence : safeSlice(desc, 0, 120).trim();
-        return `${prefix}${shortDesc}${filePart}`;
+      out = out.replace(/^(-\s+[a-zA-Z0-9_:-]+:\s+)([^\r\n]+?)(\s*\(file:\s*[^)]+\))\s*$/gm, (full) => {
+        return full;
       });
     }
 
