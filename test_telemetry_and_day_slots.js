@@ -180,8 +180,10 @@ console.log('\n--- TEST 5: Elimination of Today Single-Point Burst Bug ---');
 console.log('\n--- TEST 6: Frontend Dual-Track SVG and Tooltip Markup in server.js & public/index.html ---');
 {
   const publicPath = path.join(__dirname, 'public', 'index.html');
+  const appJsPath = path.join(__dirname, 'public', 'js', 'app.js');
   const serverPath = path.join(__dirname, 'server.js');
   const serverCode = (fs.existsSync(publicPath) ? fs.readFileSync(publicPath, 'utf8') : '') +
+                     (fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : '') +
                      fs.readFileSync(serverPath, 'utf8');
 
   // Legends
