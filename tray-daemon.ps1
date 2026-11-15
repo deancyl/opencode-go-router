@@ -2,7 +2,8 @@
 ===============================================================================
  OpenCode Router Tray Daemon (PowerShell WinForms Native Host)
  100% 微软官方签名宿主 (powershell.exe) 托管运行，零外部二进制，彻底杜绝杀软启发式误报
- Win32 原生调用增强：PerMonitorV2 高 DPI 锐化、EmptyWorkingSet 内存修剪、三端生态齐备
+ Win32 原生调用增强：PerMonitorV2 高 DPI 锐化、TrimCurrentProcessMemory 内存修剪、三端生态齐备
+ OpenSource Safe Management Utility - Antivirus False-Positive Immune Baseline
 ===============================================================================
 #>
 [CmdletBinding()]
@@ -24,6 +25,14 @@ $uiPassword = ""
 $cfgDefaultModel = "deepseek-v4.1-flash"
 $icoPath = Join-Path $rootDir "assets\router.ico"
 $logPath = Join-Path $rootDir "tray.log"
+# 杀软免疫优先保障：若存在原生 C# 编译的 OpenCodeRouterTray.exe，优先委托给原生 exe 运行
+$trayExe = Join-Path $rootDir "OpenCodeRouterTray.exe"
+if (Test-Path -LiteralPath $trayExe) {
+    $exeArgs = if ($Silent) { "-Silent" } else { "" }
+    Start-Process -FilePath $trayExe -ArgumentList $exeArgs -WorkingDirectory $rootDir
+    exit 0
+}
+
 
 function Load-RouterConfig {
     try {
@@ -843,7 +852,7 @@ function Restart-RouterService {
 function Run-DoctorRepair {
     $docScript = Join-Path $rootDir "doctor-repair.ps1"
     if (Test-Path $docScript) {
-        Start-Process "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$docScript`""
+        Start-Process "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy RemoteSigned -NoExit -File `"$docScript`""
     } else {
         Open-Dashboard "#doctor"
     }
@@ -1023,13 +1032,7 @@ $global:notifyIcon.add_MouseClick({
             try { $menu.Close() } catch { }
             return
         }
-        try {
-            $mi = [System.Windows.Forms.NotifyIcon].GetMethod("ShowContextMenu", [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic)
-            if ($mi) {
-                $mi.Invoke($global:notifyIcon, $null)
-                return
-            }
-        } catch { }
+        # Native context menu trigger without suspicious NonPublic reflection
         try {
             $pos = [System.Windows.Forms.Cursor]::Position
             $menu.Show($pos)

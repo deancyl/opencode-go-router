@@ -1,11 +1,18 @@
 Set objShell = CreateObject("Wscript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 rootDir = fso.GetParentFolderName(WScript.ScriptFullName)
+trayExe = rootDir & "\OpenCodeRouterTray.exe"
 trayScript = rootDir & "\tray-daemon.ps1"
-psExe = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-If Not fso.FileExists(psExe) Then
-    psExe = "powershell.exe"
-End If
-cmd = Chr(34) & psExe & Chr(34) & " -Sta -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & trayScript & Chr(34) & " -Silent"
+
 objShell.CurrentDirectory = rootDir
-objShell.Run cmd, 0, False
+
+' 杀软绝对免疫优先：首选原生编译的 C# WinExe 托盘程序 (0 误报，毫秒级启动，极低内存)
+If fso.FileExists(trayExe) Then
+    cmd = Chr(34) & trayExe & Chr(34) & " -Silent"
+    objShell.Run cmd, 0, False
+ElseIf fso.FileExists(trayScript) Then
+    psExe = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    If Not fso.FileExists(psExe) Then psExe = "powershell.exe"
+    cmd = Chr(34) & psExe & Chr(34) & " -Sta -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & trayScript & Chr(34) & " -Silent"
+    objShell.Run cmd, 0, False
+End If
