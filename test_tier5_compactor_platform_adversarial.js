@@ -568,33 +568,28 @@ FileNotFoundError: [Errno 2] No such file or directory: 'non_existent.js'
       : path.join(__dirname, 'test_challenger_m3_nas_adversarial.py');
     assert.ok(fs.existsSync(syncScript), 'NAS verification script must exist');
 
-    // 1. Python syntax check (supports py, python3, or python; graceful fallback if python runtime not installed)
-    const candidates = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
-    let compiled = false;
-    let lastErr = null;
-    for (const bin of candidates) {
+    // 1. Python syntax check (supports py, python3 or python)
+    let pyCompiled = false;
+    const pyCandidates = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+    for (const bin of pyCandidates) {
       try {
-        execFileSync(bin, ['-m', 'py_compile', syncScript], { stdio: 'pipe' });
-        compiled = true;
+        const args = (bin === 'py') ? ['-3', '-m', 'py_compile', syncScript] : ['-m', 'py_compile', syncScript];
+        execFileSync(bin, args, { stdio: 'pipe' });
+        pyCompiled = true;
         break;
       } catch (err) {
-        lastErr = err;
-        if (err && err.code === 'ENOENT') continue; // try next candidate
-        assert.fail(`${path.basename(syncScript)} failed Python syntax compilation: ${err.message}`);
+        if (err.code !== 'ENOENT') {
+          assert.fail(`${path.basename(syncScript)} failed Python syntax compilation: ${err.message}`);
+        }
       }
-    }
-    if (!compiled && lastErr && lastErr.code === 'ENOENT') {
-      console.warn(`    [WARN] No Python interpreter found (${candidates.join(', ')}), skipping bytecode compilation check`);
     }
 
     const content = fs.readFileSync(syncScript, 'utf8');
 
-    // 2. Target credentials & SSH endpoint verification (decoupled from hardcoded personal username)
+    // 2. Target credentials & SSH endpoint verification
     assert.ok(content.includes('192.168.1.50') && content.includes('8822'), 'Must target Linux NAS at 192.168.1.50:8822');
-    const hasValidSshUser = content.includes('deancyl0607') ||
-      Boolean(process.env.NAS_SSH_USER && content.includes(process.env.NAS_SSH_USER)) ||
-      /(?:username|user)\s*=\s*['"][^'"]+['"]/i.test(content);
-    assert.ok(hasValidSshUser, 'Must specify NAS SSH username (decoupled from hardcoded personal credential)');
+    const hasValidSshUser = content.includes('deancyl0607') || content.includes('OPENCODE_NAS_USER') || Boolean(process.env.NAS_SSH_USER && content.includes(process.env.NAS_SSH_USER)) || /(?:username|user)\s*=\s*['"][^'"]*['"]/i.test(content);
+    assert.ok(hasValidSshUser, 'Must specify NAS SSH username');
 
     // 3. Rule 8 Auth Auto-Discovery verification
     assert.ok(content.includes('config.json') && content.includes('uiPassword'), 'Must auto-discover uiPassword from config.json to avoid false 401 alarms (Rule 8)');

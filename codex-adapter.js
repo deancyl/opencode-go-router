@@ -1752,7 +1752,6 @@ function pruneResponsesPayload(body, sessionId = null, options = {}) {
     }
 
     // 2. Sliding window: prune intermediate items with turn-boundary safety
-    // User Instruction Exemption: ALL user messages (role === 'user') are 100% preserved!
     // Anti-Downgrade Invariant: NEVER drop intermediate assistant/tool causal chains on normal requests
     // based on message count alone! Dropping intermediate interactions is strictly gated by options.emergency === true
     // (triggered exclusively upon upstream context_length_exceeded self-healing) or explicit forceSlidingWindow option.
@@ -1877,8 +1876,7 @@ function pruneChatMessages(messages, maxTokens, sessionId = null, options = {}) 
   }
 
   // Anti-Downgrade Invariant: NEVER drop intermediate assistant/tool causal chains on normal requests
-  // based on message count alone! Dropping intermediate interactions is strictly gated by options.emergency === true
-  // (triggered exclusively upon upstream context_length_exceeded self-healing) or explicit forceSlidingWindow option.
+  // based on message count alone! Strictly gated by options.emergency === true, forceSlidingWindow, or token budget exceedance.
   const chatTokenEstimate = Math.ceil(JSON.stringify(result).length / 3.5);
   const isChatBudgetExceeded = (typeof maxTokens === 'number' && maxTokens > 0 && chatTokenEstimate > maxTokens) ||
     (typeof options.maxTokens === 'number' && options.maxTokens > 0 && chatTokenEstimate > options.maxTokens);

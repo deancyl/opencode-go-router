@@ -97,8 +97,7 @@ console.log('\n--- SECTION 3: Frontend Chart Viewport Scope Safety & Bar Mode --
   // Verify that renderSingleChartViewport logic runs cleanly in bar mode without themeColor ReferenceError
   const fs = require('fs');
   const path = require('path');
-  const appJsPath = path.join(__dirname, 'public', 'js', 'app.js');
-  const serverCode = fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const serverCode = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')].filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
 
   // Ensure themeColor is hoisted to the top of renderSingleChartViewport
   const fnIdx = serverCode.indexOf('function renderSingleChartViewport(');
@@ -212,8 +211,7 @@ console.log('\n--- SECTION 5: Frontend Edge Safeguards & Metric Parity ---');
 {
   const fs = require('fs');
   const path = require('path');
-  const appJsPath = path.join(__dirname, 'public', 'js', 'app.js');
-  const serverCode = fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const serverCode = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')].filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
 
   // Verify buildSmoothPath safeguard
   assert.ok(serverCode.includes("if (!pts || pts.length === 0) return '';"), 'buildSmoothPath must guard empty pts');
@@ -245,8 +243,7 @@ console.log('\n--- SECTION 6: High-Frequency Stream & Ring Buffer Sanitization -
 {
   const fs = require('fs');
   const path = require('path');
-  const appJsPath = path.join(__dirname, 'public', 'js', 'app.js');
-  const serverCode = fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const serverCode = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')].filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
 
   // Verify MAX_CHART_RING_BUFFER and sanitizeTimeSeries exist in server.js
   assert.ok(serverCode.includes('MAX_CHART_RING_BUFFER = 60'), 'server.js must define MAX_CHART_RING_BUFFER = 60');
@@ -379,8 +376,7 @@ console.log('\n--- SECTION 8: WCAG Accessibility, Zero-Jitter & Reconnection UI 
 {
   const fs = require('fs');
   const path = require('path');
-  const staticFiles = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')];
-  const serverCode = staticFiles.filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
+  const serverCode = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')].filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
 
   // 1. Tabular-nums presence for zero-jitter layouts
   assert.ok(serverCode.includes('font-variant-numeric: tabular-nums;'), 'CSS must include font-variant-numeric: tabular-nums');
@@ -411,8 +407,7 @@ console.log('\n--- SECTION 8: WCAG Accessibility, Zero-Jitter & Reconnection UI 
 {
   const fs = require('fs');
   const path = require('path');
-  const staticFiles = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')];
-  const serverCode = staticFiles.filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
+  const serverCode = [path.join(__dirname, 'server.js'), path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'public', 'css', 'style.css'), path.join(__dirname, 'public', 'js', 'app.js')].filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8')).join('\n');
 
   // Verify that empty state contains clear welcoming text
   assert.ok(serverCode.includes('暂无时序数据（发起对话后将实时呈现时序波形）'), 'Empty state must guide user clearly');

@@ -49,7 +49,7 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
 
-let CURRENT_ROUTER_VERSION = '3.14.0';
+let CURRENT_ROUTER_VERSION = '3.13.5';
 try {
   const pkgData = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
   if (pkgData && pkgData.version) CURRENT_ROUTER_VERSION = pkgData.version;
@@ -1847,9 +1847,9 @@ function handleModelAndContextFallback({
       clientRes.removeListener('error', clientErrorHandler || clientCloseHandler.errorHandler);
     }
 
-    const isCompEnabled = Boolean(config.compression && config.compression.enabled);
     let pruned = payload;
     let wasPruned = false;
+    const isCompEnabled = Boolean(config.compression && config.compression.enabled);
     if (Array.isArray(payload.messages)) {
       const pruneRes = codexAdapter.pruneChatMessages(payload.messages, null, sessionId, { enabled: isCompEnabled, emergency: true });
       const prunedMsgs = pruneRes.pruned || pruneRes;
@@ -5603,16 +5603,27 @@ function renderLanForbiddenPage() {
 </html>`;
 }
 
-/**
- * Modern Web Architecture v3.13.5:
- * HTML/CSS/JS frontend is decoupled and served from the standalone public/ directory.
- * renderDashboardHtml reads public/index.html with in-memory caching for backward compatibility.
- */
 let cachedIndexHtml = null;
 let cachedIndexMtime = 0;
+let cachedAppJs = null;
+let cachedAppJsMtime = 0;
 
 function renderDashboardHtml(config) {
+  let pkgVersion = '3.14.0';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    if (pkg.version) pkgVersion = pkg.version;
+  } catch (_) {}
+  const activePort = (config && config.port) || 4010;
+  const activeHost = (config && config.host) || '127.0.0.1';
+  let psIsWin = process.platform === 'win32';
+  try {
+    const compCfg = (config && config.compression) || contextCompactor.DEFAULT_COMPRESSION_CONFIG;
+    psIsWin = Boolean(powershellOptimizer.detectPlatform(compCfg).isWindows);
+  } catch (_) {}
+
   const publicIndexPath = path.join(__dirname, 'public', 'index.html');
+  const publicAppJsPath = path.join(__dirname, 'public', 'js', 'app.js');
   try {
     if (fs.existsSync(publicIndexPath)) {
       const stat = fs.statSync(publicIndexPath);
@@ -5620,8 +5631,30 @@ function renderDashboardHtml(config) {
         cachedIndexHtml = fs.readFileSync(publicIndexPath, 'utf8');
         cachedIndexMtime = stat.mtimeMs;
       }
-      const activePort = (config && config.port) || 4010;
-      return cachedIndexHtml.replace(/4010 监听正常/g, activePort + ' 监听正常').replace(/端口:\s*\d+/g, '端口: ' + activePort);
+      let html = cachedIndexHtml
+        .replace(/v3\.1[0-9]\.\d+ Pro/g, 'v' + pkgVersion + ' Pro')
+        .replace(/4010 监听正常 \([^)]+\)/g, activePort + ' 监听正常 (' + activeHost + ')')
+        .replace(/4010 监听正常/g, activePort + ' 监听正常')
+        .replace(/端口:\s*\d+/g, '端口: ' + activePort)
+        .replace(/Port:\s*\d+/g, 'Port: ' + activePort)
+        .replace(/http:\/\/127\.0\.0\.1:\d+/g, 'http://127.0.0.1:' + activePort)
+        .replace(/(<span style="color:var\(--muted\);">当前系统架构:<\/span>\s*<strong style="color:var\(--text\);">)[^<]+(<\/strong>)/, '$1' + process.platform + ' (' + process.arch + ')$2')
+        .replace(/(<span style="color:var\(--muted\);">Node\.js 运行时:<\/span>\s*<strong style="color:var\(--text\);">)[^<]+(<\/strong>)/, '$1' + process.version + '$2')
+        .replace(/(<span style="color:var\(--muted\);">网关服务监听:<\/span>\s*<strong style="color:var\(--primary\);">)[^<]+(<\/strong>)/, '$1' + activeHost + ':' + activePort + '$2')
+        .replace(
+          /<span class="badge [^"]*" id="badge-module-powershell-platform">[^<]*<\/span>/,
+          '<span class="badge ' + (psIsWin ? 'badge-healthy' : 'badge-disabled') + '" id="badge-module-powershell-platform">' + (psIsWin ? '🟢 Windows 原生运行中' : '🐧 Linux 休眠旁路 (零干扰)') + '</span>'
+        );
+
+      if (fs.existsSync(publicAppJsPath)) {
+        const jsStat = fs.statSync(publicAppJsPath);
+        if (!cachedAppJs || jsStat.mtimeMs > cachedAppJsMtime) {
+          cachedAppJs = fs.readFileSync(publicAppJsPath, 'utf8');
+          cachedAppJsMtime = jsStat.mtimeMs;
+        }
+        html = html.replace('<script src="/public/js/app.js"></script>', () => '<script>\n' + cachedAppJs + '\n</script>');
+      }
+      return html;
     }
   } catch (err) {
     console.warn('[Dashboard Serve] Failed to read public/index.html:', err.message);
@@ -5629,10 +5662,7 @@ function renderDashboardHtml(config) {
   return '<!DOCTYPE html><html><head><title>OpenCode Go Router</title></head><body><h1>OpenCode Go Router</h1></body></html>';
 }
 
-/**
- * Air-Gapped Safe Static File Middleware (Path Traversal & MIME Protected)
- */
-const MIME_TYPES = {
+const STATIC_MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -5643,42 +5673,46 @@ const MIME_TYPES = {
 };
 
 function serveStaticFile(req, res, relPath) {
-  const publicDir = path.join(__dirname, 'public');
-  const safePath = path.resolve(publicDir, relPath.replace(/^\/+/, ''));
-  if (!safePath.startsWith(publicDir)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('403 Forbidden: Directory traversal blocked');
-    return;
+  try {
+    let decodedRel = relPath || '';
+    try {
+      decodedRel = decodeURIComponent(decodedRel);
+    } catch (_) {}
+    const publicDir = path.resolve(__dirname, 'public');
+    const safePath = path.resolve(publicDir, decodedRel.replace(/^[\/\\]+/, ''));
+    if (!safePath.startsWith(publicDir + path.sep) && safePath !== publicDir) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('403 Forbidden: Directory traversal blocked');
+      return;
+    }
+    if (!fs.existsSync(safePath) || !fs.statSync(safePath).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('404 Not Found');
+      return;
+    }
+    const ext = path.extname(safePath).toLowerCase();
+    const contentType = STATIC_MIME_TYPES[ext] || 'application/octet-stream';
+    const stat = fs.statSync(safePath);
+    const etag = `"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+    const content = fs.readFileSync(safePath);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': 'no-cache, must-revalidate',
+      'ETag': etag
+    });
+    res.end(content);
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('500 Internal Server Error');
   }
-  if (!fs.existsSync(safePath) || !fs.statSync(safePath).isFile()) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('404 Not Found');
-    return;
-  }
-
-  const ext = path.extname(safePath).toLowerCase();
-  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-  const stat = fs.statSync(safePath);
-  const etag = `"${stat.size}-${stat.mtimeMs}"`;
-
-  if (req.headers['if-none-match'] === etag) {
-    res.writeHead(304);
-    res.end();
-    return;
-  }
-
-  res.writeHead(200, {
-    'Content-Type': contentType,
-    'Content-Length': stat.size,
-    'ETag': etag,
-    'Cache-Control': 'public, max-age=3600',
-    'Access-Control-Allow-Origin': '*'
-  });
-  fs.createReadStream(safePath).pipe(res);
 }
 
-const MAX_INTERNAL_PAYLOAD = 4 * 1024 * 1024; // 4MB safety ceiling for internal management APIs to prevent OOM
-
+const MAX_INTERNAL_PAYLOAD = 4 * 1024 * 1024;
 function readInternalBody(req, res, maxBytes = MAX_INTERNAL_PAYLOAD) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -7855,14 +7889,14 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
     return;
   }
 
-    // Static assets serving (/public/*)
+  // Static assets serving (/public/*)
   if (reqUrl.pathname && reqUrl.pathname.startsWith('/public/')) {
     const relPath = reqUrl.pathname.slice('/public/'.length);
     serveStaticFile(req, res, relPath);
     return;
   }
 
-// Web UI Dashboard & Graphical Config Center
+  // Web UI Dashboard & Graphical Config Center
   if (reqUrl.pathname === '/' || reqUrl.pathname === '/balancer/ui' || reqUrl.pathname === '/balancer') {
     if (config.uiPassword && config.uiPassword.trim()) {
       if (!isAuthorized(req)) {

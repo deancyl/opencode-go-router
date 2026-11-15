@@ -10,21 +10,9 @@
   <title>OpenCode 智能高可用网关 | 订阅管理中心</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
-  
-
-  
-
-
-  
-
-
   <link rel="stylesheet" href="/public/css/style.css">
   <style>
-:root {
-  color-scheme: dark light;
-}
-
-:root {
+    :root {
       --bg: #09090b;
       --card-bg: #121215;
       --card-bg-elevated: #16161a;
@@ -2165,7 +2153,7 @@
           </div>
 
           <!-- 大项 4：llmtrim Cache-Zone 多轮会话缓存区固化 -->
-          <div class="comp-module-card " id="module-card-cacheZone" data-title="零重算零抖动">
+          <div class="comp-module-card " id="module-card-cacheZone">
             <div class="comp-module-header">
               <div class="comp-module-title-box">
                 <label class="switch-label comp-main-switch-label">
@@ -2225,7 +2213,7 @@
               </div>
               <div class="comp-module-header-right">
                 <div style="display:flex; align-items:center; gap:6px; flex-wrap:nowrap;">
-                  <span class="badge badge-healthy" id="badge-module-powershell-platform">🟢 Windows 原生运行中</span>
+                  <span class="badge badge-disabled" id="badge-module-powershell-platform">🐧 Linux 休眠旁路 (零干扰)</span>
                   <span class="badge badge-healthy" id="badge-module-powershell">运行中</span>
                 </div>
                 <div class="comp-module-contrib">
@@ -3018,7 +3006,7 @@
         <div class="config-grid">
           <div class="form-group">
             <label>上游端点地址 (Upstream Endpoint)</label>
-            <input type="text" id="cfg-upstream" class="form-control" value="undefined" oninput="markConfigDirty()">
+            <input type="text" id="cfg-upstream" class="form-control" value="https://opencode.ai/zen/go/v1" oninput="markConfigDirty()">
             <div class="sub-tip" style="margin-left:0; margin-top:3px;">官方上游 API 接口基础端点</div>
           </div>
           <div class="form-group">
@@ -3044,17 +3032,17 @@
           </div>
           <div class="form-group">
             <label>429 触发后默认冷却时长 (秒)</label>
-            <input type="number" id="cfg-cooldown" class="form-control" value="NaN" oninput="markConfigDirty()">
+            <input type="number" id="cfg-cooldown" class="form-control" value="60" oninput="markConfigDirty()">
             <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：账号被限频后暂停使用的秒数，时间到后自动恢复正常</div>
           </div>
           <div class="form-group">
             <label>最大故障转移重试次数 (Retries)</label>
-            <input type="number" id="cfg-retries" class="form-control" value="undefined" oninput="markConfigDirty()">
+            <input type="number" id="cfg-retries" class="form-control" value="2" oninput="markConfigDirty()">
             <div class="sub-tip" style="margin-left:0; margin-top:3px;">【白话】：网络抖动时自动换其他账号重试的次数，默认 2 次</div>
           </div>
           <div class="form-group" style="display:flex; flex-direction:column; justify-content:center;">
             <label class="switch-label" style="margin-bottom:4px;">
-              <input type="checkbox" id="cfg-affinity"  onchange="markConfigDirty()">
+              <input type="checkbox" id="cfg-affinity" checked onchange="markConfigDirty()">
               <span style="font-weight:600; color:#e2e8f0;">启用会话亲和性 (保持连续对话在同一账号)</span>
             </label>
             <div class="sub-tip" style="margin-left:22px;">【白话】：让同一个任务的后续对话找同一个账号，AI 能记住上文并享受官方 KV 缓存折扣</div>
@@ -3156,11 +3144,11 @@
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; font-size:0.85rem;">
               <div class="wizard-step">
                 <span style="color:var(--muted);">当前系统架构:</span>
-                <strong style="color:var(--text);">win32 (x64)</strong>
+                <strong style="color:var(--text);">linux (x64)</strong>
               </div>
               <div class="wizard-step">
                 <span style="color:var(--muted);">Node.js 运行时:</span>
-                <strong style="color:var(--text);">v24.15.0</strong>
+                <strong style="color:var(--text);">v18.20.4</strong>
               </div>
               <div class="wizard-step">
                 <span style="color:var(--muted);">网关服务监听:</span>
@@ -3178,348 +3166,7 @@
   </div>
 
   <div id="toast" class="toast"></div>
-<script src="/public/js/app.js"></script>
-  <script>
-    // --- State Machine & Test VM Compatibility Inlined Engine ---
 
-    function setCheck(id, val) { var el = document.getElementById(id); if (el) el.checked = Boolean(val); }
-    function getChecked(id) { var el = document.getElementById(id); return el ? Boolean(el.checked) : false; }
-    function applyPresetBindings() {
-      setCheck('cfg-comp-fold-structured', true);
-      var isFold = getChecked('cfg-comp-fold-structured');
-      var directChecked = document.getElementById('cfg-comp-fold-structured').checked;
-    }
-
-
-    const MAX_CHART_RING_BUFFER = 60;
-    function scheduleChartRender() { if (typeof renderTelemetryChart === 'function') renderTelemetryChart(); }
-    function runCompressionDoctorCheck() { return { healthy: true }; }
-    function renderCompressionDiagnostics() {}
-    function runCompressionRepair() { return { success: true }; }
-    function toggleAllCompModuleBodies() {}
-    function toggleByModelDrawer() {}
-
-    var currentConfig = typeof currentConfig !== 'undefined' ? currentConfig : { accounts: [], compression: { enabled: true, preset: 'balanced' } };
-    var liveStats = typeof liveStats !== 'undefined' ? liveStats : {};
-    var accountQuotas = typeof accountQuotas !== 'undefined' ? accountQuotas : {};
-    var currentCompRange = '24h';
-
-    function updateCompCardsUI() {
-      var masterSw = document.getElementById('cfg-comp-enabled');
-      var isMaster = masterSw ? masterSw.checked : true;
-      var card = document.getElementById('compression-card');
-      var masterBadge = document.getElementById('comp-global-status-badge');
-      if (card) {
-        if (!isMaster) card.classList.add('comp-master-disabled');
-        else card.classList.remove('comp-master-disabled');
-      }
-      if (masterBadge) {
-        if (!isMaster) {
-          masterBadge.className = 'badge badge-disabled';
-          masterBadge.innerText = '总开关已关闭';
-        } else {
-          masterBadge.className = 'badge badge-healthy';
-          masterBadge.innerText = '全引擎就绪';
-        }
-      }
-      var presets = document.getElementById('comp-presets-group');
-      if (presets && typeof presets.querySelectorAll === 'function') {
-        presets.querySelectorAll('button').forEach(function(btn) { btn.disabled = !isMaster; });
-      }
-      ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell'].forEach(function(mod) {
-        var sw = document.getElementById('cfg-module-' + (mod === 'cacheZone' ? 'cachezone' : mod) + '-enabled');
-        var enabled = sw ? sw.checked : true;
-        var modCard = document.getElementById('module-card-' + mod);
-        if (modCard) {
-          if (!enabled) modCard.classList.add('comp-module-disabled');
-          else modCard.classList.remove('comp-module-disabled');
-        }
-      });
-    }
-
-    function handleCompMasterToggle(checked) {
-      updateCompCardsUI();
-      if (typeof showToast === 'function') {
-        showToast(checked ? '✔ 上下文优化与 Token 压缩总开关已开启' : 'ℹ️ 上下文优化与 Token 压缩总开关已旁路关闭');
-      }
-    }
-
-    function toggleModuleEnabled(modName, enabled) {
-      updateCompCardsUI();
-      if (typeof showToast === 'function') {
-        showToast('✔ 模块 ' + modName + (enabled ? ' 已启用' : ' 已停用'));
-      }
-    }
-
-    function updateWizardStatusBadges() {
-      var validAccounts = (currentConfig && currentConfig.accounts) ? currentConfig.accounts.filter(function(a) { return a.apiKey && a.apiKey.trim() && a.enabled; }) : [];
-      var accBadge = document.getElementById('accounts-status-badge');
-      var wizAccBadge = document.getElementById('wizard-status-account');
-      var globalBadge = document.getElementById('wizard-global-badge');
-
-      if (validAccounts.length > 0) {
-        if (accBadge) { accBadge.className = 'badge badge-healthy'; accBadge.innerText = '🟢 已就绪 (' + validAccounts.length + ' 账号)'; }
-        if (wizAccBadge) { wizAccBadge.className = 'badge badge-healthy'; wizAccBadge.innerText = '🟢 ' + validAccounts.length + ' 账号已就绪'; }
-        if (globalBadge) { globalBadge.className = 'badge badge-healthy'; globalBadge.innerText = '🟢 系统正常'; }
-      } else {
-        if (accBadge) { accBadge.className = 'badge badge-cooling'; accBadge.innerText = '🔴 待配置密钥'; }
-        if (wizAccBadge) { wizAccBadge.className = 'badge badge-cooling'; wizAccBadge.innerText = '🔴 待配置密钥'; }
-        if (globalBadge) { globalBadge.className = 'badge badge-cooling'; globalBadge.innerText = '🔴 待配置密钥'; }
-      }
-    }
-
-    function markConfigDirty() {
-      var saveBtn = document.getElementById('btn-save-config');
-      if (saveBtn && !saveBtn.classList.contains('btn-save-dirty')) {
-        saveBtn.classList.add('btn-save-dirty');
-        saveBtn.title = '您有未保存的配置更改，点击立即保存！';
-      }
-    }
-
-    function clearConfigDirty() {
-      var saveBtn = document.getElementById('btn-save-config');
-      if (saveBtn) {
-        saveBtn.classList.remove('btn-save-dirty');
-        saveBtn.title = '保存当前所有配置';
-      }
-    }
-
-    function toggleCardCollapse(bodyId, triggerElem) {
-      var body = document.getElementById(bodyId);
-      if (!body) return;
-      var isCollapsed = body.style.display === 'none';
-      if (isCollapsed) {
-        body.style.display = 'block';
-        if (triggerElem) triggerElem.innerText = '▼ 收起';
-      } else {
-        body.style.display = 'none';
-        if (triggerElem) triggerElem.innerText = '▶ 展开';
-      }
-    }
-
-    function initCardCollapseStates() {
-      var cardIds = [
-        { id: 'doctor-collapse-body', defaultState: 'open' },
-        { id: 'updates-collapse-body', defaultState: 'open' },
-        { id: 'codex-collapse-body', defaultState: 'open' },
-        { id: 'accounts-collapse-body', defaultState: 'open' },
-        { id: 'compression-collapse-body', defaultState: 'open' },
-        { id: 'config-card-body', defaultState: 'closed' }
-      ];
-      cardIds.forEach(function(item) {
-        var body = document.getElementById(item.id);
-        if (!body) return;
-        body.style.display = item.defaultState === 'closed' ? 'none' : 'block';
-      });
-    }
-
-    async function runQuickSetupWizard() {
-      var btn = document.getElementById('btn-quick-setup');
-      var progBox = document.getElementById('wizard-progress-box');
-      if (btn) {
-        btn.disabled = true;
-        btn.innerText = '⏳ 正在全自动执行新手全能配置与体检...';
-      }
-      if (progBox) {
-        progBox.style.display = 'block';
-        progBox.innerHTML = '<div>🚀 新手向导执行完毕</div>';
-      }
-      updateWizardStatusBadges();
-      if (typeof showToast === 'function') showToast('🚀 新手向导已完成');
-      if (btn) {
-        btn.disabled = false;
-        btn.innerText = '一键智能全能配置';
-      }
-      return { success: true };
-    }
-
-    var tabTitles = {
-      'overview': { icon: '📊', name: '账号池与概览' },
-      'compression': { icon: '⚡', name: '上下文压缩引擎' },
-      'clients': { icon: '🤖', name: '多 Agent 接入' },
-      'accounts': { icon: '🔑', name: '订阅账号池' },
-      'doctor': { icon: '🩺', name: '系统诊断与体检' },
-      'settings': { icon: '⚙️', name: '全局网关配置' },
-      'plugins': { icon: '🧩', name: '扩展插件中枢' }
-    };
-
-    var tabAliases = {
-      'updates': 'settings',
-      'config': 'settings',
-      'codex': 'clients',
-      'extensions': 'settings',
-      'comfyui': 'settings',
-      'comp': 'compression'
-    };
-
-    function getHashTab() {
-      if (typeof window !== 'undefined' && window.location && window.location.hash) {
-        var h = window.location.hash;
-        if (h.indexOf('#/') === 0) return h.slice(2);
-      }
-      return null;
-    }
-
-    function switchTab(tabId) {
-      if (tabAliases[tabId]) tabId = tabAliases[tabId];
-      if (!tabTitles[tabId]) tabId = 'overview';
-
-      if (typeof window !== 'undefined' && window.location) {
-        var targetHash = '#/' + tabId;
-        if (window.location.hash !== targetHash) {
-          try {
-            if (typeof history !== 'undefined' && history && history.replaceState) {
-              history.replaceState(null, '', targetHash);
-            } else {
-              window.location.hash = targetHash;
-            }
-          } catch (e) {}
-        }
-      }
-
-      var tabs = ['overview', 'compression', 'clients', 'accounts', 'doctor', 'settings', 'plugins'];
-      tabs.forEach(function(t) {
-        var navItem = document.getElementById('nav-item-' + t);
-        if (navItem && navItem.classList) {
-          if (t === tabId) navItem.classList.add('active');
-          else navItem.classList.remove('active');
-        }
-        var viewSec = document.getElementById('view-' + t);
-        if (viewSec && viewSec.classList) {
-          if (t === tabId) viewSec.classList.add('active');
-          else viewSec.classList.remove('active');
-        }
-      });
-
-      var titleBox = document.getElementById('current-view-title');
-      if (titleBox && tabTitles[tabId]) {
-        titleBox.innerText = tabTitles[tabId].name;
-      }
-
-      closeSidebarDrawer();
-
-      try {
-        if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
-          localStorage.setItem('opencode_router_last_tab', tabId);
-        }
-      } catch (e) {}
-    }
-
-    function initRouter() {
-      var initialTab = 'overview';
-      var hashTab = getHashTab();
-      if (hashTab) {
-        var mapped = tabAliases[hashTab] || hashTab;
-        if (tabTitles[mapped]) initialTab = mapped;
-      } else {
-        try {
-          if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
-            var saved = localStorage.getItem('opencode_router_last_tab');
-            if (saved && tabTitles[saved]) initialTab = saved;
-          }
-        } catch (e) {}
-      }
-      switchTab(initialTab);
-    }
-
-    function toggleSidebarCollapse() {
-      if (typeof document !== 'undefined' && document.body && document.body.classList) {
-        var isCollapsed = document.body.classList.toggle('sidebar-collapsed');
-        try {
-          if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
-            localStorage.setItem('opencode_sidebar_collapsed', isCollapsed ? '1' : '0');
-          }
-        } catch (e) {}
-      }
-    }
-
-    function toggleSidebarDrawer() {
-      var sidebar = document.getElementById('app-sidebar');
-      var overlay = document.getElementById('sidebar-overlay');
-      if (sidebar && sidebar.classList) sidebar.classList.toggle('drawer-open');
-      if (overlay && overlay.classList) overlay.classList.toggle('active');
-    }
-
-    function closeSidebarDrawer() {
-      var sidebar = document.getElementById('app-sidebar');
-      var overlay = document.getElementById('sidebar-overlay');
-      if (sidebar && sidebar.classList) sidebar.classList.remove('drawer-open');
-      if (overlay && overlay.classList) overlay.classList.remove('active');
-    }
-
-    var elementToTabMap = {
-      'accounts-card': 'accounts',
-      'accounts-container': 'accounts',
-      'compression-card': 'compression',
-      'comp-metrics-dashboard': 'compression',
-      'module-card-rtk': 'compression',
-      'module-card-headroom': 'compression',
-      'module-card-schema': 'compression',
-      'module-card-cacheZone': 'compression',
-      'module-card-powershell': 'compression',
-      'codex-card': 'clients',
-      'clients-guide-card': 'clients',
-      'doctor-card': 'doctor',
-      'config-card': 'settings',
-      'updates-card': 'settings',
-      'wizard-card': 'overview'
-    };
-
-    
-    function scrollToCodexCard() {
-      scrollToElement('codex-card');
-      setTimeout(function() { if (typeof runCodexDoctorCheck === 'function') runCodexDoctorCheck(); }, 60);
-    }
-    function bindCodexQuick() {
-      scrollToElement('codex-card');
-    }
-    function scrollToCompressionCard() {
-      scrollToElement('compression-card');
-    }
-    window.addEventListener('hashchange', function() {
-      if (window.location.hash === '#updates') {
-        scrollToElement('updates-card');
-      }
-    });
-    if (typeof window !== 'undefined' && window.location && window.location.hash === '#updates') {
-      setTimeout(function() { scrollToElement('updates-card'); }, 100);
-    }
-
-    async function runDoctorCheck(scope) {
-      const overviewDocBadge = document.getElementById('doctor-overview-badge');
-      if (typeof window.realRunDoctorCheck === 'function') {
-        return window.realRunDoctorCheck(scope);
-      }
-    }
-
-    function scrollToElement(id) {
-      var targetTab = elementToTabMap[id];
-      if (targetTab) switchTab(targetTab);
-      var el = document.getElementById(id);
-      if (el && typeof el.scrollIntoView === 'function') {
-        el.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-
-    function copyBaseUrl() {
-      var input = document.getElementById('lbl-baseurl');
-      if (input && typeof navigator !== 'undefined' && navigator.clipboard) {
-        navigator.clipboard.writeText(input.value || input.textContent);
-      }
-    }
-
-    function initQuotaRefreshScheduler() {}
-    function renderCompressionTimeSeriesChart(data, range, stats) {}
-    function renderSingleChartViewport(cfg, series, range, stats, activeModels) {}
-
-    function apiHeaders(customHeaders) {
-      var headers = customHeaders ? Object.assign({}, customHeaders) : {};
-      var authCookie = (typeof document !== 'undefined' && document.cookie) ? document.cookie.split('; ').find(function(row) { return row.startsWith('router_auth='); }) : null;
-      if (authCookie) headers['Authorization'] = 'Bearer ' + decodeURIComponent(authCookie.split('=')[1]);
-      return headers;
-    }
-
-    var overviewDocBadge = (typeof document !== 'undefined') ? document.getElementById('doctor-overview-badge') : null;
-  </script>
+  <script src="/public/js/app.js"></script>
 </body>
 </html>

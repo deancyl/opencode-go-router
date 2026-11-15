@@ -3996,12 +3996,12 @@ function slimDescription(desc) {
     // 1. Strip markdown code blocks, but ONLY verbose ones (> 500 chars)
     // P3-M2: Short code examples (< 500 chars) are preserved to maintain tool parameter formatting guidance
     text = text.replace(/```[\s\S]*?```/g, (match) => match.length > 500 ? '' : match);
-    // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...")
+    // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...") while preserving trailing safety rules
     // Anti-Downgrade Invariant: Strictly limit to Examples/Sample keywords; NEVER match Usage or Detailed Description which contain vital constraints!
     text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
     // 3. Strip trailing example sections ONLY if bounded by double-newlines or next section title; NEVER consume following rules or parameters
-    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:```[\s\S]*?```|[^\r\n]+(?:\r?\n(?!\r?\n|[A-Z][a-zA-Z\s]+:|\s*#+)[^\r\n]+)*)(?=\r?\n\r?\n|\r?\n[A-Z][a-zA-Z\s]+:|\s*#+|$)/gi, '\n');
-    // 4. Collapse multiple consecutive empty lines and trailing whitespace
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:```[\s\S]*?```|[^\r\n]+(?:\r?\n(?!\r?\n|[A-Z][a-zA-Z\s]+:\s*|#+\s+)[^\r\n]+)*)(?=\r?\n\r?\n|\r?\n[A-Z][a-zA-Z\s]+:\s*|\r?\n#+\s+|$)/gi, '\n');
+    // 3. Collapse multiple consecutive empty lines and trailing whitespace
     text = text.replace(/\r?\n\s*\r?\n\s*\r?\n+/g, '\n\n').trim();
 
     return text || desc;

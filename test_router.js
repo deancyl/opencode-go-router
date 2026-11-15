@@ -2234,11 +2234,8 @@ async function runTests() {
     for (let i = 0; i < 25; i++) {
       mockSlidingInput.push({ type: 'message', role: i % 2 === 0 ? 'assistant' : 'user', content: `Turn ${i}` });
     }
-    // Anti-Downgrade Invariant: Normal requests preserve all items without count-based deletion
     const normalPruned = codexAdapter.pruneResponsesPayload({ input: mockSlidingInput });
     assert.strictEqual(normalPruned.input.length, mockSlidingInput.length, 'Normal requests MUST NOT drop items on count alone');
-
-    // Emergency Self-Healing: under emergency mode or budget exhaustion, sliding window folds cleanly
     const pruned = codexAdapter.pruneResponsesPayload({ input: mockSlidingInput }, null, { emergency: true });
     assert.ok(pruned.input.length < mockSlidingInput.length, 'Pruned input count must be less than original under emergency');
     assert.ok(pruned.input.some(item => item.content && item.content.includes('智能网关已对前序')), 'Must contain sliding window notice');
@@ -2258,7 +2255,6 @@ async function runTests() {
     }
     const normalPrunedMsgs = codexAdapter.pruneChatMessages(mockChatMessages);
     assert.strictEqual(normalPrunedMsgs.length, mockChatMessages.length, 'Normal chat requests MUST NOT drop items on count alone');
-
     const prunedMsgs = codexAdapter.pruneChatMessages(mockChatMessages, null, null, { emergency: true });
     assert.ok(prunedMsgs.length < mockChatMessages.length, 'Pruned chat messages count must be smaller under emergency');
     console.log('✓ Context Pruning & Sliding-Window Compression Engine verified');
@@ -3767,10 +3763,9 @@ $ProgressPreference = 'SilentlyContinue'
     ];
     // Force slim threshold to 50 chars for testing
     const slimmedSchema = contextCompactor.slimToolsSchema(oversizedTools, 50);
-    // Anti-Downgrade Invariant: Strips Examples block but preserves Usage Notes and parameter rules intact
     assert.strictEqual(slimmedSchema[0].function.description, 'Executes complex queries against Kubernetes clusters. This tool communicates with kube-apiserver.\n\nUsage Notes:\nDetailed multi-page manual here.');
-    assert.ok(!slimmedSchema[0].function.description.includes('Examples:'));
     assert.ok(slimmedSchema[0].function.description.includes('Usage Notes:'), 'Usage Notes and rules must be strictly preserved without truncation');
+    assert.ok(!slimmedSchema[0].function.description.includes('Examples:'));
     assert.ok(!slimmedSchema[0].function.parameters.properties.cluster.description.includes('Examples:'));
     assert.strictEqual(slimmedSchema[0].function.parameters.properties.cluster.example, undefined, 'example field must be stripped');
     assert.strictEqual(slimmedSchema[0].function.parameters.properties.cluster.type, 'string', 'Parameter types must be strictly preserved');
@@ -3802,7 +3797,6 @@ $ProgressPreference = 'SilentlyContinue'
     const slimmedMcp = contextCompactor.slimToolsSchema(mcpTools, 50);
     assert.strictEqual(slimmedMcp[0].inputSchema.properties.filter.example, undefined, 'example field on filter must be stripped');
     assert.strictEqual(slimmedMcp[0].inputSchema.properties.filter.properties.id.example, undefined, 'nested example field on id must be stripped');
-    // Anti-Downgrade Invariant: Never strip Usage constraints on tool parameter definitions
     assert.ok(slimmedMcp[0].inputSchema.properties.filter.properties.id.description.includes('Usage:'), 'Usage parameter guidance must be strictly preserved without truncation');
     console.log('✓ Oversized Schema Slimming & Example Truncation verified');
 
@@ -7685,7 +7679,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148.body.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
@@ -7720,7 +7714,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
     // 5. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148.body.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
@@ -7995,7 +7989,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro') || uiRes153.body.includes('v3.12.0 Pro') || uiRes153.body.includes('v3.13.0 Pro') || uiRes153.body.includes('v3.13.1 Pro') || uiRes153.body.includes('v3.13.2 Pro') || uiRes153.body.includes('v3.13.3 Pro') || uiRes153.body.includes('v3.13.4 Pro') || uiRes153.body.includes('v3.13.5 Pro') || uiRes153.body.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro') || uiRes153.body.includes('v3.12.0 Pro') || uiRes153.body.includes('v3.13.0 Pro') || uiRes153.body.includes('v3.13.1 Pro') || uiRes153.body.includes('v3.13.2 Pro') || uiRes153.body.includes('v3.13.3 Pro') || uiRes153.body.includes('v3.13.4 Pro') || uiRes153.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
 
     // 6. Verify package.json declares valid version
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
@@ -8125,7 +8119,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     const uiRes154 = await request('/balancer/ui', { method: 'GET' });
     assert.strictEqual(uiRes154.statusCode, 200);
-    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro') || uiRes154.body.includes('v3.12.0 Pro') || uiRes154.body.includes('v3.13.0 Pro') || uiRes154.body.includes('v3.13.1 Pro') || uiRes154.body.includes('v3.13.2 Pro') || uiRes154.body.includes('v3.13.3 Pro') || uiRes154.body.includes('v3.13.4 Pro') || uiRes154.body.includes('v3.13.5 Pro') || uiRes154.body.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro') || uiRes154.body.includes('v3.12.0 Pro') || uiRes154.body.includes('v3.13.0 Pro') || uiRes154.body.includes('v3.13.1 Pro') || uiRes154.body.includes('v3.13.2 Pro') || uiRes154.body.includes('v3.13.3 Pro') || uiRes154.body.includes('v3.13.4 Pro') || uiRes154.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
 
     console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
@@ -8464,7 +8458,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(codexAdapter.CODEX_ZHCN_TRANSLATE_SCRIPT.includes('审查代码变更'), 'CODEX_ZHCN_TRANSLATE_SCRIPT must include Review changes translation');
     const uiRes156 = await request('/balancer/ui', { method: 'GET' });
     assert.ok(uiRes156.body.includes('toggleAllCompModuleBodies()'), 'Web UI must include 1-click advanced switches collapse toggle');
-    assert.ok(uiRes156.body.includes('v3.11.0 Pro') || uiRes156.body.includes('v3.12.0 Pro') || uiRes156.body.includes('v3.13.0 Pro') || uiRes156.body.includes('v3.13.1 Pro') || uiRes156.body.includes('v3.13.2 Pro') || uiRes156.body.includes('v3.13.3 Pro') || uiRes156.body.includes('v3.13.4 Pro') || uiRes156.body.includes('v3.13.5 Pro') || uiRes156.body.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes156.body.includes('v3.11.0 Pro') || uiRes156.body.includes('v3.12.0 Pro') || uiRes156.body.includes('v3.13.0 Pro') || uiRes156.body.includes('v3.13.1 Pro') || uiRes156.body.includes('v3.13.2 Pro') || uiRes156.body.includes('v3.13.3 Pro') || uiRes156.body.includes('v3.13.4 Pro') || uiRes156.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes156.body.includes('.comp-range-btn.active, .time-range-pill.active'), 'Web UI must style .time-range-pill.active buttons');
     assert.ok(uiRes156.body.includes("const overviewDocBadge = document.getElementById('doctor-overview-badge');"), 'runDoctorCheck must synchronize #doctor-overview-badge');
 
@@ -8519,7 +8513,6 @@ $ProgressPreference = 'SilentlyContinue'
       Array.from({ length: 20 }, (_, i) => `- domain-skill-${i}: Perform comprehensive analysis of domain ${i} workflows. Use this skill whenever the user asks to configure, debug, or inspect domain ${i} pipelines in detail (file: r1/domain-skill-${i}/SKILL.md)`).join('\n') +
       '\n</skills_instructions>';
     const compactedSkillsPrompt = contextCompactor.compactSystemPrompt(sampleSkillsPrompt, { enabled: true, cleanDevOpsOutput: true, cacheZoneFreeze: true }, 'sess_sys_156', false);
-    // Anti-Downgrade Invariant: Skill trigger conditions and descriptions are 100% preserved intact without lossy truncation
     assert.ok(compactedSkillsPrompt.includes('Use this skill whenever the user asks to configure, debug, or inspect'), 'Skill trigger conditions must be strictly preserved without truncation');
     assert.ok(compactedSkillsPrompt.includes('(file: r1/domain-skill-0/SKILL.md)') && compactedSkillsPrompt.includes('(file: r1/domain-skill-19/SKILL.md)'), 'All skill names and file paths must be 100% preserved');
 

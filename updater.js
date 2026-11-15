@@ -1980,6 +1980,10 @@ function verifyStagedCodeIntegrity(stagingDir) {
   let stagedJsFiles = [];
   try {
     stagedJsFiles = fs.readdirSync(stagingDir).filter(f => f.endsWith('.js'));
+    const pubJsPath = path.join(stagingDir, 'public', 'js', 'app.js');
+    if (fs.existsSync(pubJsPath)) {
+      stagedJsFiles.push(path.join('public', 'js', 'app.js'));
+    }
   } catch (_) {
     stagedJsFiles = criticalFiles;
   }
@@ -2027,7 +2031,8 @@ function backupLocalCodeForRollback(destDir, snapshotDir) {
     'OpenCodeWizard.exe',
     'src',
     'assets',
-    'plugins'
+    'plugins',
+    'public'
   ];
 
   const backedUp = [];
