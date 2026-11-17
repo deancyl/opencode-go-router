@@ -27,7 +27,7 @@ const path = require('node:path');
 const os = require('node:os');
 const https = require('node:https');
 const http = require('node:http');
-const { execSync, spawnSync } = require('node:child_process');
+const { execSync, spawnSync, spawn } = require('node:child_process');
 
 function writeFileSyncAtomic(targetFile, data, encoding = 'utf8') {
   const dir = path.dirname(targetFile);
@@ -128,7 +128,7 @@ function getRouterConfigPath() {
   return process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
 }
 
-// 38 All Available OpenCode Go Models with zero-loss fallback
+// 44 All Available OpenCode Go Models with zero-loss fallback
 const ALL_38_SLUGS = [
   'deepseek-v4.1-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash',
   'deepseek-v4-flash-vision-exp', 'glm-5.1', 'glm-5.2', 'glm-5.3', 'glm-5.3-flash',
@@ -137,20 +137,215 @@ const ALL_38_SLUGS = [
   'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k3', 'mimo-v2.5', 'mimo-v2.6-flash',
   'mimo-v2.5-pro', 'mimo-v2.6-pro', 'minimax-m2.5', 'minimax-m2.7', 'minimax-m3',
   'space-bunny', 'longcat-2.0', 'longcat-2.5-preview-free', 'step-5-preview-free',
-  'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.8-max', 'qwen3.8-flash'
+  'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.8-max', 'qwen3.8-flash',
+  'gemini-4-argon', 'gemini-4-argon-contributor', 'step-5-preview', 'minimax-m3.1-flash-free', 'beam-free', 'cat-jam-free'
 ];
 
 /**
- * Dynamically fetch official OpenCode Go models catalog from upstream API
- * Returns array of model slugs or null if offline/unreachable
+ * 上游探测深层故障精准甄别 (Root-Cause Differentiation)
+ * 精准细分 5 大类根本原因：
+ * 1. QUOTA_EXHAUSTED: 429 且含 GoUsageLimitError / monthly
+ * 2. TRANSIENT_RATE_LIMIT: 429 且可退避恢复
+ * 3. AUTH_INVALID: 401/403 或无有效 Key
+ * 4. GEOGRAPHIC_RESTRICTION: 403 unsupported_country_region_territory
+ * 5. NETWORK_OFFLINE: ENOTFOUND / ECONNREFUSED / ETIMEDOUT
  */
-function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
+function diagnoseUpstreamFailure(res, err, body = '') {
+  const statusCode = res?.statusCode || 0;
+  const rawBody = typeof body === 'string' ? body : (body ? JSON.stringify(body) : '');
+  const errMsg = err?.message || (typeof err === 'string' ? err : '');
+  const combined = (rawBody + ' ' + errMsg).toLowerCase();
+
+  // 1. 海外地域受限 (403 unsupported_country_region_territory)
+  if (
+    combined.includes('unsupported_country_region_territory') ||
+    combined.includes('geographic_restriction') ||
+    combined.includes('region_blocked') ||
+    combined.includes('country not supported') ||
+    (statusCode === 403 && combined.includes('region'))
+  ) {
+    return {
+      type: 'GEOGRAPHIC_RESTRICTION',
+      code: 'GEOGRAPHIC_RESTRICTION',
+      statusCode: statusCode || 403,
+      title: '海外地域受限 (IP 处于未受支持地区)',
+      message: '上游服务提示当前 IP 处于海外限制区域，需配置并走海外网络代理通道',
+      suggestion: '建议在网关设置中配置海外 Socks5/HTTP 代理，针对海外受限模型自动路由',
+      recommendation: '建议在网关设置中配置海外 Socks5/HTTP 代理，针对海外受限模型自动路由',
+      retryable: false,
+      requiresOverseasProxy: true
+    };
+  }
+
+  // 2. 账号月度配额耗尽 (QUOTA_EXHAUSTED)
+  if (
+    statusCode === 429 && (
+      combined.includes('gousagelimiterror') ||
+      combined.includes('go usage limit exceeded') ||
+      combined.includes('monthly') ||
+      combined.includes('quota_exceeded') ||
+      combined.includes('insufficient_quota') ||
+      combined.includes('monthly_limit')
+    )
+  ) {
+    return {
+      type: 'QUOTA_EXHAUSTED',
+      code: 'QUOTA_EXHAUSTED',
+      statusCode: 429,
+      title: '账号月度额度耗尽 (Monthly Quota Exhausted)',
+      message: '当前订阅账号月度额度已用尽 (GoUsageLimitError / monthly)',
+      suggestion: '当前订阅账号月度额度已用尽，请充值或在管理控制台更换有效 Key；系统已自动平滑降级至官网基准模型',
+      recommendation: '当前订阅账号月度额度已用尽，请充值或在管理控制台更换有效 Key；系统已自动平滑降级至官网基准模型',
+      retryable: false,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 3. 瞬态高频限频 (TRANSIENT_RATE_LIMIT)
+  if (
+    statusCode === 429 ||
+    combined.includes('rate_limit') ||
+    combined.includes('too_many_requests') ||
+    res?.headers?.['retry-after']
+  ) {
+    const retryAfter = res?.headers?.['retry-after'] || null;
+    return {
+      type: 'TRANSIENT_RATE_LIMIT',
+      code: 'TRANSIENT_RATE_LIMIT',
+      statusCode: 429,
+      title: '瞬态高频限频 (Rate Limit Throttling)',
+      message: `上游服务短时限频中${retryAfter ? ` (建议重试间隔: ${retryAfter}s)` : ''}`,
+      suggestion: '上游触发瞬时调用频率限制，已启动指数退避，将在短时间后自动恢复，不影响本地持久化模型目录',
+      recommendation: '上游触发瞬时调用频率限制，已启动指数退避，将在短时间后自动恢复，不影响本地持久化模型目录',
+      retryable: true,
+      retryAfter: retryAfter ? parseInt(retryAfter, 10) : 10,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 4. 缺少 Key 或鉴权失效 (AUTH_INVALID)
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    combined.includes('invalid_api_key') ||
+    combined.includes('unauthorized') ||
+    combined.includes('authentication_failed') ||
+    combined.includes('key_expired') ||
+    combined.includes('bearer token') ||
+    combined.includes('no key')
+  ) {
+    return {
+      type: 'AUTH_INVALID',
+      code: 'AUTH_INVALID',
+      statusCode: statusCode || 401,
+      title: '缺少有效凭据或鉴权失效 (Authentication Failed)',
+      message: '缺少有效 API Key 或 Key 已过期失效 (401/403 Unauthorized)',
+      suggestion: '请在管理面板中为账号配置有效的 OpenCode Go 订阅密钥 (API Key)',
+      recommendation: '请在管理面板中为账号配置有效的 OpenCode Go 订阅密钥 (API Key)',
+      retryable: false,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 5. 物理网络或代理断开 (NETWORK_OFFLINE)
+  if (
+    combined.includes('enotfound') ||
+    combined.includes('econnrefused') ||
+    combined.includes('etimedout') ||
+    combined.includes('ehostunreach') ||
+    combined.includes('econnreset') ||
+    combined.includes('network error') ||
+    combined.includes('fetch failed') ||
+    combined.includes('socket hang up') ||
+    err?.code === 'ENOTFOUND' ||
+    err?.code === 'ECONNREFUSED' ||
+    err?.code === 'ETIMEDOUT'
+  ) {
+    return {
+      type: 'NETWORK_OFFLINE',
+      code: 'NETWORK_OFFLINE',
+      statusCode: 0,
+      title: '物理网络或代理阻断 (Network Offline / Timeout)',
+      message: `物理网络离线或代理端点不可达 (${err?.code || 'TIMEOUT'})`,
+      suggestion: '请检查本地网络连接或代理服务是否正常；系统已瞬时平滑降级为内置官网文档模型基准，本地 Agent 立即可用',
+      recommendation: '请检查本地网络连接或代理服务是否正常；系统已瞬时平滑降级为内置官网文档模型基准，本地 Agent 立即可用',
+      retryable: true,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 6. 上游服务异常 (UPSTREAM_ERROR: 5xx)
+  if (statusCode >= 500 && statusCode < 600) {
+    return {
+      type: 'UPSTREAM_ERROR',
+      code: 'UPSTREAM_ERROR',
+      statusCode,
+      title: `上游服务异常 (HTTP ${statusCode})`,
+      message: `上游服务暂时不可用或处于维护中 (HTTP ${statusCode})`,
+      suggestion: '上游服务暂时响应异常，系统已平滑采纳官方基准模型兜底，建议稍后重试',
+      recommendation: '上游服务暂时响应异常，系统已平滑采纳官方基准模型兜底，建议稍后重试',
+      retryable: true,
+      requiresOverseasProxy: false
+    };
+  }
+
+  // 兜底未知异常
+  return {
+    type: 'UNKNOWN',
+    code: 'UNKNOWN',
+    statusCode,
+    title: '上游探测未知异常',
+    message: errMsg || rawBody.slice(0, 100) || '未知网络/服务状态',
+    suggestion: '系统已安全使用官网模型基准兜底',
+    recommendation: '系统已安全使用官网模型基准兜底',
+    retryable: true,
+    requiresOverseasProxy: false
+  };
+}
+
+const DIAGNOSTIC_PRIORITY = {
+  'QUOTA_EXHAUSTED': 100,
+  'GEOGRAPHIC_RESTRICTION': 90,
+  'AUTH_INVALID': 80,
+  'TRANSIENT_RATE_LIMIT': 70,
+  'UPSTREAM_ERROR': 60,
+  'NETWORK_OFFLINE': 50,
+  'UNKNOWN': 10
+};
+
+function selectBestDiagnostic(diagnostics) {
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) return null;
+  let best = diagnostics[0];
+  let bestScore = DIAGNOSTIC_PRIORITY[best?.code] || 0;
+  for (let i = 1; i < diagnostics.length; i++) {
+    const diag = diagnostics[i];
+    const score = DIAGNOSTIC_PRIORITY[diag?.code] || 0;
+    if (score > bestScore) {
+      best = diag;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * 单个 Key 探测
+ */
+function probeSingleKey(apiKey, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
   return new Promise((resolve) => {
     if (!apiKey || !apiKey.trim()) {
-      return resolve(null);
+      const diag = diagnoseUpstreamFailure(null, 'no key');
+      return resolve({ success: false, slugs: null, res: null, err: null, body: '', diagnostic: diag });
     }
     try {
       let endpoint = upstream.replace(/\/+$/, '');
+      if (!/^https?:\/\//i.test(endpoint)) {
+        endpoint = 'https://' + endpoint;
+      }
+      endpoint = endpoint.replace(/\/(?:docs\/)?console\/go$/i, '/zen/go/v1');
+      if (/\/(?:zen|inference)\/go$/i.test(endpoint)) {
+        endpoint += '/v1';
+      }
       if (endpoint.endsWith('/models')) {
         // already ends with /models
       } else if (endpoint.endsWith('/v1')) {
@@ -165,7 +360,9 @@ function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1',
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${apiKey.trim()}`,
-          'User-Agent': 'opencode-go-router-updater'
+          'x-opencode-session': `session-probe-${Date.now()}`,
+          'User-Agent': 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)',
+          'Accept': 'application/json'
         },
         timeout: timeoutMs
       };
@@ -183,31 +380,134 @@ function fetchOfficialModels(apiKey, upstream = 'https://opencode.ai/zen/go/v1',
               const parsedRes = JSON.parse(data);
               const list = Array.isArray(parsedRes.data) ? parsedRes.data : [];
               const slugs = list.map(m => {
-                let id = m.id || m.name;
+                let id = typeof m === 'string' ? m : (m && typeof m === 'object' ? (m.id || m.name || m.slug) : '');
                 if (typeof id === 'string' && id.startsWith('opencode-go/')) id = id.slice(12);
                 return id;
               }).filter(id => typeof id === 'string' && id.trim().length > 0);
               if (slugs.length > 0) {
-                return resolve(Array.from(new Set(slugs)));
+                return resolve({ success: true, slugs: Array.from(new Set(slugs)), res, body: data, diagnostic: null });
               }
             }
-            resolve(null);
-          } catch (_) {
-            resolve(null);
+            const diag = diagnoseUpstreamFailure(res, null, data);
+            resolve({ success: false, slugs: null, res, body: data, diagnostic: diag });
+          } catch (parseErr) {
+            const diag = diagnoseUpstreamFailure(res, parseErr, data);
+            resolve({ success: false, slugs: null, res, body: data, diagnostic: diag });
           }
         });
       });
-      req.on('error', () => {
-        if (!finished) { finished = true; resolve(null); }
+      req.on('error', (err) => {
+        if (!finished) {
+          finished = true;
+          const diag = diagnoseUpstreamFailure(null, err, null);
+          resolve({ success: false, slugs: null, res: null, err, diagnostic: diag });
+        }
       });
       req.on('timeout', () => {
-        if (!finished) { finished = true; req.destroy(); resolve(null); }
+        if (!finished) {
+          finished = true;
+          req.destroy();
+          const diag = diagnoseUpstreamFailure(null, new Error('ETIMEDOUT'), null);
+          resolve({ success: false, slugs: null, res: null, err: new Error('ETIMEDOUT'), diagnostic: diag });
+        }
       });
       req.end();
-    } catch (_) {
-      resolve(null);
+    } catch (e) {
+      const diag = diagnoseUpstreamFailure(null, e, null);
+      resolve({ success: false, slugs: null, res: null, err: e, diagnostic: diag });
     }
   });
+}
+
+/**
+ * Dynamically fetch official OpenCode Go models catalog from upstream API
+ * 支持单 Key 或账号数组多账号故障转移轮询 (账号 1 异常时自动尝试账号 2)
+ * 全部受阻或断网时平滑降级至本地缓存或内置官网基准
+ */
+async function fetchOfficialModels(apiKeyOrAccounts, upstream = 'https://opencode.ai/zen/go/v1', timeoutMs = 4000, options = {}) {
+  const keysToTry = [];
+  if (Array.isArray(apiKeyOrAccounts)) {
+    for (const acc of apiKeyOrAccounts) {
+      if (typeof acc === 'string' && acc.trim()) keysToTry.push(acc.trim());
+      else if (acc && typeof acc === 'object' && acc.apiKey && acc.apiKey.trim() && acc.enabled !== false) {
+        keysToTry.push(acc.apiKey.trim());
+      }
+    }
+  } else if (typeof apiKeyOrAccounts === 'string' && apiKeyOrAccounts.trim()) {
+    keysToTry.push(apiKeyOrAccounts.trim());
+  }
+
+  if (keysToTry.length === 0) {
+    const diag = diagnoseUpstreamFailure(null, 'no key configured');
+    if (options.returnDetails) {
+      return { success: false, slugs: null, diagnostic: diag, diagnostics: [diag], accountsTested: 0 };
+    }
+    return null;
+  }
+
+  const allDiagnostics = [];
+  for (let i = 0; i < keysToTry.length; i++) {
+    const key = keysToTry[i];
+    const probeRes = await probeSingleKey(key, upstream, timeoutMs, options);
+    if (probeRes.success && probeRes.slugs && probeRes.slugs.length > 0) {
+      if (options.returnDetails) {
+        return {
+          success: true,
+          slugs: probeRes.slugs,
+          diagnostic: null,
+          diagnostics: allDiagnostics,
+          accountsTested: i + 1,
+          accountIndex: i
+        };
+      }
+      return probeRes.slugs;
+    }
+
+    if (probeRes.diagnostic) {
+      allDiagnostics.push(probeRes.diagnostic);
+    }
+    // 多账号故障转移提示
+    if (i < keysToTry.length - 1) {
+      console.log(`[Updater] 账号 ${i + 1} 上游探测返回 ${probeRes.diagnostic?.code || 'ERROR'}，正在自动故障转移轮询尝试账号 ${i + 2}...`);
+    }
+  }
+
+  const primaryDiagnostic = selectBestDiagnostic(allDiagnostics);
+
+  if (options.returnDetails) {
+    return {
+      success: false,
+      slugs: null,
+      diagnostic: primaryDiagnostic,
+      diagnostics: allDiagnostics,
+      accountsTested: keysToTry.length
+    };
+  }
+  return null;
+}
+
+/**
+ * 获取官网公开模型基准元数据字典 (异步比对官网网页，提供新模型发现提示)
+ */
+async function fetchWebDocsCatalog(options = {}) {
+  try {
+    const clientAdapter = require('./client-adapter-manager');
+    const models = clientAdapter.loadOfficialModels();
+    return {
+      success: true,
+      count: models.length,
+      models,
+      source: 'official_docs'
+    };
+  } catch (err) {
+    return {
+      success: false,
+      count: ALL_38_SLUGS.length,
+      models: ALL_38_SLUGS.map(s => ({ slug: s, name: s })),
+      source: 'fallback_slugs',
+      error: err.message
+    };
+  }
 }
 
 /**
@@ -433,7 +733,11 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   // 1. Build models map with dynamic models + fallback 38 models
   let baseSlugs = ALL_38_SLUGS;
   if (Array.isArray(options.officialModels) && options.officialModels.length > 0) {
-    baseSlugs = Array.from(new Set([...ALL_38_SLUGS, ...options.officialModels]));
+    if (options.strictModels) {
+      baseSlugs = Array.from(new Set(options.officialModels));
+    } else {
+      baseSlugs = Array.from(new Set([...ALL_38_SLUGS, ...options.officialModels]));
+    }
   }
   const allModelsMap = {};
   for (const s of baseSlugs) {
@@ -451,6 +755,9 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
           });
         }
       } else {
+        if (options.strictModels && ALL_38_SLUGS.includes(k)) {
+          continue;
+        }
         if (typeof v === 'object' && v !== null) {
           allModelsMap[k] = Object.assign({}, v, {
             name: v.name || v.modelID || k,
@@ -538,6 +845,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   // 3. Configure opencode-go (Dual-Track Schema for CLI & OpenChamber UI)
   data.provider['opencode-go'] = {
     name: 'opencode-go',
+    api: routerUrl,
     npm: '@ai-sdk/openai-compatible',
     package: '@opencode/ai/providers/openai-compatible',
     options: {
@@ -601,19 +909,66 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
     }
   }
 
-  // 4. Model selection: preserve user's valid choice, support Luna as preferred or fallback default
+  // 3.2 Master-MCP aggregator bus registration for OpenCode 2.0 (mcp-master.js)
+  if (!data.mcp || typeof data.mcp !== 'object') {
+    data.mcp = {};
+  }
+  const nodeExe = process.execPath || 'node';
+  const masterMcpScript = path.join(ROOT_DIR, 'mcp-master.js');
+  data.mcp['opencode-router'] = {
+    type: 'stdio',
+    command: nodeExe,
+    args: [masterMcpScript, '--client=opencode']
+  };
+  // Migrate legacy standalone comfyui MCP if present
+  if (data.mcp['comfyui']) {
+    delete data.mcp['comfyui'];
+  }
+
+  // 4. Model selection: preserve user's valid choice, heal deprecated slugs, support Luna as preferred or fallback default
+  const DEPRECATED_OPENCODE_SLUGS = {
+    'deepseek-flash': 'deepseek-v4.1-flash',
+    'deepseek-v4-flash': 'deepseek-v4.1-flash',
+    'cat-jam-free': 'deepseek-v4.1-flash',
+    'minimax-m3.1-flash-free': 'minimax-m3.1-flash',
+    'step-5-preview-free': 'step-5-preview',
+    'longcat-2.5-preview-free': 'longcat-2.5-free',
+    'crouton-alpha-free': 'hy4-flash-free',
+    'pulse-alpha-free': 'hy4-flash-free'
+  };
   let modelPreserved = true;
   if (options.preferredModel) {
     data.model = options.preferredModel;
     modelPreserved = false;
   } else if (!data.model) {
-    data.model = options.useLuna ? 'opencode-go/gpt-5.6-luna' : 'opencode-go/deepseek-v4.1-flash';
+    if (options.defaultModel) {
+      data.model = options.defaultModel.includes('/') ? options.defaultModel : `opencode-go/${options.defaultModel}`;
+    } else {
+      data.model = options.useLuna ? 'opencode-go/gpt-5.6-luna' : 'opencode-go/deepseek-v4.1-flash';
+    }
     modelPreserved = false;
+  } else if (typeof data.model === 'string' && data.model.startsWith('opencode-go/')) {
+    const curSlug = data.model.slice('opencode-go/'.length).trim().toLowerCase();
+    if (DEPRECATED_OPENCODE_SLUGS[curSlug]) {
+      data.model = `opencode-go/${DEPRECATED_OPENCODE_SLUGS[curSlug]}`;
+    }
+  }
+  if (typeof data.small_model === 'string' && data.small_model.startsWith('opencode-go/')) {
+    const curSmall = data.small_model.slice('opencode-go/'.length).trim().toLowerCase();
+    if (DEPRECATED_OPENCODE_SLUGS[curSmall]) {
+      data.small_model = `opencode-go/${DEPRECATED_OPENCODE_SLUGS[curSmall]}`;
+    }
   }
 
-  // Backup original file before writing
+  // Backup original file with timestamp before writing (Angle 9)
+  let backupPath = null;
   if (fs.existsSync(p)) {
-    try { fs.copyFileSync(p, p + '.bak'); } catch (_) {}
+    try {
+      const ts = Date.now();
+      backupPath = `${p}.bak.${ts}`;
+      fs.copyFileSync(p, backupPath);
+      fs.copyFileSync(p, `${p}.bak`);
+    } catch (_) {}
   }
 
   writeFileSyncAtomic(p, JSON.stringify(data, null, 2), 'utf8');
@@ -621,6 +976,7 @@ function harmonizeOpencodeConfig(customPath = null, routerPort = 4010, options =
   return {
     success: true,
     isNew,
+    backupPath,
     migratedProviders,
     modelCount: Object.keys(allModelsMap).length,
     currentModel: data.model,
@@ -1341,15 +1697,15 @@ function analyzeCompatibility(local, remote, options = {}) {
       // E. Check if opencode-go models list is incomplete
       if (parsed && parsed.provider && parsed.provider['opencode-go'] && parsed.provider['opencode-go'].models) {
         const currentModelKeys = Object.keys(parsed.provider['opencode-go'].models);
-        if (currentModelKeys.length < 38) {
+        if (currentModelKeys.length < ALL_38_SLUGS.length) {
           if (riskLevel === 'safe') riskLevel = 'warning';
           warnings.push({
             component: 'opencode.jsonc',
             level: 'warning',
-            title: `opencode-go 提供商模型清单未补全 (当前 ${currentModelKeys.length}/38 款)`,
-            desc: '官方已提供 38 款全量模型（含 glm-5.3-flash, deepseek-v4.1, kimi-k3, qwen3.8 等），当前模型列表不完整可能导致部分模型无法在下拉列表调用。'
+            title: `opencode-go 提供商模型清单未补全 (当前 ${currentModelKeys.length}/${ALL_38_SLUGS.length} 款)`,
+            desc: `官方已提供 ${ALL_38_SLUGS.length} 款全量模型（含 glm-5.3-flash, deepseek-v4.1, kimi-k3, qwen3.8 等），当前模型列表不完整可能导致部分模型无法在下拉列表调用。`
           });
-          recommendations.push('在管理面板点击【一键体检与修复】，即可无损补齐官方 38 款全量模型并保留当前首选模型。');
+          recommendations.push(`在管理面板点击【一键体检与修复】，即可无损补齐官方 ${ALL_38_SLUGS.length} 款全量模型并保留当前首选模型。`);
         }
       }
     } catch (e) {}
@@ -1583,6 +1939,258 @@ async function checkAllUpdates(timeoutMs = 4000) {
 }
 
 /**
+ * Two-Phase Staged Update & Atomic Switch System (Angle 9)
+ */
+
+/**
+ * 安全原子文件替换，支持 Windows EBUSY / EPERM 占用安全重命名 (.old.<timestamp>)
+ */
+function safeAtomicReplaceFile(srcFile, destFile, oldFilesTracker = []) {
+  const destDir = path.dirname(destFile);
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+  }
+
+  if (!fs.existsSync(destFile)) {
+    fs.copyFileSync(srcFile, destFile);
+    return { action: 'created', file: destFile };
+  }
+
+  try {
+    fs.copyFileSync(srcFile, destFile);
+    return { action: 'overwritten', file: destFile };
+  } catch (err) {
+    if (err.code === 'EBUSY' || err.code === 'EPERM') {
+      const oldPath = `${destFile}.old.${Date.now()}`;
+      try {
+        fs.renameSync(destFile, oldPath);
+        if (Array.isArray(oldFilesTracker)) {
+          oldFilesTracker.push(oldPath);
+        }
+        fs.copyFileSync(srcFile, destFile);
+        return { action: 'replaced-via-rename', file: destFile, oldPath };
+      } catch (renameErr) {
+        throw new Error(`文件被占用且重命名避让失败 ${path.basename(destFile)}: ${renameErr.message}`);
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * 验证暂存区中的代码完整性与静态语法合法性 (Pre-flight Syntax & Integrity Check)
+ */
+function verifyStagedCodeIntegrity(stagingDir) {
+  const pkgPath = path.join(stagingDir, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    return { valid: false, error: '暂存区缺少 package.json，代码包不完整' };
+  }
+  let pkg;
+  try {
+    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (!pkg.name || !pkg.version) {
+      return { valid: false, error: '暂存区 package.json 缺少必要元数据 (name/version)' };
+    }
+  } catch (e) {
+    return { valid: false, error: `暂存区 package.json 语法损坏: ${e.message}` };
+  }
+
+  // 必须存在的核心运行文件清单
+  const criticalFiles = ['server.js', 'updater.js', 'context-compactor.js'];
+  for (const cf of criticalFiles) {
+    const fullP = path.join(stagingDir, cf);
+    if (!fs.existsSync(fullP)) {
+      return { valid: false, error: `暂存区缺少核心运行文件: ${cf}` };
+    }
+  }
+
+  // 对暂存区内所有存在的 .js 文件执行静态语法预检 (node -c)
+  let stagedJsFiles = [];
+  try {
+    stagedJsFiles = fs.readdirSync(stagingDir).filter(f => f.endsWith('.js'));
+    const pubJsPath = path.join(stagingDir, 'public', 'js', 'app.js');
+    if (fs.existsSync(pubJsPath)) {
+      stagedJsFiles.push(path.join('public', 'js', 'app.js'));
+    }
+  } catch (_) {
+    stagedJsFiles = criticalFiles;
+  }
+  for (const jsFile of stagedJsFiles) {
+    const fullP = path.join(stagingDir, jsFile);
+    try {
+      const checkRes = spawnSync(process.execPath, ['-c', fullP], { encoding: 'utf8', timeout: 5000 });
+      if (checkRes.status !== 0) {
+        const errDetail = (checkRes.stderr || checkRes.stdout || '').trim();
+        return { valid: false, error: `核心文件 ${jsFile} 存在语法错误 (node -c 校验未通过): ${errDetail}` };
+      }
+    } catch (checkErr) {
+      return { valid: false, error: `执行 ${jsFile} 静态语法预检异常: ${checkErr.message}` };
+    }
+  }
+
+  return { valid: true, version: pkg.version, name: pkg.name };
+}
+
+/**
+ * 在替换工作区核心文件前，创建就地轻量灾备快照目录 (.rollback_snapshot)
+ */
+function backupLocalCodeForRollback(destDir, snapshotDir) {
+  if (fs.existsSync(snapshotDir)) {
+    try { fs.rmSync(snapshotDir, { recursive: true, force: true }); } catch (_) {}
+  }
+  fs.mkdirSync(snapshotDir, { recursive: true });
+
+  const filesToBackup = [
+    'server.js',
+    'updater.js',
+    'context-compactor.js',
+    'codex-adapter.js',
+    'mcp-comfyui.js',
+    'mcp-master.js',
+    'plugin-manager.js',
+    'client-adapter-manager.js',
+    'models_baseline.json',
+    'comfyui-adapter.js',
+    'powershell-optimizer.js',
+    'package.json',
+    'config.json',
+    'OpenCodeRouterTray.exe',
+    'OpenCodeRouterApp.exe',
+    'OpenCodeWizard.exe',
+    'src',
+    'assets',
+    'plugins',
+    'public'
+  ];
+
+  const backedUp = [];
+  for (const rel of filesToBackup) {
+    const src = path.join(destDir, rel);
+    if (fs.existsSync(src)) {
+      const dest = path.join(snapshotDir, rel);
+      const parent = path.dirname(dest);
+      if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
+      try {
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) {
+          fs.cpSync(src, dest, { recursive: true });
+        } else {
+          fs.copyFileSync(src, dest);
+        }
+        backedUp.push(rel);
+      } catch (_) {}
+    }
+  }
+  return backedUp;
+}
+
+/**
+ * 发生更新异常时，从 .rollback_snapshot 原地极速还原核心运行代码
+ */
+function restoreFromLocalCodeSnapshot(snapshotDir, destDir) {
+  if (!fs.existsSync(snapshotDir)) return false;
+  try {
+    const walkAndRestore = (currentSrc, currentDest) => {
+      const entries = fs.readdirSync(currentSrc, { withFileTypes: true });
+      for (const ent of entries) {
+        const sPath = path.join(currentSrc, ent.name);
+        const dPath = path.join(currentDest, ent.name);
+        if (ent.isDirectory()) {
+          if (!fs.existsSync(dPath)) fs.mkdirSync(dPath, { recursive: true });
+          walkAndRestore(sPath, dPath);
+        } else if (ent.isFile()) {
+          try { safeAtomicReplaceFile(sPath, dPath); } catch (_) {}
+        }
+      }
+    };
+    walkAndRestore(snapshotDir, destDir);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 递归安全替换目录内容，遇到任何无法恢复的致命 I/O 错误立即中途阻断
+ */
+function safeAtomicSyncDirectory(stagingDir, destDir, oldFilesTracker = []) {
+  const replacedFiles = [];
+  function walkAndCopy(currentSrc, currentDest) {
+    const entries = fs.readdirSync(currentSrc, { withFileTypes: true });
+    for (const ent of entries) {
+      if (ent.name === '.git' || ent.name === '.update_staging' || ent.name === '.rollback_snapshot' || ent.name === 'node_modules') {
+        continue;
+      }
+      const sPath = path.join(currentSrc, ent.name);
+      const dPath = path.join(currentDest, ent.name);
+      if (ent.isDirectory()) {
+        if (!fs.existsSync(dPath)) fs.mkdirSync(dPath, { recursive: true });
+        walkAndCopy(sPath, dPath);
+      } else if (ent.isFile()) {
+        const res = safeAtomicReplaceFile(sPath, dPath, oldFilesTracker);
+        replacedFiles.push({ src: sPath, dest: dPath, action: res.action });
+      }
+    }
+  }
+  walkAndCopy(stagingDir, destDir);
+  return replacedFiles;
+}
+
+/**
+ * 探测网关健康状态，确保新版本服务正常响应
+ */
+async function probeRouterHealth(port = 4010, maxWaitMs = 4000) {
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    const ok = await new Promise((resolve) => {
+      const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1500 }, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            try {
+              const data = JSON.parse(body);
+              if (data && (data.status === 'ok' || data.healthyAccounts !== undefined)) {
+                return resolve(true);
+              }
+            } catch (_) {}
+          }
+          resolve(false);
+        });
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+    });
+
+    if (ok) return { healthy: true, durationMs: Date.now() - startTime };
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  return { healthy: false, durationMs: Date.now() - startTime, error: `网关健康检查超时 (${maxWaitMs}ms 未收到有效响应)` };
+}
+
+/**
+ * 清理由于 Windows 锁避让而遗留的 .old.* 临时文件
+ */
+function cleanStaleOldFiles(targetDir = ROOT_DIR) {
+  const cleaned = [];
+  if (!fs.existsSync(targetDir)) return cleaned;
+  try {
+    const entries = fs.readdirSync(targetDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (ent.isFile() && ent.name.includes('.old.')) {
+        const fullPath = path.join(targetDir, ent.name);
+        try {
+          fs.unlinkSync(fullPath);
+          cleaned.push(ent.name);
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return cleaned;
+}
+
+/**
  * Snapshot Backup System
  */
 function createSnapshot(reason = '安全更新前自动灾备快照', options = {}) {
@@ -1630,6 +2238,21 @@ function createSnapshot(reason = '安全更新前自动灾备快照', options = 
     backedUpFiles.push({ name: 'config.json', src: routerCfgPath, dest, mode });
   }
 
+  // 3.5. Backup production telemetry stats & history (Angle 9)
+  const prodStatsFiles = ['compression-history.json', 'compression-stats.json', 'account-history.json'];
+  for (const pf of prodStatsFiles) {
+    const srcPf = path.join(ROOT_DIR, pf);
+    if (fs.existsSync(srcPf)) {
+      const destPf = path.join(configsDir, pf);
+      let mode = null;
+      try { mode = fs.statSync(srcPf).mode; } catch (_) {}
+      try {
+        fs.copyFileSync(srcPf, destPf);
+        backedUpFiles.push({ name: pf, src: srcPf, dest: destPf, mode, isProdStats: true });
+      } catch (_) {}
+    }
+  }
+
   // 4. Record Office Preview Patch State
   let officePreviewActive = false;
   const candDists = getOpenChamberDistCandidates();
@@ -1647,7 +2270,7 @@ function createSnapshot(reason = '安全更新前自动灾备快照', options = 
 
   const fileMetadata = {};
   for (const f of backedUpFiles) {
-    fileMetadata[f.name] = { mode: f.mode || null };
+    fileMetadata[f.name] = { mode: f.mode || null, isProdStats: Boolean(f.isProdStats) };
   }
 
   const manifest = {
@@ -1774,6 +2397,39 @@ function rollbackSnapshot(snapshotId = null, options = {}) {
     fs.copyFileSync(snapCfg, targetCfg);
     tryRestoreMode(targetCfg, 'config.json');
     restoredItems.push({ file: 'config.json', status: 'restored', path: targetCfg });
+  }
+
+  // 3.5 Restore production stats if requested or if current workspace is missing/corrupted (Angle 9)
+  const prodStatsFiles = ['compression-history.json', 'compression-stats.json', 'account-history.json'];
+  for (const pf of prodStatsFiles) {
+    const snapPf = path.join(configsDir, pf);
+    const targetPf = path.join(ROOT_DIR, pf);
+    if (fs.existsSync(snapPf)) {
+      let shouldRestore = options.restoreProductionStats === true;
+      if (!shouldRestore) {
+        // 若当前工作区中文件不存在或已损坏（0 字节或语法无效），自动从快照恢复
+        if (!fs.existsSync(targetPf)) {
+          shouldRestore = true;
+        } else {
+          try {
+            const raw = fs.readFileSync(targetPf, 'utf8').trim();
+            if (raw.length === 0) shouldRestore = true;
+            else JSON.parse(raw);
+          } catch (_) {
+            shouldRestore = true;
+          }
+        }
+      }
+      if (shouldRestore) {
+        try {
+          fs.copyFileSync(snapPf, targetPf);
+          tryRestoreMode(targetPf, pf);
+          restoredItems.push({ file: pf, status: 'restored', path: targetPf });
+        } catch (_) {}
+      } else {
+        restoredItems.push({ file: pf, status: 'preserved_latest_production', path: targetPf });
+      }
+    }
   }
 
   // 4. Optionally reinstall packages to match snapshot versions
@@ -2048,7 +2704,12 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
 
                 if (hadRunning) {
                   logs.push('正在安全重启全新的 OpenChamber 桌面端...');
-                  runCmd(`powershell -NoProfile -Command "Start-Sleep -Seconds 1; explorer.exe '${desktopExe}'"`, 5000);
+                  setTimeout(() => {
+                    try {
+                      const sub = spawn('explorer.exe', [desktopExe], { detached: true, stdio: 'ignore' });
+                      sub.unref();
+                    } catch (_) {}
+                  }, 1000);
                 }
               } else {
                 logs.push(`⚠ 未能下载到桌面安装包，已保留 Web 内核更新`);
@@ -2097,7 +2758,11 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     } else if (comp === 'opencode-go-router') {
       const localVers = detectLocalVersions();
       const isSandboxTest = Boolean(process.env.OPENCODE_SNAPSHOTS_DIR) || Boolean(process.env.OPENCODE_ROUTER_CONFIG && process.env.OPENCODE_ROUTER_CONFIG.includes('config.test-'));
-      const localRouterVer = (localVers && localVers['opencode-go-router']) || '3.11.0';
+      let pkgVerFallback = '3.13.5';
+      try {
+        pkgVerFallback = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version || '3.13.5';
+      } catch (_) {}
+      const localRouterVer = (localVers && localVers['opencode-go-router']) || pkgVerFallback;
       const remoteRouterVer = (allRemote && allRemote['opencode-go-router']) || null;
       const isLocalNewerOrEqual = remoteRouterVer ? (compareSemver(localRouterVer, remoteRouterVer) >= 0) : false;
 
@@ -2131,7 +2796,13 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           const pullTimeout = options.timeoutMs ? Math.min(options.timeoutMs, 20000) : 20000;
           const res = runCmd('git pull --rebase', pullTimeout);
           if (res.success) {
-            logs.push(`✔ 智能网关套件代码已同步至最新`);
+            // Pre-flight syntax validation post git pull
+            const gitCheck = verifyStagedCodeIntegrity(ROOT_DIR);
+            if (!gitCheck.valid) {
+              logs.push(`⚠ Git pull 后的代码未通过语法预检 (${gitCheck.error})，可能存在合并冲突标记，已记录警报`);
+            } else {
+              logs.push(`✔ 智能网关套件代码已同步至最新并通过静态语法预检`);
+            }
             results['opencode-go-router'] = { success: true, method: 'git-pull', output: res.output };
           } else {
             // Clean up any incomplete rebase state and lingering locks
@@ -2149,14 +2820,18 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
           }
         }
       } else {
-        logs.push('智能网关套件处于独立部署模式，正在拉取最新代码压缩包更新...');
+        logs.push('智能网关套件处于独立部署模式，正在拉取最新代码压缩包更新 (两阶段暂存机制)...');
         const timeout = options.timeoutMs || 30000;
         const connectTimeoutSec = Math.max(2, Math.min(8, Math.floor(timeout / 1000)));
         const maxTimeSec = Math.max(5, Math.floor(timeout / 1000));
         const primaryUrl = 'https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz';
         const mirrorUrl = 'https://ghproxy.net/https://github.com/deancyl/opencode-go-router/archive/refs/heads/master.tar.gz';
 
-        const tmpExtractDir = path.join(os.tmpdir(), `opencode-router-tar-${Date.now()}`);
+        // Stage 1: Download & Extract into Staging Directory
+        const tmpExtractDir = path.join(ROOT_DIR, '.update_staging');
+        if (fs.existsSync(tmpExtractDir)) {
+          try { fs.rmSync(tmpExtractDir, { recursive: true, force: true }); } catch (_) {}
+        }
         try { fs.mkdirSync(tmpExtractDir, { recursive: true }); } catch (_) {}
         let dlCmd = `curl -sSL --connect-timeout ${connectTimeoutSec} --max-time ${maxTimeSec} "${primaryUrl}" | tar -xz --strip-components=1 -C "${tmpExtractDir}"`;
         let res = runCmd(dlCmd, timeout);
@@ -2172,27 +2847,86 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
         }
 
         if (res.success) {
-          let dlPkgVer = null;
-          try {
-            const dlPkgPath = path.join(tmpExtractDir, 'package.json');
-            if (fs.existsSync(dlPkgPath)) {
-              dlPkgVer = JSON.parse(fs.readFileSync(dlPkgPath, 'utf8')).version || null;
-            }
-          } catch (_) {}
-          if (dlPkgVer && compareSemver(localRouterVer, dlPkgVer) >= 0) {
-            logs.push(`✔ 本地版本 (v${localRouterVer}) 高于或等于远端分支版本 (v${dlPkgVer})，已拦截降级覆盖并保留当前版本`);
+          // Stage 2: Pre-flight Verification (Package metadata & Node.js Syntax Check)
+          const verifyRes = verifyStagedCodeIntegrity(tmpExtractDir);
+          if (!verifyRes.valid) {
+            logs.push(`❌ 暂存更新包完整性与语法预检失败 (${verifyRes.error})，已拦截覆盖并启动安全保护，工作区 0 破坏`);
+            try { fs.rmSync(tmpExtractDir, { recursive: true, force: true }); } catch (_) {}
             results['opencode-go-router'] = {
-              success: true,
-              method: 'preserved-current-version',
+              success: false,
+              method: 'staged-verification-failed',
+              error: verifyRes.error,
               preserved: true,
               targetVersion: localRouterVer
             };
           } else {
-            try {
-              fs.cpSync(tmpExtractDir, ROOT_DIR, { recursive: true, force: true });
-            } catch (_) {}
-            logs.push('✔ 独立部署模式下代码包已同步至最新版本');
-            results['opencode-go-router'] = { success: true, method: 'tarball-pull', output: res.output };
+            const dlPkgVer = verifyRes.version;
+            if (dlPkgVer && compareSemver(localRouterVer, dlPkgVer) >= 0) {
+              logs.push(`✔ 本地版本 (v${localRouterVer}) 高于或等于远端分支版本 (v${dlPkgVer})，已拦截降级覆盖并保留当前版本`);
+              results['opencode-go-router'] = {
+                success: true,
+                method: 'preserved-current-version',
+                preserved: true,
+                targetVersion: localRouterVer
+              };
+            } else {
+              logs.push(`✔ 暂存区核心文件完整性与静态语法检查通过 (node -c 语法预检 100% 合法，目标版本: v${dlPkgVer})`);
+              
+              // Stage 3: Pre-Switch Local Disaster Recovery Snapshot (.rollback_snapshot)
+              const localCodeSnapshotDir = path.join(ROOT_DIR, '.rollback_snapshot');
+              logs.push('正在创建核心运行代码就地灾备快照 (.rollback_snapshot)...');
+              const backedUpCodeFiles = backupLocalCodeForRollback(ROOT_DIR, localCodeSnapshotDir);
+              logs.push(`✔ 核心运行文件就地快照已生成 (${backedUpCodeFiles.length} 个关键运行文件已封存)`);
+
+              // Stage 4: Safe Atomic Sync with EBUSY / EPERM Lock Avoidance (.old.<timestamp>)
+              logs.push('正在执行多进程互斥安全文件替换...');
+              const oldFilesTracker = [];
+              let syncError = null;
+              try {
+                safeAtomicSyncDirectory(tmpExtractDir, ROOT_DIR, oldFilesTracker);
+                if (oldFilesTracker.length > 0) {
+                  logs.push(`✔ 检测到 ${oldFilesTracker.length} 个被占用二进制/脚本文件，已执行 Windows 安全重命名避让 (.old)`);
+                }
+                logs.push('✔ 独立部署模式下代码包已原子同步至最新版本！');
+                results['opencode-go-router'] = {
+                  success: true,
+                  method: 'staged-atomic-switch',
+                  output: res.output,
+                  targetVersion: dlPkgVer,
+                  lockedFilesBypassed: oldFilesTracker.length
+                };
+              } catch (copyErr) {
+                syncError = copyErr;
+                logs.push(`❌ 文件替换过程发生 I/O 异常: ${copyErr.message}，正在触发原地秒级原子自愈回滚...`);
+                const restored = restoreFromLocalCodeSnapshot(localCodeSnapshotDir, ROOT_DIR);
+                logs.push(restored ? '✔ 已从就地快照完整恢复核心运行代码，系统保持稳定' : '⚠ 就地快照恢复存在警告');
+                results['opencode-go-router'] = {
+                  success: false,
+                  method: 'auto-rolled-back-on-io-error',
+                  error: copyErr.message,
+                  preserved: true
+                };
+              }
+
+              // Stage 5: Post-Upgrade Health Check Probe (若服务在线且未被显式跳过)
+              if (!syncError && !options.skipHealthCheck) {
+                try {
+                  const targetPort = options.routerPort || options.port || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4010);
+                  logs.push(`正在对端口 ${targetPort} 执行升级后服务健康探针自检...`);
+                  const probeRes = await probeRouterHealth(targetPort, 4000);
+                  if (probeRes.healthy) {
+                    logs.push(`✔ 新版本服务健康探针自检通过 (${probeRes.durationMs}ms 响应正常)`);
+                  } else {
+                    logs.push(`ℹ 服务当前处于离线待拉起状态或处于非监听模式 (${probeRes.error})`);
+                  }
+                } catch (probeErr) {
+                  logs.push(`ℹ 健康探针提示: ${probeErr.message}`);
+                }
+              }
+
+              // 清理历史遗留的 .old.* 文件
+              cleanStaleOldFiles(ROOT_DIR);
+            }
           }
           try { fs.rmSync(tmpExtractDir, { recursive: true, force: true }); } catch (_) {}
         } else {
@@ -2215,9 +2949,9 @@ async function applyUpdates(componentsToUpdate = null, options = {}) {
     try {
       const targetPort = options.routerPort || options.port || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4010);
       const targetOmoVer = results['oh-my-openagent'] ? results['oh-my-openagent'].targetVersion : null;
-      logs.push(`正在自动执行跨平台配置合流自愈 (清洗单复数冲突，注入全量 38 款模型，端口: ${targetPort})...`);
+      logs.push(`正在自动执行跨平台配置合流自愈 (清洗单复数冲突，注入全量 ${ALL_38_SLUGS.length} 款模型，端口: ${targetPort})...`);
       const harmRes = harmonizeOpencodeConfig(options.configPath || null, targetPort, { omoVersion: targetOmoVer });
-      logs.push(`✔ opencode.jsonc 自动合流自愈成功 (38 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
+      logs.push(`✔ opencode.jsonc 自动合流自愈成功 (${ALL_38_SLUGS.length} 款全量模型已就绪，当前首选模型: ${harmRes.currentModel})`);
     } catch (harmErr) {
       logs.push(`⚠ 跨平台配置自愈提示: ${harmErr.message}`);
     }
@@ -3218,6 +3952,9 @@ module.exports = {
   detectOpenChamberActivePort,
   probeOpenChamberServices,
   fetchOfficialModels,
+  diagnoseUpstreamFailure,
+  probeSingleKey,
+  fetchWebDocsCatalog,
   ALL_38_SLUGS,
   findOpenCodeCredentialPaths,
   openSqliteDb,
@@ -3243,7 +3980,14 @@ module.exports = {
   getOpenChamberDistCandidates,
   canWriteGlobalNpm,
   findScopedComponentDir,
-  writeFileSyncAtomic
+  writeFileSyncAtomic,
+  safeAtomicReplaceFile,
+  verifyStagedCodeIntegrity,
+  backupLocalCodeForRollback,
+  restoreFromLocalCodeSnapshot,
+  safeAtomicSyncDirectory,
+  probeRouterHealth,
+  cleanStaleOldFiles
 };
 
 // CLI entry point

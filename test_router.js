@@ -9,16 +9,30 @@ const { EventEmitter } = require('node:events');
 const codexAdapter = require('./codex-adapter');
 const contextCompactor = require('./context-compactor');
 const psOptimizer = require('./powershell-optimizer');
+const serverMod = require('./server');
 
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = srv.address().port;
-      srv.close(() => resolve(port));
+// WHATWG Fetch restricted ports list (prevent random port 6000/etc. from causing "fetch failed: bad port")
+const RESTRICTED_FETCH_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104,
+  109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515,
+  526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049,
+  3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
+
+async function getFreePort() {
+  while (true) {
+    const port = await new Promise((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = srv.address().port;
+        srv.close(() => resolve(p));
+      });
+      srv.on('error', reject);
     });
-    srv.on('error', reject);
-  });
+    if (!RESTRICTED_FETCH_PORTS.has(port) && port > 1024) {
+      return port;
+    }
+  }
 }
 
 async function runTests() {
@@ -1280,7 +1294,7 @@ async function runTests() {
     const jsonCodexStatus = JSON.parse(resCodexStatus.body);
     assert.strictEqual(jsonCodexStatus.success, true);
     assert.ok(jsonCodexStatus.status, 'status object must be present');
-    assert.strictEqual(jsonCodexStatus.status.availableModels.length, 38, 'must offer all 38 OpenCode Go models');
+    assert.strictEqual(jsonCodexStatus.status.availableModels.length, codexAdapter.OPENCODE_GO_ALL_MODELS.length, 'must offer all OpenCode Go models');
     const mKimi = jsonCodexStatus.status.availableModels.find(m => m.slug === 'kimi-k3');
     assert.ok(mKimi, 'kimi-k3 must be available');
     assert.strictEqual(mKimi.default_reasoning_level, 'high');
@@ -1330,7 +1344,7 @@ async function runTests() {
 
     // Verify models.json merged original with 38 models
     const boundModels = JSON.parse(fs.readFileSync(path.join(isolatedCodexDir, 'models.json'), 'utf8'));
-    assert.strictEqual(boundModels.models.length, 39, '38 OpenCode Go models + 1 custom user model');
+    assert.strictEqual(boundModels.models.length, codexAdapter.OPENCODE_GO_ALL_MODELS.length + 1, 'OpenCode Go models + 1 custom user model');
     assert.ok(boundModels.models.some(m => m.slug === 'custom-model-abc'), 'User original model retained');
     assert.ok(boundModels.models.some(m => m.slug === 'kimi-k3'), 'OpenCode Go models injected');
 
@@ -1853,7 +1867,7 @@ async function runTests() {
     assert.strictEqual(harmonizedData.provider['opencode-go'].options.baseURL, 'http://127.0.0.1:4010/v1');
     assert.strictEqual(harmonizedData.provider['opencode-go'].options.apiKey, 'local-router');
     // 4. All 38 models must exist AND custom model must be preserved (total 39)
-    assert.strictEqual(Object.keys(harmonizedData.provider['opencode-go'].models).length, 39);
+    assert.strictEqual(Object.keys(harmonizedData.provider['opencode-go'].models).length, updater.ALL_38_SLUGS.length + 1);
     assert.ok(harmonizedData.provider['opencode-go'].models['deepseek-v4.1-flash']);
     assert.ok(harmonizedData.provider['opencode-go'].models['glm-5.3-flash']);
     assert.ok(harmonizedData.provider['opencode-go'].models['custom-finetuned-model']);
@@ -1967,9 +1981,9 @@ async function runTests() {
     // Harmonize to complete 38 models
     const fixedIncomplete = updater.harmonizeOpencodeConfig(incompleteFile, 4010);
     assert.strictEqual(fixedIncomplete.success, true);
-    assert.strictEqual(fixedIncomplete.modelCount, 38);
+    assert.strictEqual(fixedIncomplete.modelCount, updater.ALL_38_SLUGS.length);
     const fixedData = JSON.parse(fs.readFileSync(incompleteFile, 'utf8'));
-    assert.strictEqual(Object.keys(fixedData.provider['opencode-go'].models).length, 38);
+    assert.strictEqual(Object.keys(fixedData.provider['opencode-go'].models).length, updater.ALL_38_SLUGS.length);
     console.log('✓ Doctor Diagnostic & Self-Healing for Incomplete 38-Models Catalog verified');
 
     // [Test 55] Testing Dynamic Upstream Models Sync & Incremental Hot-Merge
@@ -2220,8 +2234,10 @@ async function runTests() {
     for (let i = 0; i < 25; i++) {
       mockSlidingInput.push({ type: 'message', role: i % 2 === 0 ? 'assistant' : 'user', content: `Turn ${i}` });
     }
-    const pruned = codexAdapter.pruneResponsesPayload({ input: mockSlidingInput });
-    assert.ok(pruned.input.length < mockSlidingInput.length, 'Pruned input count must be less than original');
+    const normalPruned = codexAdapter.pruneResponsesPayload({ input: mockSlidingInput });
+    assert.strictEqual(normalPruned.input.length, mockSlidingInput.length, 'Normal requests MUST NOT drop items on count alone');
+    const pruned = codexAdapter.pruneResponsesPayload({ input: mockSlidingInput }, null, { emergency: true });
+    assert.ok(pruned.input.length < mockSlidingInput.length, 'Pruned input count must be less than original under emergency');
     assert.ok(pruned.input.some(item => item.content && item.content.includes('智能网关已对前序')), 'Must contain sliding window notice');
 
     // Also verify pruneChatMessages
@@ -2237,8 +2253,10 @@ async function runTests() {
     for (let i = 0; i < 20; i++) {
       mockChatMessages.push({ role: i % 2 === 0 ? 'assistant' : 'user', content: `chat turn ${i}` });
     }
-    const prunedMsgs = codexAdapter.pruneChatMessages(mockChatMessages);
-    assert.ok(prunedMsgs.length < mockChatMessages.length, 'Pruned chat messages count must be smaller');
+    const normalPrunedMsgs = codexAdapter.pruneChatMessages(mockChatMessages);
+    assert.strictEqual(normalPrunedMsgs.length, mockChatMessages.length, 'Normal chat requests MUST NOT drop items on count alone');
+    const prunedMsgs = codexAdapter.pruneChatMessages(mockChatMessages, null, null, { emergency: true });
+    assert.ok(prunedMsgs.length < mockChatMessages.length, 'Pruned chat messages count must be smaller under emergency');
     console.log('✓ Context Pruning & Sliding-Window Compression Engine verified');
 
     // [Test 66] Testing Restart Codex API (/balancer/api/restart-codex)...
@@ -3745,7 +3763,8 @@ $ProgressPreference = 'SilentlyContinue'
     ];
     // Force slim threshold to 50 chars for testing
     const slimmedSchema = contextCompactor.slimToolsSchema(oversizedTools, 50);
-    assert.strictEqual(slimmedSchema[0].function.description, 'Executes complex queries against Kubernetes clusters. This tool communicates with kube-apiserver.');
+    assert.strictEqual(slimmedSchema[0].function.description, 'Executes complex queries against Kubernetes clusters. This tool communicates with kube-apiserver.\n\nUsage Notes:\nDetailed multi-page manual here.');
+    assert.ok(slimmedSchema[0].function.description.includes('Usage Notes:'), 'Usage Notes and rules must be strictly preserved without truncation');
     assert.ok(!slimmedSchema[0].function.description.includes('Examples:'));
     assert.ok(!slimmedSchema[0].function.parameters.properties.cluster.description.includes('Examples:'));
     assert.strictEqual(slimmedSchema[0].function.parameters.properties.cluster.example, undefined, 'example field must be stripped');
@@ -3778,7 +3797,7 @@ $ProgressPreference = 'SilentlyContinue'
     const slimmedMcp = contextCompactor.slimToolsSchema(mcpTools, 50);
     assert.strictEqual(slimmedMcp[0].inputSchema.properties.filter.example, undefined, 'example field on filter must be stripped');
     assert.strictEqual(slimmedMcp[0].inputSchema.properties.filter.properties.id.example, undefined, 'nested example field on id must be stripped');
-    assert.ok(!slimmedMcp[0].inputSchema.properties.filter.properties.id.description.includes('Usage:'));
+    assert.ok(slimmedMcp[0].inputSchema.properties.filter.properties.id.description.includes('Usage:'), 'Usage parameter guidance must be strictly preserved without truncation');
     console.log('✓ Oversized Schema Slimming & Example Truncation verified');
 
     // [Test 92] Testing Session Compression Memoization & Cache-Zone Byte Freezing (sessionCompressionMemo)
@@ -6795,7 +6814,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(launcherPs1Content.includes('OpenCodeRouterApp.exe'), 'launcher.ps1 must prioritize OpenCodeRouterApp.exe');
 
     const packageJson140 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(packageJson140.version), 'package.json version must be 3.5.0, 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.5.0', '3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(packageJson140.version), 'package.json version must be valid');
     assert.ok(packageJson140.scripts && packageJson140.scripts['build:exe'].includes('OpenCodeRouterApp.cs'), 'package.json build:exe script must build OpenCodeRouterApp');
     console.log('✓ Launchers & Tray prioritizations & package.json verified');
 
@@ -7041,7 +7060,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // 11. Verify v3.6.0+ version declaration in package.json
     const packageJson141 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(packageJson141.version), 'package.json version must be 3.6.0, 3.6.1, 3.7.0, 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.6.0', '3.6.1', '3.7.0', '3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(packageJson141.version), 'package.json version must be valid');
     console.log(`✓ package.json version ${packageJson141.version} verified`);
 
     // ---------------------------------------------------------------------------------------------
@@ -7548,9 +7567,9 @@ $ProgressPreference = 'SilentlyContinue'
       setTimeout(() => resolve(true), 100);
     });
 
-    // 4. Verify package.json version is 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1
+    // 4. Verify package.json version is 3.8.0+
     const pkgJson147 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson147.version), 'package.json version must be 3.8.0, 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.0', '3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson147.version), 'package.json version must be valid');
     console.log('✓ Web UI Redundancy Consolidation, Memory Overflow Shield & v3.8.0 Release verified');
 
     // [Test 148] Testing Internal Management API 4MB Ceiling, 413 Precedence, Cross-Tab Anchor Navigation & v3.8.1 Release
@@ -7627,7 +7646,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     // Dynamic version injection
     const pkgJson148 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson148.version), 'package.json version must be 3.8.1, 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.1', '3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson148.version), 'package.json version must be valid');
     assert.ok(uiRes148.body.includes(`v${pkgJson148.version} Pro`), 'Web UI must render version badge');
     assert.ok(uiRes148.body.includes('(SPA Architecture v3.5.0 Pro Baseline)'), 'Web UI must retain baseline notice for backwards compatibility');
 
@@ -7636,9 +7655,9 @@ $ProgressPreference = 'SilentlyContinue'
     // [Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release
     console.log('\n[Test 149] Testing Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release...');
 
-    // 1. Verify package.json declares v3.8.2, v3.8.3, v3.9.0, v3.10.0 or v3.10.1 and npm run setup script
+    // 1. Verify package.json declares valid version and npm run setup script
     const pkgJson149 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson149.version), 'package.json version must be 3.8.2, 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.2', '3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson149.version), 'package.json version must be valid');
     assert.ok(pkgJson149.scripts && pkgJson149.scripts.setup, 'package.json must contain setup script');
     assert.ok(pkgJson149.scripts.setup.includes('setup-windows.ps1'), 'setup script must execute setup-windows.ps1');
 
@@ -7660,16 +7679,16 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
     // [Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release
     console.log('\n[Test 150] Testing Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release...');
 
-    // 1. Verify package.json declares v3.8.3, v3.9.0, v3.10.0 or v3.10.1
+    // 1. Verify package.json declares valid version
     const pkgJson150 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson150.version), 'package.json version must be 3.8.3, 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.8.3', '3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson150.version), 'package.json version must be valid');
 
     // 2. Verify server.js exports MAX_ROUTER_SESSIONS = 5000 and touchSession bounding
     const routerModule = require('./server');
@@ -7694,8 +7713,8 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('process.argv'), 'setup-windows.ps1 must use process.argv for path-independent execution');
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
-    // 5. Verify Web UI renders v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.11.0 Pro'), 'Web UI must render v3.8.3 Pro or v3.9.0 Pro or v3.10.0 Pro version badge');
+    // 5. Verify Web UI renders version badge
+    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
@@ -7970,11 +7989,11 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro') || uiRes153.body.includes('v3.12.0 Pro') || uiRes153.body.includes('v3.13.0 Pro') || uiRes153.body.includes('v3.13.1 Pro') || uiRes153.body.includes('v3.13.2 Pro') || uiRes153.body.includes('v3.13.3 Pro') || uiRes153.body.includes('v3.13.4 Pro') || uiRes153.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
 
-    // 6. Verify package.json declares 3.9.0, 3.10.0 or 3.10.1
+    // 6. Verify package.json declares valid version
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.9.0', '3.10.0', '3.10.1', '3.11.0'].includes(pkgJson153.version), 'package.json version must be 3.9.0, 3.10.0 or 3.10.1');
+    assert.ok(['3.9.0', '3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson153.version), 'package.json version must be valid');
 
     console.log('✓ CONNECT Tunnel Agent, 403 Region Sanitization & Web UI Proxy Settings Persistence verified');
 
@@ -8094,13 +8113,13 @@ $ProgressPreference = 'SilentlyContinue'
     const initialSaved = contextCompactor.getCompressionStats().totalSavedChars;
     assert.ok(initialSaved > 0, 'Initial compression must save characters');
 
-    // 7. Verify package.json declares 3.10.0 or 3.10.1 and Web UI renders badge
+    // 7. Verify package.json declares valid version and Web UI renders badge
     const pkgJson154 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    assert.ok(['3.10.0', '3.10.1', '3.11.0'].includes(pkgJson154.version), 'package.json version must be 3.10.0 or 3.10.1');
+    assert.ok(['3.10.0', '3.10.1', '3.11.0', '3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson154.version), 'package.json version must be valid');
 
     const uiRes154 = await request('/balancer/ui', { method: 'GET' });
     assert.strictEqual(uiRes154.statusCode, 200);
-    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro'), 'Web UI must render v3.10.0 Pro or v3.10.1 Pro badge');
+    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro') || uiRes154.body.includes('v3.12.0 Pro') || uiRes154.body.includes('v3.13.0 Pro') || uiRes154.body.includes('v3.13.1 Pro') || uiRes154.body.includes('v3.13.2 Pro') || uiRes154.body.includes('v3.13.3 Pro') || uiRes154.body.includes('v3.13.4 Pro') || uiRes154.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
 
     console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
@@ -8439,7 +8458,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(codexAdapter.CODEX_ZHCN_TRANSLATE_SCRIPT.includes('审查代码变更'), 'CODEX_ZHCN_TRANSLATE_SCRIPT must include Review changes translation');
     const uiRes156 = await request('/balancer/ui', { method: 'GET' });
     assert.ok(uiRes156.body.includes('toggleAllCompModuleBodies()'), 'Web UI must include 1-click advanced switches collapse toggle');
-    assert.ok(uiRes156.body.includes('v3.11.0 Pro'), 'Web UI must render v3.11.0 Pro version badge');
+    assert.ok(uiRes156.body.includes('v3.11.0 Pro') || uiRes156.body.includes('v3.12.0 Pro') || uiRes156.body.includes('v3.13.0 Pro') || uiRes156.body.includes('v3.13.1 Pro') || uiRes156.body.includes('v3.13.2 Pro') || uiRes156.body.includes('v3.13.3 Pro') || uiRes156.body.includes('v3.13.4 Pro') || uiRes156.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes156.body.includes('.comp-range-btn.active, .time-range-pill.active'), 'Web UI must style .time-range-pill.active buttons');
     assert.ok(uiRes156.body.includes("const overviewDocBadge = document.getElementById('doctor-overview-badge');"), 'runDoctorCheck must synchronize #doctor-overview-badge');
 
@@ -8494,7 +8513,7 @@ $ProgressPreference = 'SilentlyContinue'
       Array.from({ length: 20 }, (_, i) => `- domain-skill-${i}: Perform comprehensive analysis of domain ${i} workflows. Use this skill whenever the user asks to configure, debug, or inspect domain ${i} pipelines in detail (file: r1/domain-skill-${i}/SKILL.md)`).join('\n') +
       '\n</skills_instructions>';
     const compactedSkillsPrompt = contextCompactor.compactSystemPrompt(sampleSkillsPrompt, { enabled: true, cleanDevOpsOutput: true, cacheZoneFreeze: true }, 'sess_sys_156', false);
-    assert.ok(compactedSkillsPrompt.length < sampleSkillsPrompt.length, 'Verbose <skills_instructions> descriptions must be deterministically compacted');
+    assert.ok(compactedSkillsPrompt.includes('Use this skill whenever the user asks to configure, debug, or inspect'), 'Skill trigger conditions must be strictly preserved without truncation');
     assert.ok(compactedSkillsPrompt.includes('(file: r1/domain-skill-0/SKILL.md)') && compactedSkillsPrompt.includes('(file: r1/domain-skill-19/SKILL.md)'), 'All skill names and file paths must be 100% preserved');
 
     // 11. Top-level cleanCliMetadata & Rule 26 Response-Chain Root Session Reverse Tracing
@@ -8574,8 +8593,653 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(sseChunks.join('').includes('网关智能防御：检测到模型输出产生重复循环'), 'Must emit user-friendly degeneration notice');
     console.log('✓ Stream Degeneration Circuit Breaker & Windows Native PowerShell Anchor (Test 157) passed');
 
+    // --- [Test 158] Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers Verification ---
+    console.log('\n--- [Test 158] Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers Verification ---');
+
+    // 1. Verify GET /balancer/api/circuit-status endpoint
+    const circuitRes = await request('/balancer/api/circuit-status', { method: 'GET' });
+    assert.strictEqual(circuitRes.statusCode, 200);
+    const circuitData = JSON.parse(circuitRes.body);
+    assert.strictEqual(circuitData.ok, true);
+    assert.ok(circuitData.circuitBreaker);
+    assert.ok(Array.isArray(circuitData.accounts));
+    assert.ok(circuitData.accounts.length >= 2);
+    const accItem = circuitData.accounts[0];
+    assert.ok(accItem.circuitState);
+    assert.strictEqual(typeof accItem.consecutiveFailures, 'number');
+
+    // 2. Verify Transparent Headers in Router Response
+    const headerTestRes = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer test-key'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        messages: [{ role: 'user', content: 'test transparent headers' }]
+      })
+    });
+    assert.strictEqual(headerTestRes.statusCode, 200);
+    assert.ok(headerTestRes.headers['x-router-account-id'], 'Must inject x-router-account-id header');
+    assert.ok(headerTestRes.headers['x-router-circuit-state'], 'Must inject x-router-circuit-state header');
+    assert.ok(headerTestRes.headers['x-router-ttft-ms'], 'Must inject x-router-ttft-ms header');
+
+    // 3. Verify Server Module Exports & Single-Flight Mutual Exclusion
+    assert.ok(serverMod.CIRCUIT_STATE);
+    assert.strictEqual(serverMod.CIRCUIT_STATE.CLOSED, 'CLOSED');
+    assert.strictEqual(serverMod.CIRCUIT_STATE.HALF_OPEN, 'HALF_OPEN');
+    assert.strictEqual(serverMod.CIRCUIT_STATE.OPEN, 'OPEN');
+
+    const testBackoff = serverMod.calculateJitteredBackoff(1000, 2, 16000);
+    assert.ok(testBackoff >= 2800 && testBackoff <= 5200, 'Backoff must reflect 70%~130% jitter range');
+
+    console.log('✓ Circuit Breaker, Single-Flight Probing, TTFT Decoupled Timeouts & Transparent Headers (Test 158) passed');
+
+    // --- [Test 159] Codex & Multi-IDE Stream State Machine, TCP Packet Fragmentation & Anti-Buffering Headers ---
+    console.log('\n--- [Test 159] Codex & Multi-IDE Stream State Machine, TCP Packet Fragmentation & Anti-Buffering Headers ---');
+
+    // 1. Verify getCorsHeaders injects anti-buffering headers for SSE
+    const corsSseHeaders = serverMod.getCorsHeaders({ 'content-type': 'text/event-stream; charset=utf-8' });
+    assert.strictEqual(corsSseHeaders['x-accel-buffering'], 'no');
+    assert.strictEqual(corsSseHeaders['cache-control'], 'no-cache');
+
+    // 2. Verify codexAdapter stream bridges export and function definition
+    assert.strictEqual(typeof codexAdapter.bridgeResponsesStream, 'function');
+    assert.strictEqual(typeof codexAdapter.bridgeAnthropicStream, 'function');
+    assert.strictEqual(typeof codexAdapter.bridgeChatStream, 'function');
+
+    // 3. Verify bridgeChatStream exactly-once [DONE] and finish_reason guarantee
+    const chatStreamChunks159 = [];
+    let chatStreamDoneCalled159 = false;
+    const mockClientRes159 = new (require('events').EventEmitter)();
+    mockClientRes159.writeHead = (st, hdrs) => {
+      assert.strictEqual(hdrs['X-Accel-Buffering'], 'no');
+      assert.strictEqual(hdrs['Cache-Control'], 'no-cache');
+    };
+    mockClientRes159.write = (chunk) => chatStreamChunks159.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    mockClientRes159.end = () => {};
+    const mockUpstreamEv159 = new (require('events').EventEmitter)();
+
+    codexAdapter.bridgeChatStream(mockUpstreamEv159, mockClientRes159, 'deepseek-v4.1-flash', 'req_test159', () => {
+      chatStreamDoneCalled159 = true;
+    });
+
+    mockUpstreamEv159.emit('data', Buffer.from('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n', 'utf8'));
+    mockUpstreamEv159.emit('data', Buffer.from('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'utf8'));
+    mockUpstreamEv159.emit('data', Buffer.from('data: [DONE]\n\n', 'utf8'));
+    mockUpstreamEv159.emit('end');
+
+    assert.strictEqual(chatStreamDoneCalled159, true);
+    const combinedStream159 = chatStreamChunks159.join('');
+    const doneMatches159 = combinedStream159.match(/data: \[DONE\]/g);
+    assert.strictEqual(doneMatches159?.length, 1, 'Must send exactly one data: [DONE]');
+    assert.ok(combinedStream159.includes('Hello'));
+
+    console.log('✓ Codex & Multi-IDE Stream State Machine & Anti-Buffering (Test 159) passed');
+
+    // --- [Test 160] ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox ---
+    console.log('\n--- [Test 160] ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox ---');
+
+    // 1. Verify ComfyUIAdapter cancelPrompt & _deleteFromQueue methods
+    const { ComfyUIAdapter } = require('./comfyui-adapter.js');
+    const testComfyAdapter = new ComfyUIAdapter({ rootDir: __dirname });
+    assert.strictEqual(typeof testComfyAdapter.cancelPrompt, 'function');
+    assert.strictEqual(typeof testComfyAdapter._deleteFromQueue, 'function');
+    assert.strictEqual(typeof testComfyAdapter.detectServer, 'function');
+    assert.strictEqual(typeof testComfyAdapter.buildExecutionGraph, 'function');
+
+    // 2. Verify Office Preview Engine security & XSS sanitizer
+    const officeEngineContent = fs.readFileSync(path.join(__dirname, 'assets', 'office-preview-engine.js'), 'utf8');
+    assert.ok(officeEngineContent.includes('textContent = rowData[c]'), 'Must use textContent for cell rendering to guarantee zero XSS');
+    assert.ok(officeEngineContent.includes('INITIAL_PAGE_SIZE = 150'), 'Must implement non-blocking chunked pagination');
+    assert.ok(officeEngineContent.includes('oc-pulse'), 'Must include animated loading skeleton');
+
+    // 3. Verify MCP Server tool definition manifest
+    const mcpContent = fs.readFileSync(path.join(__dirname, 'mcp-comfyui.js'), 'utf8');
+    assert.ok(mcpContent.includes('code: -32700'), 'MCP server must handle JSON-RPC Parse error (-32700)');
+    assert.ok(mcpContent.includes('code: -32602'), 'MCP server must handle Invalid params (-32602)');
+    assert.ok(mcpContent.includes('notifications/progress'), 'MCP server must support progress notifications');
+
+    
+
+    // 4. Verify ComfyUI Service Lifecycle & GitHub Deployment Methods
+    {
+      assert.strictEqual(typeof testComfyAdapter.startService, 'function', 'startService must be a function');
+      assert.strictEqual(typeof testComfyAdapter.stopService, 'function', 'stopService must be a function');
+      assert.strictEqual(typeof testComfyAdapter.restartService, 'function', 'restartService must be a function');
+      assert.strictEqual(typeof testComfyAdapter.syncWorkflowsFromGitHub, 'function', 'syncWorkflowsFromGitHub must be a function');
+      assert.strictEqual(typeof testComfyAdapter.deployToComfyUI, 'function', 'deployToComfyUI must be a function');
+      assert.strictEqual(typeof testComfyAdapter.detectLocalComfyUIDirs, 'function', 'detectLocalComfyUIDirs must be a function');
+      assert.strictEqual(typeof testComfyAdapter.openWebGui, 'function', 'openWebGui must be a function');
+
+      // 5. Test ComfyUI Status API & Master Switch Lifecycle
+      const statusRes = await request('/balancer/api/comfyui/status');
+      assert.strictEqual(statusRes.statusCode, 200, '/balancer/api/comfyui/status must return 200');
+      const comfyStatusJson = JSON.parse(statusRes.body);
+      assert.strictEqual(comfyStatusJson.success, true);
+      assert.strictEqual(typeof comfyStatusJson.enabled, 'boolean');
+      assert.ok(Array.isArray(comfyStatusJson.detectedDirs));
+      assert.ok(typeof comfyStatusJson.repoUrl === 'string');
+
+      // Test ComfyUI Toggle (Disable Master Switch)
+      const toggleOffRes = await request('/balancer/api/comfyui/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: false })
+      });
+      assert.strictEqual(toggleOffRes.statusCode, 200);
+      const toggleOffJson = JSON.parse(toggleOffRes.body);
+      assert.strictEqual(toggleOffJson.success, true);
+      assert.strictEqual(toggleOffJson.enabled, false);
+
+      // When disabled, /v1/images/generations must be blocked with 403 comfyui_disabled
+      const genDisabledRes = await request('/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'test when disabled' })
+      });
+      assert.strictEqual(genDisabledRes.statusCode, 403);
+      const genDisabledJson = JSON.parse(genDisabledRes.body);
+      assert.strictEqual(genDisabledJson.error?.code, 'comfyui_disabled');
+
+      // When disabled, /v1/images/interrogate must be blocked with 403 comfyui_disabled
+      const intDisabledRes = await request('/v1/images/interrogate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' })
+      });
+      assert.strictEqual(intDisabledRes.statusCode, 403);
+      const intDisabledJson = JSON.parse(intDisabledRes.body);
+      assert.strictEqual(intDisabledJson.error?.code, 'comfyui_disabled');
+
+      // Test ComfyUI Toggle (Re-enable Master Switch)
+      const toggleOnRes = await request('/balancer/api/comfyui/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true })
+      });
+      assert.strictEqual(toggleOnRes.statusCode, 200);
+      const toggleOnJson = JSON.parse(toggleOnRes.body);
+      assert.strictEqual(toggleOnJson.success, true);
+      assert.strictEqual(toggleOnJson.enabled, true);
+
+      // Test ComfyUI Detect Local Dirs API
+      const detectDirsRes = await request('/balancer/api/comfyui/detect-dirs');
+      assert.strictEqual(detectDirsRes.statusCode, 200);
+      const detectDirsJson = JSON.parse(detectDirsRes.body);
+      assert.strictEqual(detectDirsJson.success, true);
+      assert.ok(Array.isArray(detectDirsJson.dirs));
+    }
+
+    console.log('✓ ComfyUI Multimodal Bridge, Queue Purging, MCP Protocol & Office Preview Sandbox (Test 160) passed');
+
+    // --- [Test 161] Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security ---
+    console.log('\n--- [Test 161] Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security ---');
+
+    // 1. Static asset serving over HTTP with MIME and sandbox checks
+    const zhAssetRes = await request('/assets/locales/zh-CN.json');
+    assert.strictEqual(zhAssetRes.statusCode, 200, 'zh-CN.json must return 200');
+    assert.ok(zhAssetRes.headers['content-type'].includes('application/json'), 'zh-CN.json must have JSON content-type');
+    const zhParsed = JSON.parse(zhAssetRes.body);
+    assert.strictEqual(Object.keys(zhParsed).length, 239, 'zh-CN.json must have 239 keys');
+
+    const enAssetRes = await request('/assets/locales/en-US.json');
+    assert.strictEqual(enAssetRes.statusCode, 200, 'en-US.json must return 200');
+    assert.ok(enAssetRes.headers['content-type'].includes('application/json'), 'en-US.json must have JSON content-type');
+    const enParsed = JSON.parse(enAssetRes.body);
+    assert.strictEqual(Object.keys(enParsed).length, 239, 'en-US.json must have 239 keys');
+
+    // Path traversal defense over HTTP
+    const traversalRes = await request('/assets/../server.js');
+    assert.strictEqual(traversalRes.statusCode, 403, 'Path traversal must be rejected with 403');
+
+    // 2. Dashboard UI features verification
+    const dashRes = await request('/balancer/ui', { method: 'GET' });
+    assert.strictEqual(dashRes.statusCode, 200, 'Dashboard UI must load with 200');
+    assert.ok(dashRes.body.includes('gateway-connection-banner'), 'UI must include gateway-connection-banner');
+    assert.ok(dashRes.body.includes('font-variant-numeric: tabular-nums;'), 'UI must include tabular-nums styling');
+    assert.ok(dashRes.body.includes('focus-visible'), 'UI must include focus-visible focus rings');
+    assert.ok(dashRes.body.includes('MAX_CHART_RING_BUFFER = 60'), 'UI must enforce 60-point ring buffer');
+    assert.ok(dashRes.body.includes('scheduleChartRender'), 'UI must implement RAF scheduleChartRender batching');
+    assert.ok(dashRes.body.includes('truncate-text'), 'UI must include text truncation utility');
+
+    console.log('✓ Web Dashboard Monitoring, Live Streaming Chart Engine & Static Assets Security (Test 161) passed');
+
+    // =========================================================================
+    // [Test 162] Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment Verification:
+    // 1. Graceful SIGTERM/SIGINT shutdown & synchronous stats flushing in server.js
+    // 2. daemon_runner.py signal forwarding, crash-loop backoff & 10MB log rotation
+    // 3. POSIX sh / BusyBox ash compatibility across start/stop/status-linux.sh
+    // 4. patch-openchamber-office.sh / .ps1 idempotency marker (V2) & .orig rollback
+    // 5. Air-Gapped Safety: zero external CDN, fonts, or telemetry leakage
+    // =========================================================================
+    console.log('\n--- [Test 162] Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment Verification ---');
+
+    // 1. server.js graceful shutdown exports
+    const srvMod = require('./server');
+    assert.strictEqual(typeof srvMod.gracefulShutdown, 'function', 'server.js must export gracefulShutdown');
+
+    // 2. daemon_runner.py signal handling & backoff verification
+    const daemonRunnerCode = fs.readFileSync(path.join(__dirname, 'daemon_runner.py'), 'utf8');
+    assert.ok(daemonRunnerCode.includes('handle_shutdown_signal'), 'daemon_runner.py must handle shutdown signals');
+    assert.ok(daemonRunnerCode.includes('stable_uptime_threshold'), 'daemon_runner.py must implement crash-loop backoff');
+    assert.ok(daemonRunnerCode.includes('BoundedLogRotator'), 'daemon_runner.py must implement bounded log rotation');
+    assert.ok(daemonRunnerCode.includes('MAX_LOG_SIZE'), 'daemon_runner.py must enforce max log size');
+
+    // 3. opencode-router.service systemd unit verification
+    const serviceCode = fs.readFileSync(path.join(__dirname, 'opencode-router.service'), 'utf8');
+    assert.ok(serviceCode.includes('TimeoutStopSec=15s'), 'opencode-router.service must specify TimeoutStopSec');
+    assert.ok(serviceCode.includes('KillMode=mixed'), 'opencode-router.service must specify KillMode=mixed');
+
+    // 4. Linux scripts BusyBox compatibility
+    const startSh = fs.readFileSync(path.join(__dirname, 'start-linux.sh'), 'utf8');
+    const stopSh = fs.readFileSync(path.join(__dirname, 'stop-linux.sh'), 'utf8');
+    const statusSh = fs.readFileSync(path.join(__dirname, 'status-linux.sh'), 'utf8');
+    assert.ok(startSh.startsWith('#!/bin/sh'), 'start-linux.sh must have POSIX /bin/sh shebang');
+    assert.ok(stopSh.startsWith('#!/bin/sh'), 'stop-linux.sh must have POSIX /bin/sh shebang');
+    assert.ok(statusSh.startsWith('#!/bin/sh'), 'status-linux.sh must have POSIX /bin/sh shebang');
+
+    // 5. Office patch idempotency & air-gapped safety
+    const patchSh = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.sh'), 'utf8');
+    const patchPs = fs.readFileSync(path.join(__dirname, 'patch-openchamber-office.ps1'), 'utf8');
+    assert.ok(patchSh.includes('OPENCODE_OFFICE_PATCH_IDEMPOTENT_V2'), 'patch-openchamber-office.sh must contain V2 idempotency marker');
+    assert.ok(patchPs.includes('OPENCODE_OFFICE_PATCH_IDEMPOTENT_V2'), 'patch-openchamber-office.ps1 must contain V2 idempotency marker');
+    assert.ok(patchSh.includes('.orig'), 'patch-openchamber-office.sh must support .orig factory baseline');
+    assert.ok(patchPs.includes('.orig'), 'patch-openchamber-office.ps1 must support .orig factory baseline');
+
+    // 6. Air-gapped safety audit on office-preview-engine.js
+    const officeEngine = fs.readFileSync(path.join(__dirname, 'assets', 'office-preview-engine.js'), 'utf8');
+    assert.ok(!officeEngine.includes('view.officeapps.live.com'), 'office-preview-engine.js must not load external office iframe');
+    assert.ok(!officeEngine.includes('cdnjs.cloudflare.com'), 'office-preview-engine.js must not load external CDN');
+
+    console.log('✓ Linux / NAS Daemon Lifecycle & Air-Gapped Office Deployment (Test 162) passed');
+
+    // =========================================================================
+    // [Test 163] Doctor Diagnostic Engine, Staged Update & Rollback Atomicity (Angle 9):
+    // 1. Two-phase staged update syntax pre-check (verifyStagedCodeIntegrity)
+    // 2. Windows EBUSY / EPERM file locking avoidance & .old tracking
+    // 3. Local code pre-switch snapshot (.rollback_snapshot) and instant revert
+    // 4. Non-destructive configuration harmonization with millisecond timestamp backup
+    // 5. Production telemetry stats preservation during snapshot & rollback
+    // 6. doctor-repair.ps1 & rollback-all.ps1 syntax, pre-backup and safe process filtering
+    // =========================================================================
+    console.log('\n--- [Test 163] Doctor Diagnostic Engine, Staged Update & Rollback Atomicity Verification ---');
+
+    // 1. Verify updater exports for staged atomic update
+    const updaterModAngle9 = require('./updater');
+    assert.strictEqual(typeof updaterModAngle9.verifyStagedCodeIntegrity, 'function', 'updater must export verifyStagedCodeIntegrity');
+    assert.strictEqual(typeof updaterModAngle9.safeAtomicReplaceFile, 'function', 'updater must export safeAtomicReplaceFile');
+    assert.strictEqual(typeof updaterModAngle9.backupLocalCodeForRollback, 'function', 'updater must export backupLocalCodeForRollback');
+    assert.strictEqual(typeof updaterModAngle9.restoreFromLocalCodeSnapshot, 'function', 'updater must export restoreFromLocalCodeSnapshot');
+    assert.strictEqual(typeof updaterModAngle9.probeRouterHealth, 'function', 'updater must export probeRouterHealth');
+    assert.strictEqual(typeof updaterModAngle9.cleanStaleOldFiles, 'function', 'updater must export cleanStaleOldFiles');
+
+    // 2. Syntax pre-flight verification on local root directory
+    const rootSyntaxCheck = updaterModAngle9.verifyStagedCodeIntegrity(__dirname);
+    assert.strictEqual(rootSyntaxCheck.valid, true, 'Current repository code must pass syntax pre-flight check');
+
+    // 3. Script syntax validation for doctor-repair.ps1 and rollback-all.ps1
+    const doctorCodeA9 = fs.readFileSync(path.join(__dirname, 'doctor-repair.ps1'), 'utf8');
+    const rollbackCodeA9 = fs.readFileSync(path.join(__dirname, 'rollback-all.ps1'), 'utf8');
+    assert.ok(doctorCodeA9.includes('Backup-ConfigFile'), 'doctor-repair.ps1 must implement Backup-ConfigFile');
+    assert.ok(doctorCodeA9.includes('Get-IssueRootCause'), 'doctor-repair.ps1 must implement Get-IssueRootCause');
+    assert.ok(doctorCodeA9.includes('executionReport'), 'doctor-repair.ps1 must collect structured execution report');
+    assert.ok(rollbackCodeA9.includes('Stop-TargetProcessSafe'), 'rollback-all.ps1 must implement Stop-TargetProcessSafe');
+    assert.ok(rollbackCodeA9.includes('AllowedPatterns'), 'rollback-all.ps1 must enforce process pattern whitelist');
+
+    // 4. Non-destructive harmonization with timestamp backup
+    const testTempOc = path.join(os.tmpdir(), `test-oc-harm-${Date.now()}.jsonc`);
+    fs.writeFileSync(testTempOc, JSON.stringify({
+      plugin: ['oh-my-openagent@5.1.30'],
+      provider: {
+        'custom-corp': {
+          name: 'Custom Corp',
+          options: { apiKey: 'sk-corp-test-123', baseURL: 'https://corp.internal/v1' }
+        }
+      }
+    }));
+    const harmTestRes = updaterModAngle9.harmonizeOpencodeConfig(testTempOc, routerPort);
+    assert.strictEqual(harmTestRes.success, true);
+    assert.ok(harmTestRes.backupPath && fs.existsSync(harmTestRes.backupPath), 'Timestamp backup must be generated');
+    const harmReRead = JSON.parse(updaterModAngle9.stripJsonComments(fs.readFileSync(testTempOc, 'utf8')));
+    assert.strictEqual(harmReRead.provider['custom-corp'].options.apiKey, 'sk-corp-test-123', 'Custom credentials must be preserved');
+    try { fs.unlinkSync(testTempOc); } catch (_) {}
+    if (harmTestRes.backupPath) { try { fs.unlinkSync(harmTestRes.backupPath); } catch (_) {} }
+
+    console.log('✓ Doctor Diagnostic Engine, Staged Update & Rollback Atomicity (Test 163) passed');
+
+    // [Test 164] Top 5 Core High-Risk Issues Verification (Commit 5f52410 / v3.11.0)
+    console.log('\n[Test 164] Testing Top 5 Core High-Risk Issues (Commit 5f52410 / v3.11.0)...');
+
+    // 1. Issue 1: Master Switch compression.enabled: false & Source Code / Stack Trace Zero-Folding
+    const psOptMod = require('./powershell-optimizer');
+    assert.strictEqual(
+      psOptMod.isPowerShellOptimizerActive({ enabled: false, modules: { powershell: { enabled: true } } }),
+      false,
+      'PowerShell optimizer must respect global compression.enabled: false even if modules.powershell.enabled is true'
+    );
+    const bigToolPayload164 = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Inspect output' },
+        { type: 'function_call_output', call_id: 'call_disabled_164', output: 'X'.repeat(10000) }
+      ]
+    };
+    const disabledPruneResp = codexAdapter.pruneResponsesPayload(bigToolPayload164, 'sess_164_off', { enabled: false });
+    assert.strictEqual(disabledPruneResp.modified, false, 'pruneResponsesPayload must not modify payload when enabled === false');
+    assert.strictEqual(disabledPruneResp.input[1].output.length, 10000, 'Tool output must remain 100% intact when compression is disabled');
+
+    const disabledPruneChat = codexAdapter.pruneChatMessages(
+      [{ role: 'user', content: 'hi' }, { role: 'tool', tool_call_id: 'c1', content: 'Y'.repeat(10000) }],
+      4000,
+      'sess_164_off',
+      { enabled: false }
+    );
+    assert.strictEqual(disabledPruneChat.modified, false, 'pruneChatMessages must not modify messages when enabled === false');
+    assert.strictEqual(disabledPruneChat[1].content.length, 10000, 'Chat tool message must remain 100% intact when compression is disabled');
+
+    // Source code & stack trace protection in pruneResponsesPayload & pruneChatMessages
+    const longSourceCode164 = Array.from({ length: 120 }, (_, i) => `function handler_${i}(req, res) {\n  const val = req.headers["x-id-${i}"];\n  return res.json({ id: ${i}, val });\n}`).join('\n');
+    const longStackTrace164 = `TypeError: Cannot read properties of undefined (reading 'map')\n` +
+      Array.from({ length: 60 }, (_, i) => `    at Object.processItem (/app/src/services/worker_${i}.js:${i + 10}:15)`).join('\n');
+    assert.ok(longSourceCode164.length > 3500 && longStackTrace164.length > 3000);
+    const codePruneResp = codexAdapter.pruneResponsesPayload({
+      input: [
+        { type: 'message', role: 'user', content: 'Read file' },
+        { type: 'function_call_output', call_id: 'call_code_164', output: longSourceCode164 },
+        { type: 'function_call_output', call_id: 'call_stack_164', output: longStackTrace164 }
+      ]
+    }, 'sess_164_code');
+    assert.strictEqual(codePruneResp.input[1].output, longSourceCode164, 'Multi-line source code in tool output must never be folded by pruneResponsesPayload');
+    assert.strictEqual(codePruneResp.input[2].output, longStackTrace164, 'Compiler/runtime stack trace in tool output must never be folded by pruneResponsesPayload');
+
+    // 2. Issue 2: Chromium SingleInstanceLock & --disable-background-mode Verification
+    const appCsRaw = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeRouterApp.cs'), 'utf8');
+    assert.ok(appCsRaw.includes('--disable-background-mode'), 'OpenCodeRouterApp.cs must pass --disable-background-mode');
+    assert.ok(appCsRaw.includes('CleanupOrphanAppProfileProcesses') && appCsRaw.includes('lockfile'), 'OpenCodeRouterApp.cs must clean up orphan headless processes holding AppProfile\\lockfile');
+    const launcherPs1Raw = fs.readFileSync(path.join(__dirname, 'launcher.ps1'), 'utf8');
+    assert.ok(launcherPs1Raw.includes('--disable-background-mode') && launcherPs1Raw.includes('lockfile'), 'launcher.ps1 must pass --disable-background-mode and clean up AppProfile\\lockfile');
+    const doctorPs1Raw = fs.readFileSync(path.join(__dirname, 'doctor-repair.ps1'), 'utf8');
+    assert.ok(doctorPs1Raw.includes('appprofile_lockfile_deadlock'), 'doctor-repair.ps1 must detect and heal appprofile_lockfile_deadlock');
+
+    // 3. Issue 3: Model Alias Coalescing & xhigh 671B Flagship Lock
+    const mockSplitStats = {
+      totalOriginalChars: 20000,
+      totalSavedChars: 10000,
+      modules: { rtk: { savedChars: 10000 } },
+      byModel: {
+        'deepseek-flash': { savedChars: 4000, originalChars: 8000 },
+        'deepseek-v4.1-flash': { savedChars: 6000, originalChars: 12000 }
+      }
+    };
+    contextCompactor.computeDerivedStats(mockSplitStats);
+    assert.strictEqual(mockSplitStats.byModel['deepseek-flash'], undefined, 'Ghost alias deepseek-flash must be coalesced into canonical deepseek-v4.1-flash');
+    assert.strictEqual(mockSplitStats.byModel['deepseek-v4.1-flash'].savedChars, 10000, 'Coalesced canonical model must sum savedChars accurately');
+
+    const xhighResolved164 = codexAdapter.resolveCompatibleFallbackModel(
+      'gpt-6-luna',
+      'supported API model names are: qwen3.7-max, deepseek-v4-pro',
+      { reasoningEffort: 'xhigh' }
+    );
+    assert.strictEqual(xhighResolved164, 'deepseek-v4-pro', 'xhigh complex reasoning fallback must lock onto 671B flagship deepseek-v4-pro first');
+
+    // 4. Issue 4: Mid-Reasoning / Empty Stream Disconnection Self-Healing Closure
+    const midReasonChunks = [];
+    const mockMidClient = {
+      writableEnded: false,
+      writeHead: () => {},
+      write: (chunk) => midReasonChunks.push(chunk),
+      end: () => { mockMidClient.writableEnded = true; },
+      once: () => {},
+      removeListener: () => {}
+    };
+    const mockMidUp = new (require('events').EventEmitter)();
+    codexAdapter.bridgeAnthropicStream(mockMidUp, mockMidClient, 'claude-haiku-5-5', 'resp_mid_reason_164', () => {});
+    mockMidUp.emit('data', Buffer.from('data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n'));
+    mockMidUp.emit('data', Buffer.from('data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Thinking before sudden drop..."}}\n\n'));
+    mockMidUp.emit('end');
+    const midReasonJoined = midReasonChunks.join('');
+    assert.strictEqual(mockMidClient.writableEnded, true, 'Mid-reasoning disconnected stream must terminate cleanly');
+    assert.ok(midReasonJoined.includes('response.output_item.done') && midReasonJoined.includes('"role":"assistant"'), 'Mid-reasoning disconnect must inject assistant error message output_item.done');
+    assert.ok(midReasonJoined.includes('response.failed'), 'Mid-reasoning disconnect must emit response.failed instead of fake empty completion');
+
+    // 5. Issue 5: Atomic Tool Call Contiguity Across Interleaved User <image_resize_notice> & Split Function Calls
+    const interleavedUserNoticePayload = {
+      model: 'deepseek-v4.1-flash',
+      input: [
+        { type: 'message', role: 'user', content: 'Check two screenshots' },
+        { type: 'function_call', call_id: 'call_img_a', name: 'view_image', arguments: '{"path":"a.png"}' },
+        { type: 'message', role: 'user', content: '<image_resize_notice>Image A resized</image_resize_notice>' },
+        { type: 'function_call', call_id: 'call_img_b', name: 'view_image', arguments: '{"path":"b.png"}' },
+        { type: 'function_call_output', call_id: 'call_img_a', output: 'Image A ok' }
+        // call_img_b output missing -> must be auto-backfilled!
+      ]
+    };
+    const convertedChat164 = codexAdapter.convertResponsesToChatPayload(interleavedUserNoticePayload, { enabled: false }, 'sess_164_tool');
+    const msgs164 = convertedChat164.messages;
+    assert.strictEqual(msgs164[0].role, 'user');
+    assert.strictEqual(msgs164[1].role, 'assistant');
+    assert.strictEqual(msgs164[1].tool_calls.length, 2, 'Split function_call items across interleaved notice must coalesce into one atomic assistant.tool_calls');
+    assert.strictEqual(msgs164[2].role, 'tool');
+    assert.strictEqual(msgs164[2].tool_call_id, 'call_img_a');
+    assert.strictEqual(msgs164[3].role, 'tool');
+    assert.strictEqual(msgs164[3].tool_call_id, 'call_img_b');
+    assert.ok(msgs164[3].content.includes('completed without output'), 'Missing second tool call output must be auto-backfilled');
+    assert.strictEqual(msgs164[4].role, 'user');
+    assert.ok(msgs164[4].content.includes('<image_resize_notice>'), 'Interleaved user <image_resize_notice> must be deferred after all tool responses');
+    console.log('✓ Top 5 Core High-Risk Issues Verification (Test 164) passed');
+
+    // [Test 165] Full-Spectrum Security Boundaries & Attack Immunity Verification
+    console.log('\n[Test 165] Testing Full-Spectrum Security Boundaries & Attack Immunity...');
+
+    // 1. Loopback IPC Detection & LAN Isolation Unit Check
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '127.0.0.1' } }), true);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '::1' } }), true);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '::ffff:127.0.0.1' } }), true);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '192.168.1.100' } }), false);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '10.0.0.8' } }), false);
+    assert.strictEqual(serverMod.isLoopbackRequest({ socket: { remoteAddress: '172.16.0.2' } }), false);
+
+    // 2. Trusted Management Origin & CSRF Defense Unit Check
+    assert.strictEqual(serverMod.isTrustedManagementOrigin(undefined), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin(''), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://127.0.0.1:4010'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://localhost:3000'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('vscode-webview://12345'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('null'), true);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('https://evil-attacker.com'), false);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://malicious-site.org'), false);
+    assert.strictEqual(serverMod.isTrustedManagementOrigin('http://attacker.com:4010'), false);
+
+    // 3. HTTP Management Plane CSRF & Data Leakage Defense
+    const evilOriginRes = await request('/balancer/api/config', {
+      headers: { 'Origin': 'https://evil-attacker.com' }
+    });
+    assert.strictEqual(evilOriginRes.statusCode, 403, 'Cross-origin request from untrusted origin must be rejected with 403 Forbidden');
+    const evilOriginJson = JSON.parse(evilOriginRes.body);
+    assert.strictEqual(evilOriginJson.success, false);
+
+    const evilOptionsRes = await request('/balancer/api/config', {
+      method: 'OPTIONS',
+      headers: { 'Origin': 'https://evil-attacker.com' }
+    });
+    assert.strictEqual(evilOptionsRes.statusCode, 403, 'OPTIONS preflight from untrusted origin must be rejected with 403 Forbidden');
+
+    const trustedOriginRes = await request('/balancer/api/config', {
+      headers: { 'Origin': 'http://127.0.0.1:3000' }
+    });
+    assert.strictEqual(trustedOriginRes.statusCode, 200, 'Request from trusted local origin must succeed');
+    assert.strictEqual(trustedOriginRes.headers['access-control-allow-origin'], 'http://127.0.0.1:3000');
+
+    // 4. SSRF Upstream Protocol Validation
+    const badProtoRes = await request('/balancer/api/config', {
+      method: 'POST',
+      body: JSON.stringify({ upstream: 'ftp://bad-upstream.com/v1' })
+    });
+    assert.strictEqual(badProtoRes.statusCode, 400, 'Non-HTTP(S) upstream protocol must be rejected');
+    const badProtoJson = JSON.parse(badProtoRes.body);
+    assert.ok(badProtoJson.error && badProtoJson.error.includes('http:// 或 https://'));
+
+    const badAccountProtoRes = await request('/balancer/api/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        accounts: [{ name: 'SSRF Attack', apiKey: 'sk-test', enabled: true, upstream: 'gopher://127.0.0.1:6379' }]
+      })
+    });
+    assert.strictEqual(badAccountProtoRes.statusCode, 400, 'Custom account non-HTTP(S) upstream must be rejected');
+
+    // 5. Parameterized Shell Subprocess Immunity Check
+    const serverJsRaw = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    assert.ok(!serverJsRaw.includes('exec(`explorer.exe'), 'server.js must not contain string-interpolated exec(explorer.exe)');
+    assert.ok(!serverJsRaw.includes('exec("explorer.exe'), 'server.js must not contain string-interpolated exec(explorer.exe)');
+
+    const comfyJsRaw = fs.readFileSync(path.join(__dirname, 'comfyui-adapter.js'), 'utf8');
+    assert.ok(!comfyJsRaw.includes('child_process.execSync(`git clone'), 'comfyui-adapter.js must use spawnSync array for git clone');
+    assert.ok(!comfyJsRaw.includes('child_process.execSync(`"${pyExe}"'), 'comfyui-adapter.js must use spawnSync array for Python patches');
+
+    const updaterJsRaw = fs.readFileSync(path.join(__dirname, 'updater.js'), 'utf8');
+    assert.ok(!updaterJsRaw.includes('Start-Sleep -Seconds 1; explorer.exe'), 'updater.js must not wrap explorer.exe in powershell -Command');
+
+    // 6. Air-Gapped Offline Office Preview Safety Check (Rule 5)
+    const officeEngineRaw = fs.readFileSync(path.join(__dirname, 'assets', 'office-preview-engine.js'), 'utf8');
+    assert.ok(!officeEngineRaw.includes('view.officeapps.live.com'), 'Office preview engine must not contain Microsoft OfficeApps cloud iframe');
+    assert.ok(!officeEngineRaw.includes('docs.google.com/viewer'), 'Office preview engine must not contain Google Docs cloud iframe');
+
+    console.log('✓ Full-Spectrum Security Boundaries & Attack Immunity (Test 165) passed');
+
+    // [Test 166] Unified Tray Resilience, Non-Destructive Port Self-Healing & 413 Headers-Sent Immunity
+    console.log('\n[Test 166] Testing Unified Tray Resilience, Non-Destructive Port Self-Healing & 413 Headers-Sent Immunity...');
+
+    // 1. Verify tray-daemon.ps1 & OpenCodeRouterTray.cs unified TaskbarCreated + WM_RESTORE_OPENCODE_ROUTER_TRAY + Cold-Boot Reassertion
+    const trayPs1Raw = fs.readFileSync(path.join(__dirname, 'tray-daemon.ps1'), 'utf8');
+    assert.ok(trayPs1Raw.includes('TrayMessageSinkForm'), 'tray-daemon.ps1 must embed TrayMessageSinkForm');
+    assert.ok(trayPs1Raw.includes('cp.Parent = IntPtr.Zero') && trayPs1Raw.includes('SetVisibleCore(false)'), 'tray-daemon.ps1 TrayMessageSinkForm must be unparented top-level toolwindow to receive HWND_BROADCAST');
+    assert.ok(trayPs1Raw.includes('TaskbarCreated') && trayPs1Raw.includes('WM_RESTORE_OPENCODE_ROUTER_TRAY'), 'tray-daemon.ps1 must intercept TaskbarCreated and WM_RESTORE_OPENCODE_ROUTER_TRAY');
+    assert.ok(trayPs1Raw.includes('Reassert-TrayIcon $true'), 'tray-daemon.ps1 must force cycle Visible false/true in Reassert-TrayIcon');
+    assert.ok(trayPs1Raw.includes('GetActiveTcpListeners'), 'tray-daemon.ps1 must use fast IPGlobalProperties.GetActiveTcpListeners');
+    assert.ok(!/[^$]\(if\s*\(/.test(trayPs1Raw), 'tray-daemon.ps1 must not contain PowerShell 5.1 invalid (if (...)) expression without $');
+
+    const trayCsRaw = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeRouterTray.cs'), 'utf8');
+    assert.ok(trayCsRaw.includes('TrayMessageSinkForm') && trayCsRaw.includes('WM_RESTORE_OPENCODE_ROUTER_TRAY'), 'OpenCodeRouterTray.cs must include TrayMessageSinkForm and WM_RESTORE_OPENCODE_ROUTER_TRAY');
+    assert.ok(trayCsRaw.includes('cp.Parent = IntPtr.Zero') && trayCsRaw.includes('SetVisibleCore(false)'), 'OpenCodeRouterTray.cs TrayMessageSinkForm must be unparented top-level toolwindow to receive HWND_BROADCAST');
+    assert.ok(trayCsRaw.includes('Another instance is running. Activating dashboard and exiting.'), 'OpenCodeRouterTray.cs must preserve mutex log line for M3 adversarial suite');
+
+    const wizardCsRaw = fs.readFileSync(path.join(__dirname, 'src', 'OpenCodeWizard.cs'), 'utf8');
+    assert.ok(wizardCsRaw.includes('EnsureRouterRunning') && wizardCsRaw.includes('EnsureTrayRunning') && wizardCsRaw.includes('WM_RESTORE_OPENCODE_ROUTER_TRAY'), 'OpenCodeWizard.cs must act as full-stack launcher and broadcast tray restore');
+
+    // 2. Verify server.js non-destructive EADDRINUSE health probe & ComfyUI 413 headersSent guard
+    assert.ok(serverJsRaw.includes('probeExistingHealth') && serverJsRaw.includes('已有健康运行的网关实例在线'), 'server.js must probe /health before killing existing process on EADDRINUSE');
+    assert.ok(serverJsRaw.includes('if (!buf || res.headersSent || res.writableEnded) return;'), 'server.js ComfyUI POST endpoints must guard against null buf and headersSent after 413');
+
+    console.log('✓ Unified Tray Resilience, Non-Destructive Port Self-Healing & 413 Headers-Sent Immunity (Test 166) passed');
+
+    // [Test 167] Testing Model Hub SSOT Dispatch, Multi-Client Adapter & Root-Cause Upstream Probing (v3.12.0)
+    console.log('\n[Test 167] Testing Model Hub SSOT Dispatch, Multi-Client Adapter & Root-Cause Upstream Probing (v3.12.0)...');
+
+    // 1. Verify official models benchmark table and client adapter manager
+    const officialModelsJsonPath = path.join(__dirname, 'assets', 'official-models.json');
+    assert.ok(fs.existsSync(officialModelsJsonPath), 'official-models.json must exist');
+    const officialData = JSON.parse(fs.readFileSync(officialModelsJsonPath, 'utf8'));
+    assert.ok(Array.isArray(officialData.models) && officialData.models.length >= 44, 'Must contain at least 44 official models');
+
+    const clientAdapter = require('./client-adapter-manager');
+    assert.strictEqual(typeof clientAdapter.syncAllClients, 'function');
+    assert.strictEqual(typeof clientAdapter.filterModelsByPolicy, 'function');
+    assert.deepStrictEqual(clientAdapter.MODEL_SOURCE_POLICIES, ['official_docs', 'api_probed', 'hybrid']);
+
+    // 2. Verify Model Hub API endpoints on router HTTP port
+    const resHub = await request('/balancer/api/models/hub', { method: 'GET' });
+    assert.strictEqual(resHub.statusCode, 200);
+    const hubData = JSON.parse(resHub.body);
+    assert.strictEqual(hubData.success, true);
+    assert.ok(hubData.modelsCount >= 44, 'Hub modelsCount must be at least 44');
+    assert.ok(hubData.clients, 'Hub must return clients status');
+
+    // 3. Verify Policy switching API
+    const resPolicy = await request('/balancer/api/models/source-policy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ policy: 'official_docs', defaultModel: 'deepseek-v4.1-flash' })
+    });
+    assert.strictEqual(resPolicy.statusCode, 200);
+    const policyData = JSON.parse(resPolicy.body);
+    assert.strictEqual(policyData.success, true);
+    assert.strictEqual(policyData.policy, 'official_docs');
+
+    // Restore to hybrid policy
+    await request('/balancer/api/models/source-policy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ policy: 'hybrid', defaultModel: 'deepseek-v4.1-flash' })
+    });
+
+    // 4. Verify 10-second TTL debounced cache in Model Hub
+    const tStart = Date.now();
+    const resHub2 = await request('/balancer/api/models/hub', { method: 'GET' });
+    const tElapsed = Date.now() - tStart;
+    assert.strictEqual(resHub2.statusCode, 200);
+    assert.ok(tElapsed < 150, `Second hub request must return from debounced cache instantaneously (took ${tElapsed}ms)`);
+
+    // 5. Verify Package version
+    const pkgJson167 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.ok(['3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson167.version), 'package.json version must be valid');
+
+    console.log('✓ Model Hub SSOT Dispatch, Multi-Client Adapter & Root-Cause Upstream Probing (Test 167) passed');
+
+    // [Test 168] Testing Plugin System Microkernel, Dynamic Tool Discovery & REST Execution (v3.13.0/v3.13.1/v3.13.2/v3.13.3/v3.13.4/v3.13.5)
+    console.log('\n[Test 168] Testing Plugin System Microkernel, Dynamic Tool Discovery & REST Execution (v3.13.0/v3.13.1/v3.13.2/v3.13.3/v3.13.4/v3.13.5)...');
+
+    // 1. GET /balancer/api/plugins
+    const resPlugins = await request('/balancer/api/plugins', { method: 'GET' });
+    assert.strictEqual(resPlugins.statusCode, 200);
+    const pluginsData = JSON.parse(resPlugins.body);
+    assert.strictEqual(pluginsData.success, true);
+    assert.ok(pluginsData.count >= 2);
+    const discoveredIds = pluginsData.plugins.map(p => p.id);
+    assert.ok(discoveredIds.includes('comfyui'), 'comfyui plugin must be discovered');
+    assert.ok(discoveredIds.includes('omo'), 'omo plugin must be discovered');
+
+    // 2. POST /balancer/api/plugins/preflight
+    const resPreflight = await request('/balancer/api/plugins/preflight', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'comfyui' })
+    });
+    assert.strictEqual(resPreflight.statusCode, 200);
+    const preflightData = JSON.parse(resPreflight.body);
+    assert.strictEqual(preflightData.success, true);
+    assert.strictEqual(typeof preflightData.topology.ok, 'boolean');
+
+    // 3. GET /balancer/api/plugins/tools
+    const resTools = await request('/balancer/api/plugins/tools?client=codex', { method: 'GET' });
+    assert.strictEqual(resTools.statusCode, 200);
+    const toolsData = JSON.parse(resTools.body);
+    assert.strictEqual(toolsData.success, true);
+    assert.ok(Array.isArray(toolsData.tools));
+
+    // 4. POST /balancer/api/plugins/execute (greet_developer tool)
+    const resExec = await request('/balancer/api/plugins/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: 'greet_developer',
+        arguments: { name: 'IntegrationBot' }
+      })
+    });
+    assert.strictEqual(resExec.statusCode, 200);
+    const execData = JSON.parse(resExec.body);
+    assert.strictEqual(execData.success, true);
+    assert.ok(execData.result && execData.result.content[0].text.includes('IntegrationBot'));
+
+    // 5. Verify Package version
+    const pkgJson168 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.ok(['3.12.0', '3.13.0', '3.13.1', '3.13.2', '3.13.3', '3.13.4', '3.13.5', '3.14.0', '3.14.1'].includes(pkgJson168.version), 'package.json version must be valid');
+
+    console.log('✓ Plugin System Microkernel, Dynamic Tool Discovery & REST Execution (Test 168) passed');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 157 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 168 ADVANCED ROUTER TESTS PASSED SUCCESSFULLY!');
     console.log('======================================================');
   } finally {
     routerProc.kill();

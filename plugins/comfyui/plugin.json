@@ -1,0 +1,96 @@
+{
+  "$schema": "https://opencode.ai/schemas/router-plugin-v1.json",
+  "id": "comfyui",
+  "name": "ComfyUI 视觉生图与图片反推中枢",
+  "version": "1.0.0",
+  "description": "为智能网关赋予外挂生图与图片反推能力，对外暴露 OpenAI 标准生图端点与 MCP 工具",
+  "author": "deancyl",
+  "entry": "index.js",
+  "category": "service",
+  
+  "system": {
+    "platforms": ["win32", "linux"],
+    "requiresNode": ">=18.0.0",
+    "ports": [8284, 8188],
+    "hardware": {
+      "gpu": true,
+      "recommendedVramMb": 4096,
+      "minVramMb": 2048
+    },
+    "conflictsWith": [],
+    "requires": []
+  },
+
+  "clientScopes": {
+    "supported": ["opencode", "openchamber", "codex"],
+    "defaultEnabled": ["opencode", "openchamber", "codex"]
+  },
+
+  "capabilities": {
+    "service": {
+      "daemonSupported": true,
+      "defaultPort": 8284,
+      "healthEndpoint": "http://127.0.0.1:8284/system_stats",
+      "modes": ["gpu", "cpu"]
+    },
+    "tools": [
+      {
+        "name": "generate_image",
+        "description": "调用本地或远程 ComfyUI 工业级工作流生成高质量图片。支持真人写实、二次元、国风厚涂、极速抽卡、唯美壁纸等多种风格，成片以 Markdown 格式优雅渲染。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "description": "画面正向英文或中文提示词"
+            },
+            "workflow": {
+              "type": "string",
+              "description": "工作流编号或风格标签 (例如: '01' 或 '真人写实', '04' 或 '极速抽卡')"
+            },
+            "negative": {
+              "type": "string",
+              "description": "负向提示词 (可选)"
+            },
+            "width": {
+              "type": "integer",
+              "description": "宽度 (像素)"
+            },
+            "height": {
+              "type": "integer",
+              "description": "高度 (像素)"
+            },
+            "seed": {
+              "type": "integer",
+              "description": "随机种子"
+            }
+          },
+          "required": ["prompt"]
+        }
+      },
+      {
+        "name": "interrogate_image",
+        "description": "分析反推图片中的提示词、风格与关键特征 (支持本地 ComfyUI WD14 深度反推或网关视觉多模态大模型透明兜底)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "image_path": {
+              "type": "string",
+              "description": "本地图片绝对路径或 Base64 编码数据"
+            }
+          },
+          "required": ["image_path"]
+        }
+      }
+    ],
+    "agents": [],
+    "routes": [
+      { "path": "/v1/images/generations", "method": "POST" },
+      { "path": "/v1/images/interrogate", "method": "POST" }
+    ],
+    "ui": {
+      "badge": "🟢 视觉服务",
+      "sandbox": true
+    }
+  }
+}

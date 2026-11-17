@@ -87,7 +87,14 @@ Write-Host "`n[Test 1.1] 启动主托盘守护进程 (wscript.exe launch-gui.vbs
 $vbsPath = Join-Path $scriptRoot "launch-gui.vbs"
 $logPath = Join-Path $scriptRoot "tray.log"
 
-$p = Start-Process "wscript.exe" -ArgumentList "`"$vbsPath`" -Silent" -WorkingDirectory $scriptRoot -PassThru
+try {
+    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = "wscript.exe `"$vbsPath`" -Silent"
+        CurrentDirectory = $scriptRoot
+    } | Out-Null
+} catch {
+    $p = Start-Process "wscript.exe" -ArgumentList "`"$vbsPath`" -Silent" -WorkingDirectory $scriptRoot -PassThru
+}
 Start-Sleep -Milliseconds 2000
 
 $activeTrays = @(Get-TrayDaemonProcesses)
@@ -130,6 +137,8 @@ Assert-Test "1.2.1 单实例互斥防多开" ($currentTrays.Count -eq 1 -and $cu
 $trayLogContent = if (Test-Path $logPath) { (Get-Content $logPath -Tail 20) -join "`n" } else { "" }
 $hasAnotherLog = $trayLogContent -like "*Another instance is running*"
 Assert-Test "1.2.2 互斥日志溯源" $hasAnotherLog "tray.log 明确记录 'Another instance is running. Activating dashboard and exiting.'"
+$hasRestoreBroadcast = $trayLogContent -like "*WM_RESTORE_OPENCODE_ROUTER_TRAY received*"
+Assert-Test "1.2.3 跨进程托盘恢复广播接收" $hasRestoreBroadcast "主托盘成功接收 WM_RESTORE_OPENCODE_ROUTER_TRAY 并触发 Shell_NotifyIcon 重注册"
 
 # ===============================================================================
 # 挑战 1 (Part B): 模拟 Electron 僵死进程残留与自愈清理

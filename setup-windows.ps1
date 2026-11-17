@@ -22,10 +22,67 @@ param(
     [string]$Key2,
     [string]$Password,
     [string]$InstallDir,
+    [string]$OpencodeConfigDir = "",
+    [string]$ModelPolicy = "hybrid",
     [switch]$NoShortcuts
 )
 
+$OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+
+# 自动防范受限 ExecutionPolicy
+try {
+    $policy = Get-ExecutionPolicy -Scope Process -ErrorAction SilentlyContinue
+    if ($policy -eq 'Restricted') {
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
+    }
+} catch { }
+
+function Stop-SafeProcess {
+    param(
+        [Parameter(Mandatory=$true)][int]$ProcessId,
+        [Parameter(Mandatory=$true)][string[]]$Keywords,
+        [Parameter(Mandatory=$true)][string]$ServiceName
+    )
+    if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return $false }
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $proc) { return $false }
+
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    $cmdLine = if ($cim -and $cim.CommandLine) { $cim.CommandLine } else { "" }
+    $execPath = if ($cim -and $cim.ExecutablePath) { $cim.ExecutablePath } else { "" }
+    $procName = $proc.ProcessName
+
+    $isMatch = $false
+    foreach ($kw in $Keywords) {
+        if (($cmdLine -and $cmdLine -like "*$kw*") -or 
+            ($execPath -and $execPath -like "*$kw*") -or 
+            ($procName -like "*$kw*")) {
+            $isMatch = $true
+            break
+        }
+    }
+
+    if ($isMatch) {
+        try {
+            Start-Process -FilePath "taskkill.exe" -ArgumentList "/F /T /PID $ProcessId" -NoNewWindow -Wait -ErrorAction SilentlyContinue
+            Write-Host "   [OK]   已安全终止 $ServiceName 进程 (PID: $ProcessId)" -ForegroundColor Green
+            return $true
+        } catch {
+            try {
+                Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+                Write-Host "   [OK]   已强制终止 $ServiceName 进程 (PID: $ProcessId)" -ForegroundColor Green
+                return $true
+            } catch {
+                return $false
+            }
+        }
+    } else {
+        Write-Host "   [WARN] PID $ProcessId 非 $ServiceName 实例 (命令行特征不符: '$cmdLine')，已跳过以防止误杀！" -ForegroundColor Yellow
+        return $false
+    }
+}
 
 $rootDir = if ($InstallDir) { $InstallDir } elseif ($PSScriptRoot) { $PSScriptRoot } else { "$env:USERPROFILE\.opencode-go-router" }
 $cfgPath = Join-Path $rootDir "config.json"
@@ -44,7 +101,11 @@ if ($Port -gt 0) { $effectivePort = $Port }
 if ($HostName) { $effectiveHost = $HostName }
 $port = $effectivePort
 
-$opencodeConfigDir = "$env:USERPROFILE\.config\opencode"
+$opencodeConfigDir = if ($OpencodeConfigDir) { $OpencodeConfigDir } elseif ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR } else { "$env:USERPROFILE\.config\opencode" }
+if ($opencodeConfigDir) {
+    try { $opencodeConfigDir = [System.IO.Path]::GetFullPath($opencodeConfigDir) } catch { }
+}
+$env:OPENCODE_CONFIG_DIR = $opencodeConfigDir
 $opencodeConfigFile = "$opencodeConfigDir\opencode.jsonc"
 $omoConfigFile = "$env:USERPROFILE\.omo\omo.jsonc"
 $commandsDir = "$opencodeConfigDir\commands"
@@ -236,6 +297,9 @@ function Step-SetupRouter {
         defaultCooldownMs = if ($existingObj -and $existingObj.defaultCooldownMs) { $existingObj.defaultCooldownMs } else { 60000 }
         maxFailoverRetries = if ($existingObj -and $existingObj.maxFailoverRetries) { $existingObj.maxFailoverRetries } else { 2 }
         sessionAffinityEnabled = $true
+        modelSourcePolicy = if ($existingObj -and $existingObj.modelSourcePolicy) { $existingObj.modelSourcePolicy } elseif ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+        defaultModel = if ($existingObj -and $existingObj.defaultModel) { $existingObj.defaultModel } else { "deepseek-v4.1-flash" }
+        favoriteModels = if ($existingObj -and $existingObj.favoriteModels) { $existingObj.favoriteModels } else { @("deepseek-v4.1-flash", "kimi-k3") }
         uiPassword = $curUiPass
         accounts = @(
             @{ id = "account-1"; name = "OpenCode Go (订阅账号 1)"; apiKey = $curKey1; enabled = $true },
@@ -255,14 +319,26 @@ function Step-SetupRouter {
     # 同步绑定 OpenCode 主配置文件 ~/.config/opencode/opencode.jsonc
     if (-not (Test-Path $opencodeConfigDir)) { New-Item -ItemType Directory -Path $opencodeConfigDir -Force | Out-Null }
     try {
-        $updaterScript = Join-Path $rootDir "updater.js"
-        if (Test-Path $updaterScript) {
-            $nodeCmd = "const p = require('path'); const u = require(p.resolve(process.argv[1])); u.harmonizeOpencodeConfig(process.argv[2], parseInt(process.argv[3], 10));"
-            & node -e $nodeCmd "$updaterScript" "$opencodeConfigFile" "$port"
+        $camScript = Join-Path $rootDir "client-adapter-manager.js"
+        if (Test-Path $camScript) {
+            $effectivePol = if ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+            $nodeCmd = "const p = require('path'); const cam = require(p.resolve(process.argv[1])); cam.syncOpencodeConfig({ routerPort: parseInt(process.argv[2], 10), policy: process.argv[3], targetPath: process.argv[4] });"
+            & node -e $nodeCmd "$camScript" "$port" "$effectivePol" "$opencodeConfigFile"
             if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
-                Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量 38 款模型、双轨规范与智能体定义就绪)" -ForegroundColor Green
+                Write-Host "✔ opencode.jsonc 已通过客户端适配管理器绑定本地网关 (策略: $effectivePol)" -ForegroundColor Green
             } else {
-                Write-Host "⚠ opencode.jsonc 绑定执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+                Write-Host "⚠ opencode.jsonc 适配执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+            }
+        } else {
+            $updaterScript = Join-Path $rootDir "updater.js"
+            if (Test-Path $updaterScript) {
+                $nodeCmd = "const p = require('path'); const u = require(p.resolve(process.argv[1])); u.harmonizeOpencodeConfig(process.argv[2], parseInt(process.argv[3], 10));"
+                & node -e $nodeCmd "$updaterScript" "$opencodeConfigFile" "$port"
+                if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
+                    Write-Host "✔ opencode.jsonc 已自动绑定本地网关 (全量模型基准与智能体定义就绪)" -ForegroundColor Green
+                } else {
+                    Write-Host "⚠ opencode.jsonc 绑定执行返回非零状态码: $LASTEXITCODE" -ForegroundColor Yellow
+                }
             }
         }
     } catch {
@@ -442,6 +518,16 @@ function Step-SetupOpenChamber {
         } catch { }
     }
 
+    $camScript = Join-Path $rootDir "client-adapter-manager.js"
+    if (Test-Path $camScript) {
+        $effectivePol = if ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+        $nodeCmd = "const p = require('path'); const cam = require(p.resolve(process.argv[1])); cam.syncOpenChamberConfig({ policy: process.argv[2] });"
+        & node -e $nodeCmd "$camScript" "$effectivePol"
+        if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) {
+            Write-Host "✔ OpenChamber 桌面端配置已通过客户端适配管理器同步 (策略: $effectivePol)" -ForegroundColor Green
+        }
+    }
+
     $chamberPrefDir = "$env:USERPROFILE\.config\openchamber"
     $chamberPrefFile = Join-Path $chamberPrefDir "preferences.json"
     try {
@@ -455,9 +541,12 @@ function Step-SetupOpenChamber {
 
         $recents = @()
         if ($prefObj.fields.recentModels -and $prefObj.fields.recentModels.value) {
-            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and $_.modelID -eq 'deepseek-v4.1-flash') })
+            $recents = @($prefObj.fields.recentModels.value | Where-Object { -not ($_.providerID -eq 'opencode-go' -and ($_.modelID -eq 'deepseek-v4.1-flash' -or $_.modelID -eq 'kimi-k3')) })
         }
-        $newRecent = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $recents
+        $newRecent = @(
+            [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' },
+            [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }
+        ) + $recents
         if ($prefObj.fields.recentModels) {
             $prefObj.fields.recentModels.value = $newRecent
             $prefObj.fields.recentModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -465,11 +554,66 @@ function Step-SetupOpenChamber {
             $prefObj.fields | Add-Member -NotePropertyName "recentModels" -NotePropertyValue ([PSCustomObject]@{
                 updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                 value = $newRecent
-            })
+            }) -Force
+        }
+
+        $favs = @()
+        if ($prefObj.fields.favoriteModels -and $prefObj.fields.favoriteModels.value) {
+            $favs = @($prefObj.fields.favoriteModels.value)
+        }
+        $hasFlash = $false
+        $hasKimi = $false
+        foreach ($m in $favs) {
+            if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'deepseek-v4.1-flash') { $hasFlash = $true }
+            if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'kimi-k3') { $hasKimi = $true }
+        }
+        if (-not $hasFlash) {
+            $favs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $favs
+        }
+        if (-not $hasKimi) {
+            $favs = $favs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' })
+        }
+        if ($prefObj.fields.favoriteModels) {
+            $prefObj.fields.favoriteModels.value = $favs
+            $prefObj.fields.favoriteModels.updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        } else {
+            $prefObj.fields | Add-Member -NotePropertyName "favoriteModels" -NotePropertyValue ([PSCustomObject]@{
+                updatedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                value = $favs
+            }) -Force
         }
 
         [System.IO.File]::WriteAllText($chamberPrefFile, ($prefObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-        Write-Host "✔ OpenChamber 桌面端首选默认模型已锁定为: opencode-go / deepseek-v4.1-flash" -ForegroundColor Green
+
+        $chamberSetFile = Join-Path $chamberPrefDir "settings.json"
+        if (Test-Path $chamberSetFile) {
+            try {
+                $setObj = Get-Content $chamberSetFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                $sRecents = if ($setObj.recentModels) { @($setObj.recentModels | Where-Object { -not ($_.providerID -eq 'opencode-go' -and ($_.modelID -eq 'deepseek-v4.1-flash' -or $_.modelID -eq 'kimi-k3')) }) } else { @() }
+                $setObj.recentModels = @(
+                    [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' },
+                    [PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' }
+                ) + $sRecents
+
+                $sFavs = if ($setObj.favoriteModels) { @($setObj.favoriteModels) } else { @() }
+                $sHasFlash = $false
+                $sHasKimi = $false
+                foreach ($m in $sFavs) {
+                    if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'deepseek-v4.1-flash') { $sHasFlash = $true }
+                    if ($m.providerID -eq 'opencode-go' -and $m.modelID -eq 'kimi-k3') { $sHasKimi = $true }
+                }
+                if (-not $sHasFlash) {
+                    $sFavs = @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'deepseek-v4.1-flash' }) + $sFavs
+                }
+                if (-not $sHasKimi) {
+                    $sFavs = $sFavs + @([PSCustomObject]@{ providerID = 'opencode-go'; modelID = 'kimi-k3' })
+                }
+                $setObj.favoriteModels = $sFavs
+                [System.IO.File]::WriteAllText($chamberSetFile, ($setObj | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+            } catch { }
+        }
+
+        Write-Host "✔ OpenChamber 桌面端首选默认模型与置顶收藏已锁定为: opencode-go (deepseek-v4.1-flash, kimi-k3)" -ForegroundColor Green
     } catch { }
 
     $importScript = Join-Path $rootDir "import_projects.py"
@@ -484,14 +628,13 @@ function Step-SetupOpenChamber {
 # ----------------- 步骤 6: 全栈一键自动配置 -----------------
 function Step-RunAll {
     Write-Header "【全栈一键自动配置】"
-    Write-Host "将依次执行：OpenCode v2 检测 -> 智能网关部署 -> OMO 配置 -> Goal 插件配置 -> OpenChamber 配置 -> Office 离线预览挂载..." -ForegroundColor Cyan
+    Write-Host "将依次执行：OpenCode v2 检测 -> 智能网关部署 -> Goal 插件配置 -> OpenChamber 配置 -> Office 离线预览挂载 (注: OMO 为独立可选外挂，可通过菜单 [3] 单独配置)..." -ForegroundColor Cyan
     Step-InstallOpenCode
     Step-SetupRouter
-    Step-SetupOMO
     Step-SetupGoal
     Step-SetupOpenChamber
     Step-SetupOfficePreview
-    Write-Header "🎉 全套体系已全部配置就绪！"
+    Write-Header "🎉 全套核心体系已全部配置就绪！"
     Write-Host " 🌐 OpenChamber 工作台:    http://127.0.0.1:3000" -ForegroundColor White
     Write-Host " 📊 智能路由流量与监控面板: http://127.0.0.1:$port/balancer/ui" -ForegroundColor White
     Write-Host " 🎯 自主目标推进指令:      /goal <目标> 与 /boost <目标>" -ForegroundColor White
@@ -532,6 +675,17 @@ function Step-ManageUpdates {
 # ----------------- 步骤 10: Codex 客户端接入 -----------------
 function Step-SetupCodex {
     Write-Header "【步骤 10】OpenAI Codex CLI 智能接入与模型调度"
+    $camScript = Join-Path $rootDir "client-adapter-manager.js"
+    if (Test-Path $camScript) {
+        $effectivePol = if ($ModelPolicy) { $ModelPolicy } else { "hybrid" }
+        $bindCmd = "const p = require('path'); const cam = require(p.resolve(process.argv[1])); const r = cam.syncCodexConfig({ routerPort: parseInt(process.argv[2], 10), policy: process.argv[3], defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
+        $rawRes = (& node -e $bindCmd "$camScript" "$port" "$effectivePol" 2>$null)
+        $bindRes = if ($rawRes) { try { $rawRes | ConvertFrom-Json } catch { $null } } else { $null }
+        if ($bindRes -and $bindRes.success) {
+            Write-Host "🎉 成功通过客户端适配管理器接入 Codex！(策略: $effectivePol / 默认: deepseek-v4.1-flash / 思考: high / 端口: $port)" -ForegroundColor Green
+            return
+        }
+    }
     $codexAdapterJs = Join-Path $rootDir "codex-adapter.js"
     if (-not (Test-Path $codexAdapterJs)) { return }
     $bindCmd = "const p = require('path'); const a = require(p.resolve(process.argv[1])); const r = a.bindCodexConfig({ routerPort: parseInt(process.argv[2], 10), defaultModel: 'deepseek-v4.1-flash', reasoningEffort: 'high' }); console.log(JSON.stringify(r));"
@@ -544,15 +698,23 @@ function Step-SetupCodex {
 
 # ----------------- 服务控制核心命令 -----------------
 function Step-Start {
-    if (Test-PortListening $port) {
-        Write-Host "✔ 智能网关服务已在运行 (端口: $port)" -ForegroundColor Green
-        return
-    }
-
     $silentVbs = Join-Path $rootDir "silent-start.vbs"
     $serverJs = Join-Path $rootDir "server.js"
     $trayVbs = Join-Path $rootDir "start-tray.vbs"
     $trayExe = Join-Path $rootDir "OpenCodeRouterTray.exe"
+
+    if (Test-PortListening $port) {
+        Write-Host "✔ 智能网关服务已在运行 (端口: $port)" -ForegroundColor Green
+        # 即使网关端口已监听，仍确保右下角托盘常驻或触发重注册恢复
+        if (-not $NoShortcuts -and $port -eq 4010) {
+            if (Test-Path $trayVbs) {
+                Start-Process "wscript.exe" -ArgumentList "`"$trayVbs`" -Silent" -WorkingDirectory $rootDir -WindowStyle Hidden
+            } elseif (Test-Path $trayExe) {
+                Start-Process -FilePath $trayExe -ArgumentList "-Silent" -WorkingDirectory $rootDir
+            }
+        }
+        return
+    }
 
     # 1. 优先通过原生静默引擎拉起后台路由器服务
     if (Test-Path $silentVbs) {
@@ -583,20 +745,31 @@ function Step-Stop {
     Write-Host "正在停止智能网关与托盘守护进程..." -ForegroundColor Yellow
     # 停止托盘 (仅在默认端口 4010 且未指定 NoShortcuts 时处理全局托盘，保护沙箱/多实例互不干扰)
     if ($port -eq 4010 -and -not $NoShortcuts) {
-        Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        Get-Process -Name "OpenCodeRouterApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $trayProcs = Get-Process -Name "OpenCodeRouterTray" -ErrorAction SilentlyContinue
+        if ($trayProcs) {
+            foreach ($tp in $trayProcs) {
+                Stop-SafeProcess -ProcessId $tp.Id -Keywords @("OpenCodeRouterTray") -ServiceName "OpenCodeRouterTray" | Out-Null
+            }
+        }
+        $appProcs = Get-Process -Name "OpenCodeRouterApp" -ErrorAction SilentlyContinue
+        if ($appProcs) {
+            foreach ($ap in $appProcs) {
+                Stop-SafeProcess -ProcessId $ap.Id -Keywords @("OpenCodeRouterApp") -ServiceName "OpenCodeRouterApp" | Out-Null
+            }
+        }
         $trays = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*tray-daemon.ps1*" -or $_.CommandLine -like "*tray-runner.ps1*" }
         if ($trays) {
             foreach ($t in $trays) {
-                try { Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+                Stop-SafeProcess -ProcessId $t.ProcessId -Keywords @("tray-daemon.ps1", "tray-runner.ps1") -ServiceName "托盘守护脚本" | Out-Null
             }
         }
     }
-    # 停止端口上的路由进程
+    # 停止端口上的路由进程 (安全校验命令行特征)
     $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conns) {
-        foreach ($c in $conns) {
-            try { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue } catch { }
+        $portPids = @($conns | Select-Object -ExpandProperty OwningProcess -Unique)
+        foreach ($cpid in $portPids) {
+            Stop-SafeProcess -ProcessId $cpid -Keywords @("server.js", "opencode-go-router", "OpenCodeRouter") -ServiceName "opencode-go-router" | Out-Null
         }
     }
     Start-Sleep -Milliseconds 400

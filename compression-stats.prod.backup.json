@@ -3,7 +3,7 @@
   "totalCompressedChars": 61292,
   "totalSavedChars": 220171,
   "savedTokens": 57940,
-  "savedCostUSD": 0.014485,
+  "savedCostUSD": 0.008112,
   "compressionRatio": 78.2,
   "byModel": {
     "deepseek-v4.1-flash": {
@@ -11,39 +11,43 @@
       "savedTokens": 57940,
       "savedCostUSD": 0.0081116,
       "originalChars": 281463,
-      "ratePer1M": 0.14
+      "ratePer1M": 0.14,
+      "consumedTokens": 74069,
+      "consumedCostUSD": 0.0103697
     }
   },
   "modules": {
     "rtk": {
       "savedChars": 88068,
       "savedTokens": 23176,
-      "percentage": 40.0
+      "percentage": 40
     },
     "headroom": {
       "savedChars": 88069,
       "savedTokens": 23176,
-      "percentage": 40.0
+      "percentage": 40
     },
     "schema": {
       "savedChars": 11008,
       "savedTokens": 2897,
-      "percentage": 5.0,
+      "percentage": 5,
       "alignedRounds": 12,
       "alignedToolsCount": 144
     },
     "cacheZone": {
       "savedChars": 11009,
       "savedTokens": 2897,
-      "percentage": 5.0,
+      "percentage": 5,
       "cacheZoneHits": 18
     },
     "powershell": {
       "savedChars": 22017,
       "savedTokens": 5794,
-      "percentage": 10.0
+      "percentage": 10
     }
   },
   "lastResetAt": "2026-10-18T00:00:00.000Z",
-  "updatedAt": "2026-10-19T00:00:00.000Z"
+  "updatedAt": "2026-10-19T00:00:00.000Z",
+  "consumedTokens": 74069,
+  "consumedCostUSD": 0.01037
 }

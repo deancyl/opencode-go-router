@@ -34,6 +34,74 @@ function setComfyUIAdapter(adapter) {
   _globalComfyAdapter = adapter;
 }
 
+let _globalPluginManager = null;
+
+function setPluginManager(pm) {
+  _globalPluginManager = pm;
+}
+
+function getPluginManager() {
+  if (_globalPluginManager) return _globalPluginManager;
+  try {
+    const s = require('./server.js');
+    if (s.pluginManager) {
+      _globalPluginManager = s.pluginManager;
+      return _globalPluginManager;
+    }
+  } catch (_) {}
+  try {
+    const { PluginManager } = require('./plugin-manager.js');
+    const ROOT_DIR = __dirname;
+    const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(ROOT_DIR, 'config.json');
+    _globalPluginManager = new PluginManager({ rootDir: ROOT_DIR, configPath: CONFIG_FILE });
+    _globalPluginManager.scanPlugins();
+    return _globalPluginManager;
+  } catch (_) {}
+  return null;
+}
+
+function normalizeUpstreamToolName(toolName, originalTools = []) {
+  if (!toolName || typeof toolName !== 'string') return '';
+  const trimmed = toolName.trim();
+
+  // 1. ComfyUI legacy aliases (rigid compatibility with test_tier5 & test_tier8)
+  if (trimmed === 'generate_image' || trimmed === 'image_gen') {
+    return 'mcp__comfyui__generate_image';
+  }
+  if (trimmed === 'interrogate_image') {
+    return 'mcp__comfyui__interrogate_image';
+  }
+  if (trimmed.startsWith('mcp__')) {
+    return trimmed;
+  }
+
+  // 2. Check if originalTools contains a matching prefixed tool
+  if (Array.isArray(originalTools) && originalTools.length > 0) {
+    const matched = originalTools.find(t => {
+      const tName = t.function?.name || t.name || '';
+      return tName === `mcp__opencode_router__${trimmed}` ||
+             tName === `mcp__comfyui__${trimmed}` ||
+             tName.endsWith(`__${trimmed}`);
+    });
+    if (matched) {
+      return matched.function?.name || matched.name;
+    }
+  }
+
+  // 3. Dynamic lookup from pluginManager active tools
+  const pm = getPluginManager();
+  if (pm) {
+    try {
+      const activeTools = pm.getActiveTools('codex');
+      if (Array.isArray(activeTools) && activeTools.some(t => t.name === trimmed)) {
+        return `mcp__opencode_router__${trimmed}`;
+      }
+    } catch (_) {}
+  }
+
+  return trimmed;
+}
+
 function isImageGenerationToolName(name) {
   if (!name || typeof name !== 'string') return false;
   const n = name.trim();
@@ -935,6 +1003,111 @@ const OPENCODE_GO_ALL_MODELS = [
     visibility: 'list',
     supported_in_api: true,
     priority: 680
+  },
+  {
+    slug: 'gemini-4-argon',
+    display_name: 'Gemini-4-Argon',
+    name: 'Gemini-4-Argon',
+    vendor: 'Google',
+    description: '多模态全景分析与长上下文复杂代码推导模型。',
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速轻量' },
+      { effort: 'medium', description: '标准分析' },
+      { effort: 'high', description: '深度思考' },
+      { effort: 'xhigh', description: '极限推理' }
+    ],
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    input_modalities: ['text', 'image'],
+    context_window: 1048576,
+    max_context_window: 1048576,
+    effective_context_window_percent: 95,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 885
+  },
+  {
+    slug: 'gemini-4-argon-contributor',
+    display_name: 'Gemini-4-Argon-Contributor',
+    description: '多模态全景分析与长上下文复杂代码推导模型。',
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速轻量' },
+      { effort: 'medium', description: '标准分析' },
+      { effort: 'high', description: '深度思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    input_modalities: ['text', 'image'],
+    context_window: 1048576,
+    max_context_window: 1048576,
+    effective_context_window_percent: 95,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 885
+  },
+  {
+    slug: 'step-5-preview',
+    display_name: 'Step-5-Preview',
+    description: '前沿大窗口阶跃推理模型，极强逻辑理解与代码生成。',
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速执行' },
+      { effort: 'medium', description: '标准工程推导' },
+      { effort: 'high', description: '高难度逻辑求解' }
+    ],
+    supports_parallel_tool_calls: true,
+    supports_image_detail_original: true,
+    input_modalities: ['text', 'image'],
+    context_window: 524288,
+    max_context_window: 524288,
+    effective_context_window_percent: 95,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 795
+  },
+  {
+    slug: 'minimax-m3.1-flash-free',
+    display_name: 'MiniMax-M3.1-Flash-Free',
+    description: 'MiniMax 极速免费高并发代码与对话模型。',
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [{ effort: 'low', description: '极速响应' }],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    context_window: 262144,
+    max_context_window: 262144,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 755
+  },
+  {
+    slug: 'beam-free',
+    display_name: 'Beam-Free',
+    description: 'Beam 高速免费代码编辑与脚本辅助模型。',
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [{ effort: 'low', description: '快速响应' }],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    context_window: 131072,
+    max_context_window: 131072,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 675
+  },
+  {
+    slug: 'cat-jam-free',
+    display_name: 'Cat-Jam-Free',
+    description: '轻快敏捷免费助理模型，日常问答与文本格式化。',
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [{ effort: 'low', description: '极速响应' }],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    context_window: 131072,
+    max_context_window: 131072,
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 670
   }
 ];
 
@@ -946,6 +1119,21 @@ for (const m of OPENCODE_GO_ALL_MODELS) {
 /**
  * Dynamically synchronizes official upstream models into Codex catalog
  */
+function autoSyncFromOpencodeConfig() {
+  try {
+    const ocPath = path.join(require('os').homedir(), '.config', 'opencode', 'opencode.jsonc');
+    if (fs.existsSync(ocPath)) {
+      const raw = fs.readFileSync(ocPath, 'utf8');
+      const clean = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const cfg = JSON.parse(clean);
+      const mObj = cfg?.provider?.['opencode-go']?.models;
+      if (mObj && typeof mObj === 'object') {
+        syncDynamicModels(Object.keys(mObj));
+      }
+    }
+  } catch (_) {}
+}
+
 function syncDynamicModels(slugList) {
   if (!Array.isArray(slugList) || slugList.length === 0) return OPENCODE_GO_ALL_MODELS;
   const existingSlugs = new Set(OPENCODE_GO_ALL_MODELS.map(m => m.slug));
@@ -1030,6 +1218,44 @@ const MODEL_COMPATIBILITY_ALIASES = {
   'minimax-m2.7': 'minimax-m3'
 };
 
+// Official OpenCode Go (opencode.ai) deprecated/removed model mapping (2026-10 / 2026-11)
+// Used when routing to live opencode.ai upstream to transparently heal removed model IDs
+// without breaking local unit test mocks.
+const OPENCODE_GO_DEPRECATED_ALIASES = {
+  'deepseek-flash': 'deepseek-v4.1-flash',
+  'deepseek-v4-flash': 'deepseek-v4.1-flash',
+  'cat-jam-free': 'deepseek-v4.1-flash',
+  'minimax-m3.1-flash-free': 'minimax-m3.1-flash',
+  'step-5-preview-free': 'step-5-preview',
+  'longcat-2.5-preview-free': 'longcat-2.5-free',
+  'crouton-alpha-free': 'hy4-flash-free',
+  'pulse-alpha-free': 'hy4-flash-free',
+  'glm-5': 'glm-5.3',
+  'glm-5.1': 'glm-5.3',
+  'kimi-k2.6': 'kimi-k3',
+  'qwen3.6-plus': 'qwen3.7-plus',
+  'qwen3.7-max': 'qwen3.8-max',
+  'mimo-v2.5': 'mimo-v2.6-flash',
+  'mimo-v2.5-pro': 'mimo-v2.6-pro',
+  'minimax-m2.5': 'minimax-m3',
+  'minimax-m2.7': 'minimax-m3',
+  'grok-4.6': 'grok-4.7',
+  'omen-alpha': 'deepseek-v4-pro',
+  'space-bunny': 'glm-5.3-flash'
+};
+
+function normalizeOpencodeGoLiveModel(modelName) {
+  if (!modelName || typeof modelName !== 'string') return modelName;
+  const trimmed = modelName.trim();
+  const hasPrefix = /^opencode-go\//i.test(trimmed);
+  const clean = trimmed.replace(/^opencode-go\//i, '').toLowerCase().trim();
+  const mapped = OPENCODE_GO_DEPRECATED_ALIASES[clean];
+  if (mapped) {
+    return hasPrefix ? `opencode-go/${mapped}` : mapped;
+  }
+  return modelName;
+}
+
 const MODEL_TIERS = {
   FLASH: 1,    // Flash, Mini, Speed, Turbo, Lite, Haiku
   STANDARD: 2, // Standard, Code, Plus (non-pro), Balanced
@@ -1112,8 +1338,10 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
         : rawCandidates.filter(c => getModelTier(c) <= allowableTier);
 
       if (candidates.length > 0) {
-        // 1.0 Flagship tier models (or upgrade allowed with high reasoning / Rule 19): match to pro/max/flagship candidate
+        // 1.0 Flagship tier models (or upgrade allowed with high reasoning / Rule 19): lock onto 671B flagship (deepseek-v4-pro) first, then pro/max/flagship candidate
         if (allowableTier === MODEL_TIERS.FLAGSHIP && (reqTier === MODEL_TIERS.FLAGSHIP || isHighReasoningTask || isHeterogeneousRule19)) {
+          const flagship671b = candidates.find(c => c.toLowerCase() === 'deepseek-v4-pro');
+          if (flagship671b) return flagship671b;
           const proHit = candidates.find(c => getModelTier(c) === MODEL_TIERS.FLAGSHIP);
           if (proHit) return proHit;
         }
@@ -1159,6 +1387,73 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
   }
 
   // 2. Heuristic rules when candidate list is absent from error text
+  const isOfficialOpencodeGo = Boolean(options.isOfficialOpencodeGo) ||
+    /isn't included in opencode go|not included in opencode go|opencode\.ai\/console\/go|settings\s*[›>]\s*privacy/i.test(errText);
+
+  if (isOfficialOpencodeGo) {
+    if (allowUpgrade && (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high')) {
+      return cleanReq === 'deepseek-v4-pro' ? 'kimi-k3.1-pro' : 'deepseek-v4-pro';
+    }
+    if (reqTier === MODEL_TIERS.FLASH || cleanReq.endsWith('-free')) {
+      if (cleanReq === 'deepseek-flash' || cleanReq === 'deepseek-v4-flash' || cleanReq === 'cat-jam-free') {
+        return 'glm-5.3-flash';
+      }
+      if (cleanReq === 'deepseek-v4.1-flash') {
+        return 'glm-5.3-flash';
+      }
+      if (cleanReq === 'glm-5.3-flash') {
+        return 'qwen3.8-flash';
+      }
+      if (cleanReq === 'qwen3.8-flash') {
+        return 'minimax-m3.1-flash';
+      }
+      if (cleanReq === 'minimax-m3.1-flash' || cleanReq === 'minimax-m3.1-flash-free') {
+        return 'mimo-v2.6-flash';
+      }
+      if (cleanReq === 'mimo-v2.6-flash') {
+        return 'hy4-flash-free';
+      }
+      if (cleanReq === 'hy4-flash-free') {
+        return 'beam-free';
+      }
+      return 'glm-5.3-flash';
+    }
+    if (reqTier === MODEL_TIERS.STANDARD) {
+      if (cleanReq.startsWith('kimi-')) {
+        return cleanReq === 'kimi-k3' ? 'kimi-k2.7-code' : 'glm-5.3';
+      }
+      if (cleanReq.startsWith('glm')) {
+        return cleanReq === 'glm-5.3' ? 'glm-5.2' : 'qwen3.7-plus';
+      }
+      if (cleanReq.startsWith('qwen')) {
+        return allowUpgrade ? 'qwen3.8-max' : 'kimi-k3';
+      }
+      if (isHeterogeneousRule19) {
+        return 'deepseek-v4-pro';
+      }
+      return 'glm-5.3';
+    }
+    if (reqTier === MODEL_TIERS.FLAGSHIP) {
+      if (cleanReq === 'deepseek-v4-pro') {
+        return 'kimi-k3.1-pro';
+      }
+      if (cleanReq === 'kimi-k3.1-pro') {
+        return 'qwen4-max';
+      }
+      if (cleanReq === 'qwen4-max' || cleanReq === 'qwen3.8-max' || cleanReq === 'qwen3.7-max') {
+        return 'minimax-m3';
+      }
+      if (cleanReq === 'minimax-m3') {
+        return 'mimo-v2.6-pro';
+      }
+      if (cleanReq === 'mimo-v2.6-pro') {
+        return 'glm-5.3';
+      }
+      return 'deepseek-v4-pro';
+    }
+    return 'glm-5.3-flash';
+  }
+
   // 2.0 Explicit upgrade allowed with flagship preference or high reasoning
   if (allowUpgrade && (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high')) {
     return 'deepseek-v4-pro';
@@ -1248,18 +1543,109 @@ function trimPrunedFingerprintsIfNeeded() {
 function clearPruneFingerprints() {
   prunedFingerprints.clear();
 }
+/**
+ * UTF-16 Unicode Surrogate Pair Safe Slice.
+ * Prevents splitting high surrogates (0xD800-0xDBFF) and low surrogates (0xDC00-0xDFFF),
+ * ensuring multi-byte emojis (e.g. 👨‍👩‍👧‍👦, 🎉) and rare CJK characters are never split into malformed sequences.
+ */
+function safeUnicodeSlice(str, start, end) {
+  if (typeof str !== "string" || str.length === 0) return "";
+  const len = str.length;
+  let s = start === undefined ? 0 : (start < 0 ? Math.max(0, len + start) : Math.min(len, start));
+  let e = end === undefined ? len : (end < 0 ? Math.max(0, len + end) : Math.min(len, end));
+  if (s >= e) return "";
+
+  if (s > 0 && s < len) {
+    const code = str.charCodeAt(s);
+    if (code >= 0xDC00 && code <= 0xDFFF) {
+      const prevCode = str.charCodeAt(s - 1);
+      if (prevCode >= 0xD800 && prevCode <= 0xDBFF) {
+        s--;
+      }
+    }
+  }
+
+  if (e > 0 && e < len) {
+    const code = str.charCodeAt(e - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const nextCode = str.charCodeAt(e);
+      if (nextCode >= 0xDC00 && nextCode <= 0xDFFF) {
+        e++;
+      }
+    }
+  }
+
+  return str.slice(s, e);
+}
+
+/**
+ * Ensures code block (```) syntax balance when folding long text.
+ * If prefix leaves an unclosed code block (odd number of ```), appends a closing ```\n.
+ * If suffix has an unbalanced closing code block (odd number of ```), prepends an opening ```\n.
+ */
+function balanceCodeBlocks(head, tail) {
+  let balancedHead = head;
+  let balancedTail = tail;
+
+  const countCodeFence = (s) => {
+    if (!s) return 0;
+    const matches = s.match(/(?:^|\n)```/g);
+    return matches ? matches.length : 0;
+  };
+
+  const headFenceCount = countCodeFence(head);
+  if (headFenceCount % 2 !== 0) {
+    balancedHead = head.endsWith("\n") ? `${head}\`\`\`\n` : `${head}\n\`\`\`\n`;
+  }
+
+  const tailFenceCount = countCodeFence(tail);
+  if (tailFenceCount % 2 !== 0) {
+    balancedTail = tail.startsWith("\n") ? `\`\`\`\n${tail}` : `\`\`\`\n${tail}`;
+  }
+
+  return { head: balancedHead, tail: balancedTail };
+}
+
 
 /**
  * Prunes and compresses an oversized Responses API payload (body.input) to fit within
  * the model's context window (e.g. 1M or 2M tokens).
  */
-function pruneResponsesPayload(body, sessionId = null) {
+
+function isCodeOrSensitiveContent(text) {
+  if (typeof text !== 'string') return false;
+  const sample = text.length > 4096 ? text.slice(0, 4096) : text;
+  if (sample.includes('<<<<<<<') || sample.includes('=======') || sample.includes('>>>>>>>') || sample.includes('|||||||')) return true;
+  if (sample.includes('diff --git ') || sample.includes('*** Begin Patch') || /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(sample)) return true;
+  if (sample.includes('Traceback (most recent call last):') || /^\s+at\s+[\w\$.<>]+\s+\(/m.test(sample)) return true;
+  if (/\b(?:TypeError|ReferenceError|SyntaxError|RuntimeError|RangeError|AssertionError|CompileError|ParserError):\s/i.test(sample)) return true;
+  if (sample.includes('npm ERR!') || sample.includes('yarn error') || sample.includes('cargo build') || sample.includes('error[E0')) return true;
+  if (sample.includes('```') || /(?:\bfunction\s|\bconst\s|\blet\s|\bclass\s|\bimport\s|\bexport\s|\bdef\s|#include|diff --git|^@@\s+-|\n\s+at\s+\S+|Traceback \(most recent)/m.test(sample)) {
+    try {
+      const contextCompactor = require('./context-compactor');
+      if (contextCompactor && typeof contextCompactor.isProtectedSourceOrDiagnostic === 'function') {
+        if (contextCompactor.isProtectedSourceOrDiagnostic(sample)) return true;
+      }
+    } catch (_) {}
+    return true;
+  }
+  return false;
+}
+
+function pruneResponsesPayload(body, sessionId = null, options = {}) {
   if (!body || typeof body !== 'object') {
     const res = body || {};
     if (typeof res === 'object') {
       Object.defineProperty(res, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
       Object.defineProperty(res, 'pruned', { value: res, writable: true, enumerable: false, configurable: true });
     }
+    return res;
+  }
+
+  if (options && options.enabled === false) {
+    const res = body;
+    Object.defineProperty(res, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(res, 'pruned', { value: res, writable: true, enumerable: false, configurable: true });
     return res;
   }
 
@@ -1388,6 +1774,7 @@ function pruneResponsesPayload(body, sessionId = null) {
     }
 
     // 1. Compress giant tool outputs (> 2000 chars) and giant message content (> 6000 chars)
+    // Rule 25: 100% absolute exemption for source code, diffs, patches, and compiler error stacks
     for (let i = 0; i < totalItems; i++) {
       const item = input[i];
       if (!item || typeof item !== 'object') continue;
@@ -1399,11 +1786,15 @@ function pruneResponsesPayload(body, sessionId = null) {
         (item.call_id && item.output !== undefined);
 
       if (isToolOutput && item.output) {
+        if (isCodeOrSensitiveContent(item.output)) {
+          continue;
+        }
         let outStr = sanitizeToolOutput(item.output);
         if (outStr.length > 2000) {
-          const head = outStr.slice(0, 600);
-          const tail = outStr.slice(-600);
-          const folded = outStr.length - 1200;
+          const rawHead = safeUnicodeSlice(outStr, 0, 600);
+          const rawTail = safeUnicodeSlice(outStr, -600);
+          const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
+          const folded = Math.max(0, outStr.length - (rawHead.length + rawTail.length));
           const newOutput = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史工具输出以防上下文超限 ...]\n\n${tail}`;
           input[i] = { ...item, output: newOutput };
           modified = true;
@@ -1441,9 +1832,14 @@ function pruneResponsesPayload(body, sessionId = null) {
         (curItem.tool_calls && curItem.tool_calls.length > 0)
       );
       if (curItem && !isCurUser && !isCurToolResponse && !isCurToolCall && typeof curItem.content === 'string' && curItem.content.length > 6000 && i < totalItems - 2) {
-        const head = curItem.content.slice(0, 1500);
-        const tail = curItem.content.slice(-1500);
-        const folded = curItem.content.length - 3000;
+        // Zero Degradation & Anti-Downgrade Invariant: 100% absolute exemption for source code, diffs, patches, and compiler/runtime error stacks
+        if (isCodeOrSensitiveContent(curItem.content)) {
+          continue;
+        }
+        const rawHead = safeUnicodeSlice(curItem.content, 0, 1500);
+        const rawTail = safeUnicodeSlice(curItem.content, -1500);
+        const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
+        const folded = Math.max(0, curItem.content.length - (rawHead.length + rawTail.length));
         const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史长文本以防上下文超限 ...]\n\n${tail}`;
         input[i] = { ...curItem, content: newContent };
         modified = true;
@@ -1460,9 +1856,13 @@ function pruneResponsesPayload(body, sessionId = null) {
       }
     }
 
-    // 2. Sliding window: if input length > 18, prune intermediate items with turn-boundary safety
-    // User Instruction Exemption: ALL user messages (role === 'user') are 100% preserved!
-    if (input.length > 18) {
+    // 2. Sliding window: prune intermediate items with turn-boundary safety
+    // Anti-Downgrade Invariant: NEVER drop intermediate assistant/tool causal chains on normal requests
+    // based on message count alone! Dropping intermediate interactions is strictly gated by options.emergency === true
+    // (triggered exclusively upon upstream context_length_exceeded self-healing) or explicit forceSlidingWindow option.
+    const inputTokenEstimate = Math.ceil(JSON.stringify(input).length / 3.5);
+    const isResponsesBudgetExceeded = typeof options.maxTokens === 'number' && options.maxTokens > 0 && inputTokenEstimate > options.maxTokens;
+    if ((options.emergency === true || Boolean(options.forceSlidingWindow) || isResponsesBudgetExceeded) && input.length > 18) {
       const headItems = input.slice(0, 2);
       let tailStartIndex = Math.max(2, input.length - 12);
       // Turn-Aware: Never split inside an atomic tool call / tool output sequence
@@ -1482,20 +1882,25 @@ function pruneResponsesPayload(body, sessionId = null) {
         }
       }
 
+      const isSystemItem = it => it && (
+        (it.type === 'message' && (it.role === 'system' || it.role === 'developer')) ||
+        it.role === 'system' || it.role === 'developer'
+      );
       const tailItems = input.slice(tailStartIndex);
       const middleItems = input.slice(headItems.length, tailStartIndex);
 
-      const middleUserItems = middleItems.filter(isUserItem);
-      const droppedCount = middleItems.length - middleUserItems.length;
+      // System & User instruction exemption: 100% preserve all user instructions and system prompts
+      const middlePreservedItems = middleItems.filter(it => isUserItem(it) || isSystemItem(it));
+      const droppedCount = middleItems.length - middlePreservedItems.length;
 
       if (droppedCount > 0) {
-        // Intermediate assistant/tool interactions exist: drop them and 100% preserve all user instructions
+        // Intermediate assistant/tool interactions exist: drop them and 100% preserve user instructions & system prompts
         const notice = {
           type: 'message',
           role: 'system',
           content: `[系统自动自愈提示：智能网关已对前序 ${droppedCount} 条历史中间交互执行滑动窗口折叠，保留初始任务指令与最近交互上下文，已消除上下文超限。]`
         };
-        input = [...headItems, notice, ...middleUserItems, ...tailItems];
+        input = [...headItems, notice, ...middlePreservedItems, ...tailItems];
         modified = true;
       }
     }
@@ -1521,12 +1926,18 @@ function pruneResponsesPayload(body, sessionId = null) {
 /**
  * Prunes and compresses an oversized standard ChatCompletions messages array.
  */
-function pruneChatMessages(messages, maxTokens, sessionId = null) {
+function pruneChatMessages(messages, maxTokens, sessionId = null, options = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
     if (Array.isArray(messages)) {
       Object.defineProperty(messages, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
       Object.defineProperty(messages, 'pruned', { value: messages, writable: true, enumerable: false, configurable: true });
     }
+    return messages;
+  }
+
+  if (options && options.enabled === false) {
+    Object.defineProperty(messages, 'modified', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(messages, 'pruned', { value: messages, writable: true, enumerable: false, configurable: true });
     return messages;
   }
 
@@ -1538,15 +1949,21 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
     const msg = result[i];
     if (!msg) continue;
     const isTool = msg.role === 'tool';
+    // Rule 25: 100% absolute exemption for source code, diffs, patches, and compiler error stacks
+    if (typeof msg.content === 'string' && isCodeOrSensitiveContent(msg.content)) {
+      continue;
+    }
+
     const isOversized = typeof msg.content === 'string' && msg.content.length > 2500;
     if (isOversized && (isTool || i < result.length - 1)) {
       if (msg.role === 'user') {
         // 100% user instruction exemption: do not fold user messages!
         continue;
       }
-      const head = msg.content.slice(0, 800);
-      const tail = msg.content.slice(-800);
-      const folded = msg.content.length - 1600;
+      const rawHead = safeUnicodeSlice(msg.content, 0, 800);
+      const rawTail = safeUnicodeSlice(msg.content, -800);
+      const { head, tail } = balanceCodeBlocks(rawHead, rawTail);
+      const folded = Math.max(0, msg.content.length - (rawHead.length + rawTail.length));
       const newContent = `${head}\n\n[... 智能网关自愈：已自动折叠 ${folded} 字符历史输出以防上下文超限 ...]\n\n${tail}`;
       result[i] = { ...msg, content: newContent };
       modified = true;
@@ -1563,16 +1980,25 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
     }
   }
 
-  if (result.length > 18) {
+  // Anti-Downgrade Invariant: NEVER drop intermediate assistant/tool causal chains on normal requests
+  // based on message count alone! Strictly gated by options.emergency === true, forceSlidingWindow, or token budget exceedance.
+  const chatTokenEstimate = Math.ceil(JSON.stringify(result).length / 3.5);
+  const isChatBudgetExceeded = (typeof maxTokens === 'number' && maxTokens > 0 && chatTokenEstimate > maxTokens) ||
+    (typeof options.maxTokens === 'number' && options.maxTokens > 0 && chatTokenEstimate > options.maxTokens);
+  if ((options.emergency === true || Boolean(options.forceSlidingWindow) || isChatBudgetExceeded) && result.length > 18) {
     const sysMsgs = result.filter(m => m && (m.role === 'system' || m.role === 'developer'));
     const nonSys = result.filter(m => !m || (m.role !== 'system' && m.role !== 'developer'));
-    const firstUser = nonSys.length > 0 ? nonSys[0] : null;
-    let tailStartIndex = Math.max(1, nonSys.length - 12);
+    
+    // Accurate initial user instruction detection (first non-system message that has role === 'user')
+    const firstUserIndex = nonSys.findIndex(m => m && m.role === 'user');
+    const firstUser = firstUserIndex >= 0 ? nonSys[firstUserIndex] : (nonSys.length > 0 ? nonSys[0] : null);
+
+    let tailStartIndex = Math.max(firstUserIndex >= 0 ? firstUserIndex + 1 : 1, nonSys.length - 12);
     while (tailStartIndex < nonSys.length - 2 && nonSys[tailStartIndex]?.role === 'tool') {
       tailStartIndex++;
     }
     const recentMsgs = nonSys.slice(tailStartIndex);
-    const middleNonSys = nonSys.slice(1, tailStartIndex);
+    const middleNonSys = nonSys.slice(firstUserIndex >= 0 ? firstUserIndex + 1 : 1, tailStartIndex);
 
     // User instruction exemption: 100% preserve all user messages in the middle
     const middleUserMsgs = middleNonSys.filter(m => m && m.role === 'user');
@@ -1585,6 +2011,11 @@ function pruneChatMessages(messages, maxTokens, sessionId = null) {
       };
       result = [...sysMsgs, ...(firstUser ? [firstUser] : []), notice, ...middleUserMsgs, ...recentMsgs];
       modified = true;
+    }
+
+    // Double Shield: Enforce full topological sanitization to heal any orphan or interleaved tool calls
+    if (typeof sanitizeAndValidateChatMessages === 'function') {
+      result = sanitizeAndValidateChatMessages(result);
     }
   }
 
@@ -1852,12 +2283,28 @@ function sanitizeAndValidateChatMessages(messages) {
     const msg = messages[i];
 
     if (msg && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      result.push(msg);
+      const mergedAssistant = { ...msg, tool_calls: msg.tool_calls.slice() };
+      result.push(mergedAssistant);
 
-      const expectedIds = msg.tool_calls.map(tc => tc.id).filter(Boolean);
+      const expectedIds = mergedAssistant.tool_calls.map(tc => tc.id).filter(Boolean);
       const expectedIdSet = new Set(expectedIds);
       const foundToolMsgs = new Map(); // callId -> toolMsg
       const interleavedMsgs = [];      // non-tool messages or orphan tool messages
+
+      const hasPendingToolResponseAhead = (startIdx) => {
+        if (foundToolMsgs.size >= expectedIdSet.size) return false;
+        for (let k = startIdx; k < messages.length; k++) {
+          const futureMsg = messages[k];
+          if (!futureMsg) continue;
+          if (futureMsg.role === 'assistant' && (!Array.isArray(futureMsg.tool_calls) || futureMsg.tool_calls.length === 0)) {
+            return false;
+          }
+          if (futureMsg.role === 'tool' && futureMsg.tool_call_id && expectedIdSet.has(futureMsg.tool_call_id)) {
+            return true;
+          }
+        }
+        return false;
+      };
 
       let j = i + 1;
       // Scan forward to gather all responding tool messages for this assistant turn
@@ -1881,8 +2328,29 @@ function sanitizeAndValidateChatMessages(messages) {
             interleavedMsgs.push(nextMsg);
           }
           j++;
-        } else if (nextMsg.role === 'assistant' || nextMsg.role === 'user') {
-          break;
+        } else if (nextMsg.role === 'assistant') {
+          if (Array.isArray(nextMsg.tool_calls) && nextMsg.tool_calls.length > 0 && hasPendingToolResponseAhead(j + 1)) {
+            for (const tc of nextMsg.tool_calls) {
+              if (tc && tc.id && !expectedIdSet.has(tc.id)) {
+                mergedAssistant.tool_calls.push(tc);
+                expectedIds.push(tc.id);
+                expectedIdSet.add(tc.id);
+              }
+            }
+            if (nextMsg.content && !mergedAssistant.content) {
+              mergedAssistant.content = nextMsg.content;
+            }
+            j++;
+          } else {
+            break;
+          }
+        } else if (nextMsg.role === 'user') {
+          if (hasPendingToolResponseAhead(j + 1)) {
+            interleavedMsgs.push(nextMsg);
+            j++;
+          } else {
+            break;
+          }
         } else {
           interleavedMsgs.push(nextMsg);
           j++;
@@ -2016,7 +2484,12 @@ class StreamDegenerationDetector {
  * When running on Windows, automatically corrects "shell": "bash" in exec_command arguments to "powershell".
  */
 function autoCorrectToolArgs(toolName, argsStr) {
-  if (toolName !== 'exec_command' || !argsStr || typeof argsStr !== 'string') {
+  if (toolName !== 'exec_command' && toolName !== 'bash' && toolName !== 'powershell' && toolName !== 'execute_command') {
+    if (!argsStr || typeof argsStr !== 'string' || (!argsStr.includes('"command"') && !argsStr.includes('"cmd"'))) {
+      return argsStr;
+    }
+  }
+  if (!argsStr || typeof argsStr !== 'string') {
     return argsStr;
   }
   const isWindows = (process.platform === 'win32');
@@ -2025,8 +2498,25 @@ function autoCorrectToolArgs(toolName, argsStr) {
   try {
     const parsed = JSON.parse(argsStr);
     if (parsed && typeof parsed === 'object') {
+      let modified = false;
       if (parsed.shell === 'bash') {
         parsed.shell = 'powershell';
+        modified = true;
+      }
+      const cmdKey = parsed.command !== undefined ? 'command' : (parsed.cmd !== undefined ? 'cmd' : null);
+      if (cmdKey && typeof parsed[cmdKey] === 'string') {
+        try {
+          const powershellOptimizer = require('./powershell-optimizer');
+          if (powershellOptimizer && typeof powershellOptimizer.fixPowerShellCommandEscaping === 'function') {
+            const fixed = powershellOptimizer.fixPowerShellCommandEscaping(parsed[cmdKey]);
+            if (fixed && fixed !== parsed[cmdKey]) {
+              parsed[cmdKey] = fixed;
+              modified = true;
+            }
+          }
+        } catch (_) {}
+      }
+      if (modified) {
         return JSON.stringify(parsed);
       }
     }
@@ -2174,7 +2664,10 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
 
       if (isToolCall) {
         const callId = item.call_id || item.id || `call_${Date.now()}`;
-        const funcName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        let funcName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        if (typeof funcName === 'string' && funcName.startsWith('mcp__opencode_router__')) {
+          funcName = funcName.slice(22);
+        }
         let funcArgs = '{}';
         if (typeof item.arguments === 'string') {
           funcArgs = item.arguments;
@@ -2274,6 +2767,9 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
     messages: sanitizedMessages,
     stream: body.stream === true
   };
+  if (chatPayload.stream) {
+    chatPayload.stream_options = { include_usage: true };
+  }
 
   if (body.temperature !== undefined) chatPayload.temperature = body.temperature;
   if (body.top_p !== undefined) chatPayload.top_p = body.top_p;
@@ -2356,6 +2852,31 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
     if ((hasToolSearch || isVisualIntent || (compressionOptions && compressionOptions.injectComfyUiTools)) && !hasGenerateImage) {
       chatPayload.tools.push(...COMFYUI_TOOLS);
     }
+
+    // Dynamic plugin tools injection for Codex (Master-MCP linkage)
+    const pm = getPluginManager();
+    if (pm && (hasToolSearch || (compressionOptions && compressionOptions.injectPluginTools))) {
+      try {
+        const dynamicTools = pm.getActiveTools('codex');
+        for (const dt of dynamicTools) {
+          if (dt.name === 'generate_image' || dt.name === 'interrogate_image') continue;
+          const exists = chatPayload.tools.some(t => {
+            const tName = t.function?.name || t.name || '';
+            return tName === dt.name || tName === `mcp__opencode_router__${dt.name}`;
+          });
+          if (!exists) {
+            chatPayload.tools.push({
+              type: 'function',
+              function: {
+                name: dt.name,
+                description: dt.description || '',
+                parameters: normalizeToolParameters(dt.parameters || dt.inputSchema)
+              }
+            });
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   // Windows Native PowerShell Environment Directive Injection
@@ -2419,7 +2940,7 @@ function normalizeResponsesUsage(rawUsage, defaultInput = 20, defaultOutput = 20
   const outTokens = rawUsage?.output_tokens ?? rawUsage?.completion_tokens ?? defaultOutput;
   const totTokens = rawUsage?.total_tokens ?? (inTokens + outTokens);
   const reasoningTokens = rawUsage?.completion_tokens_details?.reasoning_tokens ?? rawUsage?.output_tokens_details?.reasoning_tokens ?? 0;
-  const cachedTokens = rawUsage?.prompt_tokens_details?.cached_tokens ?? rawUsage?.input_tokens_details?.cached_tokens ?? 0;
+  const cachedTokens = rawUsage?.prompt_tokens_details?.cached_tokens ?? rawUsage?.input_tokens_details?.cached_tokens ?? rawUsage?.cache_read_input_tokens ?? 0;
   return {
     input_tokens: inTokens,
     output_tokens: outTokens,
@@ -2437,6 +2958,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
     'Access-Control-Allow-Origin': '*'
   });
 
@@ -2447,7 +2969,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   }
   const sendEvent = (event, data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
-    clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    try {
+      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {}
   };
 
   sendEvent('response.created', {
@@ -2673,7 +3197,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    clientRes.write(': keep-alive\n\n');
+    try { clientRes.write(': keep-alive\n\n'); } catch (_) {}
   }, 10000);
 
   const isXHighReasoning = Boolean(reqModel && (
@@ -2740,7 +3264,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const cleanup = () => {
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
-    clientRes.removeListener('close', onCloseHandler);
+    if (typeof clientRes.removeListener === 'function') clientRes.removeListener('close', onCloseHandler);
     unbindUpstream(currentUpstream);
   };
 
@@ -2834,27 +3358,24 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   };
 
-  const onUpstreamData = (chunk) => {
-    totalChunks++;
-    lastDataTime = Date.now();
-    buffer += chunk.toString('utf8');
-    const lines = buffer.split('\n');
-    buffer = lines.pop(); // keep partial
+  const { StringDecoder } = require('string_decoder');
+  const decoder = new StringDecoder('utf8');
+  let pendingBuffer = '';
 
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-      const payloadStr = line.slice(5).trim();
-      if (!payloadStr || payloadStr === '[DONE]') continue;
+  const processLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const payloadStr = line.slice(5).trim();
+    if (!payloadStr || payloadStr === '[DONE]') return;
 
-      try {
-        const parsed = JSON.parse(payloadStr);
-        if (parsed.usage) collectedUsage = parsed.usage;
+    try {
+      const parsed = JSON.parse(payloadStr);
+      if (parsed.usage) collectedUsage = parsed.usage;
 
-        const choice = parsed.choices?.[0];
-        if (!choice) continue;
-        const delta = choice.delta;
-        if (!delta) continue;
+      const choice = parsed.choices?.[0];
+      if (!choice) return;
+      const delta = choice.delta;
+      if (!delta) return;
 
         let reasoningChunk = delta.reasoning || delta.reasoning_content;
         let textChunk = delta.content;
@@ -2902,6 +3423,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               }
               textChunk = (pendingPrefixText ? pendingPrefixText : '') + after;
               pendingPrefixText = '';
+              closeReasoning();
             } else {
               let matchLen = 0;
               for (let len = Math.min(7, thinkBuffer.length); len >= 1; len--) {
@@ -3007,6 +3529,16 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               Math.max(10, Math.round(fullText.length * 0.4)),
               Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
             );
+            try {
+              if (usageObj && typeof contextCompactor.recordRequestTelemetry === 'function') {
+                contextCompactor.recordRequestTelemetry({
+                  model: reqModel,
+                  inputTokens: usageObj.input_tokens,
+                  outputTokens: usageObj.output_tokens,
+                  cachedTokens: usageObj.input_tokens_details?.cached_tokens || 0
+                });
+              }
+            } catch (_) {}
             sendEvent('response.completed', {
               type: 'response.completed',
               sequence_number: seq++,
@@ -3087,10 +3619,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             if (!toolCallsMap.has(idx)) {
               const tcOutIdx = outputIndex++;
               const callId = tc.id || `call_${Date.now()}_${idx}`;
-              let funcName = tc.function?.name || '';
-              if (funcName === 'image_gen') {
-                funcName = 'generate_image';
-              }
+              let funcName = normalizeUpstreamToolName(tc.function?.name || '');
               const isCustomTool = (funcName === 'apply_patch');
               const rec = {
                 id: callId,
@@ -3119,12 +3648,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
             const rec = toolCallsMap.get(idx);
             if (tc.function?.name && !rec.name) {
-              let fName = tc.function.name;
-              if (fName === 'generate_image' || fName === 'image_gen') {
-                fName = 'mcp__comfyui__generate_image';
-              } else if (fName === 'interrogate_image') {
-                fName = 'mcp__comfyui__interrogate_image';
-              }
+              let fName = normalizeUpstreamToolName(tc.function.name);
               rec.name = fName;
               if (rec.name === 'apply_patch') {
                 rec.isCustomTool = true;
@@ -3148,6 +3672,24 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           }
         }
       } catch (e) {}
+  };
+
+  const onUpstreamData = (chunk) => {
+    totalChunks++;
+    lastDataTime = Date.now();
+    pendingBuffer += (typeof chunk === 'string') ? chunk : decoder.write(chunk);
+    if (pendingBuffer.length > 10 * 1024 * 1024) {
+      console.warn('[SSE Buffer Overflow Guard] bridgeResponsesStream buffer exceeded 10MB without newline. Pruning stale prefix.');
+      pendingBuffer = pendingBuffer.slice(-1024 * 1024);
+    }
+    const lastNewlineIdx = pendingBuffer.lastIndexOf('\n');
+    if (lastNewlineIdx !== -1) {
+      const completeChunk = pendingBuffer.slice(0, lastNewlineIdx);
+      pendingBuffer = pendingBuffer.slice(lastNewlineIdx + 1);
+      const lines = completeChunk.split('\n');
+      for (const rawLine of lines) {
+        processLine(rawLine);
+      }
     }
   };
 
@@ -3258,6 +3800,17 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const onUpstreamEnd = async () => {
     upstreamEnded = true;
     if (streamFinished) return;
+
+    // Flush any pending trailing bytes from StringDecoder and complete lines
+    pendingBuffer += decoder.end();
+    if (pendingBuffer && pendingBuffer.trim()) {
+      const remainingLines = pendingBuffer.split('\n');
+      pendingBuffer = '';
+      for (const rawLine of remainingLines) {
+        processLine(rawLine);
+      }
+    }
+    buffer = '';
 
     if (thinkBuffer || pendingPrefixText) {
       if (inThinkTag) {
@@ -3394,6 +3947,17 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
     );
 
+    try {
+      if (usageObj && typeof contextCompactor.recordRequestTelemetry === 'function') {
+        contextCompactor.recordRequestTelemetry({
+          model: reqModel,
+          inputTokens: usageObj.input_tokens,
+          outputTokens: usageObj.output_tokens,
+          cachedTokens: usageObj.input_tokens_details?.cached_tokens || 0
+        });
+      }
+    } catch (_) {}
+
     sendEvent('response.completed', {
       type: 'response.completed',
       sequence_number: seq++,
@@ -3474,6 +4038,7 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*'
     });
   }
@@ -3602,7 +4167,13 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
     const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
     if (thinkMatch) {
       reasoning = thinkMatch[1].trim();
-      content = content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      content = content.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim();
+    } else {
+      const unclosedMatch = content.match(/<think>([\s\S]*)$/);
+      if (unclosedMatch) {
+        reasoning = unclosedMatch[1].trim();
+        content = content.replace(/<think>[\s\S]*$/, '').trim();
+      }
     }
   }
   const output = [];
@@ -3629,12 +4200,7 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
 
   if (Array.isArray(msg.tool_calls)) {
     for (const tc of msg.tool_calls) {
-      let toolName = tc.function?.name || '';
-      if (toolName === 'generate_image' || toolName === 'image_gen') {
-        toolName = 'mcp__comfyui__generate_image';
-      } else if (toolName === 'interrogate_image') {
-        toolName = 'mcp__comfyui__interrogate_image';
-      }
+      let toolName = normalizeUpstreamToolName(tc.function?.name || '');
       const rawArgs = tc.function?.arguments || '{}';
       if (toolName === 'apply_patch') {
         const cleanInput = extractPatchInput(rawArgs);
@@ -3687,6 +4253,18 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
     };
   }
 
+  const finalUsage = normalizeResponsesUsage(chatJson.usage, 20, 20);
+  try {
+    if (finalUsage && typeof contextCompactor.recordRequestTelemetry === 'function') {
+      contextCompactor.recordRequestTelemetry({
+        model: reqModel,
+        inputTokens: finalUsage.input_tokens,
+        outputTokens: finalUsage.output_tokens,
+        cachedTokens: finalUsage.input_tokens_details?.cached_tokens || 0
+      });
+    }
+  } catch (_) {}
+
   return {
     id: respId,
     object: 'response',
@@ -3707,7 +4285,7 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
     error: null,
     incomplete_details: null,
     output,
-    usage: normalizeResponsesUsage(chatJson.usage, 20, 20),
+    usage: finalUsage,
     instructions: null,
     tool_choice: 'auto',
     tools: [],
@@ -3750,7 +4328,10 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
 
       if (isToolCall) {
         const callId = item.call_id || item.id || `call_${Date.now()}`;
-        const toolName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        let toolName = item.name || item.function?.name || (itemType !== 'function_call' ? itemType : 'custom_tool');
+        if (typeof toolName === 'string' && toolName.startsWith('mcp__opencode_router__')) {
+          toolName = toolName.slice(22);
+        }
         let inputObj = {};
         if (typeof item.arguments === 'string') {
           try { inputObj = JSON.parse(item.arguments); } catch (e) {}
@@ -3883,6 +4464,39 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
     }
   }
 
+  // 2. Ensure each assistant tool_use has a corresponding tool_result in the immediately following turn
+  for (let idx = 0; idx < mergedMessages.length; idx++) {
+    const msg = mergedMessages[idx];
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const toolUseBlocks = msg.content.filter(b => b && b.type === 'tool_use');
+      if (toolUseBlocks.length > 0) {
+        let nextMsg = mergedMessages[idx + 1];
+        if (!nextMsg || nextMsg.role !== 'user') {
+          nextMsg = { role: 'user', content: [] };
+          mergedMessages.splice(idx + 1, 0, nextMsg);
+        }
+        if (!Array.isArray(nextMsg.content)) {
+          nextMsg.content = typeof nextMsg.content === 'string' && nextMsg.content
+            ? [{ type: 'text', text: nextMsg.content }]
+            : [];
+        }
+        const existingResultIds = new Set(
+          nextMsg.content.filter(b => b && b.type === 'tool_result').map(b => b.tool_use_id)
+        );
+        for (const tu of toolUseBlocks) {
+          if (!existingResultIds.has(tu.id)) {
+            nextMsg.content.unshift({
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: '{"status":"completed","note":"auto-filled by gateway resilience"}'
+            });
+            existingResultIds.add(tu.id);
+          }
+        }
+      }
+    }
+  }
+
   // Ensure first message is user
   if (mergedMessages.length === 0 || mergedMessages[0].role !== 'user') {
     mergedMessages.unshift({ role: 'user', content: 'Begin conversation.' });
@@ -3940,6 +4554,25 @@ function convertResponsesToAnthropicPayload(body, compressionOptions = null, ses
         });
       }
     }
+
+    // Dynamic plugin tools injection for Codex (Master-MCP linkage)
+    const pm = getPluginManager();
+    if (pm && (hasToolSearch || (compressionOptions && compressionOptions.injectPluginTools))) {
+      try {
+        const dynamicTools = pm.getActiveTools('codex');
+        for (const dt of dynamicTools) {
+          if (dt.name === 'generate_image' || dt.name === 'interrogate_image') continue;
+          const exists = payload.tools.some(t => t.name === dt.name || t.name === `mcp__opencode_router__${dt.name}`);
+          if (!exists) {
+            payload.tools.push({
+              name: dt.name,
+              description: dt.description || '',
+              input_schema: normalizeToolParameters(dt.parameters || dt.inputSchema)
+            });
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   if (compressionOptions && compressionOptions.enabled !== false) {
@@ -3962,6 +4595,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
     'Access-Control-Allow-Origin': '*'
   });
 
@@ -3972,7 +4606,9 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   }
   const sendEvent = (event, data) => {
     if (clientRes.writableEnded || clientRes.destroyed) return;
-    clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    try {
+      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {}
   };
 
   sendEvent('response.created', {
@@ -4261,7 +4897,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       clearInterval(heartbeatTimer);
       return;
     }
-    clientRes.write(': keep-alive\n\n');
+    try { clientRes.write(': keep-alive\n\n'); } catch (_) {}
   }, 10000);
 
   const isXHighReasoning = Boolean(reqModel && (
@@ -4328,7 +4964,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
   const cleanup = () => {
     clearInterval(heartbeatTimer);
     clearInterval(stallWatchdog);
-    clientRes.removeListener('close', onCloseHandler);
+    if (typeof clientRes.removeListener === 'function') clientRes.removeListener('close', onCloseHandler);
     unbindUpstream(currentUpstream);
   };
 
@@ -4350,22 +4986,19 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     }
   };
 
-  const onUpstreamData = (chunk) => {
-    totalChunks++;
-    lastDataTime = Date.now();
-    buffer += chunk.toString('utf8');
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
+  const { StringDecoder: StringDecoderAnth } = require('string_decoder');
+  const decoderAnth = new StringDecoderAnth('utf8');
+  let pendingBufferAnth = '';
 
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-      const payloadStr = line.slice(5).trim();
-      if (!payloadStr) continue;
+  const processAnthropicLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const payloadStr = line.slice(5).trim();
+    if (!payloadStr) return;
 
-      try {
-        const parsed = JSON.parse(payloadStr);
-        const evType = parsed.type;
+    try {
+      const parsed = JSON.parse(payloadStr);
+      const evType = parsed.type;
 
         if (evType === 'message_start' && parsed.message?.usage) {
           collectedUsage = {
@@ -4419,10 +5052,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
             const bIdx = parsed.index ?? outputIndex;
             const tcOutIdx = outputIndex++;
             const callId = cb.id || `call_${Date.now()}_${bIdx}`;
-            let funcName = cb.name || 'custom_tool';
-            if (funcName === 'image_gen') {
-              funcName = 'generate_image';
-            }
+            let funcName = normalizeUpstreamToolName(cb.name || 'custom_tool');
             const isCustomTool = (funcName === 'apply_patch');
             const rec = { id: callId, name: funcName, args: '', outIdx: tcOutIdx, isCustomTool };
             toolCallsMap.set(bIdx, rec);
@@ -4530,6 +5160,24 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           collectedUsage.output_tokens = parsed.usage.output_tokens;
         }
       } catch (e) {}
+  };
+
+  const onUpstreamData = (chunk) => {
+    totalChunks++;
+    lastDataTime = Date.now();
+    pendingBufferAnth += (typeof chunk === 'string') ? chunk : decoderAnth.write(chunk);
+    if (pendingBufferAnth.length > 10 * 1024 * 1024) {
+      console.warn('[SSE Buffer Overflow Guard] bridgeAnthropicStream buffer exceeded 10MB without newline. Pruning stale prefix.');
+      pendingBufferAnth = pendingBufferAnth.slice(-1024 * 1024);
+    }
+    const lastNewlineIdx = pendingBufferAnth.lastIndexOf('\n');
+    if (lastNewlineIdx !== -1) {
+      const completeChunk = pendingBufferAnth.slice(0, lastNewlineIdx);
+      pendingBufferAnth = pendingBufferAnth.slice(lastNewlineIdx + 1);
+      const lines = completeChunk.split('\n');
+      for (const rawLine of lines) {
+        processAnthropicLine(rawLine);
+      }
     }
   };
 
@@ -4537,11 +5185,23 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
     upstreamEnded = true;
     if (streamFinished) return;
 
+    pendingBufferAnth += decoderAnth.end();
+    if (pendingBufferAnth && pendingBufferAnth.trim()) {
+      const remainingLines = pendingBufferAnth.split('\n');
+      pendingBufferAnth = '';
+      for (const rawLine of remainingLines) {
+        processAnthropicLine(rawLine);
+      }
+    }
+    buffer = '';
+    upstreamEnded = true;
+    if (streamFinished) return;
+
     closeReasoning();
     closeText();
 
-    if (fullText === '' && toolCallsMap.size === 0 && fullReasoning === '') {
-      if (totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
+    if (fullText === '' && toolCallsMap.size === 0) {
+      if (fullReasoning === '' && totalChunks === 0 && typeof reconnectFn === 'function' && !hasRetriedReconnect) {
         attemptReconnect(new Error('Empty stream before first token'), false);
         return;
       }
@@ -4557,6 +5217,17 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
       Math.max(10, Math.round(fullText.length * 0.4)),
       Math.max(5, Math.round((fullText.length + fullReasoning.length) * 0.7))
     );
+
+    try {
+      if (usageObj && typeof contextCompactor.recordRequestTelemetry === 'function') {
+        contextCompactor.recordRequestTelemetry({
+          model: reqModel,
+          inputTokens: usageObj.input_tokens,
+          outputTokens: usageObj.output_tokens,
+          cachedTokens: usageObj.input_tokens_details?.cached_tokens || 0
+        });
+      }
+    } catch (_) {}
 
     sendEvent('response.completed', {
       type: 'response.completed',
@@ -4618,6 +5289,191 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 /**
  * Translates upstream non-streaming Anthropic JSON response to standard OpenAI Responses JSON response
  */
+
+/**
+ * Bridges upstream stream to client in OpenAI ChatCompletions SSE protocol.
+ * Guarantees:
+ * - StringDecoder('utf8') & pendingBuffer: Zero UTF-8 multi-byte sequence corruption & complete event frames.
+ * - Multi-tool_calls index & argument fragments assembly: Preserves concurrent tool_calls without cross-talk.
+ * - Reasoning content & thinking streaming: Seamlessly outputs delta.reasoning_content.
+ * - X-Accel-Buffering: no & Cache-Control: no-cache: Eliminates proxy buffer latency for IDE autocomplete.
+ * - Exactly-once data: [DONE]\n\n termination: Prevents premature termination, missing [DONE], or duplicate [DONE].
+ */
+function bridgeChatStream(upstreamRes, clientRes, reqModel, reqId, onFinished, sessionId = null) {
+  if (!clientRes.headersSent) {
+    clientRes.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*'
+    });
+  }
+
+  const { StringDecoder } = require('string_decoder');
+  const decoder = new StringDecoder('utf8');
+  let pendingBuffer = '';
+  let streamFinished = false;
+  let hasSentDone = false;
+  const respId = reqId || ('chatcmpl_' + Date.now());
+  const created = Math.floor(Date.now() / 1000);
+  let totalChunks = 0;
+  let collectedUsage = null;
+
+  const heartbeatTimer = setInterval(() => {
+    if (clientRes.writableEnded || clientRes.destroyed || streamFinished) {
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    try { clientRes.write(': keep-alive\n\n'); } catch (_) {}
+  }, 10000);
+
+  const sendEvent = (data) => {
+    if (clientRes.writableEnded || clientRes.destroyed) return;
+    try {
+      clientRes.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
+    } catch (_) {}
+  };
+
+  const sendDelta = (deltaObj, finishReason = null) => {
+    if (hasSentDone || clientRes.writableEnded || clientRes.destroyed) return;
+    const chunk = {
+      id: respId,
+      object: 'chat.completion.chunk',
+      created,
+      model: reqModel,
+      choices: [{
+        index: 0,
+        delta: deltaObj || {},
+        finish_reason: finishReason
+      }]
+    };
+    if (finishReason && collectedUsage) {
+      chunk.usage = collectedUsage;
+    }
+    sendEvent(chunk);
+  };
+
+  const sendFinalDone = (finishReason = 'stop') => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (hasSentDone || clientRes.writableEnded || clientRes.destroyed) return;
+    hasSentDone = true;
+    streamFinished = true;
+    sendDelta({}, finishReason);
+    sendEvent('[DONE]');
+    if (!clientRes.writableEnded) {
+      clientRes.end();
+    }
+    if (typeof onFinished === 'function') onFinished();
+  };
+
+  const processChatLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const payloadStr = line.slice(5).trim();
+    if (!payloadStr) return;
+    if (payloadStr === '[DONE]') {
+      sendFinalDone('stop');
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(payloadStr);
+      if (parsed.usage) collectedUsage = parsed.usage;
+
+      // Handle standard ChatCompletions chunk
+      if (parsed.choices && parsed.choices.length > 0) {
+        const choice = parsed.choices[0];
+        const delta = choice.delta || {};
+        if (choice.finish_reason) {
+          sendFinalDone(choice.finish_reason);
+          return;
+        }
+        sendDelta(delta, null);
+        return;
+      }
+
+      // Handle Responses API event stream -> ChatCompletions chunk conversion
+      if (parsed.type) {
+        const evType = parsed.type;
+        if (evType === 'response.output_text.delta' && parsed.delta) {
+          sendDelta({ content: parsed.delta }, null);
+        } else if (evType === 'response.reasoning_text.delta' && parsed.delta) {
+          sendDelta({ reasoning_content: parsed.delta }, null);
+        } else if (evType === 'response.function_call_arguments.delta') {
+          const idx = parsed.output_index ?? 0;
+          sendDelta({
+            tool_calls: [{
+              index: idx,
+              id: parsed.call_id,
+              type: 'function',
+              function: { arguments: parsed.delta }
+            }]
+          }, null);
+        } else if (evType === 'response.output_item.added' && parsed.item?.type === 'function_call') {
+          const idx = parsed.output_index ?? 0;
+          sendDelta({
+            tool_calls: [{
+              index: idx,
+              id: parsed.item.id,
+              type: 'function',
+              function: { name: parsed.item.name || 'custom_tool', arguments: '' }
+            }]
+          }, null);
+        } else if (evType === 'response.completed') {
+          if (parsed.response?.usage) collectedUsage = parsed.response.usage;
+          sendFinalDone('stop');
+        } else if (evType === 'response.failed') {
+          sendFinalDone('stop');
+        }
+      }
+    } catch (_) {}
+  };
+
+  const onData = (chunk) => {
+    totalChunks++;
+    pendingBuffer += (typeof chunk === 'string') ? chunk : decoder.write(chunk);
+    if (pendingBuffer.length > 10 * 1024 * 1024) {
+      pendingBuffer = pendingBuffer.slice(-1024 * 1024);
+    }
+    const lastNewlineIdx = pendingBuffer.lastIndexOf('\n');
+    if (lastNewlineIdx !== -1) {
+      const completeChunk = pendingBuffer.slice(0, lastNewlineIdx);
+      pendingBuffer = pendingBuffer.slice(lastNewlineIdx + 1);
+      const lines = completeChunk.split('\n');
+      for (const line of lines) {
+        processChatLine(line);
+      }
+    }
+  };
+
+  const onEnd = () => {
+    pendingBuffer += decoder.end();
+    if (pendingBuffer && pendingBuffer.trim()) {
+      const lines = pendingBuffer.split('\n');
+      pendingBuffer = '';
+      for (const line of lines) {
+        processChatLine(line);
+      }
+    }
+    if (!hasSentDone) {
+      sendFinalDone('stop');
+    }
+  };
+
+  const onError = (err) => {
+    if (!hasSentDone) {
+      sendFinalDone('stop');
+    }
+  };
+
+  if (upstreamRes && typeof upstreamRes.on === 'function') {
+    upstreamRes.on('data', onData);
+    upstreamRes.on('end', onEnd);
+    upstreamRes.on('error', onError);
+  }
+}
+
 function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
   const respId = reqId || anthropicJson.id || ('resp_' + Date.now());
   const output = [];
@@ -4641,12 +5497,7 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
           content: [{ type: 'reasoning_text', text: c.thinking || '' }]
         });
       } else if (c.type === 'tool_use') {
-        let toolName = c.name || 'custom_tool';
-        if (toolName === 'generate_image' || toolName === 'image_gen') {
-          toolName = 'mcp__comfyui__generate_image';
-        } else if (toolName === 'interrogate_image') {
-          toolName = 'mcp__comfyui__interrogate_image';
-        }
+        let toolName = normalizeUpstreamToolName(c.name || 'custom_tool');
         const rawArgs = typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {});
         if (toolName === 'apply_patch' || c.isCustomTool) {
           const cleanInput = extractPatchInput(rawArgs);
@@ -4700,6 +5551,18 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
     };
   }
 
+  const finalUsage = normalizeResponsesUsage(anthropicJson.usage, 20, 20);
+  try {
+    if (finalUsage && typeof contextCompactor.recordRequestTelemetry === 'function') {
+      contextCompactor.recordRequestTelemetry({
+        model: reqModel,
+        inputTokens: finalUsage.input_tokens,
+        outputTokens: finalUsage.output_tokens,
+        cachedTokens: finalUsage.input_tokens_details?.cached_tokens || 0
+      });
+    }
+  } catch (_) {}
+
   return {
     id: respId,
     object: 'response',
@@ -4720,7 +5583,7 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
     error: null,
     incomplete_details: null,
     output,
-    usage: normalizeResponsesUsage(anthropicJson.usage, 20, 20),
+    usage: finalUsage,
     instructions: null,
     tool_choice: 'auto',
     tools: [],
@@ -4728,6 +5591,44 @@ function convertAnthropicResponseToResponses(anthropicJson, reqModel, reqId) {
     text: { verbosity: null, format: { type: 'text' } },
     moderation: null
   };
+}
+
+/**
+ * Dynamically resolves the latest existing cua_node executable
+ */
+function findLatestCuaNodeExecutable(codexDirOverride = null) {
+  const userProfile = process.env.USERPROFILE || os.homedir();
+  const cuaBase = codexDirOverride
+    ? (fs.existsSync(path.join(codexDirOverride, 'runtimes', 'cua_node')) ? path.join(codexDirOverride, 'runtimes', 'cua_node') : codexDirOverride)
+    : path.join(userProfile, 'AppData', 'Local', 'OpenAI', 'Codex', 'runtimes', 'cua_node');
+  if (!fs.existsSync(cuaBase)) return null;
+
+  try {
+    const entries = fs.readdirSync(cuaBase, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory())
+      .map(e => {
+        const full = path.join(cuaBase, e.name);
+        let mtime = 0;
+        try { mtime = fs.statSync(full).mtimeMs; } catch (_) {}
+        return { name: e.name, full, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const dir of dirs) {
+      const candidates = [
+        path.join(dir.full, 'bin', 'node_modules', '@oai', 'sky', 'bin', 'windows', 'swift', 'x64', 'codex-computer-use-swift.exe'),
+        path.join(dir.full, 'bin', 'node_modules', '@oai', 'sky', 'bin', 'windows', 'codex-computer-use.exe'),
+        path.join(dir.full, 'bin', 'node_modules', '@oai', 'cua', 'bin', 'windows', 'codex-computer-use.exe')
+      ];
+      for (const cand of candidates) {
+        if (fs.existsSync(cand)) {
+          return cand;
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
 /**
@@ -4800,36 +5701,25 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
   filteredLines.push('stream_max_retries = 3');
   filteredLines.push('request_max_retries = 3');
 
-  // Safeguard: Always ensure [model_providers.custom] points to local router as well
-  // This prevents Codex from erroring out with "supported API model names are ... but you passed deepseek-v4.1-flash"
-  // if the user toggles provider back to "custom" in the UI.
-  let hasCustom = false;
-  inSection = false;
+  // Channel Isolation: Never hijack or overwrite user's direct [model_providers.custom]
+  // The gateway strictly operates within its dedicated [model_providers."opencode-go"] section.
+
+  // Check and dynamically heal notify executable path if present
   for (let i = 0; i < filteredLines.length; i++) {
     const l = filteredLines[i].trim();
-    if (l === '[model_providers.custom]') {
-      hasCustom = true;
-      inSection = true;
-      continue;
-    }
-    if (inSection) {
-      if (l.startsWith('[')) {
-        inSection = false;
-      } else if (l.startsWith('base_url =')) {
-        filteredLines[i] = `base_url = ${JSON.stringify(routerUrl)}`;
-      } else if (l.startsWith('wire_api =')) {
-        filteredLines[i] = 'wire_api = "responses"';
+    const mNotify = l.match(/^notify\s*=\s*\[\s*["']([^"']+)["']/);
+    if (mNotify) {
+      const rawNotifyPath = mNotify[1].replace(/\\\\/g, '\\');
+      if (!fs.existsSync(rawNotifyPath)) {
+        const latestExe = findLatestCuaNodeExecutable();
+        if (latestExe) {
+          const escaped = latestExe.replace(/\\/g, '\\\\');
+          filteredLines[i] = filteredLines[i].replace(mNotify[1], escaped);
+        } else {
+          filteredLines[i] = `# ${filteredLines[i]} # (disabled: runtime executable not found)`;
+        }
       }
     }
-  }
-
-  if (!hasCustom && provider === 'custom') {
-    filteredLines.push('');
-    filteredLines.push('[model_providers.custom]');
-    filteredLines.push('name = "custom"');
-    filteredLines.push('wire_api = "responses"');
-    filteredLines.push('requires_openai_auth = true');
-    filteredLines.push(`base_url = ${JSON.stringify(routerUrl)}`);
   }
 
   // Ensure [desktop] section has localeOverride = "zh-CN"
@@ -4864,6 +5754,54 @@ function updateCodexTomlString(rawToml, { model, provider, reasoningEffort, rout
     filteredLines.push('');
     filteredLines.push('[desktop]');
     filteredLines.push('localeOverride = "zh-CN"');
+  }
+
+  // Ensure Master-MCP Unified Tool Bus is configured under [mcp_servers.opencode_router]
+  const nodeExe = (process.execPath || 'C:\\Program Files\\nodejs\\node.exe').replace(/\\/g, '\\\\');
+  const masterMcpScript = path.join(__dirname, 'mcp-master.js').replace(/\\/g, '\\\\');
+
+  let hasMasterMcp = false;
+  let hasMcpServersHeader = false;
+  let legacyComfyIdx = -1;
+
+  for (let i = 0; i < filteredLines.length; i++) {
+    const l = filteredLines[i].trim();
+    if (l === '[mcp_servers]') hasMcpServersHeader = true;
+    if (l === '[mcp_servers.opencode_router]') {
+      hasMasterMcp = true;
+    }
+    if (l === '[mcp_servers.comfyui]') {
+      legacyComfyIdx = i;
+    }
+  }
+
+  // Smooth migration of legacy [mcp_servers.comfyui]
+  if (legacyComfyIdx !== -1 && !hasMasterMcp) {
+    filteredLines[legacyComfyIdx] = '[mcp_servers.opencode_router]';
+    for (let j = legacyComfyIdx + 1; j < filteredLines.length; j++) {
+      const jl = filteredLines[j].trim();
+      if (jl.startsWith('[')) break;
+      if (jl.startsWith('args =') || jl.startsWith('args=')) {
+        filteredLines[j] = `args = ["${masterMcpScript}", "--client=codex"]`;
+      }
+    }
+    hasMasterMcp = true;
+  } else if (legacyComfyIdx !== -1 && hasMasterMcp) {
+    let endIdx = legacyComfyIdx + 1;
+    while (endIdx < filteredLines.length && !filteredLines[endIdx].trim().startsWith('[')) {
+      endIdx++;
+    }
+    filteredLines.splice(legacyComfyIdx, endIdx - legacyComfyIdx);
+  } else if (!hasMasterMcp) {
+    if (!hasMcpServersHeader) {
+      filteredLines.push('');
+      filteredLines.push('[mcp_servers]');
+    }
+    filteredLines.push('');
+    filteredLines.push('[mcp_servers.opencode_router]');
+    filteredLines.push(`command = "${nodeExe}"`);
+    filteredLines.push(`args = ["${masterMcpScript}", "--client=codex"]`);
+    filteredLines.push('startup_timeout_sec = 60');
   }
 
   return filteredLines.join('\n');
@@ -4954,6 +5892,8 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     backupInfo = { timestamp: fs.statSync(configPath + '.router-bak').mtimeMs };
   }
 
+  const localeCheck = checkCodexLocaleAndEnvironment({ codexDir });
+
   return {
     codexDir,
     cliInstalled,
@@ -4969,6 +5909,8 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     hasValidAuthKey,
     hasBackup,
     backupInfo,
+    hasMasterMcp: Boolean(localeCheck && localeCheck.hasMasterMcp),
+    missingMasterMcp: Boolean(localeCheck && localeCheck.missingMasterMcp),
     desktopLocale: (function() {
       if (!fs.existsSync(configPath)) return null;
       try {
@@ -4979,10 +5921,10 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     })(),
     localeNotice: '已配置简体中文 (localeOverride = "zh-CN")。注意：Codex 桌面端 Web 界面内部汉化受制于官方该版本 Feature Gate (Statsig 72216192) 默认值冲突，官方放量或更新后将自动全面显示中文。',
     processHealth: checkCodexProcessHealth(),
-    localeCheck: checkCodexLocaleAndEnvironment({ codexDir }),
-    availableModels: OPENCODE_GO_ALL_MODELS.map(m => ({
+    localeCheck,
+    availableModels: ((routerPortOrDir && typeof routerPortOrDir === 'object' && Array.isArray(routerPortOrDir.models) && routerPortOrDir.models.length > 0) ? routerPortOrDir.models : OPENCODE_GO_ALL_MODELS).map(m => ({
       slug: m.slug,
-      display_name: m.display_name,
+      display_name: m.display_name || m.name,
       description: m.description,
       default_reasoning_level: m.default_reasoning_level,
       supported_reasoning_levels: m.supported_reasoning_levels
@@ -5004,6 +5946,9 @@ function bindCodexConfig(options = {}) {
   const defaultModel = options.defaultModel || 'deepseek-v4.1-flash';
   const reasoningEffort = options.reasoningEffort || 'high';
   const providerName = options.providerName || 'opencode-go';
+
+  let effectiveModel = defaultModel;
+  let effectiveEffort = reasoningEffort;
 
   const configPath = path.join(codexDir, 'config.toml');
   const authPath = path.join(codexDir, 'auth.json');
@@ -5119,26 +6064,31 @@ function bindCodexConfig(options = {}) {
     baseInstructions += '\n\n# 语言规范\n无论用户以何种语言提问，除非用户明确要求使用其他语言，否则请始终使用简体中文（Simplified Chinese）进行思考、回答和代码解释。\n';
   }
 
-  const catalogModels = OPENCODE_GO_ALL_MODELS.map(m => {
+  const targetModels = (Array.isArray(options.models) && options.models.length > 0) ? options.models : OPENCODE_GO_ALL_MODELS;
+
+  const catalogModels = targetModels.map(m => {
     const ctx = m.context_window || 1048576;
-    const compactLimit = Math.floor(ctx * 0.85); // 85% of context window triggers Codex client-side auto-compaction
+    const effPercent = (typeof m.effective_context_window_percent === 'number' && m.effective_context_window_percent > 0) ? m.effective_context_window_percent : 95;
+    const compactLimit = Math.floor(ctx * (effPercent / 100)); // 95% of context window triggers Codex client-side auto-compaction
     return {
       ...baseTemplate,
       ...m,
+      display_name: m.display_name || m.name || m.slug,
       base_instructions: baseInstructions,
       context_window: ctx,
-      max_context_window: ctx,
+      max_context_window: m.max_context_window || ctx,
       auto_compact_token_limit: compactLimit,
-      effective_context_window_percent: 95,
+      effective_context_window_percent: effPercent,
       shell_type: 'shell_command',
       visibility: 'list',
-      supported_in_api: true
+      supported_in_api: true,
+      supports_parallel_tool_calls: true
     };
   });
 
   const catalogFile = path.join(catalogsDir, 'opencode-go-catalog.json');
   fs.writeFileSync(catalogFile, JSON.stringify({ models: catalogModels }, null, 2), 'utf8');
-  messages.push(`已生成 OpenCode Go 全量 38 款模型元数据目录 (${catalogFile})`);
+  messages.push(`已生成 OpenCode Go 全量 ${targetModels.length} 款模型元数据目录 (${catalogFile})`);
 
   // Step 3: Update models.json
   try {
@@ -5149,22 +6099,25 @@ function bindCodexConfig(options = {}) {
         if (Array.isArray(parsed.models)) existingModels = parsed.models;
       } catch (e) {}
     }
-    const enrichedOpencodeModels = OPENCODE_GO_ALL_MODELS.map(m => {
+    const enrichedOpencodeModels = targetModels.map(m => {
       const ctx = m.context_window || 1048576;
+      const effPercent = (typeof m.effective_context_window_percent === 'number' && m.effective_context_window_percent > 0) ? m.effective_context_window_percent : 95;
       return {
         ...baseTemplate,
         ...m,
+        display_name: m.display_name || m.name || m.slug,
         base_instructions: baseInstructions,
         context_window: ctx,
-        max_context_window: ctx,
-        auto_compact_token_limit: Math.floor(ctx * 0.85),
-        effective_context_window_percent: 95
+        max_context_window: m.max_context_window || ctx,
+        auto_compact_token_limit: Math.floor(ctx * (effPercent / 100)),
+        effective_context_window_percent: effPercent,
+        supports_parallel_tool_calls: true
       };
     });
     const newSlugs = new Set(enrichedOpencodeModels.map(m => m.slug));
     const retainedModels = existingModels.filter(m => !newSlugs.has(m.slug)).map(m => {
       if (!m.auto_compact_token_limit && m.context_window) {
-        m.auto_compact_token_limit = Math.floor(m.context_window * 0.85);
+        m.auto_compact_token_limit = Math.floor(m.context_window * 0.95);
       }
       return m;
     });
@@ -5198,15 +6151,30 @@ function bindCodexConfig(options = {}) {
     if (fs.existsSync(configPath)) {
       rawToml = fs.readFileSync(configPath, 'utf8');
     }
+
+    effectiveModel = defaultModel;
+    effectiveEffort = reasoningEffort;
+    if (options.preserveChoice === true && fs.existsSync(configPath) && rawToml.trim()) {
+      const existingMatch = rawToml.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+      if (existingMatch && existingMatch[1]) {
+        const rawExisting = existingMatch[1].trim();
+        effectiveModel = OPENCODE_GO_DEPRECATED_ALIASES[rawExisting.toLowerCase()] || rawExisting;
+      }
+      const existingEffortMatch = rawToml.match(/^\s*model_reasoning_effort\s*=\s*["']([^"']+)["']/m);
+      if (existingEffortMatch && existingEffortMatch[1]) {
+        effectiveEffort = existingEffortMatch[1];
+      }
+    }
+
     const updatedToml = updateCodexTomlString(rawToml, {
-      model: defaultModel,
+      model: effectiveModel,
       provider: providerName,
-      reasoningEffort,
+      reasoningEffort: effectiveEffort,
       routerUrl,
       catalogRelativePath: 'model-catalogs/opencode-go-catalog.json'
     });
     fs.writeFileSync(configPath, updatedToml, 'utf8');
-    messages.push(`已更新 ${configPath}: model="${defaultModel}", provider="${providerName}", effort="${reasoningEffort}", base_url="${routerUrl}"`);
+    messages.push(`已更新 ${configPath}: model="${effectiveModel}", provider="${providerName}", effort="${effectiveEffort}", base_url="${routerUrl}"`);
   } catch (err) {
     messages.push(`更新 config.toml 失败: ${err.message}`);
     return { success: false, messages, error: err.message };
@@ -5257,8 +6225,8 @@ function bindCodexConfig(options = {}) {
 
   return {
     success: true,
-    boundModel: defaultModel,
-    reasoningEffort,
+    boundModel: effectiveModel,
+    reasoningEffort: effectiveEffort,
     provider: providerName,
     routerUrl,
     backupCreated,
@@ -5760,6 +6728,11 @@ function checkCodexProcessHealth() {
 
   try {
     const psScript = `
+$procs = Get-Process -Name 'ChatGPT' -ErrorAction SilentlyContinue
+if (-not $procs) {
+    Write-Output '0|0|0|0|'
+    exit
+}
 Add-Type @'
 using System;
 using System.Text;
@@ -5864,7 +6837,30 @@ function resumeOrCleanCodexProcesses() {
   }
 
   try {
-    const psScript = `
+    // 准则 4 & 准则 32：排查桌面客户端“秒退/打不开”时，第一优先级检测无窗口僵死进程组（visibleWindows === 0）
+    // 一旦确诊其霸占 SingleInstanceLock 互斥锁，自愈逻辑必须无条件强力终止全部残留进程树，彻底释放互斥锁！
+    if (status.visibleWindows === 0 && status.procCount > 0) {
+      execSync('powershell.exe -NoProfile -NonInteractive -Command "try { Get-Process -Name ChatGPT, codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}; exit 0"', {
+        timeout: 6000,
+        stdio: 'ignore'
+      });
+
+      // 清理孤立互斥锁与第三方残留死锁
+      const lockDir = path.join(process.env.USERPROFILE || '', '.codex', 'tmp', 'provider-sync.lock');
+      if (fs.existsSync(lockDir)) {
+        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch (_) {}
+      }
+
+      return {
+        success: true,
+        killed: true,
+        message: `已安全清理霸占 SingleInstanceLock 互斥锁的 ${status.procCount} 个无窗口僵死进程，互斥锁已彻底释放，可正常双击桌面图标启动`
+      };
+    }
+
+    // 若存在正常可见窗口，且仅为部分辅助线程被 Windows PLM 偶发挂起，尝试唤醒该辅助线程
+    if (status.hasSuspended && status.visibleWindows > 0) {
+      const psScript = `
 Add-Type @'
 using System;
 using System.Diagnostics;
@@ -5892,24 +6888,27 @@ public class SuspendedResumer {
 }
 '@
 $resumed = [SuspendedResumer]::ResumeAll()
-if ($resumed -eq 0) {
-    Get-Process -Name "ChatGPT" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
 Write-Output $resumed
 `;
-    const enc = Buffer.from(psScript, 'utf16le').toString('base64');
-    const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
-      encoding: 'utf8',
-      timeout: 6000,
-      stdio: ['pipe', 'pipe', 'ignore']
-    }).trim();
+      const enc = Buffer.from(psScript, 'utf16le').toString('base64');
+      const out = execSync(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${enc}`, {
+        encoding: 'utf8',
+        timeout: 6000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      }).trim();
 
-    const resumedCount = parseInt(out, 10) || 0;
-    if (resumedCount > 0) {
-      return { success: true, resumed: resumedCount, message: `已成功唤醒 ${resumedCount} 个被 Windows PLM 挂起的 ChatGPT 线程，恢复窗口渲染` };
-    } else {
-      return { success: true, killed: true, message: '已安全清理霸占 SingleInstanceLock 互斥锁的无窗口僵死进程，可正常点击桌面图标秒开' };
+      const resumedCount = parseInt(out, 10) || 0;
+      if (resumedCount > 0) {
+        return { success: true, resumed: resumedCount, message: `已成功唤醒 ${resumedCount} 个被 Windows PLM 挂起的 ChatGPT 线程，恢复窗口渲染` };
+      }
     }
+
+    // 强力兜底清理
+    execSync('powershell.exe -NoProfile -NonInteractive -Command "try { Get-Process -Name ChatGPT, codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}; exit 0"', {
+      timeout: 6000,
+      stdio: 'ignore'
+    });
+    return { success: true, killed: true, message: '已彻底终止异常残留的 Codex / ChatGPT 进程组并释放互斥锁' };
   } catch (err) {
     return { success: false, error: err.message, message: '自愈挂起/僵死进程失败: ' + err.message };
   }
@@ -6150,13 +7149,17 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   let missingDesktopLocale = false;
   let hasInvalidModelSlug = false;
   let missingComfyUiMcp = false;
+  let hasMasterMcp = false;
+  let missingMasterMcp = false;
   let currentModel = null;
 
   if (hasConfig) {
     try {
       const raw = fs.readFileSync(configPath, 'utf8');
       const mLocale = raw.match(/localeOverride\s*=\s*["']([^"']+)["']/);
-      missingComfyUiMcp = !raw.includes('[mcp_servers.comfyui]');
+      hasMasterMcp = raw.includes('[mcp_servers.opencode_router]');
+      missingMasterMcp = !hasMasterMcp;
+      missingComfyUiMcp = !raw.includes('[mcp_servers.comfyui]') && !hasMasterMcp;
       if (!mLocale || mLocale[1] !== 'zh-CN') {
         missingDesktopLocale = true;
       }
@@ -6208,6 +7211,14 @@ function checkCodexLocaleAndEnvironment(options = {}) {
 
   let hasCodexPlusPortConflict = false;
   let missingCodexPlusZhScript = false;
+  let hasProviderSyncLock = false;
+
+  if (process.platform === 'win32') {
+    const lockDir = path.join(process.env.USERPROFILE || '', '.codex', 'tmp', 'provider-sync.lock');
+    if (fs.existsSync(lockDir)) {
+      hasProviderSyncLock = true;
+    }
+  }
   if (process.platform === 'win32') {
     const codexPlusDir = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Codex++');
     const watcherLnk = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'CodexPlusPlusWatcher.lnk');
@@ -6246,8 +7257,8 @@ function checkCodexLocaleAndEnvironment(options = {}) {
   if (hasCodexPlusPortConflict) {
     issues.push('Codex++ 汉化注入工具默认侦听 4010 端口与本地智能网关冲突，导致汉化插件闪退');
   }
-  if (missingComfyUiMcp) {
-    issues.push('config.toml 尚未挂载 ComfyUI 图像智能体 (mcp-comfyui.js)，一键修复即可激活原生生图与反推工具');
+  if (missingMasterMcp && missingComfyUiMcp) {
+    issues.push('config.toml 尚未挂载 Master-MCP 统一工具总线 (mcp-master.js)，一键修复即可激活全部插件与图像工具');
   }
   if (missingCodexPlusZhScript) {
     issues.push('Codex++ 界面汉化脚本存在语法错误或匹配失效，一键修复即可自动升级为最新高保真汉化补丁');
@@ -6263,6 +7274,8 @@ function checkCodexLocaleAndEnvironment(options = {}) {
     hasCodexPlusPortConflict,
     missingCodexPlusZhScript,
     missingComfyUiMcp,
+    hasMasterMcp,
+    missingMasterMcp,
     issues
   };
 }
@@ -6302,10 +7315,10 @@ function repairCodexLocaleAndEnvironment(options = {}) {
         messages.push('已校准 config.toml 中非标准模型名为合法 Slug "deepseek-v4.1-flash"');
       }
 
-      // Ensure ComfyUI MCP Server is registered for Codex Desktop
+      // Ensure ComfyUI MCP Server is registered for Codex Desktop (if neither is present)
       const nodeExe = (process.execPath || 'C:\\Program Files\\nodejs\\node.exe').replace(/\\/g, '\\\\');
       const mcpScript = path.join(__dirname, 'mcp-comfyui.js').replace(/\\/g, '\\\\');
-      if (!raw.includes('[mcp_servers.comfyui]')) {
+      if (!raw.includes('[mcp_servers.comfyui]') && !raw.includes('[mcp_servers.opencode_router]')) {
         const mcpBlock = `\n[mcp_servers.comfyui]\ncommand = "${nodeExe}"\nargs = ["${mcpScript}"]\nstartup_timeout_sec = 60\n`;
         if (raw.includes('[mcp_servers]')) {
           raw = raw.replace('[mcp_servers]', '[mcp_servers]' + mcpBlock);
@@ -6314,6 +7327,38 @@ function repairCodexLocaleAndEnvironment(options = {}) {
         }
         changed = true;
         messages.push('已为 Codex Desktop 自动注册 ComfyUI 图像智能体 (mcp-comfyui.js)');
+      }
+
+      // Ensure Master-MCP Unified Tool Bus is registered for Codex Desktop
+      const masterMcpScript = path.join(__dirname, 'mcp-master.js').replace(/\\/g, '\\\\');
+      if (!raw.includes('[mcp_servers.opencode_router]')) {
+        const masterBlock = `\n[mcp_servers.opencode_router]\ncommand = "${nodeExe}"\nargs = ["${masterMcpScript}", "--client=codex"]\nstartup_timeout_sec = 60\n`;
+        if (raw.includes('[mcp_servers]')) {
+          raw = raw.replace('[mcp_servers]', '[mcp_servers]' + masterBlock);
+        } else {
+          raw += `\n[mcp_servers]` + masterBlock;
+        }
+        changed = true;
+        messages.push('已为 Codex Desktop 自动注册 Master-MCP 统一工具总线 (mcp-master.js)');
+      }
+
+      // Check and dynamically heal notify executable path if present
+      const mNotify = raw.match(/^\s*notify\s*=\s*\[\s*["']([^"']+)["']/m);
+      if (mNotify) {
+        const currentNotifyExe = mNotify[1].replace(/\\\\/g, '\\');
+        if (!fs.existsSync(currentNotifyExe)) {
+          const latestExe = findLatestCuaNodeExecutable(codexDir);
+          if (latestExe) {
+            const escapedPath = latestExe.replace(/\\/g, '\\\\');
+            raw = raw.replace(/^\s*notify\s*=\s*\[\s*["'][^"']+["']/m, `notify = [ "${escapedPath}"`);
+            changed = true;
+            messages.push(`已自动校准失效的 notify 路径至最新运行时: ${latestExe}`);
+          } else {
+            raw = raw.replace(/^\s*notify\s*=/m, '# notify =');
+            changed = true;
+            messages.push('未发现可用 cua_node 运行时，已安全注释失效的 notify 引用');
+          }
+        }
       }
 
       if (changed) {
@@ -6450,11 +7495,45 @@ function repairCodexLocaleAndEnvironment(options = {}) {
     messages.push(`Codex++ 汉化脚本修复提醒: ${err.message}`);
   }
 
+  // 6. Clean orphan thread-writer-locks if Codex is completely offline
+  try {
+    const lockDir = path.join(codexDir, 'thread-writer-locks');
+    if (fs.existsSync(lockDir)) {
+      let isCodexRunning = false;
+      try {
+        const { execSync } = require('child_process');
+        const out = execSync('tasklist /FI "IMAGENAME eq codex.exe" /NH', { encoding: 'utf8' });
+        if (out.includes('codex.exe')) isCodexRunning = true;
+      } catch (_) {}
+      if (!isCodexRunning) {
+        const lockFiles = fs.readdirSync(lockDir).filter(f => f.endsWith('.lock'));
+        let removedCount = 0;
+        for (const f of lockFiles) {
+          const fp = path.join(lockDir, f);
+          try {
+            const stat = fs.statSync(fp);
+            if (stat.size === 0) {
+              fs.unlinkSync(fp);
+              removedCount++;
+            }
+          } catch (_) {}
+        }
+        if (removedCount > 0) {
+          messages.push(`已安全清理 ${removedCount} 个离线孤儿 thread-writer-locks 互斥锁文件`);
+        }
+      }
+    }
+  } catch (_) {}
+
   return { success: true, messages };
 }
 
+// Automatically synchronize models from local opencode.jsonc on load
+try { autoSyncFromOpencodeConfig(); } catch (_) {}
+
 module.exports = {
   OPENCODE_GO_ALL_MODELS,
+  autoSyncFromOpencodeConfig,
   NATIVE_RESPONSES_MODELS,
   nativeResponsesUnsupportedModels,
   markNativeResponsesUnsupported,
@@ -6463,17 +7542,24 @@ module.exports = {
   isNativeResponsesModel,
   ANTHROPIC_MODELS,
   MODEL_COMPATIBILITY_ALIASES,
+  OPENCODE_GO_DEPRECATED_ALIASES,
+  normalizeOpencodeGoLiveModel,
   MODEL_TIERS,
   getModelTier,
   configureAdapter,
   adapterConfig,
   pruneResponsesPayload,
   pruneChatMessages,
+  safeUnicodeSlice,
+  balanceCodeBlocks,
+  safeUnicodeSlice,
+  balanceCodeBlocks,
   clearPruneFingerprints,
   prunedFingerprints,
   getCodexConfigDir,
   convertResponsesToChatPayload,
   bridgeResponsesStream,
+  bridgeChatStream,
   convertChatResponseToResponses,
   convertResponsesToAnthropicPayload,
   bridgeAnthropicStream,
@@ -6528,6 +7614,10 @@ module.exports = {
   StreamDegenerationDetector,
   autoCorrectToolArgs,
   dispatchResponsesStreamError,
+  findLatestCuaNodeExecutable,
   setComfyUIAdapter,
-  getComfyUIAdapter
+  getComfyUIAdapter,
+  setPluginManager,
+  getPluginManager,
+  normalizeUpstreamToolName
 };

@@ -210,7 +210,7 @@ async function runTier5AdversarialSuite() {
     assert.strictEqual(p18.input.length, 18);
     assert.strictEqual(p18.modified, false);
 
-    const p19 = codexAdapter.pruneResponsesPayload({ input: makeItems(19) });
+    const p19 = codexAdapter.pruneResponsesPayload({ input: makeItems(19) }, null, { emergency: true });
     assert.ok(p19.input.length < 19, '19 items must be folded by sliding window');
     assert.strictEqual(p19.modified, true);
     assert.ok(p19.input.some(item => item.content && item.content.includes('滑动窗口折叠')));

@@ -4,7 +4,7 @@
     "totalCompressedChars": 61292,
     "totalSavedChars": 220171,
     "savedTokens": 57940,
-    "savedCostUSD": 0.014485,
+    "savedCostUSD": 0.008112,
     "compressionRatio": 78.2,
     "byModel": {
       "deepseek-v4.1-flash": {
@@ -12,47 +12,510 @@
         "savedTokens": 57940,
         "savedCostUSD": 0.0081116,
         "originalChars": 281463,
-        "ratePer1M": 0.14
+        "ratePer1M": 0.14,
+        "consumedTokens": 74069,
+        "consumedCostUSD": 0.0103697
       }
     },
     "modules": {
       "rtk": {
         "savedChars": 88068,
         "savedTokens": 23176,
-        "percentage": 40.0
+        "percentage": 40
       },
       "headroom": {
         "savedChars": 88069,
         "savedTokens": 23176,
-        "percentage": 40.0
+        "percentage": 40
       },
       "schema": {
         "savedChars": 11008,
         "savedTokens": 2897,
-        "percentage": 5.0,
+        "percentage": 5,
         "alignedRounds": 12,
         "alignedToolsCount": 144
       },
       "cacheZone": {
         "savedChars": 11009,
         "savedTokens": 2897,
-        "percentage": 5.0,
+        "percentage": 5,
         "cacheZoneHits": 18
       },
       "powershell": {
         "savedChars": 22017,
         "savedTokens": 5794,
-        "percentage": 10.0
+        "percentage": 10
       }
     },
     "lastResetAt": "2026-10-18T00:00:00.000Z",
-    "updatedAt": "2026-10-19T00:00:00.000Z"
+    "updatedAt": "2026-10-19T00:00:00.000Z",
+    "consumedTokens": 74069,
+    "consumedCostUSD": 0.01037
   },
   "buckets": {
     "m5": [],
     "h1": [],
-    "d1": []
-  },
-  "lastResetAt": "2026-10-18T00:00:00.000Z",
-  "updatedAt": "2026-10-19T00:00:00.000Z"
+    "d1": [
+      {
+        "startTime": 1792252800000,
+        "endTime": 1792339200000,
+        "totalOriginalChars": 34778,
+        "totalCompressedChars": 7573,
+        "totalSavedChars": 27205,
+        "savedTokens": 7159,
+        "savedCostUSD": 0.0010023,
+        "consumedTokens": 9152,
+        "consumedCostUSD": 0.0012813,
+        "modules": {
+          "rtk": {
+            "savedChars": 10882,
+            "savedTokens": 2864
+          },
+          "headroom": {
+            "savedChars": 10882,
+            "savedTokens": 2863
+          },
+          "schema": {
+            "savedChars": 1360,
+            "savedTokens": 358,
+            "alignedRounds": 1,
+            "alignedToolsCount": 18
+          },
+          "cacheZone": {
+            "savedChars": 1360,
+            "savedTokens": 358,
+            "cacheZoneHits": 2
+          },
+          "powershell": {
+            "savedChars": 2721,
+            "savedTokens": 716
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 27205,
+            "savedTokens": 7159,
+            "savedCostUSD": 0.0010023,
+            "originalChars": 34778,
+            "ratePer1M": 0.14,
+            "consumedTokens": 9152,
+            "consumedCostUSD": 0.0012813
+          }
+        }
+      },
+      {
+        "startTime": 1792339200000,
+        "endTime": 1792425600000,
+        "totalOriginalChars": 2426,
+        "totalCompressedChars": 528,
+        "totalSavedChars": 1898,
+        "savedTokens": 499,
+        "savedCostUSD": 0.0000699,
+        "consumedTokens": 639,
+        "consumedCostUSD": 0.0000895,
+        "modules": {
+          "rtk": {
+            "savedChars": 759,
+            "savedTokens": 200
+          },
+          "headroom": {
+            "savedChars": 759,
+            "savedTokens": 199
+          },
+          "schema": {
+            "savedChars": 95,
+            "savedTokens": 25,
+            "alignedRounds": 0,
+            "alignedToolsCount": 1
+          },
+          "cacheZone": {
+            "savedChars": 95,
+            "savedTokens": 25,
+            "cacheZoneHits": 0
+          },
+          "powershell": {
+            "savedChars": 190,
+            "savedTokens": 50
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 1898,
+            "savedTokens": 499,
+            "savedCostUSD": 0.0000699,
+            "originalChars": 2426,
+            "ratePer1M": 0.14,
+            "consumedTokens": 639,
+            "consumedCostUSD": 0.0000895
+          }
+        }
+      },
+      {
+        "startTime": 1792425600000,
+        "endTime": 1792512000000,
+        "totalOriginalChars": 12940,
+        "totalCompressedChars": 2817,
+        "totalSavedChars": 10123,
+        "savedTokens": 2664,
+        "savedCostUSD": 0.000373,
+        "consumedTokens": 3405,
+        "consumedCostUSD": 0.0004767,
+        "modules": {
+          "rtk": {
+            "savedChars": 4049,
+            "savedTokens": 1065
+          },
+          "headroom": {
+            "savedChars": 4050,
+            "savedTokens": 1066
+          },
+          "schema": {
+            "savedChars": 506,
+            "savedTokens": 133,
+            "alignedRounds": 1,
+            "alignedToolsCount": 7
+          },
+          "cacheZone": {
+            "savedChars": 506,
+            "savedTokens": 133,
+            "cacheZoneHits": 1
+          },
+          "powershell": {
+            "savedChars": 1012,
+            "savedTokens": 267
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 10123,
+            "savedTokens": 2664,
+            "savedCostUSD": 0.000373,
+            "originalChars": 12940,
+            "ratePer1M": 0.14,
+            "consumedTokens": 3405,
+            "consumedCostUSD": 0.0004767
+          }
+        }
+      },
+      {
+        "startTime": 1792512000000,
+        "endTime": 1792598400000,
+        "totalOriginalChars": 12940,
+        "totalCompressedChars": 2817,
+        "totalSavedChars": 10123,
+        "savedTokens": 2664,
+        "savedCostUSD": 0.000373,
+        "consumedTokens": 3405,
+        "consumedCostUSD": 0.0004767,
+        "modules": {
+          "rtk": {
+            "savedChars": 4049,
+            "savedTokens": 1065
+          },
+          "headroom": {
+            "savedChars": 4049,
+            "savedTokens": 1066
+          },
+          "schema": {
+            "savedChars": 506,
+            "savedTokens": 133,
+            "alignedRounds": 1,
+            "alignedToolsCount": 7
+          },
+          "cacheZone": {
+            "savedChars": 507,
+            "savedTokens": 134,
+            "cacheZoneHits": 1
+          },
+          "powershell": {
+            "savedChars": 1012,
+            "savedTokens": 266
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 10123,
+            "savedTokens": 2664,
+            "savedCostUSD": 0.000373,
+            "originalChars": 12940,
+            "ratePer1M": 0.14,
+            "consumedTokens": 3405,
+            "consumedCostUSD": 0.0004767
+          }
+        }
+      },
+      {
+        "startTime": 1792598400000,
+        "endTime": 1792684800000,
+        "totalOriginalChars": 131838,
+        "totalCompressedChars": 28712,
+        "totalSavedChars": 103126,
+        "savedTokens": 27140,
+        "savedCostUSD": 0.0037993,
+        "consumedTokens": 34694,
+        "consumedCostUSD": 0.0048571,
+        "modules": {
+          "rtk": {
+            "savedChars": 41250,
+            "savedTokens": 10856
+          },
+          "headroom": {
+            "savedChars": 41251,
+            "savedTokens": 10856
+          },
+          "schema": {
+            "savedChars": 5156,
+            "savedTokens": 1357,
+            "alignedRounds": 5,
+            "alignedToolsCount": 67
+          },
+          "cacheZone": {
+            "savedChars": 5156,
+            "savedTokens": 1357,
+            "cacheZoneHits": 9
+          },
+          "powershell": {
+            "savedChars": 10313,
+            "savedTokens": 2714
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 103126,
+            "savedTokens": 27140,
+            "savedCostUSD": 0.0037993,
+            "originalChars": 131838,
+            "ratePer1M": 0.14,
+            "consumedTokens": 34694,
+            "consumedCostUSD": 0.0048571
+          }
+        }
+      },
+      {
+        "startTime": 1792684800000,
+        "endTime": 1792771200000,
+        "totalOriginalChars": 67131,
+        "totalCompressedChars": 14619,
+        "totalSavedChars": 52512,
+        "savedTokens": 13819,
+        "savedCostUSD": 0.0019347,
+        "consumedTokens": 17666,
+        "consumedCostUSD": 0.0024732,
+        "modules": {
+          "rtk": {
+            "savedChars": 21005,
+            "savedTokens": 5528
+          },
+          "headroom": {
+            "savedChars": 21005,
+            "savedTokens": 5527
+          },
+          "schema": {
+            "savedChars": 2625,
+            "savedTokens": 691,
+            "alignedRounds": 3,
+            "alignedToolsCount": 34
+          },
+          "cacheZone": {
+            "savedChars": 2626,
+            "savedTokens": 691,
+            "cacheZoneHits": 4
+          },
+          "powershell": {
+            "savedChars": 5251,
+            "savedTokens": 1382
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 52512,
+            "savedTokens": 13819,
+            "savedCostUSD": 0.0019347,
+            "originalChars": 67131,
+            "ratePer1M": 0.14,
+            "consumedTokens": 17666,
+            "consumedCostUSD": 0.0024732
+          }
+        }
+      },
+      {
+        "startTime": 1792771200000,
+        "endTime": 1792857600000,
+        "totalOriginalChars": 4044,
+        "totalCompressedChars": 881,
+        "totalSavedChars": 3163,
+        "savedTokens": 832,
+        "savedCostUSD": 0.0001165,
+        "consumedTokens": 1064,
+        "consumedCostUSD": 0.000149,
+        "modules": {
+          "rtk": {
+            "savedChars": 1266,
+            "savedTokens": 333
+          },
+          "headroom": {
+            "savedChars": 1265,
+            "savedTokens": 333
+          },
+          "schema": {
+            "savedChars": 158,
+            "savedTokens": 42,
+            "alignedRounds": 0,
+            "alignedToolsCount": 2
+          },
+          "cacheZone": {
+            "savedChars": 158,
+            "savedTokens": 41,
+            "cacheZoneHits": 0
+          },
+          "powershell": {
+            "savedChars": 316,
+            "savedTokens": 83
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 3163,
+            "savedTokens": 832,
+            "savedCostUSD": 0.0001165,
+            "originalChars": 4044,
+            "ratePer1M": 0.14,
+            "consumedTokens": 1064,
+            "consumedCostUSD": 0.000149
+          }
+        }
+      },
+      {
+        "startTime": 1792857600000,
+        "endTime": 1792944000000,
+        "totalOriginalChars": 12940,
+        "totalCompressedChars": 2817,
+        "totalSavedChars": 10123,
+        "savedTokens": 2664,
+        "savedCostUSD": 0.000373,
+        "consumedTokens": 3405,
+        "consumedCostUSD": 0.0004767,
+        "modules": {
+          "rtk": {
+            "savedChars": 4049,
+            "savedTokens": 1065
+          },
+          "headroom": {
+            "savedChars": 4049,
+            "savedTokens": 1067
+          },
+          "schema": {
+            "savedChars": 507,
+            "savedTokens": 133,
+            "alignedRounds": 1,
+            "alignedToolsCount": 7
+          },
+          "cacheZone": {
+            "savedChars": 506,
+            "savedTokens": 133,
+            "cacheZoneHits": 1
+          },
+          "powershell": {
+            "savedChars": 1012,
+            "savedTokens": 266
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 10123,
+            "savedTokens": 2664,
+            "savedCostUSD": 0.000373,
+            "originalChars": 12940,
+            "ratePer1M": 0.14,
+            "consumedTokens": 3405,
+            "consumedCostUSD": 0.0004767
+          }
+        }
+      },
+      {
+        "startTime": 1792944000000,
+        "endTime": 1793030400000,
+        "totalOriginalChars": 2426,
+        "totalCompressedChars": 528,
+        "totalSavedChars": 1898,
+        "savedTokens": 499,
+        "savedCostUSD": 0.0000699,
+        "consumedTokens": 639,
+        "consumedCostUSD": 0.0000895,
+        "modules": {
+          "rtk": {
+            "savedChars": 759,
+            "savedTokens": 200
+          },
+          "headroom": {
+            "savedChars": 759,
+            "savedTokens": 199
+          },
+          "schema": {
+            "savedChars": 95,
+            "savedTokens": 25,
+            "alignedRounds": 0,
+            "alignedToolsCount": 1
+          },
+          "cacheZone": {
+            "savedChars": 95,
+            "savedTokens": 25,
+            "cacheZoneHits": 0
+          },
+          "powershell": {
+            "savedChars": 190,
+            "savedTokens": 50
+          }
+        },
+        "byModel": {
+          "deepseek-v4.1-flash": {
+            "savedChars": 1898,
+            "savedTokens": 499,
+            "savedCostUSD": 0.0000699,
+            "originalChars": 2426,
+            "ratePer1M": 0.14,
+            "consumedTokens": 639,
+            "consumedCostUSD": 0.0000895
+          }
+        }
+      },
+      {
+        "startTime": 1793030400000,
+        "endTime": 1793116800000,
+        "totalOriginalChars": 0,
+        "totalCompressedChars": 0,
+        "totalSavedChars": 0,
+        "savedTokens": 0,
+        "savedCostUSD": 0,
+        "consumedTokens": 0,
+        "consumedCostUSD": 0,
+        "modules": {
+          "rtk": {
+            "savedChars": 0,
+            "savedTokens": 0
+          },
+          "headroom": {
+            "savedChars": 0,
+            "savedTokens": 0
+          },
+          "schema": {
+            "savedChars": 0,
+            "savedTokens": 0,
+            "alignedRounds": 0,
+            "alignedToolsCount": 0
+          },
+          "cacheZone": {
+            "savedChars": 0,
+            "savedTokens": 0,
+            "cacheZoneHits": 0
+          },
+          "powershell": {
+            "savedChars": 0,
+            "savedTokens": 0
+          }
+        },
+        "byModel": {}
+      }
+    ]
+  }
 }

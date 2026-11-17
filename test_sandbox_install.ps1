@@ -20,6 +20,9 @@ Write-Host "🧪 OpenCode Go Router 隔离沙箱全新冷启动安装测试启�
 Write-Host "代码基线目录: $scriptRoot" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 
+$hostOcPath = "$env:USERPROFILE\.config\opencode\opencode.jsonc"
+$hostInitialHash = if (Test-Path $hostOcPath) { (Get-FileHash -Path $hostOcPath -Algorithm SHA256).Hash } else { "" }
+
 $testResults = [ordered]@{}
 $stopwatch = [System.Diagnostics.Stopwatch]::New()
 
@@ -69,18 +72,25 @@ Write-Host "  动态分配独立沙箱测试端口: $sandboxPort" -ForegroundCol
 $filesToCopy = @(
     "server.js",
     "context-compactor.js",
+    "client-adapter-manager.js",
     "codex-adapter.js",
+    "comfyui-adapter.js",
+    "mcp-comfyui.js",
     "updater.js",
     "powershell-optimizer.js",
+    "plugin-manager.js",
+    "mcp-master.js",
     "package.json",
     "setup-windows.ps1",
     "setup-wizard.ps1",
     "launcher.ps1",
     "start-tray.vbs",
     "silent-start.vbs",
+    "start-daemon.bat",
     "launch-gui.vbs",
     "OpenCodeRouterApp.exe",
     "OpenCodeRouterTray.exe",
+    "OpenCodeWizard.exe",
     "doctor-repair.ps1",
     "patch-openchamber-office.ps1"
 )
@@ -98,6 +108,12 @@ if (Test-Path $assetsSrc) {
     Copy-Item -Path $assetsSrc -Destination $sandboxDir -Recurse -Force
 }
 
+# 复制 plugins 目录
+$pluginsSrc = Join-Path $scriptRoot "plugins"
+if (Test-Path $pluginsSrc) {
+    Copy-Item -Path $pluginsSrc -Destination $sandboxDir -Recurse -Force
+}
+
 Assert-SandboxTest "1.1 隔离沙箱文件装配" (Test-Path (Join-Path $sandboxDir "server.js")) "沙箱环境所需全部运行时组件复制就绪"
 
 # 断言沙箱内尚无任何 config.json (100% 模拟零配置新机冷启动)
@@ -113,12 +129,14 @@ $testKey1 = "oc_sk_sandbox_test_alpha_001"
 $testKey2 = "oc_sk_sandbox_test_beta_002"
 $testPassword = "SandboxSecurePass_777!"
 
+$sandboxConfigDir = Join-Path $sandboxDir "opencode_config"
+$env:OPENCODE_CONFIG_DIR = $sandboxConfigDir
 $setupScript = Join-Path $sandboxDir "setup-windows.ps1"
 
 $stopwatch.Restart()
 Push-Location $env:TEMP
 try {
-    & $setupScript -Step 2 -Silent -Port $sandboxPort -HostName "127.0.0.1" -Key1 $testKey1 -Key2 $testKey2 -Password $testPassword -InstallDir $sandboxDir -NoShortcuts
+    & $setupScript -Step 2 -Silent -Port $sandboxPort -HostName "127.0.0.1" -Key1 $testKey1 -Key2 $testKey2 -Password $testPassword -InstallDir $sandboxDir -OpencodeConfigDir $sandboxConfigDir -NoShortcuts
 } finally {
     Pop-Location
 }
@@ -215,7 +233,9 @@ foreach ($f in $filesToCopy) {
 }
 
 $setupScript2 = Join-Path $sandboxDir2 "setup-windows.ps1"
-& $setupScript2 -Step 2 -Silent -Port $sandboxPort2 -HostName "127.0.0.1" -Key1 "key_second_inst" -Key2 "key_second_inst_2" -InstallDir $sandboxDir2 -NoShortcuts
+$sandboxConfigDir2 = Join-Path $sandboxDir2 "opencode_config"
+$env:OPENCODE_CONFIG_DIR = $sandboxConfigDir2
+& $setupScript2 -Step 2 -Silent -Port $sandboxPort2 -HostName "127.0.0.1" -Key1 "key_second_inst" -Key2 "key_second_inst_2" -InstallDir $sandboxDir2 -OpencodeConfigDir $sandboxConfigDir2 -NoShortcuts
 
 $inst2Active = $false
 for ($i = 0; $i -lt 30; $i++) {
@@ -233,6 +253,7 @@ Assert-SandboxTest "6.3 次级沙箱安全退出" (-not (Test-PortActive $sandbo
 Assert-SandboxTest "6.4 主沙箱免疫隔离" (Test-PortActive $sandboxPort) "主沙箱在次级实例销毁后依然正常服务，未受任何误杀影响"
 
 try { Remove-Item -Path $sandboxDir2 -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+$env:OPENCODE_CONFIG_DIR = $sandboxConfigDir
 
 # -------------------------------------------------------------
 # 7. 生命周期控制实测: 停止与平滑重启自愈
@@ -247,7 +268,7 @@ $stoppedPort = -not (Test-PortActive $sandboxPort)
 Assert-SandboxTest "7.1 优雅停止并释放端口" $stoppedPort "沙箱端口 $sandboxPort 已完全释放"
 
 # 7.2 重新启动沙箱服务
-& $setupScript -Start -Port $sandboxPort -InstallDir $sandboxDir -NoShortcuts
+& $setupScript -Start -Port $sandboxPort -InstallDir $sandboxDir -OpencodeConfigDir $sandboxConfigDir -NoShortcuts
 Start-Sleep -Milliseconds 800
 
 $restartedPort = $false
@@ -270,8 +291,43 @@ Start-Sleep -Milliseconds 500
 try {
     Remove-Item -Path $sandboxDir -Recurse -Force -ErrorAction SilentlyContinue
 } catch { }
+Remove-Item Env:OPENCODE_CONFIG_DIR -ErrorAction SilentlyContinue
 
 Assert-SandboxTest "8.1 沙箱环境干净回收" (-not (Test-PortActive $sandboxPort)) "端口 $sandboxPort 已归还系统，测试无污染"
+
+# 8.2 核验宿主全局配置零污染 (Air-Gapped Isolation Assertion)
+$hostConfigOk = $false
+$hostConfigDetail = ""
+if (Test-Path $hostOcPath) {
+    try {
+        $hostFinalHash = (Get-FileHash -Path $hostOcPath -Algorithm SHA256).Hash
+        $hostOcRaw = Get-Content $hostOcPath -Raw -Encoding UTF8
+        $hostOcJson = $hostOcRaw | ConvertFrom-Json
+        $baseUrls = @()
+        if ($hostOcJson.provider -and $hostOcJson.provider.'opencode-go') {
+            if ($hostOcJson.provider.'opencode-go'.options -and $hostOcJson.provider.'opencode-go'.options.baseURL) {
+                $baseUrls += $hostOcJson.provider.'opencode-go'.options.baseURL
+            }
+            if ($hostOcJson.provider.'opencode-go'.settings -and $hostOcJson.provider.'opencode-go'.settings.baseURL) {
+                $baseUrls += $hostOcJson.provider.'opencode-go'.settings.baseURL
+            }
+        }
+        $isPure4010 = ($baseUrls.Count -gt 0) -and (-not ($baseUrls | Where-Object { $_ -notlike "*127.0.0.1:4010*" }))
+        $noSandboxPorts = (-not ($hostOcRaw -like "*:$sandboxPort*")) -and (-not ($hostOcRaw -like "*:$sandboxPort2*"))
+        $hashUntouched = ($hostInitialHash -eq "" -or $hostInitialHash -eq $hostFinalHash)
+        if ($isPure4010 -and $noSandboxPorts -and $hashUntouched) {
+            $hostConfigOk = $true
+            $hostConfigDetail = "宿主 opencode.jsonc 100% 保持纯净且未发生任何单字节漂移 (SHA256: $hostFinalHash, 未受沙箱端口 $sandboxPort / $sandboxPort2 污染)"
+        } else {
+            $hostConfigDetail = "宿主 opencode.jsonc baseURL 异常或受沙箱污染: $($baseUrls -join ', ') (HashMatch: $hashUntouched)"
+        }
+    } catch {
+        $hostConfigDetail = "解析宿主配置失败: $_"
+    }
+} else {
+    $hostConfigDetail = "宿主配置文件不存在: $hostOcPath"
+}
+Assert-SandboxTest "8.2 宿主全局配置零污染断言" $hostConfigOk $hostConfigDetail
 
 # -------------------------------------------------------------
 # 总结测试报告

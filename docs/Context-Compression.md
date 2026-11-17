@@ -118,6 +118,21 @@ flowchart TD
 - **跨平台自适应休眠旁路**：
   - 自动识别宿主与请求平台；在 Windows 下全速启用，在 Linux / NAS 服务端自动进入 0 开销休眠旁路。
 
+### 7. 滑动窗口剪枝、原子消息事务与数值熔断防护 (Atomic Block & NaN Shield)
+- **初始用户指令与 System Prompt 100% 绝对保真**：
+  - 滑动窗口截断（`pruneChatMessages` 与 `pruneResponsesPayload`）中，无论系统提示词（System/Developer）位于开头、中间还是末尾，均 100% 豁免保留；
+  - 严格识别并保全用户的初始指令（First User Instruction）与所有中间修正指令（User Corrections），绝不丢失核心目标；
+- **Tool Call / Tool Result 成对原子事务绑定 (`Atomic Block`)**：
+  - 裁剪算法将包含 `tool_calls` 的 assistant 消息与其对应的 `role: "tool"` 响应绑定为不可分割的原子事务块；
+  - 滑动窗口切分点绝不在原子块内部断开，裁剪后强制经由 `sanitizeAndValidateChatMessages` 兜底自愈，杜绝孤儿 tool 或未响应 call 导致上游 400 报错；
+- **多字节 Emoji 与罕见 CJK 代理项安全切片 (`safeUnicodeSlice`)**：
+  - 针对 UTF-16 高低代理项（Surrogate Pairs）实施双向探测与对齐，折叠截断时绝不拆散 Emoji（如 `👨‍👩‍👧‍👦`、`🎉`）或罕见 CJK 字符，杜绝半字符乱码；
+- **Markdown 代码块闭合平衡守卫 (`balanceCodeBlocks`)**：
+  - 检测截断前后缀中三反引号（```）的奇偶性，自动补齐闭合与开启标记，防止局部折叠破坏全局 Markdown 渲染；
+- **统计记账数值边界与 NaN 熔断防护 (`NaN Shield`)**：
+  - 在 `recordSavings`、`recordModelSavings`、`recordModuleOnlySavings`、`recordOverallSavings` 等统计入口实施严格有限数过滤（`Number.isFinite && !isNaN`）；
+  - 彻底杜绝脏数据引发的全局 `NaN` 扩散与负数节省量，持久化文件采用原子替换（`fs.renameSync`）与 `.bak` 双写灾备，保证零损坏。
+
 ### 6. 高精度动态分词模型与 100% 零反向膨胀熔断
 - **中英双语动态分词模型 (`estimateTokens`)**：彻底取代全系统单一写死的 `/ 3.8`，针对中文/CJK 字符按约 1.25 字符/Token、英文/代码/符号按约 3.8 字符/Token 动态加权分词，显著提升计费与 Token 节约预估精度；
 - **100% 零反向膨胀熔断屏障**：在所有转换管线内部部署严格守卫，若压缩后长度大于等于原文本长度，坚决 100% 熔断回滚原文，确保绝不会因压缩引入更多字符。

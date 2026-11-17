@@ -12,6 +12,118 @@ using Microsoft.Win32;
 
 namespace OpenCodeRouter
 {
+    public class TrayMessageSinkForm : Form
+    {
+        public const uint MSGFLT_ADD = 1;
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ChangeWindowMessageFilter(uint message, uint dwFlag);
+
+        public static uint WM_TASKBARCREATED = 0;
+        public static uint WM_RESTORE_ROUTER_TRAY = 0;
+        private EventWaitHandle restoreEvent = null;
+        private RegisteredWaitHandle registeredWait = null;
+
+        public TrayMessageSinkForm()
+        {
+            this.Text = "OpenCodeRouterTrayMsgSink";
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.WindowState = FormWindowState.Minimized;
+            this.Size = new Size(0, 0);
+            this.Opacity = 0;
+            this.ShowIcon = false;
+            IntPtr h = this.Handle;
+
+            try {
+                bool createdNew;
+                restoreEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\OpenCodeRouterTrayRestoreEvent", out createdNew);
+                registeredWait = ThreadPool.RegisterWaitForSingleObject(restoreEvent, (state, timedOut) => {
+                    if (!timedOut) {
+                        try {
+                            if (this.IsHandleCreated && !this.IsDisposed) {
+                                this.BeginInvoke(new Action(() => {
+                                    Program.Log("Received WM_RESTORE_ROUTER_TRAY from peer instance! Restoring tray icon...");
+                                    Program.ReassertTrayIcon(true);
+                                }));
+                            }
+                        } catch { }
+                    }
+                }, null, -1, false);
+            } catch { }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try {
+                    if (registeredWait != null) {
+                        registeredWait.Unregister(null);
+                        registeredWait = null;
+                    }
+                    if (restoreEvent != null) {
+                        restoreEvent.Close();
+                        restoreEvent = null;
+                    }
+                } catch { }
+            }
+            base.Dispose(disposing);
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000080; // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                cp.Parent = IntPtr.Zero;
+                return cp;
+            }
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            base.SetVisibleCore(false);
+            if (!this.IsHandleCreated)
+            {
+                this.CreateHandle();
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try
+            {
+                WM_TASKBARCREATED = Program.RegisterWindowMessage("TaskbarCreated");
+                if (WM_TASKBARCREATED != 0)
+                {
+                    ChangeWindowMessageFilter(WM_TASKBARCREATED, MSGFLT_ADD);
+                }
+                WM_RESTORE_ROUTER_TRAY = Program.RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                if (WM_RESTORE_ROUTER_TRAY != 0)
+                {
+                    ChangeWindowMessageFilter(WM_RESTORE_ROUTER_TRAY, MSGFLT_ADD);
+                }
+            }
+            catch { }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == (int)WM_TASKBARCREATED && WM_TASKBARCREATED != 0)
+            {
+                Program.Log("Explorer TaskbarCreated received! Reasserting tray icon...");
+                Program.ReassertTrayIcon(true);
+            }
+            else if (m.Msg == (int)WM_RESTORE_ROUTER_TRAY && WM_RESTORE_ROUTER_TRAY != 0)
+            {
+                Program.Log("Received WM_RESTORE_ROUTER_TRAY from peer instance! Restoring tray icon...");
+                Program.ReassertTrayIcon(true);
+            }
+            base.WndProc(ref m);
+        }
+    }
+
     static class Program
     {
         [DllImport("user32.dll")]
@@ -20,6 +132,16 @@ namespace OpenCodeRouter
         [DllImport("user32.dll")]
         private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
 
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+        public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
+
         private const int SW_RESTORE = 9;
 
         [DllImport("psapi.dll")]
@@ -27,15 +149,40 @@ namespace OpenCodeRouter
 
         private static Mutex mutex = null;
         private static NotifyIcon notifyIcon = null;
+        private static Icon cachedNormalIcon = null;
+        private static Icon cachedGreenIcon = null;
         private static int port = 4010;
         private static string uiPassword = "";
         private static string rootDir = "";
-        private static string icoPath = "";
+        private static string logPath = "";
         private static System.Windows.Forms.Timer watchdogTimer = null;
+
+        // Anti-reentrancy flags for background operations
+        private static int isCheckingStatus = 0;
+        private static int isResettingCooldown = 0;
+        private static int isRestartingRouter = 0;
+        private static int isBindingClients = 0;
+        private static int isEnsuringRunning = 0;
+
+        public static void Log(string msg)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(logPath)) return;
+                using (FileStream fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                using (StreamWriter sw = new StreamWriter(fs, Encoding.UTF8))
+                {
+                    sw.WriteLine("[" + DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss") + "] " + msg);
+                }
+            }
+            catch { }
+        }
 
         [STAThread]
         static void Main(string[] args)
         {
+            try { SetProcessDPIAware(); } catch { }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -51,29 +198,46 @@ namespace OpenCodeRouter
             }
 
             LoadConfig(rootDir, ref port, ref uiPassword);
-
-            icoPath = Path.Combine(rootDir, "assets", "router.ico");
-            string logPath = Path.Combine(rootDir, "tray.log");
+            logPath = Path.Combine(rootDir, "tray.log");
+            LoadCachedIcons();
 
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] UnhandledException: " + e.ExceptionObject + "\r\n"); } catch { }
+                Log("UnhandledException: " + e.ExceptionObject);
             };
             Application.ThreadException += (s, e) => {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] ThreadException: " + e.Exception + "\r\n"); } catch { }
+                Log("ThreadException: " + e.Exception);
             };
 
             try
             {
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 1: Main started, pid=" + Process.GetCurrentProcess().Id + "\r\n");
+                Log("Step 1: Main started, pid=" + Process.GetCurrentProcess().Id);
 
                 bool createdNew = false;
                 try
                 {
-                    mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2", out createdNew);
+                    // Check if PowerShell tray daemon is already running with its mutex
+                    bool psMutexExists = false;
+                    try
+                    {
+                        using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayPSMutex_v2"))
+                        {
+                            psMutexExists = true;
+                        }
+                    }
+                    catch { }
+
+                    if (psMutexExists)
+                    {
+                        createdNew = false;
+                    }
+                    else
+                    {
+                        mutex = new Mutex(true, @"Local\OpenCodeRouterTrayMutex_v2", out createdNew);
+                    }
                 }
                 catch (Exception mex)
                 {
-                    File.AppendAllText(logPath, "Mutex ex: " + mex.Message + "\r\n");
+                    Log("Mutex ex: " + mex.Message);
                     createdNew = true;
                 }
 
@@ -90,11 +254,21 @@ namespace OpenCodeRouter
                     }
                 }
 
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent + "\r\n");
+                Log("Step 2: createdNew=" + createdNew + ", isSilent=" + isSilent);
                 if (!createdNew)
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Another instance is running, activating dashboard and exiting.\r\n");
-                    EnsureRouterRunning();
+                    Log("Another instance is running. Activating dashboard and exiting.");
+                    try {
+                        using (var evt = EventWaitHandle.OpenExisting("Local\\OpenCodeRouterTrayRestoreEvent")) {
+                            evt.Set();
+                        }
+                    } catch { }
+                    uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                    if (msgRestore != 0)
+                    {
+                        try { PostMessage(HWND_BROADCAST, msgRestore, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    }
+                    EnsureRouterRunning(false);
                     if (!isSilent)
                     {
                         OpenDashboard();
@@ -102,128 +276,240 @@ namespace OpenCodeRouter
                     return;
                 }
 
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 3: EnsureRouterRunning\r\n");
-                EnsureRouterRunning();
+                Log("Step 3: EnsureRouterRunning");
+                EnsureRouterRunning(true);
                 if (!isSilent)
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 4: OpenDashboard\r\n");
+                    Log("Step 4: OpenDashboard");
                     OpenDashboard();
                 }
                 else
                 {
-                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 4: Silent mode, skipping OpenDashboard\r\n");
+                    Log("Step 4: Silent mode, skipping OpenDashboard");
                 }
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 5: Setting up NotifyIcon\r\n");
+                Log("Step 5: Setting up NotifyIcon");
 
-            // Setup NotifyIcon
-            notifyIcon = new NotifyIcon();
-            if (File.Exists(icoPath))
-            {
-                try {
-                    notifyIcon.Icon = new Icon(icoPath);
-                    File.AppendAllText(logPath, "[" + DateTime.Now + "] Icon loaded successfully\r\n");
-                } catch (Exception iex) {
-                    File.AppendAllText(logPath, "Icon load failed: " + iex.Message + "\r\n");
-                    notifyIcon.Icon = SystemIcons.Application;
-                }
-            }
-            else
-            {
-                notifyIcon.Icon = SystemIcons.Application;
-            }
+                // Setup NotifyIcon
+                notifyIcon = new NotifyIcon();
+                bool isOnline = IsPortListening(port);
+                notifyIcon.Icon = isOnline ? cachedGreenIcon : cachedNormalIcon;
+                string statusText = string.Format("OpenCode 订阅管理中心 (端口: {0} - {1})", port, isOnline ? "在线" : "离线");
+                if (statusText.Length >= 64) statusText = statusText.Substring(0, 63);
+                notifyIcon.Text = statusText;
+                notifyIcon.Visible = true;
 
-            notifyIcon.Text = "OpenCode 订阅管理中心 (端口: " + port + ")";
-            notifyIcon.Visible = true;
-
-            try
-            {
-                notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已启动", "已在系统托盘静默运行！若未显示，可展开任务栏右下角小箭头查看。", ToolTipIcon.Info);
-            }
-            catch { }
-
-            // Context Menu
-            ContextMenuStrip menu = new ContextMenuStrip();
-
-            ToolStripMenuItem menuOpen = new ToolStripMenuItem("🚀 打开订阅管理面板");
-            menuOpen.Font = new Font(menuOpen.Font, FontStyle.Bold);
-            menuOpen.Click += (s, e) => OpenDashboard();
-            menu.Items.Add(menuOpen);
-
-            menu.Items.Add(new ToolStripSeparator());
-
-            ToolStripMenuItem menuChamber = new ToolStripMenuItem("💻 唤醒 / 启动 OpenChamber 桌面端");
-            menuChamber.Font = new Font(menuChamber.Font, FontStyle.Bold);
-            menuChamber.Click += (s, e) => LaunchOrActivateOpenChamber();
-            menu.Items.Add(menuChamber);
-
-            menu.Items.Add(new ToolStripSeparator());
-
-            ToolStripMenuItem menuStatus = new ToolStripMenuItem("🔍 检查服务状态");
-            menuStatus.Click += (s, e) => CheckStatus();
-            menu.Items.Add(menuStatus);
-
-            ToolStripMenuItem menuResetCooldown = new ToolStripMenuItem("⚡ 一键重置限频冷却");
-            menuResetCooldown.Click += (s, e) => ResetCooldown();
-            menu.Items.Add(menuResetCooldown);
-
-            ToolStripMenuItem menuRestart = new ToolStripMenuItem("🔄 重启路由服务");
-            menuRestart.Click += (s, e) => RestartRouter();
-            menu.Items.Add(menuRestart);
-
-            ToolStripMenuItem menuDoctor = new ToolStripMenuItem("🩺 系统环境自检与修复");
-            menuDoctor.Click += (s, e) => RunDoctor();
-            menu.Items.Add(menuDoctor);
-
-            ToolStripMenuItem menuUpdates = new ToolStripMenuItem("📦 检查更新与组件版本诊断");
-            menuUpdates.Click += (s, e) => CheckUpdates();
-            menu.Items.Add(menuUpdates);
-
-            ToolStripMenuItem menuBind = new ToolStripMenuItem("⚡ 一键应用至 OpenCode / OpenChamber");
-            menuBind.Click += (s, e) => BindDesktopClients();
-            menu.Items.Add(menuBind);
-
-            ToolStripMenuItem menuTrim = new ToolStripMenuItem("🧹 深度清理与内存修剪 (释放至 <30MB)");
-            menuTrim.Click += (s, e) => TrimMemory(true);
-            menu.Items.Add(menuTrim);
-
-            menu.Items.Add(new ToolStripSeparator());
-
-            ToolStripMenuItem menuExit = new ToolStripMenuItem("❌ 退出托盘与路由服务");
-            menuExit.Click += (s, e) => ExitApp();
-            menu.Items.Add(menuExit);
-
-            notifyIcon.ContextMenuStrip = menu;
-            notifyIcon.DoubleClick += (s, e) => OpenDashboard();
-            notifyIcon.Click += (s, e) => {
-                MouseEventArgs me = e as MouseEventArgs;
-                if (me != null && me.Button == MouseButtons.Left)
+                if (!isSilent)
                 {
-                    OpenDashboard();
+                    try
+                    {
+                        notifyIcon.ShowBalloonTip(3000, "OpenCode 订阅管理中心已就绪", "已在系统托盘静默运行！若未显示，可展开任务栏右下角小箭头查看。", ToolTipIcon.Info);
+                    }
+                    catch { }
                 }
-            };
 
-            // 后台常驻自愈看门狗 (Watchdog: 每 5 秒守护检测 4010 端口，异常时静默复活，并定期修剪工作集)
-            int watchdogTickCount = 0;
-            watchdogTimer = new System.Windows.Forms.Timer();
-            watchdogTimer.Interval = 5000;
-            watchdogTimer.Tick += (s, e) => {
-                try { EnsureRouterRunning(); } catch { }
-                watchdogTickCount++;
-                if (watchdogTickCount % 6 == 0) // 每 30 秒静默深度整理内存
-                {
-                    try { TrimMemory(false); } catch { }
-                }
-            };
-            watchdogTimer.Start();
+                // Context Menu
+                ContextMenuStrip menu = new ContextMenuStrip();
+                menu.ShowImageMargin = false;
 
-            File.AppendAllText(logPath, "[" + DateTime.Now + "] Step 7: Entering Application.Run...\r\n");
-            Application.Run();
-            File.AppendAllText(logPath, "[" + DateTime.Now + "] Application.Run EXITED!\r\n");
+                ToolStripMenuItem menuOpen = new ToolStripMenuItem("🚀 打开订阅管理面板");
+                menuOpen.Font = new Font(menuOpen.Font, FontStyle.Bold);
+                menuOpen.Click += (s, e) => OpenDashboard();
+                menu.Items.Add(menuOpen);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                ToolStripMenuItem menuChamber = new ToolStripMenuItem("💻 唤醒 / 启动 OpenChamber 桌面端");
+                menuChamber.Font = new Font(menuChamber.Font, FontStyle.Bold);
+                menuChamber.Click += (s, e) => LaunchOrActivateOpenChamber();
+                menu.Items.Add(menuChamber);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                ToolStripMenuItem menuStatus = new ToolStripMenuItem("🔍 检查服务状态");
+                menuStatus.Click += (s, e) => CheckStatus();
+                menu.Items.Add(menuStatus);
+
+                ToolStripMenuItem menuResetCooldown = new ToolStripMenuItem("⚡ 一键重置限频冷却");
+                menuResetCooldown.Click += (s, e) => ResetCooldown();
+                menu.Items.Add(menuResetCooldown);
+
+                ToolStripMenuItem menuRestart = new ToolStripMenuItem("🔄 重启路由服务");
+                menuRestart.Click += (s, e) => RestartRouter();
+                menu.Items.Add(menuRestart);
+
+                ToolStripMenuItem menuDoctor = new ToolStripMenuItem("🩺 系统环境自检与修复");
+                menuDoctor.Click += (s, e) => RunDoctor();
+                menu.Items.Add(menuDoctor);
+
+                ToolStripMenuItem menuUpdates = new ToolStripMenuItem("📦 检查更新与组件版本诊断");
+                menuUpdates.Click += (s, e) => CheckUpdates();
+                menu.Items.Add(menuUpdates);
+
+                ToolStripMenuItem menuBind = new ToolStripMenuItem("⚡ 一键应用至 OpenCode / OpenChamber");
+                menuBind.Click += (s, e) => BindDesktopClients();
+                menu.Items.Add(menuBind);
+
+                ToolStripMenuItem menuTrim = new ToolStripMenuItem("🧹 深度清理与内存修剪 (释放至 <30MB)");
+                menuTrim.Click += (s, e) => TrimMemory(true);
+                menu.Items.Add(menuTrim);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                ToolStripMenuItem menuExit = new ToolStripMenuItem("❌ 退出托盘与路由服务");
+                menuExit.Click += (s, e) => ExitApp();
+                menu.Items.Add(menuExit);
+
+                notifyIcon.ContextMenuStrip = menu;
+                notifyIcon.DoubleClick += (s, e) => OpenDashboard();
+                notifyIcon.Click += (s, e) => {
+                    MouseEventArgs me = e as MouseEventArgs;
+                    if (me != null && me.Button == MouseButtons.Left)
+                    {
+                        OpenDashboard();
+                    }
+                };
+
+                // 后台常驻自愈看门狗 (Watchdog: 每 5 秒守护检测 4010 端口，全异步非阻塞，异常时静默复活)
+                int watchdogTickCount = 0;
+                watchdogTimer = new System.Windows.Forms.Timer();
+                watchdogTimer.Interval = 5000;
+                watchdogTimer.Tick += (s, e) => {
+                    try
+                    {
+                        bool listening = IsPortListening(port);
+                        UpdateTrayStatus(listening);
+
+                        if (!listening)
+                        {
+                            // 触发后台静默复活
+                            ThreadPool.QueueUserWorkItem(state => {
+                                try { EnsureRouterRunning(true); } catch { }
+                            });
+                        }
+
+                        watchdogTickCount++;
+                        // 冷开机后第 1 个 tick (+5s) 与第 3 个 tick (+15s) 强制执行一次 Shell_NotifyIcon 重注册，彻底解决 Windows 11 任务栏延迟初始化导致图标丢失
+                        if (watchdogTickCount == 1 || watchdogTickCount == 3)
+                        {
+                            ReassertTrayIcon(true);
+                        }
+                        else if (watchdogTickCount % 3 == 0)
+                        {
+                            ReassertTrayIcon(false);
+                        }
+
+                        // 仅每隔 30 分钟（360 个 tick）温和修剪托盘守护自身的私有内存，彻底杜绝每 30 秒高频刷盘
+                        if (watchdogTickCount % 360 == 0)
+                        {
+                            try { EmptyWorkingSet(Process.GetCurrentProcess().Handle); } catch { }
+                        }
+                    }
+                    catch { }
+                };
+                watchdogTimer.Start();
+
+                // 使用注入了 TaskbarCreated 消息拦截的宿主窗体
+                Log("Step 7: Entering Application.Run(new TrayMessageSinkForm())...");
+                Application.Run(new TrayMessageSinkForm());
+                Log("Application.Run EXITED!");
             }
             catch (Exception ex)
             {
-                try { File.AppendAllText(logPath, "[" + DateTime.Now + "] Main CRASH: " + ex + "\r\n"); } catch { }
+                Log("Main CRASH: " + ex);
             }
+        }
+
+        private static void LoadCachedIcons()
+        {
+            string normalIcoPath = Path.Combine(rootDir, "assets", "router.ico");
+            string greenIcoPath = Path.Combine(rootDir, "assets", "router_green.ico");
+
+            if (File.Exists(normalIcoPath))
+            {
+                try { cachedNormalIcon = new Icon(normalIcoPath); } catch { }
+            }
+            if (File.Exists(greenIcoPath))
+            {
+                try { cachedGreenIcon = new Icon(greenIcoPath); } catch { }
+            }
+
+            if (cachedNormalIcon == null && cachedGreenIcon != null) cachedNormalIcon = cachedGreenIcon;
+            if (cachedGreenIcon == null && cachedNormalIcon != null) cachedGreenIcon = cachedNormalIcon;
+            if (cachedNormalIcon == null) cachedNormalIcon = SystemIcons.Application;
+            if (cachedGreenIcon == null) cachedGreenIcon = SystemIcons.Application;
+        }
+
+        public static void ReassertTrayIcon(bool forceCycle)
+        {
+            try
+            {
+                if (notifyIcon == null) return;
+                bool isOnline = IsPortListening(port);
+                Icon targetIcon = isOnline ? cachedGreenIcon : cachedNormalIcon;
+                string statusText = string.Format("OpenCode 订阅管理中心 (端口: {0} - {1})", port, isOnline ? "在线" : "离线");
+                if (statusText.Length >= 64) statusText = statusText.Substring(0, 63);
+
+                if (forceCycle)
+                {
+                    notifyIcon.Visible = false;
+                    notifyIcon.Icon = targetIcon;
+                    notifyIcon.Text = statusText;
+                    notifyIcon.Visible = true;
+                }
+                else
+                {
+                    if (!notifyIcon.Visible)
+                    {
+                        notifyIcon.Visible = true;
+                    }
+                    if (notifyIcon.Icon != targetIcon)
+                    {
+                        notifyIcon.Icon = targetIcon;
+                    }
+                    if (notifyIcon.Text != statusText)
+                    {
+                        notifyIcon.Text = statusText;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("ReassertTrayIcon error: " + ex.Message);
+            }
+        }
+
+        private static void UpdateTrayStatus(bool isOnline)
+        {
+            try
+            {
+                if (notifyIcon != null)
+                {
+                    Icon targetIcon = isOnline ? cachedGreenIcon : cachedNormalIcon;
+                    if (notifyIcon.Icon != targetIcon)
+                    {
+                        notifyIcon.Icon = targetIcon;
+                    }
+                    string statusText = string.Format("OpenCode 订阅管理中心 (端口: {0} - {1})", port, isOnline ? "在线" : "离线");
+                    if (statusText.Length >= 64) statusText = statusText.Substring(0, 63);
+                    if (notifyIcon.Text != statusText)
+                    {
+                        notifyIcon.Text = statusText;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static void ShowBalloon(string title, string text, ToolTipIcon icon, int timeout = 3000)
+        {
+            try
+            {
+                if (notifyIcon != null)
+                {
+                    notifyIcon.ShowBalloonTip(timeout, title, text, icon);
+                }
+            }
+            catch { }
         }
 
         static bool IsPortListening(int targetPort)
@@ -241,11 +527,18 @@ namespace OpenCodeRouter
             return false;
         }
 
-        static void EnsureRouterRunning()
+        static void EnsureRouterRunning(bool wait = false)
         {
+            if (Interlocked.Exchange(ref isEnsuringRunning, 1) != 0) return;
             try
             {
-                if (IsPortListening(port)) return;
+                if (IsPortListening(port))
+                {
+                    UpdateTrayStatus(true);
+                    return;
+                }
+
+                UpdateTrayStatus(false);
 
                 string silentVbs = Path.Combine(rootDir, "silent-start.vbs");
                 string serverJs = Path.Combine(rootDir, "server.js");
@@ -269,15 +562,26 @@ namespace OpenCodeRouter
                     Process.Start(psi);
                 }
 
-                for (int i = 0; i < 15; i++)
+                if (wait)
                 {
-                    Thread.Sleep(200);
-                    if (IsPortListening(port)) break;
+                    for (int i = 0; i < 20; i++)
+                    {
+                        Thread.Sleep(150);
+                        if (IsPortListening(port))
+                        {
+                            UpdateTrayStatus(true);
+                            break;
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
-                try { File.AppendAllText(Path.Combine(rootDir, "tray.log"), "[" + DateTime.Now + "] EnsureRouterRunning exception: " + ex + "\r\n"); } catch { }
+                Log("EnsureRouterRunning exception: " + ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref isEnsuringRunning, 0);
             }
         }
 
@@ -361,7 +665,7 @@ namespace OpenCodeRouter
                     try { EmptyWorkingSet(p.Handle); } catch { }
                 }
 
-                // 3. 仅精准查找拥有网关管理中心标题的窗口进程进行修剪，绝不误伤用户日常浏览器
+                // 3. 仅查找拥有网关管理中心标题的窗口进程进行修剪，绝不误伤用户日常浏览器
                 Process[] allProcs = Process.GetProcesses();
                 foreach (Process p in allProcs)
                 {
@@ -378,9 +682,9 @@ namespace OpenCodeRouter
                     catch { }
                 }
 
-                if (showBalloon && notifyIcon != null)
+                if (showBalloon)
                 {
-                    notifyIcon.ShowBalloonTip(2000, "内存深度清理完成", "已将前端与托盘守护工作集深度整理，物理内存已降至 20MB 左右！", ToolTipIcon.Info);
+                    ShowBalloon("内存深度清理完成", "已将前端与托盘守护工作集深度整理，物理内存已降至 20MB 左右！", ToolTipIcon.Info, 2000);
                 }
             }
             catch { }
@@ -388,7 +692,7 @@ namespace OpenCodeRouter
 
         static void OpenUrl(string url)
         {
-            EnsureRouterRunning();
+            EnsureRouterRunning(false);
 
             // 方案 0: 优先使用本地超轻量桌面客户端 OpenCodeRouterApp.exe 唤出（单实例置顶、内存修剪、极简模式）
             try
@@ -406,7 +710,7 @@ namespace OpenCodeRouter
             }
             catch { }
 
-            string lightBrowserArgs = "--disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
+            string lightBrowserArgs = "--disable-background-mode --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
 
             // 方案 0.5: 优先使用本地嵌入纯净 Chromium 核心（若存在独立自包含包）
             try
@@ -432,10 +736,10 @@ namespace OpenCodeRouter
             catch { }
 
             string defaultBrowser = GetDefaultBrowserName();
-            string primaryBrowser = "chrome.exe"; // 优先沙箱 Chrome
-            string secondaryBrowser = "msedge.exe"; // 备选沙箱 Edge
+            string primaryBrowser = "chrome.exe";
+            string secondaryBrowser = "msedge.exe";
 
-            // 方案 1: 优先以系统默认浏览器的独立桌面应用模式 (--app=...) 唤出（带极限内存优化参数）
+            // 方案 1: 优先以主浏览器的独立桌面应用模式 (--app=...) 唤出
             try
             {
                 string bExe = FindBrowserExe(primaryBrowser);
@@ -467,7 +771,7 @@ namespace OpenCodeRouter
             }
             catch { }
 
-            // 方案 3: 使用 Windows Shell 默认关联浏览器打开 (UseShellExecute = true 核心保障)
+            // 方案 3: 使用 Windows Shell 默认关联浏览器打开
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
@@ -550,7 +854,7 @@ namespace OpenCodeRouter
 
         static void OpenDashboard(string hash = "")
         {
-            EnsureRouterRunning();
+            EnsureRouterRunning(false);
             LoadConfig(rootDir, ref port, ref uiPassword);
             string appExe = Path.Combine(rootDir, "OpenCodeRouterApp.exe");
             if (File.Exists(appExe))
@@ -567,14 +871,7 @@ namespace OpenCodeRouter
             }
             string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
             string url = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + (hash ?? "");
-            try
-            {
-                if (notifyIcon != null)
-                {
-                    notifyIcon.ShowBalloonTip(1500, "订阅管理中心", "正在唤起控制面板界面...", ToolTipIcon.Info);
-                }
-            }
-            catch { }
+            ShowBalloon("订阅管理中心", "正在唤起控制面板界面...", ToolTipIcon.Info, 1500);
             OpenUrl(url);
         }
 
@@ -633,10 +930,7 @@ namespace OpenCodeRouter
                 {
                     ShowWindowAsync(activeWindow, SW_RESTORE);
                     SetForegroundWindow(activeWindow);
-                    if (notifyIcon != null)
-                    {
-                        notifyIcon.ShowBalloonTip(1500, "OpenChamber 桌面端", "已快速激活置顶至当前前台窗口。", ToolTipIcon.Info);
-                    }
+                    ShowBalloon("OpenChamber 桌面端", "已快速激活置顶至当前前台窗口。", ToolTipIcon.Info, 1500);
                     return;
                 }
 
@@ -658,22 +952,15 @@ namespace OpenCodeRouter
             {
                 try
                 {
-                    // 严格遵循规则 4: 必须通过 explorer.exe <path> 脱钩启动，严禁挂接在临时终端 Job 树中
                     ProcessStartInfo psi = new ProcessStartInfo("explorer.exe", "\"" + chamberExe + "\"");
                     psi.UseShellExecute = true;
                     Process.Start(psi);
-                    if (notifyIcon != null)
-                    {
-                        notifyIcon.ShowBalloonTip(2000, "OpenChamber 桌面端", "正在启动 OpenChamber 桌面原生工作台...", ToolTipIcon.Info);
-                    }
+                    ShowBalloon("OpenChamber 桌面端", "正在启动 OpenChamber 桌面原生工作台...", ToolTipIcon.Info, 2000);
                     return;
                 }
                 catch (Exception ex)
                 {
-                    if (notifyIcon != null)
-                    {
-                        notifyIcon.ShowBalloonTip(3000, "启动失败", "启动原生客户端异常: " + ex.Message, ToolTipIcon.Warning);
-                    }
+                    ShowBalloon("启动失败", "启动原生客户端异常: " + ex.Message, ToolTipIcon.Warning, 3000);
                 }
             }
 
@@ -687,75 +974,112 @@ namespace OpenCodeRouter
             bool isListening = IsPortListening(3000);
             OpenUrl(url);
 
-            if (!isListening && notifyIcon != null)
+            if (!isListening)
             {
-                notifyIcon.ShowBalloonTip(3000, "OpenChamber 提示", "已唤出工作台界面。检测到 3000 端口服务未就绪，可运行 setup-wizard.ps1 启动服务。", ToolTipIcon.Warning);
+                ShowBalloon("OpenChamber 提示", "已唤出工作台界面。检测到 3000 端口服务未就绪，可运行 setup-wizard.ps1 启动服务。", ToolTipIcon.Warning, 3000);
             }
         }
 
         static void CheckStatus()
         {
-            try
+            if (Interlocked.Exchange(ref isCheckingStatus, 1) != 0) return;
+
+            ThreadPool.QueueUserWorkItem(state =>
             {
-                LoadConfig(rootDir, ref port, ref uiPassword);
-                using (WebClient client = new WebClient())
+                try
                 {
-                    client.Encoding = System.Text.Encoding.UTF8;
+                    LoadConfig(rootDir, ref port, ref uiPassword);
+                    HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + "/status");
+                    req.Method = "GET";
+                    req.Timeout = 3000;
                     if (!string.IsNullOrEmpty(uiPassword))
                     {
-                        client.Headers["x-ui-password"] = uiPassword;
-                        client.Headers["x-api-key"] = uiPassword;
+                        req.Headers["x-ui-password"] = uiPassword;
+                        req.Headers["x-api-key"] = uiPassword;
                     }
-                    string json = client.DownloadString("http://127.0.0.1:" + port + "/status");
-                    notifyIcon.ShowBalloonTip(3000, "OpenCode 路由正常", "本地端口: " + port + "\n服务在线，详细指标请查看面板。", ToolTipIcon.Info);
+                    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                    {
+                        UpdateTrayStatus(true);
+                        ShowBalloon("OpenCode 路由正常", "本地端口: " + port + "\n服务在线，详细指标请查看面板。", ToolTipIcon.Info, 3000);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                notifyIcon.ShowBalloonTip(3000, "服务检测异常", "端口 " + port + ": " + ex.Message, ToolTipIcon.Warning);
-            }
+                catch (Exception ex)
+                {
+                    UpdateTrayStatus(false);
+                    ShowBalloon("服务检测异常", "端口 " + port + ": " + ex.Message, ToolTipIcon.Warning, 3000);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref isCheckingStatus, 0);
+                }
+            });
         }
 
         static void ResetCooldown()
         {
-            try
+            if (Interlocked.Exchange(ref isResettingCooldown, 1) != 0) return;
+
+            ThreadPool.QueueUserWorkItem(state =>
             {
-                LoadConfig(rootDir, ref port, ref uiPassword);
-                using (WebClient client = new WebClient())
+                try
                 {
-                    client.Encoding = System.Text.Encoding.UTF8;
-                    client.Headers[HttpRequestHeader.ContentType] = "application/json";
+                    LoadConfig(rootDir, ref port, ref uiPassword);
+                    HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + "/balancer/api/reset-cooldown");
+                    req.Method = "POST";
+                    req.ContentType = "application/json";
+                    req.Timeout = 3500;
                     if (!string.IsNullOrEmpty(uiPassword))
                     {
-                        client.Headers["x-ui-password"] = uiPassword;
-                        client.Headers["x-api-key"] = uiPassword;
+                        req.Headers["x-ui-password"] = uiPassword;
+                        req.Headers["x-api-key"] = uiPassword;
                     }
-                    string res = client.UploadString("http://127.0.0.1:" + port + "/balancer/api/reset-cooldown", "POST", "{}");
-                    notifyIcon.ShowBalloonTip(2500, "冷却已重置", "账号限频冷却已立即清空并恢复健康轮询！", ToolTipIcon.Info);
+                    byte[] data = Encoding.UTF8.GetBytes("{}");
+                    req.ContentLength = data.Length;
+                    using (Stream s = req.GetRequestStream())
+                    {
+                        s.Write(data, 0, data.Length);
+                    }
+                    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                    {
+                        ShowBalloon("冷却已重置", "账号限频冷却已立即清空并恢复健康轮询！", ToolTipIcon.Info, 2500);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                notifyIcon.ShowBalloonTip(2500, "重置失败", ex.Message, ToolTipIcon.Warning);
-            }
+                catch (Exception ex)
+                {
+                    ShowBalloon("重置失败", ex.Message, ToolTipIcon.Warning, 2500);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref isResettingCooldown, 0);
+                }
+            });
         }
 
         static void RestartRouter()
         {
-            try
-            {
-                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"Get-NetTCPConnection -LocalPort " + port + " -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }\"");
-                psi.CreateNoWindow = true;
-                psi.UseShellExecute = false;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
-                Process p = Process.Start(psi);
-                p.WaitForExit(3000);
-            }
-            catch { }
+            if (Interlocked.Exchange(ref isRestartingRouter, 1) != 0) return;
 
-            Thread.Sleep(500);
-            EnsureRouterRunning();
-            notifyIcon.ShowBalloonTip(2000, "路由服务已重启", "服务已重新加载并监听端口 " + port, ToolTipIcon.Info);
+            ShowBalloon("正在重启路由服务", "正在停止并安全重载 4010 网关核心进程...", ToolTipIcon.Info, 1500);
+
+            ThreadPool.QueueUserWorkItem(state =>
+            {
+                try
+                {
+                    KillProcessTreeByPort(port);
+                    Thread.Sleep(500);
+                    EnsureRouterRunning(true);
+                    UpdateTrayStatus(true);
+                    ShowBalloon("路由服务已重启", "服务已重新加载并监听端口 " + port, ToolTipIcon.Info, 2000);
+                }
+                catch (Exception ex)
+                {
+                    ShowBalloon("重启异常", ex.Message, ToolTipIcon.Warning, 3000);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref isRestartingRouter, 0);
+                }
+            });
         }
 
         static void RunDoctor()
@@ -774,13 +1098,15 @@ namespace OpenCodeRouter
 
         static void CheckUpdates()
         {
-            EnsureRouterRunning();
+            EnsureRouterRunning(false);
             OpenDashboard("#updates");
         }
 
         static void BindDesktopClients()
         {
-            new Thread(() =>
+            if (Interlocked.Exchange(ref isBindingClients, 1) != 0) return;
+
+            ThreadPool.QueueUserWorkItem(state =>
             {
                 try
                 {
@@ -802,14 +1128,91 @@ namespace OpenCodeRouter
                     }
                     using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                     {
-                        notifyIcon.ShowBalloonTip(4000, "OpenCode 智能路由", "✔ 本地网关已成功锁定为 OpenCode 与 OpenChamber 默认配置！", ToolTipIcon.Info);
+                        ShowBalloon("OpenCode 智能路由", "✔ 本地网关已成功锁定为 OpenCode 与 OpenChamber 默认配置！", ToolTipIcon.Info, 4000);
                     }
                 }
                 catch (Exception ex)
                 {
-                    notifyIcon.ShowBalloonTip(4000, "配置失败", ex.Message, ToolTipIcon.Warning);
+                    ShowBalloon("配置失败", ex.Message, ToolTipIcon.Warning, 4000);
                 }
-            }).Start();
+                finally
+                {
+                    Interlocked.Exchange(ref isBindingClients, 0);
+                }
+            });
+        }
+
+        static void KillProcessTreeByPort(int targetPort)
+        {
+            try
+            {
+                // Primary: PowerShell TCP connection lookup with deduplication pipeline
+                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"Get-NetTCPConnection -LocalPort " + targetPort + " -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }\"");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null) p.WaitForExit(3000);
+                }
+            }
+            catch { }
+
+            try
+            {
+                // Secondary: netstat and taskkill /F /T for recursive child process termination
+                ProcessStartInfo psiNetstat = new ProcessStartInfo("cmd.exe", "/c netstat -ano -p tcp | findstr \":" + targetPort + " .*LISTENING\"");
+                psiNetstat.CreateNoWindow = true;
+                psiNetstat.UseShellExecute = false;
+                psiNetstat.RedirectStandardOutput = true;
+                using (Process pNetstat = Process.Start(psiNetstat))
+                {
+                    string output = pNetstat.StandardOutput.ReadToEnd();
+                    pNetstat.WaitForExit(2000);
+                    if (!string.IsNullOrEmpty(output))
+                    {
+                        string[] lines = output.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (string line in lines)
+                        {
+                            string[] parts = line.Trim().Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                            if (parts.Length >= 5)
+                            {
+                                string pidStr = parts[parts.Length - 1];
+                                int pid;
+                                if (int.TryParse(pidStr, out pid) && pid > 0 && pid != Process.GetCurrentProcess().Id)
+                                {
+                                    KillProcessTree(pid);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        static void KillProcessTree(int pid)
+        {
+            if (pid <= 0) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("taskkill.exe", string.Format("/F /T /PID {0}", pid));
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                using (Process p = Process.Start(psi))
+                {
+                    p.WaitForExit(3000);
+                }
+            }
+            catch
+            {
+                try
+                {
+                    Process proc = Process.GetProcessById(pid);
+                    proc.Kill();
+                }
+                catch { }
+            }
         }
 
         static void ExitApp()
@@ -820,27 +1223,47 @@ namespace OpenCodeRouter
                 {
                     watchdogTimer.Stop();
                     watchdogTimer.Dispose();
+                    watchdogTimer = null;
                 }
                 catch { }
             }
 
             if (notifyIcon != null)
             {
-                notifyIcon.Visible = false;
-                notifyIcon.Dispose();
+                try
+                {
+                    notifyIcon.Visible = false;
+                    notifyIcon.Dispose();
+                    notifyIcon = null;
+                }
+                catch { }
             }
+
+            if (cachedNormalIcon != null && cachedNormalIcon != SystemIcons.Application)
+            {
+                try { cachedNormalIcon.Dispose(); } catch { }
+                cachedNormalIcon = null;
+            }
+            if (cachedGreenIcon != null && cachedGreenIcon != SystemIcons.Application && cachedGreenIcon != cachedNormalIcon)
+            {
+                try { cachedGreenIcon.Dispose(); } catch { }
+                cachedGreenIcon = null;
+            }
+
             if (mutex != null)
             {
-                try { mutex.ReleaseMutex(); } catch { }
+                try
+                {
+                    mutex.ReleaseMutex();
+                    mutex.Dispose();
+                }
+                catch { }
+                mutex = null;
             }
 
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"Get-NetTCPConnection -LocalPort " + port + " -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -like '*node*') { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }\"");
-                psi.CreateNoWindow = true;
-                psi.UseShellExecute = false;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
-                Process.Start(psi);
+                KillProcessTreeByPort(port);
             }
             catch { }
 

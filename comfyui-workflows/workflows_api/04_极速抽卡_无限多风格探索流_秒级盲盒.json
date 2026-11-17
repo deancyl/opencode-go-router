@@ -1,0 +1,174 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "Realistic_Vision_V5.1.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "【1】底模加载器 (RealisticVision V5.1)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "lora_name": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【2】Hyper-SD 8步蒸馏加速 (极速抽卡引擎)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "b1": 1.3,
+      "b2": 1.4,
+      "s1": 0.9,
+      "s2": 0.2
+    },
+    "class_type": "FreeU_V2",
+    "_meta": {
+      "title": "【3】FreeU V2 胶片质感与光影频段增强"
+    }
+  },
+  "4": {
+    "inputs": {
+      "theme": "All Styles (全风格综合混搭)",
+      "nudity_level": "Random (随机体态)",
+      "seed": 1234567,
+      "custom_extra": "masterpiece, best quality, ultra-detailed, 8k resolution, raw color photo, authentic skin texture"
+    },
+    "class_type": "Gacha_Prompt_Randomizer",
+    "_meta": {
+      "title": "【4】🎲 抽卡词池随机引擎 (多体态/服饰/光影)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "clip": [
+        "2",
+        1
+      ],
+      "text": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【5】动态正向词编码"
+    }
+  },
+  "6": {
+    "inputs": {
+      "clip": [
+        "2",
+        1
+      ],
+      "text": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【6】动态负向屏蔽词"
+    }
+  },
+  "7": {
+    "inputs": {
+      "width": 512,
+      "height": 768,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "【7】画幅尺寸 (512x768 黄金竖屏写真)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "7",
+        0
+      ],
+      "seed": 88889999,
+      "steps": 8,
+      "cfg": 4.5,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【8】极速采样核心 (8步 / ~25-30秒出卡)"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【9】VAE 解码"
+    }
+  },
+  "10": {
+    "inputs": {
+      "images": [
+        "9",
+        0
+      ],
+      "filename_prefix": "Gacha_Cards/card"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【10】保存抽卡美图 (Gacha_BlindBox_Cards)"
+    }
+  },
+  "11": {
+    "inputs": {
+      "text": [
+        "4",
+        2
+      ],
+      "save_to_file": false,
+      "filename": "card_info.txt"
+    },
+    "class_type": "NSFW_Text_Display",
+    "_meta": {
+      "title": "【抽卡档案】当前卡牌编号与主题"
+    }
+  }
+}

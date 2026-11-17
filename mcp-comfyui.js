@@ -89,7 +89,7 @@ function sendJson(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n');
 }
 
-async function handleToolCall(name, args = {}) {
+async function handleToolCall(name, args = {}, onProgress = null) {
   const normalizedName = (name || '').replace(/^mcp__[a-zA-Z0-9_-]+__/, '');
   logMcp('INFO', `handleToolCall received: rawName="${name}", normalizedName="${normalizedName}"`, args);
 
@@ -108,7 +108,8 @@ async function handleToolCall(name, args = {}) {
         negative,
         width,
         height,
-        seed
+        seed,
+        onProgress
       });
 
       const imageUrl = `http://127.0.0.1:${ROUTER_PORT}${res.url}`;
@@ -189,8 +190,6 @@ const rl = readline.createInterface({
   terminal: false
 });
 
-let buffer = '';
-
 rl.on('line', async line => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -200,10 +199,34 @@ rl.on('line', async line => {
     return;
   }
 
+  let req;
   try {
-    const req = JSON.parse(trimmed);
-    if (!req || typeof req !== 'object') return;
+    req = JSON.parse(trimmed);
+  } catch (parseErr) {
+    sendJson({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: -32700,
+        message: 'Parse error: Invalid JSON was received by the server.'
+      }
+    });
+    return;
+  }
 
+  if (!req || typeof req !== 'object') {
+    sendJson({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: -32600,
+        message: 'Invalid Request: The JSON sent is not a valid JSON-RPC request.'
+      }
+    });
+    return;
+  }
+
+  try {
     const { id, method, params } = req;
 
     // 1. Initialize
@@ -253,15 +276,65 @@ rl.on('line', async line => {
 
     // 5. Tools/call
     if (method === 'tools/call') {
-      const toolName = params?.name;
-      const toolArgs = params?.arguments || {};
+      if (!params || typeof params !== 'object') {
+        sendJson({
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32602,
+            message: 'Invalid params: params must be an object'
+          }
+        });
+        return;
+      }
+      const toolName = params.name;
+      if (!toolName || typeof toolName !== 'string') {
+        sendJson({
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32602,
+            message: 'Invalid params: Missing or invalid "name" string'
+          }
+        });
+        return;
+      }
+      const toolArgs = (params.arguments && typeof params.arguments === 'object') ? params.arguments : {};
+      const progressToken = params?._meta?.progressToken ?? params?.progressToken;
+
+      const onProgress = (progInfo) => {
+        if (progressToken !== undefined && progressToken !== null) {
+          sendJson({
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: {
+              progressToken,
+              progress: progInfo.progress || progInfo.elapsedSec || 1,
+              total: progInfo.total || 100
+            }
+          });
+        }
+      };
+
       logMcp('INFO', `Received MCP tools/call request for "${toolName}"`, toolArgs);
-      const toolResult = await handleToolCall(toolName, toolArgs);
-      sendJson({
-        jsonrpc: '2.0',
-        id,
-        result: toolResult
-      });
+      try {
+        const toolResult = await handleToolCall(toolName, toolArgs, onProgress);
+        sendJson({
+          jsonrpc: '2.0',
+          id,
+          result: toolResult
+        });
+      } catch (err) {
+        logMcp('ERROR', `Tool call crashed unexpectedly: ${err.message}`);
+        sendJson({
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32603,
+            message: `Internal error: ${err.message}`
+          }
+        });
+      }
       return;
     }
 
@@ -277,6 +350,15 @@ rl.on('line', async line => {
       });
     }
   } catch (err) {
-    // Malformed JSON
+    if (req?.id !== undefined) {
+      sendJson({
+        jsonrpc: '2.0',
+        id: req.id,
+        error: {
+          code: -32603,
+          message: `Internal error: ${err.message}`
+        }
+      });
+    }
   }
 });

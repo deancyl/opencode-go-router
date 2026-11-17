@@ -5,6 +5,15 @@
   "defaultCooldownMs": 60000,
   "maxFailoverRetries": 2,
   "sessionAffinityEnabled": true,
+  "ttftTimeoutMs": 25000,
+  "chunkIdleTimeoutMs": 60000,
+  "circuitBreaker": {
+    "enabled": true,
+    "failureThreshold": 3,
+    "baseCooldownMs": 5000,
+    "maxCooldownMs": 120000,
+    "halfOpenMaxProbes": 1
+  },
   "accounts": [
     {
       "id": "account-1",

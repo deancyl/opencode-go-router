@@ -20,14 +20,17 @@ import hashlib
 import urllib.request
 import urllib.error
 import http.cookiejar
-import paramiko
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
-NAS_HOST = '192.168.1.50'
-NAS_PORT = 8822
-NAS_USER = 'deancyl0607'
-NAS_PASS = '123321Abccba@'
-LOCAL_DIR = r"C:\Users\deanc\.opencode-go-router"
-REMOTE_DIR = "/home/deancyl0607/.opencode-go-router"
+NAS_HOST = os.environ.get('OPENCODE_NAS_HOST', '192.168.1.50')
+NAS_PORT = int(os.environ.get('OPENCODE_NAS_PORT', '8822'))
+NAS_USER = os.environ.get('OPENCODE_NAS_USER', '')
+NAS_PASS = os.environ.get('OPENCODE_NAS_PASS', '')
+LOCAL_DIR = os.environ.get('OPENCODE_LOCAL_DIR') or os.path.dirname(os.path.abspath(__file__))
+REMOTE_DIR = os.environ.get('OPENCODE_REMOTE_DIR') or (f"/home/{NAS_USER}/.opencode-go-router" if NAS_USER else "~/.opencode-go-router")
 
 FILES_TO_VERIFY = [
     'server.js',
@@ -37,6 +40,12 @@ FILES_TO_VERIFY = [
     'package.json',
     'README.md',
     'setup-linux.sh',
+    'start-linux.sh',
+    'stop-linux.sh',
+    'status-linux.sh',
+    'daemon_runner.py',
+    'opencode-router.service',
+    'patch-openchamber-office.sh',
     'test_router.js',
     'test_stress_regression.js',
     'test_m1_adversarial_deep.js',
@@ -63,8 +72,12 @@ def run_ssh_command(client, cmd):
 def main():
     print("=" * 70)
     print("🚀 STARTING ADVERSARIAL CHALLENGE SUITE FOR LINUX NAS DEPLOYMENT (M3)")
-    print(f"Target NAS: {NAS_USER}@{NAS_HOST}:{NAS_PORT}")
+    print(f"Target NAS: {NAS_USER or '<unset>'}@{NAS_HOST}:{NAS_PORT}")
     print("=" * 70)
+
+    if paramiko is None or not NAS_USER or not NAS_PASS:
+        print("ℹ [SKIP] Remote NAS SSH credentials (OPENCODE_NAS_USER / OPENCODE_NAS_PASS) or paramiko not configured; skipping live SSH NAS challenge.")
+        return 0
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -124,7 +137,7 @@ def main():
                 print("   ", m)
             test_results['CHALLENGE_1_MD5'] = False
         else:
-            print("✔ All 14 files have 100% identical MD5 hashes between local Windows and Linux NAS!")
+            print(f"✔ All {len(FILES_TO_VERIFY)} files have 100% identical MD5 hashes between local Windows and Linux NAS!")
             test_results['CHALLENGE_1_MD5'] = True
 
         # -------------------------------------------------------------
@@ -147,6 +160,15 @@ def main():
                 syntax_passed = False
             else:
                 print(f"  [Syntax OK] {target}")
+
+        # Python syntax prior check
+        py_target = f"{REMOTE_DIR}/daemon_runner.py"
+        code, out, err = run_ssh_command(client, f"python3 -m py_compile {py_target}")
+        if code != 0 or err.strip():
+            print(f"❌ Python syntax check FAILED for {py_target}:\n{err}")
+            syntax_passed = False
+        else:
+            print(f"  [Syntax OK] {py_target}")
 
         test_results['CHALLENGE_2_SYNTAX'] = syntax_passed
 

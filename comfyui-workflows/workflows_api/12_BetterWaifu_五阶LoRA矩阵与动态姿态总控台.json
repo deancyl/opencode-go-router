@@ -1,0 +1,305 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "anything-v5-PrtRE.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "【1】底模 (Anything V5 / 可切 Realistic Vision)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "lora_name": "koreanDollLikeness_v10.safetensors",
+      "strength_model": 0.0,
+      "strength_clip": 0.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【LoRA 1 开关】Korean Doll (0关闭/0.3开启半写实)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "clip": [
+        "2",
+        1
+      ],
+      "lora_name": "cuteGirlMix4_v10.safetensors",
+      "strength_model": 0.25,
+      "strength_clip": 0.25
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【LoRA 2】Cute Girl Mix 4 (甜美少女气质)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "clip": [
+        "3",
+        1
+      ],
+      "lora_name": "Ahegao.safetensors",
+      "strength_model": 0.0,
+      "strength_clip": 0.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【LoRA 3 开关】Ahegao 极乐眼眸 (0关闭/0.8开启)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ],
+      "lora_name": "more_details.safetensors",
+      "strength_model": 0.45,
+      "strength_clip": 0.45
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【LoRA 4】More Details (好身材与微观细节)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "clip": [
+        "5",
+        1
+      ],
+      "text": "(masterpiece, best quality, ultra-detailed:1.2), (sharp clean anime lineart:1.35), (crisp 2D cel shading:1.3), (clean vector outlines:1.25), high contrast, vibrant vivid anime colors, (1girl:1.2), cute and beautiful anime waifu, flowing peach-pink twintails, expressive glowing eyes with intricate pupils, sharp hair bangs, stylish modern aesthetic cyber bodysuit, tactical jacket falling off shoulders, midriff, kneeling dynamic angle, clean background with subtle colorful particle sparks, sharp focus, digital illustration"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【正向词】BetterWaifu 纯净动漫赛璐珞"
+    }
+  },
+  "7": {
+    "inputs": {
+      "clip": [
+        "5",
+        1
+      ],
+      "text": "lowres, bad anatomy, bad hands, bad feet, missing fingers, extra digits, deformed, disfigured, oil painting, painterly, oil paint strokes, thick paint, brush strokes, canvas texture, messy lines, dirty shading, airbrushed, blurry, soft focus, muted colors, faded, smeared, 3d render, cgi"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "【负向词】彻底防油画涂抹/防模糊/防畸变"
+    }
+  },
+  "8": {
+    "inputs": {
+      "width": 512,
+      "height": 768,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "【画幅】512x768 黄金人像竖幅"
+    }
+  },
+  "9": {
+    "inputs": {
+      "model": [
+        "5",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "8",
+        0
+      ],
+      "seed": 66778899,
+      "steps": 28,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高精采样 [MODE:QUALITY]】26步 DPM++ 2M Karras"
+    }
+  },
+  "10": {
+    "inputs": {
+      "samples": [
+        "9",
+        0
+      ],
+      "upscale_method": "bicubic",
+      "scale_by": 1.35
+    },
+    "class_type": "LatentUpscaleBy",
+    "_meta": {
+      "title": "【潜空间放大】1.35x"
+    }
+  },
+  "11": {
+    "inputs": {
+      "model": [
+        "5",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "10",
+        0
+      ],
+      "seed": 66778899,
+      "steps": 15,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.45
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【高分微雕 [MODE:QUALITY_REFINE]】14步 DPM++ (Denoise 0.44)"
+    }
+  },
+  "12": {
+    "inputs": {
+      "samples": [
+        "11",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【高精解码】VAEDecode"
+    }
+  },
+  "13": {
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "filename_prefix": "BetterWaifu_Matrix_Pro"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【成片输出 [OUTPUT:QUALITY]】"
+    }
+  },
+  "15": {
+    "inputs": {
+      "model": [
+        "5",
+        0
+      ],
+      "clip": [
+        "5",
+        1
+      ],
+      "lora_name": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "【旁路·极速引擎】Hyper-SD 蒸馏加载器"
+    }
+  },
+  "16": {
+    "inputs": {
+      "model": [
+        "15",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "8",
+        0
+      ],
+      "seed": 66778899,
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler_name": "euler",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "【快速预览 [MODE:PREVIEW]】8步极速采样"
+    }
+  },
+  "17": {
+    "inputs": {
+      "samples": [
+        "16",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "【预览解码】VAEDecode"
+    }
+  },
+  "18": {
+    "inputs": {
+      "images": [
+        "17",
+        0
+      ],
+      "filename_prefix": "Preview_BetterWaifu"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "【预览输出 [OUTPUT:PREVIEW]】"
+    }
+  }
+}

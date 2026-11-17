@@ -1,0 +1,83 @@
+{
+  "1": {
+    "inputs": {
+      "image": "NanoBanana_CinemaSensual_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "【上传/选择参考图】待反推的图像"
+    }
+  },
+  "2": {
+    "inputs": {
+      "image": [
+        "1",
+        0
+      ],
+      "threshold": 0.35,
+      "character_threshold": 0.75,
+      "exclude_tags": "watermark, text, signature, rating:*, source_*, simple background, white background, blurry, bad anatomy, bad hands",
+      "sort_by_confidence": true
+    },
+    "class_type": "NSFW_WD14_Interrogator",
+    "_meta": {
+      "title": "【1】NSFW 核心反推引擎 (WD14 + 语义重组)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "text": [
+        "2",
+        0
+      ],
+      "save_to_file": false,
+      "filename": "tags_danbooru.txt"
+    },
+    "class_type": "NSFW_Text_Display",
+    "_meta": {
+      "title": "【面板 A】纯 Danbooru 核心标签 (适合SD/Pony直出)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": [
+        "2",
+        1
+      ],
+      "save_to_file": false,
+      "filename": "caption_natural.txt"
+    },
+    "class_type": "NSFW_Text_Display",
+    "_meta": {
+      "title": "【面板 B】摄影级自然语言描述 (电影质感短文)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "text": [
+        "2",
+        2
+      ],
+      "save_to_file": true,
+      "filename": "merged_prompt_final.txt"
+    },
+    "class_type": "NSFW_Text_Display",
+    "_meta": {
+      "title": "【面板 C】双轨全融合提示词 (推荐直接复制使用)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": [
+        "2",
+        3
+      ],
+      "save_to_file": true,
+      "filename": "bilingual_analysis.txt"
+    },
+    "class_type": "NSFW_Text_Display",
+    "_meta": {
+      "title": "【面板 D】🏷️ 中英双语对照与置信度评分表"
+    }
+  }
+}

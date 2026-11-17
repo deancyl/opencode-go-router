@@ -8,8 +8,9 @@
 
 set -e
 
-# 自动定位或拉取仓库目录（支持直接通过 curl | bash 运行）
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+# 自动定位或拉取仓库目录（支持直接通过 curl | bash 运行，兼容 POSIX sh / bash）
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd || echo "")"
 if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/server.js" ]]; then
   TARGET_DIR="$HOME/.opencode-go-router"
   if [[ ! -f "$TARGET_DIR/server.js" ]]; then
@@ -278,6 +279,9 @@ Environment="PATH=$HOME/.local/bin:$HOME/.opencode/bin:/usr/local/bin:/usr/bin:/
 ExecStart=$node_bin server.js
 Restart=always
 RestartSec=3s
+TimeoutStopSec=15s
+KillMode=mixed
+LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
 
@@ -297,10 +301,10 @@ EOF
     fi
   fi
 
-  echo -e "${GREEN}✔ systemd 用户服务已注册并启动: $SERVICE_NAME${NC}"
+  echo -e "${GREEN}✔ systemd 用户服务已注册并启动: $SERVICE_NAME (混合优雅停机/15s落盘保护)${NC}"
 }
 
-# 5. 回退 nohup 后台启动
+# 5. 回退 nohup 后台启动 (优先使用具备退避防拉死与日志轮转的 daemon_runner.py)
 start_nohup_daemon() {
   echo -e "\n${YELLOW}🚀 正在使用后台守护模式启动智能网关...${NC}"
   if [[ -f "$PID_FILE" ]]; then
@@ -312,7 +316,22 @@ start_nohup_daemon() {
     fi
   fi
 
-  nohup node server.js >> "$LOG_FILE" 2>&1 &
+  local py_bin=""
+  if command -v python3 >/dev/null 2>&1; then
+    py_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    py_bin="python"
+  fi
+
+  if [[ -n "$py_bin" && -f "$SCRIPT_DIR/daemon_runner.py" ]]; then
+    echo -e "${CYAN}ℹ 使用 Python 生产级守护进程 (Crash-Loop Backoff + 10MB 日志自动轮转)...${NC}"
+    nohup "$py_bin" "$SCRIPT_DIR/daemon_runner.py" >> "$LOG_FILE" 2>&1 &
+  else
+    local node_bin
+    node_bin=$(which node || echo "node")
+    nohup "$node_bin" "$SCRIPT_DIR/server.js" >> "$LOG_FILE" 2>&1 &
+  fi
+
   local new_pid=$!
   echo "$new_pid" > "$PID_FILE"
   sleep 1
@@ -335,7 +354,7 @@ service_start() {
   verify_health
 }
 
-# 7. 统一停止函数
+# 7. 统一停止函数 (优雅 SIGTERM 转发 + 进程安全校验 + 端口彻底清理)
 service_stop() {
   echo -e "${YELLOW}正在停止 OpenCode 智能网关服务...${NC}"
   local configured_port
@@ -344,15 +363,52 @@ service_stop() {
   if has_systemd_user; then
     systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
   fi
+
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid=$(cat "$PID_FILE" 2>/dev/null || true)
-    if [[ -n "$pid" ]]; then
-      kill "$pid" 2>/dev/null || true
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      # 安全特征核验，防止系统重启后 PID 复用误杀无关系统进程
+      local is_target=false
+      if [[ -d "/proc/$pid" && -f "/proc/$pid/cmdline" ]]; then
+        local cmdline
+        cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+        if [[ "$cmdline" =~ server\.js|daemon_runner\.py|opencode-router|node ]]; then
+          is_target=true
+        fi
+      elif command -v ps >/dev/null 2>&1; then
+        local ps_cmd
+        ps_cmd=$(ps -p "$pid" -o cmd= 2>/dev/null || true)
+        if [[ "$ps_cmd" =~ server\.js|daemon_runner\.py|opencode-router|node ]]; then
+          is_target=true
+        fi
+      else
+        is_target=true
+      fi
+
+      if [[ "$is_target" == true ]]; then
+        echo -e "  ⏳ 发送优雅停止信号 (SIGTERM) 至 PID $pid..."
+        kill -TERM "$pid" 2>/dev/null || true
+        # 轮询等待最多 3 秒让其完成落盘
+        local wait_count=0
+        while kill -0 "$pid" 2>/dev/null && [[ $wait_count -lt 30 ]]; do
+          sleep 0.1
+          wait_count=$((wait_count + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+          echo -e "  ⚠ 进程未在 3s 内退出，执行强制终止 (SIGKILL)..."
+          kill -9 "$pid" 2>/dev/null || true
+        fi
+      else
+        echo -e "${YELLOW}⚠ PID $pid 命令特征不匹配目标服务，跳过终止以防误杀${NC}"
+      fi
+      rm -f "$PID_FILE"
+    else
       rm -f "$PID_FILE"
     fi
   fi
-  # 跨平台清理端口占用
+
+  # 跨平台清理端口残留
   kill_port "$configured_port"
   echo -e "${GREEN}✔ 网关服务已停止 (端口: $configured_port)${NC}"
 }

@@ -37,6 +37,9 @@ namespace OpenCodeRouter
         public static extern bool BringWindowToTop(IntPtr hWnd);
 
         [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll")]
@@ -115,6 +118,7 @@ namespace OpenCodeRouter
         {
             try
             {
+                SetProcessDPIAware();
                 AllowSetForegroundWindow(ASFW_ANY);
                 WM_SHOW_OPENCODE_ROUTER_V35 = RegisterWindowMessage(WM_SHOW_OPENCODE_ROUTER_V35_MSG);
                 if (WM_SHOW_OPENCODE_ROUTER_V35 != 0)
@@ -355,16 +359,43 @@ namespace OpenCodeRouter
         {
             try
             {
+                uint msgRestore = RegisterWindowMessage("WM_RESTORE_OPENCODE_ROUTER_TRAY");
+                bool trayRunning = false;
                 Process[] trays = Process.GetProcessesByName("OpenCodeRouterTray");
-                if (trays != null && trays.Length > 0) return;
-
-                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
-                if (File.Exists(trayExe))
+                if (trays != null && trays.Length > 0)
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
-                    psi.WorkingDirectory = rootDir;
-                    psi.UseShellExecute = true;
-                    Process.Start(psi);
+                    trayRunning = true;
+                }
+                else
+                {
+                    try
+                    {
+                        using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayPSMutex_v2"))
+                        {
+                            trayRunning = true;
+                        }
+                    }
+                    catch { }
+                    if (!trayRunning)
+                    {
+                        try
+                        {
+                            using (Mutex dummy = Mutex.OpenExisting(@"Local\OpenCodeRouterTrayMutex_v2"))
+                            {
+                                trayRunning = true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (trayRunning)
+                {
+                    // 广播唤醒已有托盘实例，强制重新断言向 Explorer 注册托盘图标
+                    if (msgRestore != 0)
+                    {
+                        try { PostMessage(HWND_BROADCAST, msgRestore, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    }
                     return;
                 }
 
@@ -375,6 +406,16 @@ namespace OpenCodeRouter
                     psi.WorkingDirectory = rootDir;
                     psi.CreateNoWindow = true;
                     psi.UseShellExecute = false;
+                    Process.Start(psi);
+                    return;
+                }
+
+                string trayExe = Path.Combine(rootDir, "OpenCodeRouterTray.exe");
+                if (File.Exists(trayExe))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(trayExe, "-Silent");
+                    psi.WorkingDirectory = rootDir;
+                    psi.UseShellExecute = true;
                     Process.Start(psi);
                 }
             }
@@ -453,9 +494,10 @@ namespace OpenCodeRouter
                 string authQuery = !string.IsNullOrEmpty(uiPassword) ? ("?auth=" + Uri.EscapeDataString(uiPassword)) : "";
                 string targetUrl = "http://127.0.0.1:" + port + "/balancer/ui" + authQuery + hash;
 
+                CleanGhostBrowserInstances(appProfile);
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = browserExe;
-                psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
+                psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-background-mode --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter";
                 psi.UseShellExecute = true;
                 Process.Start(psi);
             }
@@ -478,10 +520,12 @@ namespace OpenCodeRouter
                         Directory.CreateDirectory(appProfile);
                     }
 
+                    CleanGhostBrowserInstances(appProfile);
+
                     ProcessStartInfo psi = new ProcessStartInfo();
                     psi.FileName = browserExe;
-                    // 原生超轻量受控应用模式：剥离 GPU 进程、限制单渲染器、限制 32MB 堆内存、禁用 HTTP 缓存、禁用扩展、极度收敛
-                    psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --window-size=1280,840 --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,InterestFeedContentSuggestions";
+                    // 原生超轻量受控应用模式：剥离 GPU 进程、限制单渲染器、限制 32MB 堆内存、禁用 HTTP 缓存、禁用扩展、极度收敛、禁用后台模式防僵死
+                    psi.Arguments = "--app=\"" + targetUrl + "\" --user-data-dir=\"" + appProfile + "\" --disable-background-mode --disable-gpu --disable-software-rasterizer --renderer-process-limit=1 --js-flags=\"--max-old-space-size=32\" --disable-extensions --disable-background-networking --disable-component-update --disable-sync --disk-cache-size=1 --media-cache-size=1 --disable-http-cache --no-first-run --no-default-browser-check --window-size=1280,840 --disable-features=Translate,msEdgeStartupBoost,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,InterestFeedContentSuggestions";
                     psi.UseShellExecute = true; // 脱钩外壳启动，杜绝挂接在父级 Job 导致被终止
                     Process.Start(psi);
 
@@ -516,6 +560,75 @@ namespace OpenCodeRouter
                 }
                 catch { }
             }
+        }
+
+        private static void CleanupOrphanAppProfileProcesses(string appProfile)
+        {
+            CleanGhostBrowserInstances(appProfile);
+        }
+
+        private static void CleanGhostBrowserInstances(string appProfile)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(appProfile) || !Directory.Exists(appProfile)) return;
+
+                string lockfile = Path.Combine(appProfile, "lockfile");
+                string singletonLock = Path.Combine(appProfile, "SingletonLock");
+                bool isLocked = false;
+                if (File.Exists(lockfile))
+                {
+                    try
+                    {
+                        using (FileStream fs = File.Open(lockfile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                        {
+                            // Can open exclusively: file is not locked
+                        }
+                        try { File.Delete(lockfile); } catch { }
+                    }
+                    catch
+                    {
+                        // File is locked by a zombie process holding SingleInstanceLock!
+                        isLocked = true;
+                    }
+                }
+
+                // If lockfile is locked or exists, forcibly clean zombie browser processes
+                if (isLocked)
+                {
+                    try
+                    {
+                        ProcessStartInfo psi = new ProcessStartInfo();
+                        psi.FileName = "powershell.exe";
+                        psi.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -Command \"Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*OpenCodeRouter*AppProfile*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\"";
+                        psi.CreateNoWindow = true;
+                        psi.UseShellExecute = false;
+                        psi.WindowStyle = ProcessWindowStyle.Hidden;
+                        using (Process p = Process.Start(psi))
+                        {
+                            p.WaitForExit(5000);
+                        }
+                    }
+                    catch { }
+
+                    for (int retry = 0; retry < 6; retry++)
+                    {
+                        try
+                        {
+                            if (File.Exists(lockfile)) File.Delete(lockfile);
+                        }
+                        catch { }
+                        try
+                        {
+                            if (File.Exists(singletonLock)) File.Delete(singletonLock);
+                        }
+                        catch { }
+                        if (!File.Exists(lockfile) && !File.Exists(singletonLock)) break;
+                        Thread.Sleep(100);
+                    }
+                }
+            }
+            catch { }
         }
 
         private static void TrimAppWorkingSet()

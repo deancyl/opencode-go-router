@@ -1,0 +1,50 @@
+{
+  "$schema": "https://opencode.ai/schemas/router-plugin-v1.json",
+  "id": "example-greeter",
+  "name": "开发者示例问候扩展 (Example Greeter Plugin)",
+  "version": "1.0.0",
+  "description": "第三方开发者参考模板插件，演示工具声明、生命周期钩子与 Master-MCP 接入",
+  "author": "developer-team",
+  "entry": "index.js",
+  "category": "tools",
+
+  "system": {
+    "platforms": ["win32", "linux", "darwin"],
+    "requiresNode": ">=18.0.0",
+    "ports": [],
+    "hardware": { "gpu": false },
+    "conflictsWith": [],
+    "requires": []
+  },
+
+  "clientScopes": {
+    "supported": ["opencode", "openchamber", "codex"],
+    "defaultEnabled": ["opencode", "codex"]
+  },
+
+  "capabilities": {
+    "service": null,
+    "tools": [
+      {
+        "name": "greet_developer",
+        "description": "向当前开发者致以热情的问候并返回网关插件运行时摘要信息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "开发者姓名或昵称"
+            }
+          },
+          "required": ["name"]
+        }
+      }
+    ],
+    "agents": [],
+    "routes": [],
+    "ui": {
+      "badge": "👋 示例扩展",
+      "sandbox": false
+    }
+  }
+}

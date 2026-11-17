@@ -1,0 +1,340 @@
+{
+  "last_node_id": 7,
+  "last_link_id": 5,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [
+        40,
+        160
+      ],
+      "size": [
+        320,
+        314
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "【上传/选择参考图】待反推的图像",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "NanoBanana_CinemaSensual_00001_.png",
+        "image"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "NSFW_WD14_Interrogator",
+      "pos": [
+        420,
+        160
+      ],
+      "size": [
+        380,
+        260
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tags",
+          "type": "STRING",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "natural_caption",
+          "type": "STRING",
+          "links": [
+            3
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "merged_prompt",
+          "type": "STRING",
+          "links": [
+            4
+          ],
+          "slot_index": 2
+        },
+        {
+          "name": "bilingual_table",
+          "type": "STRING",
+          "links": [
+            5
+          ],
+          "slot_index": 3
+        },
+        {
+          "name": "rating",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 4
+        }
+      ],
+      "title": "【1】NSFW 核心反推引擎 (WD14 + 语义重组)",
+      "properties": {
+        "Node name for S&R": "NSFW_WD14_Interrogator"
+      },
+      "widgets_values": [
+        0.35,
+        0.75,
+        "watermark, text, signature, rating:*, source_*, simple background, white background, blurry, bad anatomy, bad hands",
+        true
+      ]
+    },
+    {
+      "id": 3,
+      "type": "NSFW_Text_Display",
+      "pos": [
+        840,
+        40
+      ],
+      "size": [
+        460,
+        160
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "【面板 A】纯 Danbooru 核心标签 (适合SD/Pony直出)",
+      "properties": {
+        "Node name for S&R": "NSFW_Text_Display"
+      },
+      "widgets_values": [
+        false,
+        "tags_danbooru.txt"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "NSFW_Text_Display",
+      "pos": [
+        840,
+        230
+      ],
+      "size": [
+        460,
+        160
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "【面板 B】摄影级自然语言描述 (电影质感短文)",
+      "properties": {
+        "Node name for S&R": "NSFW_Text_Display"
+      },
+      "widgets_values": [
+        false,
+        "caption_natural.txt"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "NSFW_Text_Display",
+      "pos": [
+        840,
+        420
+      ],
+      "size": [
+        460,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "【面板 C】双轨全融合提示词 (推荐直接复制使用)",
+      "properties": {
+        "Node name for S&R": "NSFW_Text_Display"
+      },
+      "widgets_values": [
+        true,
+        "merged_prompt_final.txt"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "NSFW_Text_Display",
+      "pos": [
+        1340,
+        40
+      ],
+      "size": [
+        560,
+        600
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "【面板 D】🏷️ 中英双语对照与置信度评分表",
+      "properties": {
+        "Node name for S&R": "NSFW_Text_Display"
+      },
+      "widgets_values": [
+        true,
+        "bilingual_analysis.txt"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "MarkdownNote",
+      "pos": [
+        40,
+        520
+      ],
+      "size": [
+        340,
+        360
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "【工作台说明与快捷指南】",
+      "properties": {
+        "Node name for S&R": "MarkdownNote"
+      },
+      "widgets_values": [
+        "# 🔍 NSFW 深度精准提示词反推工作台\n\n## 核心特性\n- **零显存负担 (Zero VRAM)**：基于 ONNX 纯 CPU 极速推理，单次反推仅耗时 **0.2 秒**，不占用 780M 宝贵显存，绝对零发热、不卡死。\n- **无审查直出 (100% Uncensored)**：精准识别全裸、半遮、乳头、私密器官、体态姿势（弓背、俯身、后背位等）、水渍汗水等成人艺术特征，绝无商业模型审查过滤。\n- **四大专属面板**：\n  - **【面板 A】**：标准 Danbooru 逗号标签（最适合 SD1.5 / Pony / Illustrious 底模）。\n  - **【面板 B】**：摄影级自然语言描述（写实光影、镜头焦段、情感氛围）。\n  - **【面板 C】**：双轨全融合提示词（直接用于任何绘图工作流的正向词）。\n  - **【面板 D】**：中英双语标签对照表与置信度分析（清晰看懂每个标签含义）。\n"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "STRING"
+    ],
+    [
+      3,
+      2,
+      1,
+      4,
+      0,
+      "STRING"
+    ],
+    [
+      4,
+      2,
+      2,
+      5,
+      0,
+      "STRING"
+    ],
+    [
+      5,
+      2,
+      3,
+      6,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

@@ -4,13 +4,17 @@ After=network.target
 StartLimitIntervalSec=0
 
 [Service]
+StartLimitInterval=0
 Type=simple
 WorkingDirectory=%h/.opencode-go-router
 Environment="NODE_ENV=production"
 Environment="PATH=%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/node server.js
+ExecStart=/usr/bin/env node server.js
 Restart=always
 RestartSec=3s
+TimeoutStopSec=15s
+KillMode=mixed
+LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
 

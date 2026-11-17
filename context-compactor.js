@@ -497,6 +497,45 @@ function normalizeCompressionOptions(input = {}) {
 
 const DEFAULT_MODEL_RATE_PER_1M = 0.25; // USD / 1M Tokens (fallback baseline)
 
+/**
+ * OpenCode 官方标准模型计价字典 (USD / 1M Tokens)
+ * 严格对齐 OpenCode 官方模型定义与三阶计费梯级 (Input, Prompt Cache Read, Output)
+ */
+const OPENCODE_OFFICIAL_PRICING = {
+  // DeepSeek 旗舰与主力
+  'deepseek-v4.1-flash': { input: 0.14, cacheRead: 0.014, output: 0.28 },
+  'deepseek-v4-pro':     { input: 0.55, cacheRead: 0.055, output: 2.19 },
+  'deepseek-flash':      { input: 0.14, cacheRead: 0.014, output: 0.28 },
+  'deepseek-v4-flash':   { input: 0.14, cacheRead: 0.014, output: 0.28 },
+
+  // Claude 系列 (OpenCode 配额基准)
+  'claude-3-7-sonnet':   { input: 3.00, cacheRead: 0.30,  output: 15.00 },
+  'claude-3-5-sonnet':   { input: 3.00, cacheRead: 0.30,  output: 15.00 },
+  'claude-haiku-5-5':    { input: 1.25, cacheRead: 0.125, output: 5.00 },
+
+  // GLM 系列
+  'glm-5.3':             { input: 0.35, cacheRead: 0.035, output: 0.70 },
+  'glm-5.3-flash':       { input: 0.10, cacheRead: 0.010, output: 0.20 },
+
+  // Kimi 系列
+  'kimi-k2.7-code':      { input: 0.45, cacheRead: 0.045, output: 1.20 },
+  'kimi-k3':             { input: 0.60, cacheRead: 0.060, output: 1.80 },
+
+  // Qwen 系列
+  'qwen3.7-plus':        { input: 0.40, cacheRead: 0.040, output: 1.20 },
+  'qwen3.8-max':         { input: 0.85, cacheRead: 0.085, output: 2.50 },
+  'qwen4-max':           { input: 1.50, cacheRead: 0.150, output: 4.50 },
+  'kimi-k3.1-pro':       { input: 1.00, cacheRead: 0.100, output: 3.00 },
+  'minimax-m3.1-flash':  { input: 0.15, cacheRead: 0.015, output: 0.45 },
+  'hy4':                 { input: 0.50, cacheRead: 0.050, output: 1.50 },
+  'hy4-flash-free':      { input: 0.00, cacheRead: 0.000, output: 0.00 },
+  'longcat-2.5-free':    { input: 0.00, cacheRead: 0.000, output: 0.00 },
+  'iceman-contributor-free': { input: 0.00, cacheRead: 0.000, output: 0.00 },
+
+  // 兜底基准
+  'default':             { input: 0.25, cacheRead: 0.025, output: 0.50 }
+};
+
 const OPENCODE_GO_MODEL_RATES = {
   // DeepSeek family (OpenCode Go primary agent models)
   'deepseek-v4.1-flash': 0.14,
@@ -566,12 +605,30 @@ const OPENCODE_GO_MODEL_RATES = {
   'space-bunny': 0.15,
   'omen-alpha': 0.50,
 
+  // Latest OpenCode Official Models (2026.10 - 2026.11 Update)
+  'gemini-4-argon': 0.50,
+  'gemini-4-argon-contributor': 0.15,
+  'qwen4-max': 1.50,
+  'kimi-k3.1-pro': 1.00,
+  'minimax-m3.1-flash': 0.15,
+  'minimax-m3.1-flash-free': 0.00,
+  'hy4': 0.50,
+  'hy4-flash-free': 0.00,
+  'longcat-2.5-free': 0.00,
+  'iceman-contributor-free': 0.00,
+  'step-5-preview': 0.35,
+  'beam-free': 0.00,
+  'cat-jam-free': 0.00,
+
   // Codex native aliases
   'codex-mini': 0.40,
   'codex-pro': 1.50
 };
 
-const dynamicModelRates = { ...OPENCODE_GO_MODEL_RATES };
+const dynamicModelRates = {
+  ...OPENCODE_GO_MODEL_RATES,
+  ...Object.fromEntries(Object.entries(OPENCODE_OFFICIAL_PRICING).map(([k, v]) => [k, { ...v }]))
+};
 
 const MAX_BY_MODEL_ENTRIES = 120;
 
@@ -599,6 +656,7 @@ function pruneByModelEntriesIfNeeded() {
 }
 
 const CANONICAL_MODEL_ALIASES = {
+  // Only map non-standard or legacy aliases; strictly preserve valid opencode distinct models (deepseek-flash & deepseek-v4-flash)
   'deepseek-flash': 'deepseek-v4.1-flash',
   'deepseek-v4-flash': 'deepseek-v4.1-flash',
   'deepseek_flash': 'deepseek-v4.1-flash',
@@ -630,42 +688,140 @@ function normalizeModelName(rawModel) {
   if (CANONICAL_MODEL_ALIASES[clean]) {
     return CANONICAL_MODEL_ALIASES[clean];
   }
-  // Regex canonical alignment for deepseek flash & pro family
-  if (/^deepseek[-_.]*(?:v[0-9.]*[-_.]*)?flash$/.test(clean)) {
+  // Regex canonical alignment only for bare 'deepseek' or typos without full version
+  if (clean === 'deepseek' || clean === 'deepseek-ai' || clean === 'deepseek-chat') {
     return 'deepseek-v4.1-flash';
   }
-  if (/^deepseek[-_.]*(?:v[0-9.]*[-_.]*)?pro$/.test(clean)) {
+  if (clean === 'deepseek-reasoner') {
     return 'deepseek-v4-pro';
   }
   return clean || null;
 }
 
-function getModelRate(rawModel) {
-  const model = normalizeModelName(rawModel);
-  if (!model) return DEFAULT_MODEL_RATE_PER_1M;
-  if (typeof dynamicModelRates[model] === 'number') {
-    return dynamicModelRates[model];
-  }
-  // Longest-prefix match (LPM) on candidate keys sorted by length descending
-  const sortedEntries = Object.entries(dynamicModelRates).sort((a, b) => b[0].length - a[0].length);
-  for (const [key, rate] of sortedEntries) {
-    if (model === key || model.startsWith(key + '-') || (model.length >= 3 && key.startsWith(model + '-'))) {
-      return rate;
+function getModelPricing(rawModel) {
+  const model = normalizeModelName(rawModel) || (rawModel && typeof rawModel === 'string' ? rawModel.trim().toLowerCase() : null);
+  if (!model) return { ...OPENCODE_OFFICIAL_PRICING['default'] };
+
+  // 1. Dynamic rates configured by user or synchronized at runtime take highest precedence (Rule 6)
+  if (dynamicModelRates[model] !== undefined) {
+    const val = dynamicModelRates[model];
+    if (typeof val === 'object' && val !== null && typeof val.input === 'number') {
+      return {
+        input: val.input,
+        cacheRead: typeof val.cacheRead === 'number' ? val.cacheRead : Number((val.input * 0.1).toFixed(4)),
+        output: typeof val.output === 'number' ? val.output : Number((val.input * 2.5).toFixed(4))
+      };
+    }
+    if (typeof val === 'number') {
+      return {
+        input: val,
+        cacheRead: Number((val * 0.1).toFixed(4)),
+        output: Number((val * 2.5).toFixed(4))
+      };
     }
   }
-  return DEFAULT_MODEL_RATE_PER_1M;
+
+  // 2. OpenCode official 3-tier pricing dictionary
+  if (OPENCODE_OFFICIAL_PRICING[model]) {
+    return { ...OPENCODE_OFFICIAL_PRICING[model] };
+  }
+
+  // 3. Fallback to legacy single-rate dictionary if present
+  if (typeof OPENCODE_GO_MODEL_RATES[model] === 'number') {
+    const val = OPENCODE_GO_MODEL_RATES[model];
+    return {
+      input: val,
+      cacheRead: Number((val * 0.1).toFixed(4)),
+      output: Number((val * 2.5).toFixed(4))
+    };
+  }
+
+  // 4. Longest-prefix match (LPM) on candidate keys sorted by length descending
+  const candidates = Array.from(new Set([
+    ...Object.keys(dynamicModelRates),
+    ...Object.keys(OPENCODE_OFFICIAL_PRICING),
+    ...Object.keys(OPENCODE_GO_MODEL_RATES)
+  ])).sort((a, b) => b.length - a.length);
+
+  for (const key of candidates) {
+    if (model === key || model.startsWith(key + '-') || (model.length >= 3 && key.startsWith(model + '-'))) {
+      const dynVal = dynamicModelRates[key];
+      if (dynVal !== undefined) {
+        if (typeof dynVal === 'object' && dynVal !== null && typeof dynVal.input === 'number') {
+          return {
+            input: dynVal.input,
+            cacheRead: typeof dynVal.cacheRead === 'number' ? dynVal.cacheRead : Number((dynVal.input * 0.1).toFixed(4)),
+            output: typeof dynVal.output === 'number' ? dynVal.output : Number((dynVal.input * 2.5).toFixed(4))
+          };
+        }
+        if (typeof dynVal === 'number') {
+          return {
+            input: dynVal,
+            cacheRead: Number((dynVal * 0.1).toFixed(4)),
+            output: Number((dynVal * 2.5).toFixed(4))
+          };
+        }
+      }
+      if (OPENCODE_OFFICIAL_PRICING[key]) return { ...OPENCODE_OFFICIAL_PRICING[key] };
+      const val = OPENCODE_GO_MODEL_RATES[key];
+      if (typeof val === 'number') {
+        return {
+          input: val,
+          cacheRead: Number((val * 0.1).toFixed(4)),
+          output: Number((val * 2.5).toFixed(4))
+        };
+      }
+    }
+  }
+
+  return { ...OPENCODE_OFFICIAL_PRICING['default'] };
+}
+
+function getModelRate(rawModel) {
+  return getModelPricing(rawModel).input;
+}
+
+function calculateCost(model, inputTokens, outputTokens, cachedTokens, savedTokens = 0) {
+  const p = getModelPricing(model);
+  const inTok = Number(inputTokens) || 0;
+  const outTok = Number(outputTokens) || 0;
+  const cTok = Math.max(0, Number(cachedTokens) || 0);
+  // If inTok >= cTok, inTok is total prompt tokens (OpenAI / DeepSeek format)
+  // If inTok < cTok, inTok is uncached prompt tokens (Anthropic format where cached tokens are reported separately)
+  const regularInput = inTok >= cTok ? Math.max(0, inTok - cTok) : inTok;
+  const sTok = Number(savedTokens) || 0;
+
+  // 实际产生费用 (三阶定价模型)
+  const actualCost = Number((
+    ((regularInput / 1e6) * p.input) +
+    ((cTok / 1e6) * p.cacheRead) +
+    ((outTok / 1e6) * p.output)
+  ).toFixed(7));
+
+  // 压缩节约价值（按被压缩抵扣掉的 Input Prompt 单价核算）
+  const savedCost = Number(((sTok / 1e6) * p.input).toFixed(7));
+
+  return { actualCost, savedCost, pricing: p };
 }
 
 function updateModelRates(newRates) {
   if (!newRates || typeof newRates !== 'object') return dynamicModelRates;
   let updatedAny = false;
   for (const [rawModel, rate] of Object.entries(newRates)) {
-    const clean = normalizeModelName(rawModel);
-    if (clean && typeof rate === 'number' && rate > 0) {
-      dynamicModelRates[clean] = rate;
-      if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
-        compressionStats.byModel[clean].ratePer1M = rate;
-        updatedAny = true;
+    const clean = normalizeModelName(rawModel) || (rawModel && typeof rawModel === 'string' ? rawModel.trim().toLowerCase() : null);
+    if (clean) {
+      if (typeof rate === 'number' && rate > 0) {
+        dynamicModelRates[clean] = rate;
+        if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
+          compressionStats.byModel[clean].ratePer1M = rate;
+          updatedAny = true;
+        }
+      } else if (typeof rate === 'object' && rate !== null && typeof rate.input === 'number' && rate.input > 0) {
+        dynamicModelRates[clean] = rate;
+        if (compressionStats && compressionStats.byModel && compressionStats.byModel[clean]) {
+          compressionStats.byModel[clean].ratePer1M = rate.input;
+          updatedAny = true;
+        }
       }
     }
   }
@@ -765,7 +921,10 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
                   if (mId && numCost !== null && !isNaN(numCost) && numCost > 0) {
                     const r = numCost < 0.005 ? Number((numCost * 1000000).toFixed(4)) : Number(numCost.toFixed(4));
                     const cleanId = normalizeModelName(mId);
-                    if (cleanId) fetchedRates[cleanId] = r;
+                    // Protect official 3-tier pricing baseline models from being degraded by external scalar rates
+                    if (cleanId && !OPENCODE_OFFICIAL_PRICING[cleanId]) {
+                      fetchedRates[cleanId] = r;
+                    }
                   }
                 }
                 if (Object.keys(fetchedRates).length > 0) {
@@ -795,6 +954,23 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
   }
 }
 
+function safeSlice(str, start, end) {
+  if (typeof str !== 'string') return str;
+  const s = str.slice(start, end);
+  if (s.length > 0) {
+    const lastCode = s.charCodeAt(s.length - 1);
+    if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+      return s.slice(0, -1);
+    }
+  }
+  if (s.length > 0) {
+    const firstCode = s.charCodeAt(0);
+    if (firstCode >= 0xDC00 && firstCode <= 0xDFFF) {
+      return s.slice(1);
+    }
+  }
+  return s;
+}
 /**
  * Dynamic bilingual token estimation model.
  * - Chinese / CJK characters: ~1.25 chars / Token
@@ -805,6 +981,7 @@ async function syncModelRatesFromOpenCode(port = null, password = null) {
  */
 function estimateTokens(input) {
   if (typeof input === 'number') {
+    if (!Number.isFinite(input) || isNaN(input) || input <= 0) return 0;
     return Math.round(input / 3.8);
   }
   if (typeof input !== 'string' || input.length === 0) {
@@ -842,17 +1019,36 @@ const HISTORY_FILE = process.env.COMPRESSION_HISTORY_FILE || (IS_TEST_ENV && pro
 const STATS_BAK_FILE = `${STATS_FILE}.bak`;
 const HISTORY_BAK_FILE = `${HISTORY_FILE}.bak`;
 
+/**
+ * 获取本地时区自然日（00:00:00）时间戳，彻底消除 UTC 跨天偏移
+ */
+function getLocalDayStartTimestamp(ts = Date.now()) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * 根据本地自然日与日偏移量计算目标日 00:00:00 时间戳，防御夏令时跨日抖动
+ */
+function getDaySlotTimestamp(currentSlotTs, dayOffset) {
+  const d = new Date(currentSlotTs);
+  d.setDate(d.getDate() - dayOffset);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
 const BUCKET_DEFINITIONS = {
   m5: { intervalMs: 5 * 60 * 1000, maxBuckets: 12, maxAgeMs: 60 * 60 * 1000 },
   h1: { intervalMs: 60 * 60 * 1000, maxBuckets: 24, maxAgeMs: 24 * 60 * 60 * 1000 },
-  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 30, maxAgeMs: 30 * 24 * 60 * 60 * 1000 }
+  d1: { intervalMs: 24 * 60 * 60 * 1000, maxBuckets: 90, maxAgeMs: 90 * 24 * 60 * 60 * 1000 }
 };
 
 const RANGE_CONFIG = {
   '1h': { tier: 'm5', windowMs: 60 * 60 * 1000, label: '过去 1 小时' },
   '24h': { tier: 'h1', windowMs: 24 * 60 * 60 * 1000, label: '过去 24 小时' },
   '7d': { tier: 'd1', windowMs: 7 * 24 * 60 * 60 * 1000, label: '过去 7 天' },
-  'all': { tier: 'd1', windowMs: 30 * 24 * 60 * 60 * 1000, label: '全部历史累计' }
+  'all': { tier: 'd1', windowMs: 90 * 24 * 60 * 60 * 1000, label: '全部历史累计' }
 };
 
 let compressionStats = {
@@ -920,7 +1116,9 @@ function pruneExpiredBuckets(now = Date.now()) {
       compressionHistory.buckets[tier] = [];
       continue;
     }
-    const cutoff = now - def.maxAgeMs;
+    const cutoff = tier === 'd1'
+      ? getLocalDayStartTimestamp(now - def.maxAgeMs)
+      : now - def.maxAgeMs;
     list = list.filter(b => b && typeof b.endTime === 'number' && b.endTime > cutoff && b.startTime <= now + def.intervalMs);
     list.sort((a, b) => a.startTime - b.startTime);
     if (list.length > def.maxBuckets) {
@@ -933,10 +1131,18 @@ function pruneExpiredBuckets(now = Date.now()) {
 function getOrCreateBucket(tier, ts, now = Date.now()) {
   const def = BUCKET_DEFINITIONS[tier];
   if (!def) return null;
-  if (ts < now - def.maxAgeMs) return null;
+  const safeTs = (typeof ts === 'number' && Number.isFinite(ts) && !isNaN(ts)) ? ts : now;
+  if (safeTs < now - def.maxAgeMs) return null;
 
-  const start = Math.floor(ts / def.intervalMs) * def.intervalMs;
-  const end = start + def.intervalMs;
+  let start;
+  let end;
+  if (tier === 'd1') {
+    start = getLocalDayStartTimestamp(safeTs);
+    end = start + def.intervalMs;
+  } else {
+    start = Math.floor(safeTs / def.intervalMs) * def.intervalMs;
+    end = start + def.intervalMs;
+  }
 
   let list = compressionHistory.buckets[tier];
   if (!Array.isArray(list)) {
@@ -961,10 +1167,14 @@ function recordBucketSavings(tier, ts, moduleName, validSaved, validOrig, modelN
   const bucket = getOrCreateBucket(tier, ts);
   if (!bucket) return;
 
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeSaved = (typeof validSaved === 'number' && Number.isFinite(validSaved) && !isNaN(validSaved)) ? Math.max(0, validSaved) : 0;
+  const safeOrig = (typeof validOrig === 'number' && Number.isFinite(validOrig) && !isNaN(validOrig)) ? Math.max(safeSaved, validOrig) : safeSaved;
+  if (safeSaved <= 0 && safeOrig <= 0) return;
+
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
-    : estimateTokens(validSaved);
-  const validOrigTokens = estimateTokens(validOrig);
+    : estimateTokens(safeSaved);
+  const validOrigTokens = estimateTokens(safeOrig);
 
   bucket.totalOriginalChars += validOrig;
   bucket.totalCompressedChars += (validOrig - validSaved);
@@ -1068,10 +1278,36 @@ function computeDerivedStats(stats) {
     stats.modules[modKey] = mod;
   }
 
-  stats.savedTokens = modulesTokenSum > 0 ? modulesTokenSum : estimateTokens(totalSavedChars);
+  stats.savedTokens = (modulesTokenSum > 0 || Number(stats.savedTokens) > 0)
+    ? Math.max(modulesTokenSum, Number(stats.savedTokens) || 0)
+    : estimateTokens(totalSavedChars);
 
   // Compute byModel telemetry and dynamic weighted savedCostUSD
   stats.byModel = stats.byModel || {};
+  // Coalesce any un-normalized alias keys (e.g. deepseek-flash -> deepseek-v4.1-flash) before computing derived totals
+  for (const [rawKey, rawVal] of Object.entries(stats.byModel)) {
+    if (!rawVal || typeof rawVal !== 'object') continue;
+    const canonicalKey = normalizeModelName(rawKey) || rawKey;
+    if (canonicalKey !== rawKey) {
+      const target = stats.byModel[canonicalKey] || {
+        savedChars: 0,
+        savedTokens: 0,
+        savedCostUSD: 0,
+        originalChars: 0,
+        consumedTokens: 0,
+        consumedCostUSD: 0,
+        ratePer1M: getModelRate(canonicalKey)
+      };
+      target.savedChars = (Number(target.savedChars) || 0) + (Number(rawVal.savedChars) || 0);
+      target.savedTokens = (Number(target.savedTokens) || 0) + (Number(rawVal.savedTokens) || 0);
+      target.savedCostUSD = Number(((Number(target.savedCostUSD) || 0) + (Number(rawVal.savedCostUSD) || 0)).toFixed(7));
+      target.originalChars = (Number(target.originalChars) || 0) + (Number(rawVal.originalChars) || 0);
+      target.consumedTokens = (Number(target.consumedTokens) || 0) + (Number(rawVal.consumedTokens) || 0);
+      target.consumedCostUSD = Number(((Number(target.consumedCostUSD) || 0) + (Number(rawVal.consumedCostUSD) || 0)).toFixed(7));
+      stats.byModel[canonicalKey] = target;
+      delete stats.byModel[rawKey];
+    }
+  }
   pruneByModelEntriesIfNeeded();
   let modelTokensSum = 0;
   let modelCostSum = 0;
@@ -1105,25 +1341,56 @@ function computeDerivedStats(stats) {
     if (data.consumedTokens === undefined || data.consumedTokens === null || data.consumedTokens === 0) {
       data.consumedTokens = estimateTokens(data.originalChars || 0);
     }
-    data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    if (data.consumedCostUSD === undefined || data.consumedCostUSD === null || data.consumedCostUSD === 0) {
+      data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    }
     modelConsumedTokensSum += data.consumedTokens;
     modelConsumedCostSum += data.consumedCostUSD;
   }
   const totalOrigTokens = estimateTokens(stats.totalOriginalChars);
-  stats.consumedTokens = Math.max(totalOrigTokens, modelConsumedTokensSum, stats.savedTokens);
+  const explicitConsumed = Number(stats.consumedTokens) || 0;
+  if (explicitConsumed > 0 || modelConsumedTokensSum > 0) {
+    stats.consumedTokens = Math.max(explicitConsumed, modelConsumedTokensSum);
+  } else {
+    stats.consumedTokens = Math.max(totalOrigTokens, stats.savedTokens);
+  }
   const unassignedConsumed = Math.max(0, stats.consumedTokens - modelConsumedTokensSum);
   const unassignedConsumedCost = (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
-  stats.consumedCostUSD = Number((modelConsumedCostSum + unassignedConsumedCost).toFixed(6));
+  if (modelConsumedCostSum > 0 || unassignedConsumedCost > 0) {
+    stats.consumedCostUSD = Number((modelConsumedCostSum + unassignedConsumedCost).toFixed(6));
+  }
 
-  stats.compressionRatio = stats.totalOriginalChars > 0
+  const rawRatio = (stats.totalOriginalChars > 0 && Number.isFinite(stats.totalOriginalChars))
     ? Number(((totalSavedChars / stats.totalOriginalChars) * 100).toFixed(1))
     : 0;
+  stats.compressionRatio = (Number.isFinite(rawRatio) && !isNaN(rawRatio)) ? rawRatio : 0;
 
   return stats;
 }
 
+function writeFileSyncAtomic(filePath, data, encoding = 'utf8') {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.tmp-${path.basename(filePath)}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  fs.writeFileSync(tmpPath, data, encoding);
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.copyFileSync(tmpPath, filePath);
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+    } catch (_) {
+      try { fs.writeFileSync(filePath, data, encoding); } catch (_) {}
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+    }
+  }
+}
+
 function saveStatsToDisk() {
   try {
+    if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+      return;
+    }
     pruneExpiredBuckets();
 
     // Canonical Self-Healing Migration: coalesce aliases (e.g. deepseek-flash -> deepseek-v4.1-flash) in loaded stats and history
@@ -1182,19 +1449,15 @@ function saveStatsToDisk() {
       historyJson = JSON.stringify(compressionHistory, null, 2);
     }
 
-    const tmpHist = `${HISTORY_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpHist, historyJson, 'utf8');
-    fs.renameSync(tmpHist, HISTORY_FILE);
-    // Dual-write disaster recovery backup (.bak)
-    try { fs.writeFileSync(HISTORY_BAK_FILE, historyJson, 'utf8'); } catch (_) {}
+    writeFileSyncAtomic(HISTORY_FILE, historyJson, 'utf8');
+    // Dual-write disaster recovery backup (.bak) with atomic guarantee
+    try { writeFileSyncAtomic(HISTORY_BAK_FILE, historyJson, 'utf8'); } catch (_) {}
 
     // Save legacy compression-stats.json for 100% compatibility with existing test assertions
     const statsJson = JSON.stringify(compressionStats, null, 2);
-    const tmpStats = `${STATS_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpStats, statsJson, 'utf8');
-    fs.renameSync(tmpStats, STATS_FILE);
-    // Dual-write disaster recovery backup (.bak)
-    try { fs.writeFileSync(STATS_BAK_FILE, statsJson, 'utf8'); } catch (_) {}
+    writeFileSyncAtomic(STATS_FILE, statsJson, 'utf8');
+    // Dual-write disaster recovery backup (.bak) with atomic guarantee
+    try { writeFileSyncAtomic(STATS_BAK_FILE, statsJson, 'utf8'); } catch (_) {}
   } catch (err) {
     // Non-fatal, sandbox logged
   }
@@ -1299,13 +1562,18 @@ function loadStatsFromDisk() {
         for (const [m, data] of Object.entries(sourceStats.byModel)) {
           if (data && typeof data === 'object') {
             const cleanM = normalizeModelName(m) || m;
-            loadedByModel[cleanM] = {
-              savedChars: Number(data.savedChars) || 0,
-              savedTokens: Number(data.savedTokens) || 0,
-              savedCostUSD: Number(data.savedCostUSD) || 0,
-              originalChars: Number(data.originalChars) || 0,
+            const existing = loadedByModel[cleanM] || {
+              savedChars: 0,
+              savedTokens: 0,
+              savedCostUSD: 0,
+              originalChars: 0,
               ratePer1M: typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(cleanM)
             };
+            existing.savedChars += Number(data.savedChars) || 0;
+            existing.savedTokens += Number(data.savedTokens) || 0;
+            existing.savedCostUSD = Number((existing.savedCostUSD + (Number(data.savedCostUSD) || 0)).toFixed(7));
+            existing.originalChars += Number(data.originalChars) || 0;
+            loadedByModel[cleanM] = existing;
           }
         }
       }
@@ -1375,6 +1643,26 @@ function loadStatsFromDisk() {
         if (Array.isArray(bucketList)) {
           for (const b of bucketList) {
             if (b && typeof b === 'object') {
+              if (b.byModel && typeof b.byModel === 'object') {
+                const coalescedBucketModels = {};
+                for (const [rawKey, mData] of Object.entries(b.byModel)) {
+                  if (!mData || typeof mData !== 'object') continue;
+                  const cleanM = normalizeModelName(rawKey) || rawKey;
+                  const cur = coalescedBucketModels[cleanM] || {
+                    savedChars: 0,
+                    savedTokens: 0,
+                    savedCostUSD: 0,
+                    originalChars: 0,
+                    ratePer1M: getModelRate(cleanM)
+                  };
+                  cur.savedChars += Number(mData.savedChars) || 0;
+                  cur.savedTokens += Number(mData.savedTokens) || 0;
+                  cur.savedCostUSD = Number((cur.savedCostUSD + (Number(mData.savedCostUSD) || 0)).toFixed(7));
+                  cur.originalChars += Number(mData.originalChars) || 0;
+                  coalescedBucketModels[cleanM] = cur;
+                }
+                b.byModel = coalescedBucketModels;
+              }
               const origChars = Number(b.totalOriginalChars) || 0;
               const savedChars = Number(b.totalSavedChars) || 0;
               const modTokSum = Object.values(b.modules || {}).reduce((s, m) => s + (Number(m.savedTokens) || 0), 0);
@@ -1412,10 +1700,12 @@ loadStatsFromDisk();
 
 function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp = Date.now(), customSavedTokens = null) {
   const model = normalizeModelName(modelName);
-  if (!model || (savedChars <= 0 && originalChars <= 0)) return;
-  const validSaved = Math.max(0, savedChars);
-  const validOrig = Math.max(validSaved, originalChars);
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeSaved = (typeof savedChars === 'number' && Number.isFinite(savedChars) && !isNaN(savedChars)) ? Math.max(0, savedChars) : 0;
+  const safeOrig = (typeof originalChars === 'number' && Number.isFinite(originalChars) && !isNaN(originalChars)) ? Math.max(safeSaved, originalChars) : safeSaved;
+  if (!model || (safeSaved <= 0 && safeOrig <= 0)) return;
+  const validSaved = safeSaved;
+  const validOrig = safeOrig;
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
     : estimateTokens(validSaved);
 
@@ -1441,11 +1731,13 @@ function recordModelSavings(modelName, savedChars, originalChars = 0, timestamp 
 }
 
 function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now(), customSavedTokens = null) {
-  if (deltaChars <= 0) return;
-  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeDelta = (typeof deltaChars === 'number' && Number.isFinite(deltaChars) && !isNaN(deltaChars)) ? Math.max(0, deltaChars) : 0;
+  if (safeDelta <= 0) return;
+  const ts = (typeof timestamp === 'number' && Number.isFinite(timestamp) && !isNaN(timestamp)) ? timestamp : Date.now();
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
-    : estimateTokens(deltaChars);
+    : estimateTokens(safeDelta);
+  const deltaCharsSafe = safeDelta;
   if (moduleName && compressionStats.modules[moduleName]) {
     compressionStats.modules[moduleName].savedChars += deltaChars;
     compressionStats.modules[moduleName].savedTokens = (compressionStats.modules[moduleName].savedTokens || 0) + validTokens;
@@ -1462,11 +1754,13 @@ function recordModuleOnlySavings(moduleName, deltaChars, timestamp = Date.now(),
 }
 
 function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = null, timestamp = Date.now(), customSavedTokens = null) {
-  if (deltaChars <= 0 && originalChars <= 0) return;
-  const validSaved = Math.max(0, deltaChars);
-  const validOrig = Math.max(validSaved, originalChars);
-  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
-  const validTokens = (typeof customSavedTokens === 'number' && customSavedTokens >= 0)
+  const safeSaved = (typeof deltaChars === 'number' && Number.isFinite(deltaChars) && !isNaN(deltaChars)) ? Math.max(0, deltaChars) : 0;
+  const safeOrig = (typeof originalChars === 'number' && Number.isFinite(originalChars) && !isNaN(originalChars)) ? Math.max(safeSaved, originalChars) : safeSaved;
+  if (safeSaved <= 0 && safeOrig <= 0) return;
+  const validSaved = safeSaved;
+  const validOrig = safeOrig;
+  const ts = (typeof timestamp === 'number' && Number.isFinite(timestamp) && !isNaN(timestamp)) ? timestamp : Date.now();
+  const validTokens = (typeof customSavedTokens === 'number' && Number.isFinite(customSavedTokens) && !isNaN(customSavedTokens) && customSavedTokens >= 0)
     ? customSavedTokens
     : estimateTokens(validSaved);
 
@@ -1498,11 +1792,13 @@ function recordSavings(moduleName, deltaChars, originalChars = 0, modelName = nu
 }
 
 function recordOverallSavings(origLen, compLen, timestamp = Date.now()) {
-  if (origLen <= compLen) return;
-  const ts = typeof timestamp === 'number' && !isNaN(timestamp) ? timestamp : Date.now();
-  const validSaved = origLen - compLen;
-  compressionStats.totalOriginalChars += origLen;
-  compressionStats.totalCompressedChars += compLen;
+  const safeOrig = (typeof origLen === 'number' && Number.isFinite(origLen) && !isNaN(origLen)) ? Math.max(0, origLen) : 0;
+  const safeComp = (typeof compLen === 'number' && Number.isFinite(compLen) && !isNaN(compLen)) ? Math.max(0, compLen) : safeOrig;
+  if (safeOrig <= safeComp) return;
+  const ts = (typeof timestamp === 'number' && Number.isFinite(timestamp) && !isNaN(timestamp)) ? timestamp : Date.now();
+  const validSaved = safeOrig - safeComp;
+  compressionStats.totalOriginalChars += safeOrig;
+  compressionStats.totalCompressedChars += safeComp;
   compressionStats.updatedAt = new Date().toISOString();
   computeDerivedStats(compressionStats);
 
@@ -1530,10 +1826,162 @@ function recordCompressionEvent(event) {
     modelName = null,
     timestamp = Date.now()
   } = event;
-  const actualSaved = savedChars || deltaChars || 0;
-  const actualOrig = Math.max(actualSaved, originalChars || 0);
+  const rawSaved = typeof savedChars === 'number' ? savedChars : (typeof deltaChars === 'number' ? deltaChars : 0);
+  const actualSaved = (Number.isFinite(rawSaved) && !isNaN(rawSaved)) ? Math.max(0, rawSaved) : 0;
+  const rawOrig = typeof originalChars === 'number' ? originalChars : 0;
+  const actualOrig = (Number.isFinite(rawOrig) && !isNaN(rawOrig)) ? Math.max(actualSaved, rawOrig) : actualSaved;
   const actualModel = model || modelName || null;
   recordSavings(module, actualSaved, actualOrig, actualModel, timestamp);
+}
+
+/**
+ * 全量请求遥测接口 (Full Request Telemetry Hook)
+ * 接收模型名、真实 inputTokens、outputTokens、cachedTokens 以及压缩消除的 savings (savedTokens/savedChars)
+ * 同步更新全局统计与多级时序环形缓冲 (m5, h1, d1)
+ */
+function recordRequestTelemetry(telemetry = {}) {
+  if (!telemetry || typeof telemetry !== 'object') return;
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
+  const rawModel = telemetry.model || telemetry.modelName || 'default';
+  const model = normalizeModelName(rawModel) || rawModel || 'default';
+  const ts = (typeof telemetry.timestamp === 'number' && Number.isFinite(telemetry.timestamp)) ? telemetry.timestamp : Date.now();
+
+  const inputTokens = Math.max(0, Number(telemetry.inputTokens ?? telemetry.input_tokens ?? telemetry.prompt_tokens ?? 0));
+  const outputTokens = Math.max(0, Number(telemetry.outputTokens ?? telemetry.output_tokens ?? telemetry.completion_tokens ?? 0));
+  const cachedTokens = Math.max(0, Number(
+    telemetry.cachedTokens ??
+    telemetry.cached_tokens ??
+    telemetry.prompt_tokens_details?.cached_tokens ??
+    telemetry.input_tokens_details?.cached_tokens ??
+    0
+  ));
+
+  let savedTokens = 0;
+  let savedChars = 0;
+  let originalChars = 0;
+  if (typeof telemetry.savings === 'number') {
+    savedTokens = Math.max(0, telemetry.savings);
+    savedChars = Math.round(savedTokens * 3.8);
+  } else if (telemetry.savings && typeof telemetry.savings === 'object') {
+    savedTokens = Math.max(0, Number(telemetry.savings.savedTokens || telemetry.savings.tokens || 0));
+    savedChars = Math.max(0, Number(telemetry.savings.savedChars || telemetry.savings.chars || 0));
+    originalChars = Math.max(0, Number(telemetry.savings.originalChars || 0));
+    if (savedTokens === 0 && savedChars > 0) savedTokens = estimateTokens(savedChars);
+  } else {
+    savedTokens = Math.max(0, Number(telemetry.savedTokens || 0));
+    savedChars = Math.max(0, Number(telemetry.savedChars || 0));
+    if (savedTokens === 0 && savedChars > 0) savedTokens = estimateTokens(savedChars);
+  }
+
+  const cTok = Math.max(0, Number(cachedTokens) || 0);
+  const regularInput = inputTokens >= cTok ? Math.max(0, inputTokens - cTok) : inputTokens;
+  const consumedTokens = (inputTokens >= cTok ? inputTokens : (regularInput + cTok)) + outputTokens;
+  const { actualCost, savedCost, pricing } = calculateCost(model, inputTokens, outputTokens, cachedTokens, savedTokens);
+
+  // Update global compressionStats
+  compressionStats.consumedTokens = (Number(compressionStats.consumedTokens) || 0) + consumedTokens;
+  compressionStats.consumedCostUSD = Number(((Number(compressionStats.consumedCostUSD) || 0) + actualCost).toFixed(7));
+
+  if (savedTokens > 0) {
+    const modKey = telemetry.module || (telemetry.savings && telemetry.savings.module) || 'rtk';
+    if (compressionStats.modules && compressionStats.modules[modKey]) {
+      compressionStats.modules[modKey].savedTokens = (Number(compressionStats.modules[modKey].savedTokens) || 0) + savedTokens;
+      compressionStats.modules[modKey].savedChars = (Number(compressionStats.modules[modKey].savedChars) || 0) + savedChars;
+    }
+    compressionStats.savedTokens = (Number(compressionStats.savedTokens) || 0) + savedTokens;
+    compressionStats.savedCostUSD = Number(((Number(compressionStats.savedCostUSD) || 0) + savedCost).toFixed(7));
+  }
+  if (savedChars > 0) {
+    compressionStats.totalSavedChars = (Number(compressionStats.totalSavedChars) || 0) + savedChars;
+    compressionStats.totalOriginalChars = (Number(compressionStats.totalOriginalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+    compressionStats.totalCompressedChars = Math.max(0, compressionStats.totalOriginalChars - compressionStats.totalSavedChars);
+  }
+
+  // Update global byModel
+  if (!compressionStats.byModel) compressionStats.byModel = {};
+  if (!compressionStats.byModel[model]) {
+    compressionStats.byModel[model] = {
+      savedChars: 0,
+      savedTokens: 0,
+      savedCostUSD: 0,
+      originalChars: 0,
+      consumedTokens: 0,
+      consumedCostUSD: 0,
+      ratePer1M: pricing.input
+    };
+  }
+  const mEntry = compressionStats.byModel[model];
+  mEntry.consumedTokens = (Number(mEntry.consumedTokens) || 0) + consumedTokens;
+  mEntry.consumedCostUSD = Number(((Number(mEntry.consumedCostUSD) || 0) + actualCost).toFixed(7));
+  if (savedTokens > 0) {
+    mEntry.savedTokens = (Number(mEntry.savedTokens) || 0) + savedTokens;
+    mEntry.savedCostUSD = Number(((Number(mEntry.savedCostUSD) || 0) + savedCost).toFixed(7));
+  }
+  if (savedChars > 0) {
+    mEntry.savedChars = (Number(mEntry.savedChars) || 0) + savedChars;
+    mEntry.originalChars = (Number(mEntry.originalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+  }
+  mEntry.ratePer1M = pricing.input;
+
+  compressionStats.updatedAt = new Date().toISOString();
+  computeDerivedStats(compressionStats);
+
+  // Synchronously record to all 3 ring-buffer time tiers (m5, h1, d1)
+  for (const tier of ['m5', 'h1', 'd1']) {
+    const bucket = getOrCreateBucket(tier, ts);
+    if (bucket) {
+      bucket.consumedTokens = (Number(bucket.consumedTokens) || 0) + consumedTokens;
+      bucket.consumedCostUSD = Number(((Number(bucket.consumedCostUSD) || 0) + actualCost).toFixed(7));
+      if (savedTokens > 0) {
+        const modKey = telemetry.module || (telemetry.savings && telemetry.savings.module) || 'rtk';
+        if (bucket.modules && bucket.modules[modKey]) {
+          bucket.modules[modKey].savedTokens = (Number(bucket.modules[modKey].savedTokens) || 0) + savedTokens;
+          bucket.modules[modKey].savedChars = (Number(bucket.modules[modKey].savedChars) || 0) + savedChars;
+        }
+        bucket.savedTokens = (Number(bucket.savedTokens) || 0) + savedTokens;
+        bucket.savedCostUSD = Number(((Number(bucket.savedCostUSD) || 0) + savedCost).toFixed(7));
+      }
+      if (savedChars > 0) {
+        bucket.totalSavedChars = (Number(bucket.totalSavedChars) || 0) + savedChars;
+        bucket.totalOriginalChars = (Number(bucket.totalOriginalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+        bucket.totalCompressedChars = Math.max(0, bucket.totalOriginalChars - bucket.totalSavedChars);
+      }
+
+      if (!bucket.byModel) bucket.byModel = {};
+      if (!bucket.byModel[model]) {
+        bucket.byModel[model] = {
+          savedChars: 0,
+          savedTokens: 0,
+          savedCostUSD: 0,
+          originalChars: 0,
+          consumedTokens: 0,
+          consumedCostUSD: 0,
+          ratePer1M: pricing.input
+        };
+      }
+      const bM = bucket.byModel[model];
+      bM.consumedTokens = (Number(bM.consumedTokens) || 0) + consumedTokens;
+      bM.consumedCostUSD = Number(((Number(bM.consumedCostUSD) || 0) + actualCost).toFixed(7));
+      if (savedTokens > 0) {
+        bM.savedTokens = (Number(bM.savedTokens) || 0) + savedTokens;
+        bM.savedCostUSD = Number(((Number(bM.savedCostUSD) || 0) + savedCost).toFixed(7));
+      }
+      if (savedChars > 0) {
+        bM.savedChars = (Number(bM.savedChars) || 0) + savedChars;
+        bM.originalChars = (Number(bM.originalChars) || 0) + (originalChars || Math.round((consumedTokens + savedTokens) * 3.8));
+      }
+      bM.ratePer1M = pricing.input;
+    }
+  }
+
+  pruneExpiredBuckets();
+
+  if (isTestEnvironment() && isProductionDiskTarget() && process.env.ALLOW_PROD_STATS_IN_TEST !== '1') {
+    return;
+  }
+  persistStatsThrottled();
 }
 
 function formatTimeSeriesLabel(ts, range) {
@@ -1623,28 +2071,35 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     intervalMs = 24 * 60 * 60 * 1000; // 1 day intervals
     count = 7;
   } else {
-    // 'all' tier: provide daily slots with dynamic history span (up to 30 days, min 7 days)
+    // 'all' tier: provide daily slots with dynamic history span (up to 90 days, min 7 days)
     intervalMs = 24 * 60 * 60 * 1000;
-    let daysSpan = 14;
+    let daysSpan = 7;
     if (Array.isArray(matchingBuckets) && matchingBuckets.length > 0) {
       const validStarts = matchingBuckets.map(b => b && b.startTime).filter(t => typeof t === 'number' && t > 0);
       if (validStarts.length > 0) {
         const earliest = Math.min(...validStarts);
-        if (earliest < now) {
-          const diffDays = Math.ceil((now - earliest) / intervalMs) + 1;
-          daysSpan = Math.min(30, Math.max(7, diffDays));
+        const earliestDay = getLocalDayStartTimestamp(earliest);
+        const currentDay = getLocalDayStartTimestamp(now);
+        if (earliestDay < currentDay) {
+          const diffDays = Math.round((currentDay - earliestDay) / intervalMs) + 1;
+          daysSpan = Math.min(90, Math.max(7, diffDays));
         }
       }
     }
     count = daysSpan;
   }
 
-  const currentSlot = Math.floor(now / intervalMs) * intervalMs;
+  const currentSlot = (normRange === '7d' || normRange === 'all')
+    ? getLocalDayStartTimestamp(now)
+    : Math.floor(now / intervalMs) * intervalMs;
+
   const bucketMap = new Map();
   if (Array.isArray(matchingBuckets)) {
     for (const b of matchingBuckets) {
       if (b && typeof b.startTime === 'number') {
-        const slotKey = Math.floor(b.startTime / intervalMs) * intervalMs;
+        const slotKey = (normRange === '7d' || normRange === 'all')
+          ? getLocalDayStartTimestamp(b.startTime)
+          : Math.floor(b.startTime / intervalMs) * intervalMs;
         if (bucketMap.has(slotKey)) {
           mergeBuckets(bucketMap.get(slotKey), b);
         } else {
@@ -1655,7 +2110,9 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
   }
 
   for (let i = count - 1; i >= 0; i--) {
-    const slotTime = currentSlot - (i * intervalMs);
+    const slotTime = (normRange === '7d' || normRange === 'all')
+      ? getDaySlotTimestamp(currentSlot, i)
+      : currentSlot - (i * intervalMs);
     const existing = bucketMap.get(slotTime);
     const label = formatTimeSeriesLabel(slotTime, normRange);
 
@@ -1684,8 +2141,12 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
           const mOrigChars = Math.max(Number(mInfo.originalChars) || 0, Number(mInfo.savedChars) || 0);
           const cTokens = Math.max(Number(mInfo.consumedTokens) || 0, estimateTokens(mOrigChars), sTokens);
           const rate = mInfo.ratePer1M || getModelRate(cleanM);
-          const sCost = Number(((sTokens / 1000000) * rate).toFixed(7));
-          const cCost = Number(((cTokens / 1000000) * rate).toFixed(7));
+          const sCost = (typeof mInfo.savedCostUSD === 'number' && mInfo.savedCostUSD > 0)
+            ? Number(mInfo.savedCostUSD.toFixed(7))
+            : Number(((sTokens / 1000000) * rate).toFixed(7));
+          const cCost = (typeof mInfo.consumedCostUSD === 'number' && mInfo.consumedCostUSD > 0)
+            ? Number(mInfo.consumedCostUSD.toFixed(7))
+            : Number(((cTokens / 1000000) * rate).toFixed(7));
 
           if (!byModelData[cleanM]) {
             byModelData[cleanM] = {
@@ -1745,24 +2206,6 @@ function buildTimeSeries(range, matchingBuckets = [], now = Date.now()) {
     }
   }
 
-  // If in 'all' mode and all buckets are 0 but global stats have savings or consumed, inject into latest point
-  if (normRange === 'all') {
-    const allZero = series.every(p => p.savedTokens === 0 && p.consumedTokens === 0);
-    if (allZero && (compressionStats.savedTokens > 0 || compressionStats.totalSavedChars > 0 || compressionStats.totalOriginalChars > 0)) {
-      const lastPoint = series[series.length - 1];
-      if (lastPoint) {
-        lastPoint.consumedTokens = compressionStats.consumedTokens || estimateTokens(compressionStats.totalOriginalChars);
-        lastPoint.consumedCostUSD = compressionStats.consumedCostUSD || Number(((lastPoint.consumedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
-        lastPoint.savedTokens = compressionStats.savedTokens;
-        lastPoint.savedCostUSD = compressionStats.savedCostUSD;
-        lastPoint.savedChars = compressionStats.totalSavedChars;
-        lastPoint.originalChars = compressionStats.totalOriginalChars;
-        lastPoint.consumedChars = compressionStats.totalOriginalChars;
-        lastPoint.byModel = JSON.parse(JSON.stringify(compressionStats.byModel || {}));
-      }
-    }
-  }
-
   return series;
 }
 
@@ -1807,6 +2250,10 @@ function getStatsByRange(range = 'all', now = Date.now()) {
   let totalOriginalChars = 0;
   let totalCompressedChars = 0;
   let totalSavedChars = 0;
+  let totalConsumedTokens = 0;
+  let totalConsumedCostUSD = 0;
+  let totalSavedTokens = 0;
+  let totalSavedCostUSD = 0;
   const modules = {
     rtk: { savedChars: 0, savedTokens: 0, percentage: 0 },
     headroom: { savedChars: 0, savedTokens: 0, percentage: 0 },
@@ -1820,6 +2267,10 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     totalOriginalChars += (Number(b.totalOriginalChars) || 0);
     totalCompressedChars += (Number(b.totalCompressedChars) || 0);
     totalSavedChars += (Number(b.totalSavedChars) || 0);
+    totalConsumedTokens += (Number(b.consumedTokens) || 0);
+    totalConsumedCostUSD += (Number(b.consumedCostUSD) || 0);
+    totalSavedTokens += (Number(b.savedTokens) || 0);
+    totalSavedCostUSD += (Number(b.savedCostUSD) || 0);
 
     for (const modKey of ['rtk', 'headroom', 'schema', 'cacheZone', 'powershell']) {
       if (b.modules && b.modules[modKey]) {
@@ -1844,12 +2295,17 @@ function getStatsByRange(range = 'all', now = Date.now()) {
             savedTokens: 0,
             savedCostUSD: 0,
             originalChars: 0,
+            consumedTokens: 0,
+            consumedCostUSD: 0,
             ratePer1M: getModelRate(cleanM)
           };
         }
         byModel[cleanM].savedChars += (Number(mData.savedChars) || 0);
         byModel[cleanM].savedTokens += (Number(mData.savedTokens) || 0);
+        byModel[cleanM].savedCostUSD = Number(((Number(byModel[cleanM].savedCostUSD) || 0) + (Number(mData.savedCostUSD) || 0)).toFixed(7));
         byModel[cleanM].originalChars += (Number(mData.originalChars) || 0);
+        byModel[cleanM].consumedTokens += (Number(mData.consumedTokens) || 0);
+        byModel[cleanM].consumedCostUSD = Number(((Number(byModel[cleanM].consumedCostUSD) || 0) + (Number(mData.consumedCostUSD) || 0)).toFixed(7));
       }
     }
   }
@@ -1885,7 +2341,7 @@ function getStatsByRange(range = 'all', now = Date.now()) {
       : 0;
   }
 
-  const savedTokens = Math.max(modulesTokenSum, estimateTokens(totalSavedChars));
+  const savedTokens = Math.max(totalSavedTokens, modulesTokenSum, estimateTokens(totalSavedChars));
 
   let modelTokensSum = 0;
   let modelCostSum = 0;
@@ -1894,26 +2350,36 @@ function getStatsByRange(range = 'all', now = Date.now()) {
     data.savedTokens = Math.max(Number(data.savedTokens) || 0, estimateTokens(data.savedChars));
     const officialRate = getModelRate(m);
     data.ratePer1M = officialRate;
-    data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
+    if (typeof data.savedCostUSD !== 'number' || data.savedCostUSD === 0) {
+      data.savedCostUSD = Number(((data.savedTokens / 1000000) * data.ratePer1M).toFixed(7));
+    }
     modelTokensSum += data.savedTokens;
     modelCostSum += data.savedCostUSD;
   }
 
   const unassignedTokens = Math.max(0, savedTokens - modelTokensSum);
   const unassignedCost = (unassignedTokens / 1000000) * DEFAULT_MODEL_RATE_PER_1M;
-  const savedCostUSD = Number((modelCostSum + unassignedCost).toFixed(6));
+  const savedCostUSD = (totalSavedCostUSD > 0 && totalSavedCostUSD >= modelCostSum)
+    ? Number(totalSavedCostUSD.toFixed(6))
+    : Number((modelCostSum + unassignedCost).toFixed(6));
 
   let modelConsumedTokensSum = 0;
   let modelConsumedCostSum = 0;
   for (const [m, data] of Object.entries(byModel)) {
-    data.consumedTokens = Math.max(Number(data.consumedTokens) || 0, estimateTokens(data.originalChars || 0));
-    data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    const sTokens = data.savedTokens || 0;
+    const mOrig = data.originalChars || 0;
+    data.consumedTokens = Math.max(Number(data.consumedTokens) || 0, estimateTokens(mOrig), sTokens);
+    if (typeof data.consumedCostUSD !== 'number' || data.consumedCostUSD === 0) {
+      data.consumedCostUSD = Number(((data.consumedTokens / 1000000) * (data.ratePer1M || getModelRate(m))).toFixed(7));
+    }
     modelConsumedTokensSum += data.consumedTokens;
     modelConsumedCostSum += data.consumedCostUSD;
   }
-  const consumedTokens = Math.max(estimateTokens(totalOriginalChars), modelConsumedTokensSum, savedTokens);
+  const consumedTokens = Math.max(totalConsumedTokens, modelConsumedTokensSum, estimateTokens(totalOriginalChars), savedTokens);
   const unassignedConsumed = Math.max(0, consumedTokens - modelConsumedTokensSum);
-  const consumedCostUSD = Number((modelConsumedCostSum + (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
+  const consumedCostUSD = (totalConsumedCostUSD > 0 && totalConsumedCostUSD >= modelConsumedCostSum)
+    ? Number(totalConsumedCostUSD.toFixed(6))
+    : Number((modelConsumedCostSum + (unassignedConsumed / 1000000) * DEFAULT_MODEL_RATE_PER_1M).toFixed(6));
 
   const compressionRatio = totalOriginalChars > 0
     ? Number(((totalSavedChars / totalOriginalChars) * 100).toFixed(1))
@@ -3230,7 +3696,7 @@ function cleanSearchAndTreeOutput(text) {
         if (isMinifiedOrAsset) {
           modified = true;
           const omitted = line.length - 220;
-          return line.slice(0, 220) + ` ... [RTK Search: Minified/long line tail omitted (${omitted} chars)]`;
+          return safeSlice(line, 0, 220) + ` ... [RTK Search: Minified/long line tail omitted (${omitted} chars)]`;
         }
       }
       return line;
@@ -3546,12 +4012,10 @@ function slimDescription(desc) {
     // P3-M2: Short code examples (< 500 chars) are preserved to maintain tool parameter formatting guidance
     text = text.replace(/```[\s\S]*?```/g, (match) => match.length > 500 ? '' : match);
     // 2. Strip verbose example list sections (e.g. "Examples of valid command strings:\n\n- ...") while preserving trailing safety rules
-    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
-    // 3. Strip trailing example sections at the end of description
-    const strippedExamples = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Usage|Sample|Detailed Description):\s*[\s\S]*/i, '').trim();
-    if (strippedExamples && strippedExamples.length >= 1) {
-      text = strippedExamples;
-    }
+    // Anti-Downgrade Invariant: Strictly limit to Examples/Sample keywords; NEVER match Usage or Detailed Description which contain vital constraints!
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:\r?\n)+(?:\s*[-*•].*\r?\n?)+/gi, '\n');
+    // 3. Strip trailing example sections ONLY if bounded by double-newlines or next section title; NEVER consume following rules or parameters
+    text = text.replace(/(?:\r?\n)+\s*(?:Examples?(?:\s+of\s+[^\r\n:]+)?|Sample):\s*(?:```[\s\S]*?```|[^\r\n]+(?:\r?\n(?!\r?\n|[A-Z][a-zA-Z\s]+:\s*|#+\s+)[^\r\n]+)*)(?=\r?\n\r?\n|\r?\n[A-Z][a-zA-Z\s]+:\s*|\r?\n#+\s+|$)/gi, '\n');
     // 3. Collapse multiple consecutive empty lines and trailing whitespace
     text = text.replace(/\r?\n\s*\r?\n\s*\r?\n+/g, '\n\n').trim();
 
@@ -4040,7 +4504,7 @@ function isMultiLineSourceFileRead(text) {
   if (/^\s*\d+\s*[:|\t]\s*(?:\/\*|\/\/|#|import\b|export\b|const\b|let\b|var\b|function\b|class\b|package\b|def\b|pub\b|fn\b|using\b|#include\b|\[CmdletBinding|param\s*\(|\$[a-zA-Z_]\w*\s*=|return\b|if\b|for\b)/m.test(trimmed)) {
     return true;
   }
-  const sample = bodyText.length > 16000 ? bodyText.slice(0, 16000) : bodyText;
+  const sample = bodyText.length > 16000 ? safeSlice(bodyText, 0, 16000) : bodyText;
   const lines = sample.split(/\r?\n/);
   if (lines.length < 3) return false;
   let codeLines = 0;
@@ -4102,13 +4566,11 @@ function compactSystemPrompt(text, opts = {}, sessionId = null, hasMultiAgentOve
       out = 'You are `/root`, the primary agent. All agents share the same container, filesystem, and current working directory.';
     }
 
-    // 2. Compact <skills_instructions> verbose descriptions (safety threshold: 120 chars) while preserving 100% of skill names & file paths
+    // 2. Zero Degradation & Anti-Downgrade Invariant: 100% preserve skill descriptions and trigger conditions.
+    // NEVER truncate skill descriptions to 120 chars; trigger keywords (Use when/Trigger on) are vital for tool calling.
     if (out.includes('<skills_instructions>') && out.includes('### Available skills')) {
-      out = out.replace(/^(-\s+[a-zA-Z0-9_:-]+:\s+)([^\r\n]+?)(\s*\(file:\s*[^)]+\))\s*$/gm, (full, prefix, desc, filePart) => {
-        if (desc.length <= 120) return full;
-        const firstSentence = desc.split(/\.\s+|\s+—\s+|;\s+/)[0].trim();
-        const shortDesc = firstSentence.length >= 35 && firstSentence.length <= 120 ? firstSentence : desc.slice(0, 120).trim();
-        return `${prefix}${shortDesc}${filePart}`;
+      out = out.replace(/^(-\s+[a-zA-Z0-9_:-]+:\s+)([^\r\n]+?)(\s*\(file:\s*[^)]+\))\s*$/gm, (full) => {
+        return full;
       });
     }
 
@@ -4287,7 +4749,7 @@ function compactText(text, options = {}, sessionId = null) {
     // Reverts to original text reference if no compression savings were achieved,
     // protecting against reverse inflation while preserving explicit folding markers.
     // P2-C2: Unified fold marker detection via regex — auto-covers new fold types
-    const hasFoldMarker = /\[(Test suite|Lockfile diff folded|SmartCrusher|Headroom SmartCrusher|Git|Build\/Pkg|llmtrim Log Dedup|Terminal output cleaned|RTK Search|Docker|Terraform|Kubectl)[:\s]/i.test(result);
+    const hasFoldMarker = /\[(Test suite|Lockfile diff folded|SmartCrusher|Headroom SmartCrusher|Git|Build\/Pkg|llmtrim Log Dedup|Terminal output cleaned|RTK Search|Docker|Terraform|Kubectl|Empty terminal output)[:\s\]]/i.test(result);
     if (result.length >= text.length && !hasFoldMarker) {
       result = text;
     }
@@ -5273,6 +5735,7 @@ module.exports = {
   COMPRESSION_PRESETS,
   normalizeCompressionOptions,
   getCompressionStats,
+  computeDerivedStats,
   resetCompressionStats,
   getStatsByRange,
   buildTimeSeries,
@@ -5287,6 +5750,9 @@ module.exports = {
   HISTORY_FILE,
   createEmptyBucket,
   recordSavings,
+  recordModelSavings,
+  recordModuleOnlySavings,
+  recordOverallSavings,
   STATS_FILE,
   stripAnsi,
   cleanProgressBars,
@@ -5342,5 +5808,12 @@ module.exports = {
   isSourceDiffOrPatch,
   isCompilerDiagnosticOrStackTrace,
   isProtectedSourceOrDiagnostic,
-  normalizeMemoSessionId
+  normalizeMemoSessionId,
+  safeSlice,
+  recordRequestTelemetry,
+  OPENCODE_OFFICIAL_PRICING,
+  getModelPricing,
+  calculateCost,
+  getLocalDayStartTimestamp,
+  getDaySlotTimestamp
 };
