@@ -49,7 +49,7 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
 
-let CURRENT_ROUTER_VERSION = '3.14.1';
+let CURRENT_ROUTER_VERSION = '3.14.3';
 try {
   const pkgData = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
   if (pkgData && pkgData.version) CURRENT_ROUTER_VERSION = pkgData.version;
@@ -6434,7 +6434,7 @@ let cachedAppJs = null;
 let cachedAppJsMtime = 0;
 
 function renderDashboardHtml(config) {
-  let pkgVersion = '3.14.1';
+  let pkgVersion = '3.14.3';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     if (pkg.version) pkgVersion = pkg.version;
