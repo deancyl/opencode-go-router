@@ -4,6 +4,9 @@
 
 const assert = require('assert');
 const EventEmitter = require('events');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 const codexAdapter = require('./codex-adapter');
 const clientAdapter = require('./client-adapter-manager');
 const serverModule = require('./server');
@@ -115,6 +118,69 @@ try {
   serverModule.accountStats.delete('acc-audit-1');
 }
 
+// 6. Verify WebUI top bar & sidebar badges stay consistent with card subscription-ended state (Zero Contradiction)
+const appJsCode = fs.readFileSync(path.join(__dirname, 'public', 'js', 'app.js'), 'utf8');
+const mkEl = (id) => ({ id, className: '', innerText: '', title: '', style: {}, checked: true });
+const mockDom = {
+  'accounts-status-badge': mkEl('accounts-status-badge'),
+  'wizard-status-account': mkEl('wizard-status-account'),
+  'wizard-desc-account': mkEl('wizard-desc-account'),
+  'accounts-overview-badge': mkEl('accounts-overview-badge'),
+  'accounts-overview-val': mkEl('accounts-overview-val'),
+  'accounts-overview-sub': mkEl('accounts-overview-sub'),
+  'wizard-global-badge': mkEl('wizard-global-badge'),
+  'nav-badge-overview': mkEl('nav-badge-overview'),
+  'nav-badge-accounts': mkEl('nav-badge-accounts'),
+  'cfg-comp-enabled': mkEl('cfg-comp-enabled'),
+  'badge-account-1': mkEl('badge-account-1')
+};
+const sandbox = {
+  document: {
+    getElementById: (id) => mockDom[id] || mkEl(id),
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    cookie: ''
+  },
+  window: { location: { port: '4010', hostname: '127.0.0.1' }, addEventListener: () => {} },
+  localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  setTimeout: () => 0,
+  setInterval: () => 0,
+  clearTimeout: () => {},
+  clearInterval: () => {},
+  fetch: () => new Promise(() => {}),
+  console
+};
+vm.createContext(sandbox);
+vm.runInContext(appJsCode, sandbox);
+
+// Simulate 1 configured account whose subscription ended (403)
+vm.runInContext(`
+  currentConfig = { port: 4010, host: '127.0.0.1', accounts: [{ id: 'account-1', name: 'OpenCode Go (订阅账号 1)', apiKey: 'sk-test', enabled: true }] };
+  liveStats = { 'account-1': { id: 'account-1', enabled: true, hasKey: true, status: 'subscription_ended', circuitState: 'CLOSED', lastStatus: 403, isSubscriptionEnded: true, isQuotaExhausted: true } };
+  updateMetricsUI();
+  updateWizardStatusBadges();
+`, sandbox);
+
+assert.strictEqual(mockDom['badge-account-1'].innerText, '🔴 官方订阅失效 (需授权)');
+assert.strictEqual(mockDom['accounts-status-badge'].innerText, '🟡 游客免费兜底 (0/1 订阅有效)');
+assert.strictEqual(mockDom['wizard-global-badge'].innerText, '🟡 游客免费兜底 (0/1 订阅有效)');
+assert.strictEqual(mockDom['nav-badge-overview'].innerText, '游客兜底');
+assert.strictEqual(mockDom['nav-badge-accounts'].innerText, '需授权');
+
+// Simulate recovery to Scheme A (200 healthy)
+vm.runInContext(`
+  liveStats = { 'account-1': { id: 'account-1', enabled: true, hasKey: true, status: 'healthy', circuitState: 'CLOSED', lastStatus: 200, isSubscriptionEnded: false, isQuotaExhausted: false } };
+  updateMetricsUI();
+  updateWizardStatusBadges();
+`, sandbox);
+
+assert.strictEqual(mockDom['badge-account-1'].innerText, '🟢 正常 (CLOSED)');
+assert.strictEqual(mockDom['badge-account-1'].style.background, '');
+assert.strictEqual(mockDom['accounts-status-badge'].innerText, '🟢 已就绪 (1 账号)');
+assert.strictEqual(mockDom['nav-badge-overview'].innerText, '就绪');
+assert.strictEqual(mockDom['nav-badge-accounts'].innerText, '多账号');
+console.log('  [PASS] 6. WebUI top bar, card & sidebar badges stay 100% consistent across Guest <-> Paid transitions');
+
 console.log('================================================================');
-console.log('ALL 5/5 GUEST PROTOCOL & STATE MACHINE TESTS PASSED!');
+console.log('ALL 6/6 GUEST PROTOCOL & STATE MACHINE TESTS PASSED!');
 console.log('================================================================');

@@ -6414,7 +6414,11 @@ const server = http.createServer((req, res) => {
     const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
     const healthyAccounts = enabledAccounts.filter(a => {
       const stat = accountStats.get(a.id);
-      return !stat || (stat.cooldownUntil || 0) <= now;
+      if (!stat) return true;
+      if (stat.isSubscriptionEnded || stat.lastStatus === 403 || (stat.isQuotaExhausted && stat.lastStatus === 402)) {
+        return false;
+      }
+      return (stat.cooldownUntil || 0) <= now;
     });
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -6426,7 +6430,8 @@ const server = http.createServer((req, res) => {
       version: CURRENT_ROUTER_VERSION,
       port: config.port,
       healthyAccounts: healthyAccounts.length,
-      totalAccounts: config.accounts.length
+      totalAccounts: config.accounts.length,
+      guestModeActive: isGuestModeActive()
     }));
     return;
   }
@@ -6447,8 +6452,10 @@ const server = http.createServer((req, res) => {
       const state = getCircuitState(acc.id, now);
       const isCooling = state === CIRCUIT_STATE.OPEN || (stat.cooldownUntil || 0) > now;
       const remainingCooldown = isCooling ? Math.max(0, Math.ceil(((stat.cooldownUntil || 0) - now) / 1000)) : 0;
+      const isSubEnded = Boolean(stat.isSubscriptionEnded || stat.lastStatus === 403 || (stat.isQuotaExhausted && stat.lastStatus === 402));
       let status = 'healthy';
       if (!acc.enabled || !acc.apiKey || !acc.apiKey.trim()) status = 'disabled';
+      else if (isSubEnded) status = 'subscription_ended';
       else if (isCooling) status = 'cooling_down';
       else if (state === CIRCUIT_STATE.HALF_OPEN) status = 'half_open';
 
@@ -6477,6 +6484,8 @@ const server = http.createServer((req, res) => {
       };
     });
 
+    const healthyCount = accountsData.filter(a => a.enabled && a.hasKey && a.status !== 'subscription_ended' && a.status !== 'cooling_down').length;
+
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*'
@@ -6493,6 +6502,8 @@ const server = http.createServer((req, res) => {
       chunkIdleTimeoutMs: config.chunkIdleTimeoutMs || 60000,
       circuitBreaker: config.circuitBreaker || DEFAULT_CIRCUIT_CONFIG,
       activeSessions: sessionMap.size,
+      healthyAccounts: healthyCount,
+      guestModeActive: isGuestModeActive(),
       accounts: accountsData
     }, null, 2));
     return;
