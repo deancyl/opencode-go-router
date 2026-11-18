@@ -1258,13 +1258,124 @@ function normalizeOpencodeGoLiveModel(modelName) {
 }
 
 const FREE_MODEL_SLUGS = [
+  'big-pickle',
   'hy4-flash-free',
   'longcat-2.5-free',
   'mimo-v2.6-flash-free',
   'glm-5.3-flash-free',
-  'big-pickle',
+  'minimax-m3.1-flash-free',
   'cat-jam-free',
   'beam-free'
+];
+
+const GUEST_FREE_MODELS_CATALOG = [
+  {
+    slug: 'big-pickle',
+    name: 'Big-Pickle',
+    display_name: 'Big-Pickle',
+    vendor: 'OpenCode',
+    description: 'OpenCode 官方在役免登录默认匿名大模型。',
+    context_window: 131072,
+    max_context_window: 131072,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速' },
+      { effort: 'medium', description: '标准' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 710
+  },
+  {
+    slug: 'hy4-flash-free',
+    name: 'HY4-Flash-Free',
+    display_name: 'HY4-Flash-Free',
+    vendor: 'HY',
+    description: 'HY4 Flash 官方在役免费高速推理模型。',
+    context_window: 131072,
+    max_context_window: 131072,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速响应' },
+      { effort: 'medium', description: '常规思考' },
+      { effort: 'high', description: '深度思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 700
+  },
+  {
+    slug: 'longcat-2.5-free',
+    name: 'LongCat-2.5-Free',
+    display_name: 'LongCat-2.5-Free',
+    vendor: 'LongCat',
+    description: 'LongCat 2.5 官方在役免费超长上下文模型。',
+    context_window: 262144,
+    max_context_window: 262144,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速响应' },
+      { effort: 'medium', description: '常规思考' },
+      { effort: 'high', description: '深度思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 690
+  },
+  {
+    slug: 'mimo-v2.6-flash-free',
+    name: 'MiMo-V2.6-Flash-Free',
+    display_name: 'MiMo-V2.6-Flash-Free',
+    vendor: 'MiMo',
+    description: 'MiMo V2.6 Flash 免费轻量推理模型。',
+    context_window: 131072,
+    max_context_window: 131072,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速响应' },
+      { effort: 'medium', description: '常规' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 685
+  },
+  {
+    slug: 'glm-5.3-flash-free',
+    name: 'GLM-5.3-Flash-Free',
+    display_name: 'GLM-5.3-Flash-Free',
+    vendor: 'Zhipu AI',
+    description: 'GLM 5.3 Flash 免费极速代码与对话模型。',
+    context_window: 131072,
+    max_context_window: 131072,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '极速响应' },
+      { effort: 'medium', description: '常规思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 680
+  }
 ];
 
 function isFreeModel(modelName) {
@@ -6150,7 +6261,7 @@ function bindCodexConfig(options = {}) {
       };
     });
     const newSlugs = new Set(enrichedOpencodeModels.map(m => m.slug));
-    const retainedModels = existingModels.filter(m => !newSlugs.has(m.slug)).map(m => {
+    const retainedModels = (options.isGuest ? [] : existingModels.filter(m => !newSlugs.has(m.slug))).map(m => {
       if (!m.auto_compact_token_limit && m.context_window) {
         m.auto_compact_token_limit = Math.floor(m.context_window * 0.95);
       }
@@ -7581,6 +7692,7 @@ module.exports = {
   normalizeOpencodeGoLiveModel,
   isFreeModel,
   FREE_MODEL_SLUGS,
+  GUEST_FREE_MODELS_CATALOG,
   MODEL_TIERS,
   getModelTier,
   configureAdapter,

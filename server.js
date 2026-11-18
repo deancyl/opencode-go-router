@@ -669,14 +669,25 @@ function recordAccountSuccess(accountId, ttftMs = null) {
     if (stat.ttftSamples.length > 10) stat.ttftSamples.shift();
     stat.avgTtftMs = Math.round(stat.ttftSamples.reduce((a, b) => a + b, 0) / stat.ttftSamples.length);
   }
+  const wasEnded = Boolean(stat.isSubscriptionEnded);
   stat.consecutiveFailures = 0;
   stat.consecutiveSuccesses = (stat.consecutiveSuccesses || 0) + 1;
-  if (stat.circuitState === CIRCUIT_STATE.HALF_OPEN) {
+  stat.isSubscriptionEnded = false;
+  stat.isQuotaExhausted = false;
+  stat.lastStatus = 200;
+  stat.lastError = null;
+  if (wasEnded) {
+    try {
+      const clientAdapter = require("./client-adapter-manager");
+      clientAdapter.syncAllClients({ policy: config.modelSourcePolicy || "hybrid", routerPort: config.port, preserveChoice: true });
+    } catch (_) {}
+  }
+  if (stat.circuitState === CIRCUIT_STATE.HALF_OPEN || stat.circuitState === CIRCUIT_STATE.OPEN || (stat.cooldownUntil && stat.cooldownUntil > 0)) {
     stat.circuitState = CIRCUIT_STATE.CLOSED;
     stat.halfOpenInFlight = false;
     stat.cooldownUntil = 0;
     stat.lastError = null;
-    console.log(`[Circuit Breaker] Account "${stat.name}" single-flight probe SUCCEEDED. Circuit CLOSED (Fully Recovered).`);
+    console.log(`[Circuit Breaker] Account "${stat.name}" probe SUCCEEDED. Circuit CLOSED (Fully Recovered).`);
   } else if (stat.circuitState === CIRCUIT_STATE.CLOSED) {
     stat.halfOpenInFlight = false;
   }
@@ -687,6 +698,7 @@ function recordAccountFailure(accountId, reason, statusCode = null, isRateLimit 
   if (!stat) return;
   const errDesc = `${statusCode ? 'HTTP ' + statusCode + ': ' : ''}${reason || 'Unknown error'}`;
   stat.lastError = errDesc;
+  if (statusCode) stat.lastStatus = statusCode;
   stat.consecutiveSuccesses = 0;
   const circuitConf = { ...DEFAULT_CIRCUIT_CONFIG, ...(config.circuitBreaker || {}) };
 
@@ -873,7 +885,7 @@ function isGuestModeActive() {
   const accounts = Array.isArray(config.accounts) ? config.accounts : [];
   const enabledAccounts = accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
   if (enabledAccounts.length === 0) {
-    return true;
+    return false;
   }
   // 仅当所有已配置账号均处于订阅失效 (403 Subscription Ended) 或明确欠费待授权时，自动激活游客协议
   // 单纯的 429 限额瞬时冷却绝不误判为游客模式，保障池级熔断与 Retry-After 语义完整
@@ -890,7 +902,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
   const available = accounts.filter(a => isAccountAvailable(a, now) && !excludeAccountIds.has(a.id));
 
   if (available.length === 0) {
-    if (isGuestModeActive()) {
+    if (isGuestModeActive() && (!excludeAccountIds || !excludeAccountIds.has('__guest_protocol__'))) {
       return {
         id: '__guest_protocol__',
         name: 'OpenCode Go (游客协议·免登录)',
@@ -1007,6 +1019,73 @@ function buildLocalAccountUsageFallback(apiKey) {
   };
 }
 
+// Deep Entitlement Probe for opencode.ai when GET /usage or /models returns bare 403 without JSON error details
+function probeOpencodeEntitlement(upstream, apiKey) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const safeResolve = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    try {
+      let endpoint = normalizeUpstreamEndpoint(upstream).replace(/\/+$/, "");
+      if (endpoint.endsWith("/models") || endpoint.endsWith("/usage")) {
+        endpoint = endpoint.replace(/\/(?:models|usage)$/, "/chat/completions");
+      } else if (endpoint.endsWith("/v1")) {
+        endpoint += "/chat/completions";
+      } else {
+        endpoint += "/v1/chat/completions";
+      }
+      const parsed = new URL(endpoint);
+      const mod = parsed.protocol === "https:" ? https : http;
+      const postBody = JSON.stringify({
+        model: "hy4-flash-free",
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+        stream: false
+      });
+      const reqOptions = {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(Buffer.byteLength(postBody)),
+          "Authorization": `Bearer ${apiKey.trim()}`,
+          "x-opencode-session": "session-entitlement-probe-" + Date.now(),
+          "User-Agent": "opencode/2.0.26 (Windows NT 10.0; Win64; x64)",
+          "Accept": "application/json"
+        },
+        timeout: 6000
+      };
+      const proxyInfo = getEffectiveProxyForRequest(null);
+      if (proxyInfo) {
+        const agent = getProxyAgent(proxyInfo.url, parsed.protocol === "https:");
+        if (agent) reqOptions.agent = agent;
+      }
+      const req = mod.request(parsed, reqOptions, (res) => {
+        let body = "";
+        res.on("data", c => body += c);
+        res.on("end", () => {
+          let msg = "";
+          try {
+            if (body && body.trim().startsWith("{")) {
+              const ej = JSON.parse(body);
+              msg = (typeof ej.error === "string" ? ej.error : ej.error?.message) || ej.message || "";
+            }
+          } catch (_) {}
+          const isSubEnded = /subscription ended|payment method needs authorization|subscribe again|entitlementerror/i.test(msg || body || "");
+          safeResolve({ statusCode: res.statusCode, isSubscriptionEnded: isSubEnded, message: msg });
+        });
+      });
+      req.on("error", () => safeResolve(null));
+      req.on("timeout", () => { try { req.destroy(); } catch (_) {} safeResolve(null); });
+      req.end(postBody);
+    } catch (_) {
+      safeResolve(null);
+    }
+  });
+}
+
 // Connectivity Tester
 function testAccountConnection(upstream, apiKey) {
   return new Promise((resolve) => {
@@ -1049,7 +1128,55 @@ function testAccountConnection(upstream, apiKey) {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             safeResolve({ success: true, statusCode: res.statusCode, latencyMs, message: `连接成功 (延迟 ${latencyMs}ms)` });
           } else if (res.statusCode === 401 || res.statusCode === 403) {
-            safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: `认证失败: 密钥无效或未授权 (HTTP ${res.statusCode})` });
+            let errDetail = "";
+            try {
+              if (body && body.trim().startsWith("{")) {
+                const ej = JSON.parse(body);
+                errDetail = (typeof ej.error === "string" ? ej.error : ej.error?.message) || ej.message || "";
+              }
+            } catch (_) {}
+            const isSubEnded = /subscription ended|payment method needs authorization|subscribe again|entitlementerror/i.test(errDetail || body || "");
+            if (isSubEnded) {
+              const targetAcc = (config.accounts || []).find(a => (a.apiKey || "").trim() === apiKey.trim());
+              if (targetAcc && accountStats.has(targetAcc.id)) {
+                const st = accountStats.get(targetAcc.id);
+                st.isSubscriptionEnded = true;
+                st.isQuotaExhausted = true;
+                st.lastStatus = 403;
+                st.lastError = "官方订阅失效: 支付方式需重新授权";
+              }
+              safeResolve({
+                success: false,
+                statusCode: res.statusCode,
+                latencyMs,
+                isSubscriptionEnded: true,
+                message: `官方订阅失效: 支付方式需重新授权 (${errDetail || "请前往 https://opencode.ai/console/go 重新授权支付方式"})`
+              });
+            } else if (res.statusCode === 403 && parsed.hostname.includes("opencode.ai")) {
+              probeOpencodeEntitlement(upstream, apiKey).then((probeRes) => {
+                if (probeRes && probeRes.isSubscriptionEnded) {
+                  const targetAcc = (config.accounts || []).find(a => (a.apiKey || "").trim() === apiKey.trim());
+                  if (targetAcc && accountStats.has(targetAcc.id)) {
+                    const st = accountStats.get(targetAcc.id);
+                    st.isSubscriptionEnded = true;
+                    st.isQuotaExhausted = true;
+                    st.lastStatus = 403;
+                    st.lastError = "官方订阅失效: 支付方式需重新授权";
+                  }
+                  safeResolve({
+                    success: false,
+                    statusCode: 403,
+                    latencyMs,
+                    isSubscriptionEnded: true,
+                    message: `官方订阅失效: 支付方式需重新授权 (${probeRes.message || "请前往 https://opencode.ai/console/go 重新授权支付方式"})`
+                  });
+                } else {
+                  safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: (probeRes && probeRes.message) ? `认证失败: ${probeRes.message} (HTTP ${res.statusCode})` : (errDetail ? `认证失败: ${errDetail} (HTTP ${res.statusCode})` : `认证失败: 密钥无效或未授权 (HTTP ${res.statusCode})`) });
+                }
+              });
+            } else {
+              safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: errDetail ? `认证失败: ${errDetail} (HTTP ${res.statusCode})` : `认证失败: 密钥无效或未授权 (HTTP ${res.statusCode})` });
+            }
           } else if (res.statusCode === 429) {
             safeResolve({ success: false, statusCode: res.statusCode, latencyMs, message: `账号限频中 (HTTP 429 Too Many Requests)` });
           } else {
@@ -1159,15 +1286,18 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
           try {
             if (body && typeof body === 'string' && body.trim().startsWith('{')) {
               const errJson = JSON.parse(body);
-              upstreamErrorMsg = errJson.error?.message || errJson.message || '';
+              upstreamErrorMsg = (typeof errJson.error === 'string' ? errJson.error : errJson.error?.message) || errJson.message || '';
             }
           } catch (_) {}
 
+          const targetAccForQuota = (config.accounts || []).find(a => (a.apiKey || '').trim() === apiKey.trim());
+          const targetStatForQuota = targetAccForQuota ? accountStats.get(targetAccForQuota.id) : null;
+
           // 1. Explicit Upstream Entitlement or Subscription Expiration
-          const isSubscriptionEnded = Boolean(upstreamErrorMsg && (
-            /subscription ended|payment method needs authorization|subscribe again|entitlementerror/i.test(upstreamErrorMsg) ||
-            /entitlementerror/i.test(body)
-          ));
+          const isSubscriptionEnded = Boolean(
+            /subscription ended|payment method needs authorization|subscribe again|entitlementerror/i.test(upstreamErrorMsg || body || '') ||
+            (res.statusCode === 403 && targetStatForQuota && targetStatForQuota.isSubscriptionEnded)
+          );
           if (isSubscriptionEnded) {
             const targetAcc = (config.accounts || []).find(a => (a.apiKey || '').trim() === apiKey.trim());
             if (targetAcc) {
@@ -1182,7 +1312,8 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
             safeResolve({
               success: false,
               statusCode: res.statusCode,
-              error: `官方订阅失效: 支付方式需重新授权 (${upstreamErrorMsg})`,
+              isSubscriptionEnded: true,
+              error: `官方订阅失效: 支付方式需重新授权 (${upstreamErrorMsg || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`,
               fromCache: false
             });
             return;
@@ -1191,7 +1322,26 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
           // 2. When live opencode.ai restricts direct /usage polling with HTTP 403/404 (Console session required),
           // verify API key connectivity via /models and fall back to passive telemetry so UI never shows false HTTP 403
           if (parsed.hostname.includes('opencode.ai') && (res.statusCode === 403 || res.statusCode === 404 || res.statusCode === 405)) {
-            testAccountConnection(upstream, apiKey).then((connRes) => {
+            testAccountConnection(upstream, apiKey).then(async (connRes) => {
+              if (connRes && connRes.success && res.statusCode === 403) {
+                const probeRes = await probeOpencodeEntitlement(upstream, apiKey);
+                if (probeRes && probeRes.isSubscriptionEnded) {
+                  if (targetStatForQuota) {
+                    targetStatForQuota.isSubscriptionEnded = true;
+                    targetStatForQuota.isQuotaExhausted = true;
+                    targetStatForQuota.lastStatus = 403;
+                    targetStatForQuota.lastError = "官方订阅失效: 支付方式需重新授权";
+                  }
+                  safeResolve({
+                    success: false,
+                    statusCode: 403,
+                    isSubscriptionEnded: true,
+                    error: `官方订阅失效: 支付方式需重新授权 (${probeRes.message || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`,
+                    fromCache: false
+                  });
+                  return;
+                }
+              }
               if (connRes && connRes.success) {
                 const fallbackUsage = buildLocalAccountUsageFallback(apiKey);
                 const result = {
@@ -1209,7 +1359,8 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                 safeResolve({
                   success: false,
                   statusCode: connRes?.statusCode || res.statusCode,
-                  error: upstreamErrorMsg || connRes?.message || `上游返回 HTTP ${res.statusCode}`,
+                  isSubscriptionEnded: Boolean(connRes?.isSubscriptionEnded),
+                  error: connRes?.message || upstreamErrorMsg || `上游返回 HTTP ${res.statusCode}`,
                   fromCache: false
                 });
               }
@@ -1655,7 +1806,18 @@ function handleQuotaExhaustedFailover({
   retryFn
 }) {
   console.warn(`[Router Quota Alert] Account "${account.name}" quota/balance exhausted (${statusCode}): ${errText.slice(0, 160)}`);
-  recordCooldown(account.id, 3600000, 'Quota / Balance Exhausted');
+  const stat = accountStats.get(account.id);
+  const classified = classifyUpstreamError(statusCode, errText);
+  if (stat) {
+    stat.isQuotaExhausted = true;
+    stat.lastStatus = statusCode || 402;
+    if (classified && classified.isSubscriptionEnded) {
+      stat.isSubscriptionEnded = true;
+      stat.lastStatus = 403;
+      stat.lastError = '官方订阅失效: 支付方式需重新授权';
+    }
+  }
+  recordCooldown(account.id, 3600000, (classified && classified.isSubscriptionEnded) ? 'Subscription Ended (Payment Auth Needed)' : 'Quota / Balance Exhausted');
   finishRequest();
   clientRes.removeListener('close', clientCloseHandler);
   if (clientErrorHandler || clientCloseHandler?.errorHandler) {
@@ -2063,13 +2225,17 @@ function handleModelAndContextFallback({
   }
 
   // 2b. Protocol unsupported, model unsupported, or region blocked (if allowRegionFallback is enabled) -> fallback model
-  if ((classified.isRegionBlocked || classified.isProtocolUnsupported || classified.isModelUnsupported) && model) {
+  const isGuestModelAuthError = Boolean(account && account.isGuest && (statusCode === 401 || statusCode === 403) && model !== 'big-pickle');
+  if ((classified.isRegionBlocked || classified.isProtocolUnsupported || classified.isModelUnsupported || isGuestModelAuthError) && model) {
     const isOfficialOpencodeGo = Boolean(((account && account.upstream) || config.upstream || '').includes('opencode.ai'));
-    const fallbackModel = codexAdapter.resolveCompatibleFallbackModel(model, errText, { 
-      reasoningEffort,
-      allowUpgrade: config.allowModelAutoUpgrade,
-      isOfficialOpencodeGo
-    });
+    const fallbackModel = isGuestModelAuthError
+      ? 'big-pickle'
+      : codexAdapter.resolveCompatibleFallbackModel(model, errText, { 
+          reasoningEffort,
+          allowUpgrade: config.allowModelAutoUpgrade,
+          isOfficialOpencodeGo,
+          isGuest: Boolean(account && account.isGuest)
+        });
     if (fallbackModel && fallbackModel !== model) {
       if (sessionId && model) {
         setSessionModelFallback(sessionId, model, fallbackModel);
@@ -2611,7 +2777,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   } else {
     proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
   }
-  if (targetPath.includes('/messages')) {
+  if (targetPath.includes('/messages') && !(account && account.isGuest)) {
     proxyHeaders['x-api-key'] = account.apiKey.trim();
     if (!proxyHeaders['anthropic-version']) {
       proxyHeaders['anthropic-version'] = clientReq.headers['anthropic-version'] || '2023-06-01';
@@ -2866,7 +3032,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         const errText = Buffer.concat(errChunks).toString('utf8');
         const classified = classifyUpstreamError(statusCode, errText);
 
-        if (classified.isInvalidApiKey) {
+        if (classified.isInvalidApiKey && !(account && account.isGuest)) {
           const handled = handleInvalidApiKeyFailover({
             protocolTag: 'Proxy',
             clientRes,
@@ -3347,7 +3513,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
   };
   const chatPayload = precomputedChatPayload || codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
-  const reqModel = chatPayload.model || 'deepseek-v4.1-flash';
+  if (account && account.isGuest && chatPayload && chatPayload.model && !codexAdapter.isFreeModel(chatPayload.model)) {
+    console.log(`[Guest Protocol] Codex 桥接拦截付费模型 "${chatPayload.model}"，自动安全转换为免费在役模型 "hy4-flash-free"`);
+    chatPayload.model = 'hy4-flash-free';
+  }
+  const reqModel = chatPayload.model || ((account && account.isGuest) ? 'hy4-flash-free' : 'deepseek-v4.1-flash');
   const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
 
@@ -3357,10 +3527,16 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   const proxyHeaders = {
     'content-type': 'application/json',
     'content-length': String(chatBody.length),
-    'authorization': `Bearer ${account.apiKey.trim()}`,
-    'x-opencode-session': sessionId,
-    'user-agent': (clientReq.headers['user-agent'] && !/python|curl|undici|node-fetch/i.test(clientReq.headers['user-agent'])) ? clientReq.headers['user-agent'] : 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)'
+    'x-opencode-session': sessionId || ('guest-' + Date.now()),
+    'user-agent': (account && account.isGuest)
+      ? 'opencode/1.2.0 (windows; x64)'
+      : ((clientReq.headers['user-agent'] && !/python|curl|undici|node-fetch/i.test(clientReq.headers['user-agent'])) ? clientReq.headers['user-agent'] : 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)')
   };
+  if (account && account.isGuest) {
+    proxyHeaders['x-opencode-client'] = 'cli';
+  } else {
+    proxyHeaders['authorization'] = `Bearer ${(account.apiKey || '').trim()}`;
+  }
 
   const proxyOptions = {
     protocol: upstreamUrl.protocol,
@@ -3553,7 +3729,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
         const classified = classifyUpstreamError(statusCode, errText);
 
-        if (classified.isInvalidApiKey) {
+        if (classified.isInvalidApiKey && !(account && account.isGuest)) {
           const handled = handleInvalidApiKeyFailover({
             protocolTag: 'Bridge',
             clientRes,
@@ -3844,6 +4020,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 }
 
 function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedAnthropicPayload = null) {
+  if (account && account.isGuest) {
+    const guestBody = { ...(responsesBody || {}), model: 'hy4-flash-free' };
+    bridgeResponsesToChatRequest(clientReq, clientRes, guestBody, account, attemptNumber, triedAccountIds, resolvedSessionId);
+    return;
+  }
   const effectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
   const upstreamUrl = new URL(effectiveUpstream);
   const isHttps = upstreamUrl.protocol === 'https:';
@@ -4108,7 +4289,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
         const classified = classifyUpstreamError(statusCode, errText);
 
-        if (classified.isInvalidApiKey) {
+        if (classified.isInvalidApiKey && !(account && account.isGuest)) {
           const handled = handleInvalidApiKeyFailover({
             protocolTag: 'Anthropic',
             clientRes,
@@ -6289,7 +6470,10 @@ const server = http.createServer((req, res) => {
         rateLimitCount: stat.rateLimitCount || 0,
         failoverCount: stat.failoverCount || 0,
         lastUsedAt: stat.lastUsedAt || null,
-        lastError: stat.lastError || null
+        lastError: stat.lastError || null,
+        lastStatus: stat.lastStatus || null,
+        isSubscriptionEnded: Boolean(stat.isSubscriptionEnded),
+        isQuotaExhausted: Boolean(stat.isQuotaExhausted)
       };
     });
 
@@ -6343,7 +6527,10 @@ const server = http.createServer((req, res) => {
         totalRequests: stat.totalRequests || 0,
         rateLimitCount: stat.rateLimitCount || 0,
         failoverCount: stat.failoverCount || 0,
-        lastError: stat.lastError || null
+        lastError: stat.lastError || null,
+        lastStatus: stat.lastStatus || null,
+        isSubscriptionEnded: Boolean(stat.isSubscriptionEnded),
+        isQuotaExhausted: Boolean(stat.isQuotaExhausted)
       };
     });
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -7256,6 +7443,7 @@ $ghost
             accountId = payload.id;
           } catch (e) {}
         }
+        quotaCache.clear();
         if (accountId) {
           const stat = accountStats.get(accountId);
           if (stat) {
@@ -7263,6 +7451,9 @@ $ghost
             stat.circuitState = CIRCUIT_STATE.CLOSED;
             stat.consecutiveFailures = 0;
             stat.halfOpenInFlight = false;
+            stat.isSubscriptionEnded = false;
+            stat.isQuotaExhausted = false;
+            stat.lastStatus = null;
             stat.lastError = null;
           }
         } else {
@@ -7271,6 +7462,9 @@ $ghost
             stat.circuitState = CIRCUIT_STATE.CLOSED;
             stat.consecutiveFailures = 0;
             stat.halfOpenInFlight = false;
+            stat.isSubscriptionEnded = false;
+            stat.isQuotaExhausted = false;
+            stat.lastStatus = null;
             stat.lastError = null;
           }
         }

@@ -112,11 +112,18 @@ function filterModelsByPolicy(policy = DEFAULT_POLICY, options = {}) {
     ? options.officialModels
     : loadOfficialModels();
 
-  // Guest Protocol Mode: strictly return free models only
+  // Guest Protocol Mode: strictly return free models only (merge official free models + built-in guest free catalog without mutating 44-model SSOT)
   if (isGuest) {
     const codex = require('./codex-adapter');
-    const freeModels = officialModels.filter(m => codex.isFreeModel(m.slug || m.id || m.name));
-    return freeModels.map(m => ({ ...m, source: 'guest_free_only' })).sort((a, b) => (b.priority || 500) - (a.priority || 500));
+    const extraGuestModels = Array.isArray(codex.GUEST_FREE_MODELS_CATALOG) ? codex.GUEST_FREE_MODELS_CATALOG : [];
+    const mergedMap = new Map();
+    for (const m of [...officialModels, ...extraGuestModels]) {
+      const slug = m.slug || m.id || m.name;
+      if (slug && codex.isFreeModel(slug) && !mergedMap.has(slug)) {
+        mergedMap.set(slug, { ...m, slug, source: 'guest_free_only' });
+      }
+    }
+    return Array.from(mergedMap.values()).sort((a, b) => (b.priority || 500) - (a.priority || 500));
   }
 
   const officialMap = new Map();
