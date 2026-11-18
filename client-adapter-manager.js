@@ -112,18 +112,13 @@ function filterModelsByPolicy(policy = DEFAULT_POLICY, options = {}) {
     ? options.officialModels
     : loadOfficialModels();
 
-  // Guest Protocol Mode: strictly return free models only (merge official free models + built-in guest free catalog without mutating 44-model SSOT)
+  // Guest Protocol Mode: strictly return active free models only (without mutating 44-model SSOT or mixing deprecated slugs like cat-jam-free / beam-free)
   if (isGuest) {
     const codex = require('./codex-adapter');
-    const extraGuestModels = Array.isArray(codex.GUEST_FREE_MODELS_CATALOG) ? codex.GUEST_FREE_MODELS_CATALOG : [];
-    const mergedMap = new Map();
-    for (const m of [...officialModels, ...extraGuestModels]) {
-      const slug = m.slug || m.id || m.name;
-      if (slug && codex.isFreeModel(slug) && !mergedMap.has(slug)) {
-        mergedMap.set(slug, { ...m, slug, source: 'guest_free_only' });
-      }
-    }
-    return Array.from(mergedMap.values()).sort((a, b) => (b.priority || 500) - (a.priority || 500));
+    const activeGuestCatalog = Array.isArray(codex.GUEST_FREE_MODELS_CATALOG) ? codex.GUEST_FREE_MODELS_CATALOG : [];
+    return activeGuestCatalog
+      .map(m => ({ ...m, slug: m.slug || m.id || m.name, source: 'guest_free_only' }))
+      .sort((a, b) => (b.priority || 500) - (a.priority || 500));
   }
 
   const officialMap = new Map();
@@ -397,7 +392,7 @@ function syncOpencodeConfig(options = {}) {
   const models = (Array.isArray(options.models) && options.models.length > 0)
     ? options.models
     : filterModelsByPolicy(policy, { ...options, isGuest });
-  const defaultModelSlug = isGuest ? 'hy4-flash-free' : (options.defaultModel || DEFAULT_MODEL);
+  const defaultModelSlug = isGuest ? 'deepseek-v4.1-flash-free' : (options.defaultModel || DEFAULT_MODEL);
   const preserveChoice = isGuest ? false : options.preserveChoice;
 
   const messages = [];
@@ -577,7 +572,7 @@ function syncCodexConfig(options = {}) {
   const models = (Array.isArray(options.models) && options.models.length > 0)
     ? options.models
     : filterModelsByPolicy(policy, { ...options, isGuest });
-  const defaultModelSlug = isGuest ? 'hy4-flash-free' : (options.defaultModel || DEFAULT_MODEL);
+  const defaultModelSlug = isGuest ? 'deepseek-v4.1-flash-free' : (options.defaultModel || DEFAULT_MODEL);
   const effort = options.reasoningEffort || DEFAULT_REASONING_EFFORT;
   const codexDir = options.codexDir || path.join(os.homedir(), '.codex');
   const preserveChoice = isGuest ? false : options.preserveChoice;
@@ -609,22 +604,28 @@ function syncCodexConfig(options = {}) {
  * 7. 全端一键原子同步 (统一多端模型获取策略与配置下发)
  */
 function syncAllClients(options = {}) {
-  const policy = options.policy || DEFAULT_POLICY;
+  const isGuest = Boolean(options.isGuest || options.freeOnly || options.policy === 'guest');
+  const policy = isGuest ? 'guest' : (options.policy || DEFAULT_POLICY);
   const routerPort = options.routerPort || 4010;
-  const defaultModel = options.defaultModel || DEFAULT_MODEL;
-  const favorites = options.favorites || DEFAULT_FAVORITES;
+  const defaultModel = isGuest ? 'deepseek-v4.1-flash-free' : (options.defaultModel || DEFAULT_MODEL);
+  const favorites = isGuest
+    ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'longcat-2.5-free', 'big-pickle']
+    : (options.favorites || DEFAULT_FAVORITES);
   const reasoningEffort = options.reasoningEffort || DEFAULT_REASONING_EFFORT;
   const targetClients = Array.isArray(options.clients) ? options.clients : ['opencode', 'openchamber', 'codex'];
+  const effectivePreserveChoice = isGuest ? false : options.preserveChoice;
 
   // 1. 获取根据策略过滤后的模型清单
   const filteredModels = filterModelsByPolicy(policy, {
     officialModels: options.officialModels,
-    probedModels: options.probedModels
+    probedModels: options.probedModels,
+    isGuest
   });
 
   const results = {
     success: true,
     policy,
+    isGuest,
     modelsCount: filteredModels.length,
     defaultModel,
     opencode: null,
@@ -641,7 +642,8 @@ function syncAllClients(options = {}) {
         models: filteredModels,
         defaultModel,
         targetPath: options.opencodeConfigPath,
-        preserveChoice: options.preserveChoice
+        preserveChoice: effectivePreserveChoice,
+        isGuest
       });
       results.opencode = ocRes;
       results.messages.push(...ocRes.messages);
@@ -658,7 +660,7 @@ function syncAllClients(options = {}) {
         defaultModel,
         favorites,
         targetDirs: options.openchamberDirs,
-        preserveChoice: options.preserveChoice
+        preserveChoice: effectivePreserveChoice
       });
       results.openchamber = ocRes;
       results.messages.push(...ocRes.messages);
@@ -677,7 +679,8 @@ function syncAllClients(options = {}) {
         reasoningEffort,
         codexDir: options.codexDir,
         dryRun: options.dryRun,
-        preserveChoice: options.preserveChoice
+        preserveChoice: effectivePreserveChoice,
+        isGuest
       });
       results.codex = codexRes;
       results.messages.push(...codexRes.messages);

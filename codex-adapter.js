@@ -1258,10 +1258,13 @@ function normalizeOpencodeGoLiveModel(modelName) {
 }
 
 const FREE_MODEL_SLUGS = [
+  'deepseek-v4.1-flash-free',
+  'mimo-v2.6-flash-free',
+  'longcat-2.5-free',
   'big-pickle',
   'hy4-flash-free',
-  'longcat-2.5-free',
-  'mimo-v2.6-flash-free',
+  'nemotron-3.5-super-vl-free',
+  'nemotron-3.5-lightning-free',
   'glm-5.3-flash-free',
   'minimax-m3.1-flash-free',
   'cat-jam-free',
@@ -1269,6 +1272,71 @@ const FREE_MODEL_SLUGS = [
 ];
 
 const GUEST_FREE_MODELS_CATALOG = [
+  {
+    slug: 'deepseek-v4.1-flash-free',
+    name: 'DeepSeek-V4.1-Flash-Free',
+    display_name: 'DeepSeek-V4.1-Flash-Free',
+    vendor: 'DeepSeek',
+    description: 'DeepSeek V4.1 Flash 官方在役免费高速推理主力模型。',
+    context_window: 131072,
+    max_context_window: 131072,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速响应' },
+      { effort: 'medium', description: '常规思考' },
+      { effort: 'high', description: '深度思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 730
+  },
+  {
+    slug: 'mimo-v2.6-flash-free',
+    name: 'MiMo-V2.6-Flash-Free',
+    display_name: 'MiMo-V2.6-Flash-Free',
+    vendor: 'MiMo',
+    description: 'MiMo V2.6 Flash 官方在役免费轻量推理模型。',
+    context_window: 131072,
+    max_context_window: 131072,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'low',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速响应' },
+      { effort: 'medium', description: '常规' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 720
+  },
+  {
+    slug: 'longcat-2.5-free',
+    name: 'LongCat-2.5-Free',
+    display_name: 'LongCat-2.5-Free',
+    vendor: 'LongCat',
+    description: 'LongCat 2.5 官方在役免费超长上下文模型。',
+    context_window: 262144,
+    max_context_window: 262144,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速响应' },
+      { effort: 'medium', description: '常规思考' },
+      { effort: 'high', description: '深度思考' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 710
+  },
   {
     slug: 'big-pickle',
     name: 'Big-Pickle',
@@ -1288,7 +1356,7 @@ const GUEST_FREE_MODELS_CATALOG = [
     quota_tier: 'free',
     foreign_proxy_required: false,
     is_official: true,
-    priority: 710
+    priority: 705
   },
   {
     slug: 'hy4-flash-free',
@@ -1311,70 +1379,6 @@ const GUEST_FREE_MODELS_CATALOG = [
     foreign_proxy_required: false,
     is_official: true,
     priority: 700
-  },
-  {
-    slug: 'longcat-2.5-free',
-    name: 'LongCat-2.5-Free',
-    display_name: 'LongCat-2.5-Free',
-    vendor: 'LongCat',
-    description: 'LongCat 2.5 官方在役免费超长上下文模型。',
-    context_window: 262144,
-    max_context_window: 262144,
-    effective_context_window_percent: 95,
-    default_reasoning_level: 'medium',
-    supported_reasoning_levels: [
-      { effort: 'low', description: '快速响应' },
-      { effort: 'medium', description: '常规思考' },
-      { effort: 'high', description: '深度思考' }
-    ],
-    supports_parallel_tool_calls: true,
-    input_modalities: ['text'],
-    quota_tier: 'free',
-    foreign_proxy_required: false,
-    is_official: true,
-    priority: 690
-  },
-  {
-    slug: 'mimo-v2.6-flash-free',
-    name: 'MiMo-V2.6-Flash-Free',
-    display_name: 'MiMo-V2.6-Flash-Free',
-    vendor: 'MiMo',
-    description: 'MiMo V2.6 Flash 免费轻量推理模型。',
-    context_window: 131072,
-    max_context_window: 131072,
-    effective_context_window_percent: 95,
-    default_reasoning_level: 'low',
-    supported_reasoning_levels: [
-      { effort: 'low', description: '快速响应' },
-      { effort: 'medium', description: '常规' }
-    ],
-    supports_parallel_tool_calls: true,
-    input_modalities: ['text'],
-    quota_tier: 'free',
-    foreign_proxy_required: false,
-    is_official: true,
-    priority: 685
-  },
-  {
-    slug: 'glm-5.3-flash-free',
-    name: 'GLM-5.3-Flash-Free',
-    display_name: 'GLM-5.3-Flash-Free',
-    vendor: 'Zhipu AI',
-    description: 'GLM 5.3 Flash 免费极速代码与对话模型。',
-    context_window: 131072,
-    max_context_window: 131072,
-    effective_context_window_percent: 95,
-    default_reasoning_level: 'medium',
-    supported_reasoning_levels: [
-      { effort: 'low', description: '极速响应' },
-      { effort: 'medium', description: '常规思考' }
-    ],
-    supports_parallel_tool_calls: true,
-    input_modalities: ['text'],
-    quota_tier: 'free',
-    foreign_proxy_required: false,
-    is_official: true,
-    priority: 680
   }
 ];
 
@@ -4292,6 +4296,157 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
         phase: 'final_answer',
         content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
       }]
+    }
+  });
+
+  try {
+    clientRes.end();
+  } catch (_) {}
+}
+
+/**
+ * Dispatches a compliant completed Responses API SSE stream containing a clear assistant notice
+ * (e.g. for deterministic 429 FreeUsageLimitError) so Codex renders the explanation immediately
+ * and unlocks UI input without executing pointless 1-minute exponential retries.
+ */
+function dispatchResponsesStreamNotice(clientRes, reqModel, reqId, noticeText, sessionId = null) {
+  if (!clientRes || clientRes.writableEnded || clientRes.destroyed) return;
+
+  const respId = reqId || ('resp_notice_' + Date.now());
+  const model = reqModel || 'deepseek-v4.1-flash-free';
+  const text = String(noticeText || '[智能网关提示：当前免费通道不可用，请检查配置。]');
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  if (sessionId) {
+    recordResponseSession(respId, sessionId);
+  }
+
+  if (!clientRes.headersSent) {
+    clientRes.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*'
+    });
+  }
+
+  const sendEvent = (event, data) => {
+    if (clientRes.writableEnded || clientRes.destroyed) return;
+    try {
+      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (_) {}
+  };
+
+  let seq = 0;
+  const msgId = 'msg_notice_' + Date.now();
+
+  sendEvent('response.created', {
+    type: 'response.created',
+    sequence_number: seq++,
+    response: {
+      id: respId,
+      object: 'response',
+      created_at: nowSec,
+      completed_at: null,
+      status: 'in_progress',
+      parallel_tool_calls: true,
+      model,
+      output: [],
+      tools: []
+    }
+  });
+
+  sendEvent('response.in_progress', {
+    type: 'response.in_progress',
+    sequence_number: seq++,
+    response: {
+      id: respId,
+      object: 'response',
+      created_at: nowSec,
+      completed_at: null,
+      status: 'in_progress',
+      model
+    }
+  });
+
+  sendEvent('response.output_item.added', {
+    type: 'response.output_item.added',
+    sequence_number: seq++,
+    output_index: 0,
+    item: {
+      id: msgId,
+      type: 'message',
+      status: 'in_progress',
+      role: 'assistant',
+      content: []
+    }
+  });
+
+  sendEvent('response.content_part.added', {
+    type: 'response.content_part.added',
+    sequence_number: seq++,
+    output_index: 0,
+    content_index: 0,
+    item_id: msgId,
+    part: { type: 'output_text', text: '', annotations: [], logprobs: [] }
+  });
+
+  sendEvent('response.output_text.delta', {
+    type: 'response.output_text.delta',
+    sequence_number: seq++,
+    item_id: msgId,
+    output_index: 0,
+    content_index: 0,
+    delta: text
+  });
+
+  sendEvent('response.output_text.done', {
+    type: 'response.output_text.done',
+    sequence_number: seq++,
+    item_id: msgId,
+    output_index: 0,
+    content_index: 0,
+    text
+  });
+
+  sendEvent('response.content_part.done', {
+    type: 'response.content_part.done',
+    sequence_number: seq++,
+    output_index: 0,
+    content_index: 0,
+    item_id: msgId,
+    part: { type: 'output_text', text, annotations: [], logprobs: [] }
+  });
+
+  const finalItem = {
+    id: msgId,
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    phase: 'final_answer',
+    content: [{ type: 'output_text', text, annotations: [], logprobs: [] }]
+  };
+
+  sendEvent('response.output_item.done', {
+    type: 'response.output_item.done',
+    sequence_number: seq++,
+    output_index: 0,
+    item: finalItem
+  });
+
+  sendEvent('response.completed', {
+    type: 'response.completed',
+    sequence_number: seq++,
+    response: {
+      id: respId,
+      object: 'response',
+      created_at: nowSec,
+      completed_at: Math.floor(Date.now() / 1000),
+      status: 'completed',
+      model,
+      output: [finalItem],
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
     }
   });
 
@@ -7763,6 +7918,7 @@ module.exports = {
   StreamDegenerationDetector,
   autoCorrectToolArgs,
   dispatchResponsesStreamError,
+  dispatchResponsesStreamNotice,
   findLatestCuaNodeExecutable,
   setComfyUIAdapter,
   getComfyUIAdapter,

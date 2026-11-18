@@ -910,23 +910,74 @@ function getOrMintGuestSessionId(rawSessionId) {
 const ZEN_PUBLIC_FREE_MODELS = new Set([
   "deepseek-v4.1-flash-free",
   "mimo-v2.6-flash-free",
-  "longcat-2.5-preview-free",
-  "cat-jam-free",
+  "longcat-2.5-free",
   "big-pickle",
+  "hy4-flash-free",
   "nemotron-3.5-lightning-free",
-  "nemotron-3.5-super-vl-free",
-  "space-bunny-free"
+  "nemotron-3.5-super-vl-free"
 ]);
 
 function mapModelForZenGuest(modelName) {
   const clean = (modelName || "").replace(/^opencode(?:-go)?\//i, "").toLowerCase().trim();
   if (ZEN_PUBLIC_FREE_MODELS.has(clean)) return clean;
-  if (clean === "hy4-flash-free" || clean === "deepseek-v4.1-flash" || clean === "deepseek-flash" || clean === "glm-5.3-flash" || clean === "glm-5.3-flash-free") {
+  if (clean === "longcat-2.5-preview-free") return "longcat-2.5-free";
+  if (clean === "mimo-v2.6-flash") return "mimo-v2.6-flash-free";
+  if (clean === "cat-jam-free" || clean === "beam-free" || clean === "deepseek-v4.1-flash" || clean === "deepseek-flash" || clean === "glm-5.3-flash" || clean === "glm-5.3-flash-free") {
     return "deepseek-v4.1-flash-free";
   }
-  if (clean === "longcat-2.5-free") return "longcat-2.5-preview-free";
-  if (clean === "mimo-v2.6-flash") return "mimo-v2.6-flash-free";
   return "deepseek-v4.1-flash-free";
+}
+
+function buildFreeUsageLimitNotice(modelName) {
+  const displayModel = modelName || "deepseek-v4.1-flash-free";
+  return [
+    `[智能网关提示] OpenCode Zen 免费游客通道返回 429 FreeUsageLimitError（模型：${displayModel}）。`,
+    "",
+    "原因说明：OpenCode Zen v2 免费模型仅向官方 OpenCode CLI 原生客户端开放（深度校验官方系统提示词 Preamble 与工具签名），且免费池当日限流锁至次日 00:00 UTC（北京时间 08:00）。为保护 Codex 原生改代码与命令执行能力，网关不会强行篡改您的 Codex 系统提示词。",
+    "",
+    "推荐快速恢复方案：",
+    "1. 【免费稳定兜底（推荐）】在网关 WebUI「订阅账号 2」填入任意兼容 OpenAI 的第三方免费 API Key（如硅基流动 SiliconFlow、Groq、Google AI Studio）及对应 Upstream，账号 1 订阅失效时将自动 0.1 秒无缝接管 Codex 编码任务；",
+    "2. 【恢复 OpenCode Go 订阅】前往 https://opencode.ai/console/go 重新授权支付方式，回到网关 WebUI 点击【测速】，即可秒级解除游客模式并恢复全量 44 款旗舰模型。"
+  ].join("\n");
+}
+
+function sendResponsesFreeLimitFastClose(clientRes, reqModel, reqId, isStream, sessionId = null) {
+  const notice = buildFreeUsageLimitNotice(reqModel);
+  if (isStream && typeof codexAdapter.dispatchResponsesStreamNotice === 'function') {
+    codexAdapter.dispatchResponsesStreamNotice(clientRes, reqModel, reqId, notice, sessionId);
+    return;
+  }
+  if (!clientRes || clientRes.writableEnded || clientRes.destroyed) return;
+  const respId = reqId || ('resp_notice_' + Date.now());
+  const msgId = 'msg_notice_' + Date.now();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify({
+    id: respId,
+    object: 'response',
+    created_at: nowSec,
+    completed_at: nowSec,
+    status: 'completed',
+    model: reqModel || 'deepseek-v4.1-flash-free',
+    output: [{
+      id: msgId,
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      phase: 'final_answer',
+      content: [{ type: 'output_text', text: notice, annotations: [], logprobs: [] }]
+    }],
+    output_text: notice,
+    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+  });
+  const buf = Buffer.from(payload, 'utf8');
+  if (!clientRes.headersSent) {
+    clientRes.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': String(buf.length),
+      'Access-Control-Allow-Origin': '*'
+    });
+  }
+  clientRes.end(buf);
 }
 
 const ZEN_REQUIRED_TOOL_STUBS = [
@@ -1416,7 +1467,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
               guestModeActive: true,
               usage: {
                 mode: "guest_free_tier",
-                guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free", "cat-jam-free", "big-pickle"],
+                guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-free", "big-pickle", "hy4-flash-free"],
                 subscriptionNotice: subNotice,
                 rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                 weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -1450,7 +1501,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     guestModeActive: true,
                     usage: {
                       mode: "guest_free_tier",
-                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free", "cat-jam-free", "big-pickle"],
+                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-free", "big-pickle", "hy4-flash-free"],
                       subscriptionNotice: subNotice,
                       rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                       weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -1485,7 +1536,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     guestModeActive: true,
                     usage: {
                       mode: "guest_free_tier",
-                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free", "cat-jam-free", "big-pickle"],
+                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-free", "big-pickle", "hy4-flash-free"],
                       subscriptionNotice: subNotice,
                       rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                       weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -3095,6 +3146,11 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
         },
         errorFallbackFn: (errText) => {
+          const c = classifyUpstreamError(statusCode, errText);
+          if (c && c.isFreeUsageLimit && isResponsesReq) {
+            sendResponsesFreeLimitFastClose(clientRes, parsedBody?.model, parsedBody?.id, parsedBody?.stream !== false, sessionId);
+            return;
+          }
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -3855,6 +3911,11 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
         },
         errorFallbackFn: (errText) => {
+          const c = classifyUpstreamError(statusCode, errText);
+          if (c && c.isFreeUsageLimit) {
+            sendResponsesFreeLimitFastClose(clientRes, reqModel, responsesBody ? responsesBody.id : null, isStream, sessionId);
+            return;
+          }
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -4415,6 +4476,11 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
         },
         errorFallbackFn: (errText) => {
+          const c = classifyUpstreamError(statusCode, errText);
+          if (c && c.isFreeUsageLimit) {
+            sendResponsesFreeLimitFastClose(clientRes, reqModel, responsesBody ? responsesBody.id : null, isStream, sessionId);
+            return;
+          }
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -9033,6 +9099,8 @@ module.exports = {
   getOrMintGuestSessionId,
   mapModelForZenGuest,
   ensureZenGuestToolsInChatPayload,
+  buildFreeUsageLimitNotice,
+  sendResponsesFreeLimitFastClose,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
   handleQuotaExhaustedFailover,

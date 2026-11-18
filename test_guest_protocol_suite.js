@@ -65,8 +65,9 @@ for (let i = 0; i < 100; i++) {
   const low12 = parseInt(sesId.slice(13, 16), 16);
   assert.ok(low12 >= 0xfc0 && low12 <= 0xfff, `Low 12 bits of head must land in [0xfc0, 0xfff], got 0x${low12.toString(16)}`);
 }
-assert.strictEqual(serverModule.mapModelForZenGuest('hy4-flash-free'), 'deepseek-v4.1-flash-free');
-assert.strictEqual(serverModule.mapModelForZenGuest('longcat-2.5-free'), 'longcat-2.5-preview-free');
+assert.strictEqual(serverModule.mapModelForZenGuest('cat-jam-free'), 'deepseek-v4.1-flash-free');
+assert.strictEqual(serverModule.mapModelForZenGuest('longcat-2.5-preview-free'), 'longcat-2.5-free');
+assert.strictEqual(serverModule.mapModelForZenGuest('longcat-2.5-free'), 'longcat-2.5-free');
 assert.strictEqual(serverModule.mapModelForZenGuest('big-pickle'), 'big-pickle');
 
 const paddedChat = serverModule.ensureZenGuestToolsInChatPayload({ model: 'deepseek-v4.1-flash-free', messages: [{ role: 'user', content: 'hi' }] });
@@ -135,6 +136,33 @@ try {
   serverModule.accountStats.delete('acc-audit-1');
 }
 
+// 7. Verify active free-only guest catalog (no deprecated cat-jam-free / beam-free) & 429 FreeUsageLimitError fast SSE close
+const guestSlugs = clientAdapter.filterModelsByPolicy('guest').map(m => m.slug);
+assert.strictEqual(guestSlugs[0], 'deepseek-v4.1-flash-free', 'Default guest free model must be deepseek-v4.1-flash-free');
+assert.ok(guestSlugs.includes('mimo-v2.6-flash-free') && guestSlugs.includes('longcat-2.5-free') && guestSlugs.includes('big-pickle'), 'Must include active Zen free models');
+assert.ok(!guestSlugs.includes('cat-jam-free') && !guestSlugs.includes('beam-free'), 'Must NOT inject deprecated cat-jam-free or geo-blocked beam-free');
+
+let writtenStatus = null;
+let writtenHeaders = null;
+let writtenChunks = '';
+let streamEnded = false;
+const mockSseRes = {
+  headersSent: false,
+  writableEnded: false,
+  destroyed: false,
+  writeHead(code, hdrs) { writtenStatus = code; writtenHeaders = hdrs; this.headersSent = true; },
+  write(chunk) { writtenChunks += String(chunk); },
+  end() { streamEnded = true; this.writableEnded = true; }
+};
+serverModule.sendResponsesFreeLimitFastClose(mockSseRes, 'deepseek-v4.1-flash-free', 'resp_free_limit_test', true, 'sess_test');
+assert.strictEqual(writtenStatus, 200, 'FreeUsageLimitError SSE fast close must return HTTP 200 to prevent Codex 1-min 429 retry loop');
+assert.ok(writtenHeaders['Content-Type'].includes('text/event-stream'), 'Must send text/event-stream');
+assert.ok(writtenChunks.includes('event: response.output_text.delta'), 'Must stream assistant notice delta');
+assert.ok(writtenChunks.includes('event: response.completed'), 'Must conclude with response.completed so Codex immediately unlocks UI');
+assert.ok(writtenChunks.includes('429 FreeUsageLimitError') && writtenChunks.includes('订阅账号 2'), 'Must include clear Chinese explanation & Scheme B third-party free fallback guidance');
+assert.strictEqual(streamEnded, true, 'Must end stream cleanly');
+console.log('  [PASS] 7. Active free-only catalog & 429 FreeUsageLimitError fast SSE close (zero retry loop) verified');
+
 console.log('================================================================');
-console.log('ALL 6/6 GUEST PROTOCOL & ZEN V2 WIRE TESTS PASSED!');
+console.log('ALL 7/7 GUEST PROTOCOL & ZEN V2 WIRE TESTS PASSED!');
 console.log('================================================================');
