@@ -1224,7 +1224,8 @@ const MODEL_COMPATIBILITY_ALIASES = {
 const OPENCODE_GO_DEPRECATED_ALIASES = {
   'deepseek-flash': 'deepseek-v4.1-flash',
   'deepseek-v4-flash': 'deepseek-v4.1-flash',
-  'cat-jam-free': 'deepseek-v4.1-flash',
+  'cat-jam-free': 'hy4-flash-free',
+  'beam-free': 'hy4-flash-free',
   'minimax-m3.1-flash-free': 'minimax-m3.1-flash',
   'step-5-preview-free': 'step-5-preview',
   'longcat-2.5-preview-free': 'longcat-2.5-free',
@@ -1254,6 +1255,31 @@ function normalizeOpencodeGoLiveModel(modelName) {
     return hasPrefix ? `opencode-go/${mapped}` : mapped;
   }
   return modelName;
+}
+
+const FREE_MODEL_SLUGS = [
+  'hy4-flash-free',
+  'longcat-2.5-free',
+  'mimo-v2.6-flash-free',
+  'glm-5.3-flash-free',
+  'big-pickle',
+  'cat-jam-free',
+  'beam-free'
+];
+
+function isFreeModel(modelName) {
+  if (!modelName) return false;
+  const slug = typeof modelName === 'string'
+    ? modelName.replace(/^opencode-go\//i, '').toLowerCase().trim()
+    : ((modelName.slug || modelName.id || modelName.name || '').replace(/^opencode-go\//i, '').toLowerCase().trim());
+  if (FREE_MODEL_SLUGS.includes(slug)) return true;
+  if (slug.includes('free') || slug.includes('pickle')) return true;
+  if (typeof modelName === 'object' && modelName.cost && modelName.cost.text) {
+    const inP = modelName.cost.text.input ? modelName.cost.text.input.price : null;
+    const outP = modelName.cost.text.output ? modelName.cost.text.output.price : null;
+    if (inP === 0 && outP === 0) return true;
+  }
+  return false;
 }
 
 const MODEL_TIERS = {
@@ -1394,9 +1420,30 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     if (allowUpgrade && (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high')) {
       return cleanReq === 'deepseek-v4-pro' ? 'kimi-k3.1-pro' : 'deepseek-v4-pro';
     }
-    if (reqTier === MODEL_TIERS.FLASH || cleanReq.endsWith('-free')) {
-      if (cleanReq === 'deepseek-flash' || cleanReq === 'deepseek-v4-flash' || cleanReq === 'cat-jam-free') {
-        return 'glm-5.3-flash';
+    // Free Tier / Guest Mode Guard: strictly preserve free model boundaries
+    const isFreeReq = isFreeModel(cleanReq) || Boolean(options && (options.freeOnly || options.isGuest));
+    if (isFreeReq) {
+      if (cleanReq === 'beam-free' || cleanReq === 'cat-jam-free') {
+        return 'hy4-flash-free';
+      }
+      if (cleanReq === 'hy4-flash-free') {
+        return 'longcat-2.5-free';
+      }
+      if (cleanReq === 'longcat-2.5-free') {
+        return 'mimo-v2.6-flash-free';
+      }
+      if (cleanReq === 'mimo-v2.6-flash-free') {
+        return 'glm-5.3-flash-free';
+      }
+      if (cleanReq === 'glm-5.3-flash-free') {
+        return 'big-pickle';
+      }
+      return 'hy4-flash-free';
+    }
+
+    if (reqTier === MODEL_TIERS.FLASH) {
+      if (cleanReq === 'deepseek-flash' || cleanReq === 'deepseek-v4-flash') {
+        return 'deepseek-v4.1-flash';
       }
       if (cleanReq === 'deepseek-v4.1-flash') {
         return 'glm-5.3-flash';
@@ -1407,16 +1454,10 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
       if (cleanReq === 'qwen3.8-flash') {
         return 'minimax-m3.1-flash';
       }
-      if (cleanReq === 'minimax-m3.1-flash' || cleanReq === 'minimax-m3.1-flash-free') {
+      if (cleanReq === 'minimax-m3.1-flash') {
         return 'mimo-v2.6-flash';
       }
-      if (cleanReq === 'mimo-v2.6-flash') {
-        return 'hy4-flash-free';
-      }
-      if (cleanReq === 'hy4-flash-free') {
-        return 'beam-free';
-      }
-      return 'glm-5.3-flash';
+      return 'deepseek-v4.1-flash';
     }
     if (reqTier === MODEL_TIERS.STANDARD) {
       if (cleanReq.startsWith('kimi-')) {
@@ -1459,21 +1500,15 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     return 'deepseek-v4-pro';
   }
 
-  // 2.1 Flash tier: strictly stay in flash tier when allowUpgrade is false
+  // 2.1 Free models and Flash tier
+  if (isFreeModel(cleanReq) || (options && (options.freeOnly || options.isGuest))) {
+    return 'hy4-flash-free';
+  }
   if (reqTier === MODEL_TIERS.FLASH) {
-    if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash') {
+    if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash' || cleanReq === 'deepseek-flash') {
       return 'deepseek-flash';
     }
-    if (cleanReq === 'deepseek-flash') {
-      return 'deepseek-flash';
-    }
-    if (cleanReq.startsWith('glm')) {
-      return 'deepseek-flash';
-    }
-    if (cleanReq.startsWith('gemini')) {
-      return 'deepseek-flash';
-    }
-    if (cleanReq.startsWith('claude')) {
+    if (cleanReq.startsWith('glm') || cleanReq.startsWith('gemini') || cleanReq.startsWith('claude')) {
       return 'deepseek-flash';
     }
     return 'deepseek-flash';
@@ -1494,7 +1529,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     if (isHeterogeneousRule19) {
       return 'deepseek-v4-pro';
     }
-    return 'deepseek-flash';
+    return isFreeModel(cleanReq) ? 'hy4-flash-free' : 'deepseek-flash';
   }
 
   // 2.3 Flagship tier: flagship to flagship candidates (Rule 19 Anti-Downgrade)
@@ -1520,7 +1555,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     return 'deepseek-v4-pro';
   }
 
-  return 'deepseek-flash';
+  return isFreeModel(cleanReq) ? 'hy4-flash-free' : 'deepseek-flash';
 }
 
 /**
@@ -7544,6 +7579,8 @@ module.exports = {
   MODEL_COMPATIBILITY_ALIASES,
   OPENCODE_GO_DEPRECATED_ALIASES,
   normalizeOpencodeGoLiveModel,
+  isFreeModel,
+  FREE_MODEL_SLUGS,
   MODEL_TIERS,
   getModelTier,
   configureAdapter,

@@ -106,10 +106,18 @@ function loadOfficialModels() {
  * @returns {Array<Object>} 过滤并装配完成的规范模型元数据数组
  */
 function filterModelsByPolicy(policy = DEFAULT_POLICY, options = {}) {
-  const normPolicy = MODEL_SOURCE_POLICIES.includes(policy) ? policy : DEFAULT_POLICY;
+  const isGuest = Boolean(options.isGuest || options.freeOnly || policy === 'guest');
+  const normPolicy = isGuest ? 'guest' : (MODEL_SOURCE_POLICIES.includes(policy) ? policy : DEFAULT_POLICY);
   const officialModels = Array.isArray(options.officialModels) && options.officialModels.length > 0
     ? options.officialModels
     : loadOfficialModels();
+
+  // Guest Protocol Mode: strictly return free models only
+  if (isGuest) {
+    const codex = require('./codex-adapter');
+    const freeModels = officialModels.filter(m => codex.isFreeModel(m.slug || m.id || m.name));
+    return freeModels.map(m => ({ ...m, source: 'guest_free_only' })).sort((a, b) => (b.priority || 500) - (a.priority || 500));
+  }
 
   const officialMap = new Map();
   for (const m of officialModels) {
@@ -369,6 +377,7 @@ function getClientStatus(options = {}) {
  * 100% 保护自定义 Provider (如 aixforge) 与自定义 Agent (如 agent.goal)
  */
 function syncOpencodeConfig(options = {}) {
+  const isGuest = Boolean(options.isGuest || options.policy === 'guest' || options.freeOnly);
   const routerPort = options.routerPort || 4010;
   const opencodeDir = options.targetPath ? path.dirname(options.targetPath) : (process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode'));
   let configPath = options.targetPath;
@@ -377,11 +386,12 @@ function syncOpencodeConfig(options = {}) {
     const jsonPath = path.join(opencodeDir, 'opencode.json');
     configPath = (!fs.existsSync(jsoncPath) && fs.existsSync(jsonPath)) ? jsonPath : jsoncPath;
   }
-  const policy = options.policy || DEFAULT_POLICY;
+  const policy = isGuest ? 'guest' : (options.policy || DEFAULT_POLICY);
   const models = (Array.isArray(options.models) && options.models.length > 0)
     ? options.models
-    : filterModelsByPolicy(policy, options);
-  const defaultModelSlug = options.defaultModel || DEFAULT_MODEL;
+    : filterModelsByPolicy(policy, { ...options, isGuest });
+  const defaultModelSlug = isGuest ? 'hy4-flash-free' : (options.defaultModel || DEFAULT_MODEL);
+  const preserveChoice = isGuest ? false : options.preserveChoice;
 
   const messages = [];
   if (!fs.existsSync(opencodeDir)) {
@@ -395,9 +405,9 @@ function syncOpencodeConfig(options = {}) {
 
   const harmRes = updater.harmonizeOpencodeConfig(configPath, routerPort, {
     officialModels: officialSlugs,
-    preferredModel: options.preserveChoice === false ? preferredModelStr : undefined,
+    preferredModel: preserveChoice === false ? preferredModelStr : undefined,
     defaultModel: defaultModelSlug,
-    strictModels: policy === 'api_probed'
+    strictModels: isGuest || policy === 'api_probed'
   });
 
   messages.push(`✔ OpenCode 2.0 配置已成功同步 (共 ${harmRes.modelCount} 款模型，首选模型: ${harmRes.currentModel})`);
@@ -554,14 +564,16 @@ function syncOpenChamberConfig(options = {}) {
  * 绝不杀死、重启或干扰正在运行的 Codex 桌面任务与进程！
  */
 function syncCodexConfig(options = {}) {
+  const isGuest = Boolean(options.isGuest || options.policy === 'guest' || options.freeOnly);
   const routerPort = options.routerPort || 4010;
-  const policy = options.policy || DEFAULT_POLICY;
+  const policy = isGuest ? 'guest' : (options.policy || DEFAULT_POLICY);
   const models = (Array.isArray(options.models) && options.models.length > 0)
     ? options.models
-    : filterModelsByPolicy(policy, options);
-  const defaultModelSlug = options.defaultModel || DEFAULT_MODEL;
+    : filterModelsByPolicy(policy, { ...options, isGuest });
+  const defaultModelSlug = isGuest ? 'hy4-flash-free' : (options.defaultModel || DEFAULT_MODEL);
   const effort = options.reasoningEffort || DEFAULT_REASONING_EFFORT;
   const codexDir = options.codexDir || path.join(os.homedir(), '.codex');
+  const preserveChoice = isGuest ? false : options.preserveChoice;
 
   const codex = require('./codex-adapter');
 
@@ -572,7 +584,8 @@ function syncCodexConfig(options = {}) {
     reasoningEffort: effort,
     codexDir,
     models,
-    preserveChoice: options.preserveChoice
+    preserveChoice,
+    isGuest
   });
 
   return {

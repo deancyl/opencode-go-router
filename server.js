@@ -853,6 +853,7 @@ function isAccountAvailable(acc, now = Date.now()) {
   if (!acc.enabled || !acc.apiKey || acc.apiKey.trim() === '') return false;
   const stat = accountStats.get(acc.id);
   if (!stat) return false;
+  if (stat.isSubscriptionEnded || stat.isQuotaExhausted) return false;
   const state = getCircuitState(acc.id, now);
   if (state === CIRCUIT_STATE.CLOSED) return true;
   if (state === CIRCUIT_STATE.OPEN) return false;
@@ -864,12 +865,41 @@ function isAccountAvailable(acc, now = Date.now()) {
   return false;
 }
 
+
+function isGuestModeActive() {
+  if (config.forceGuestMode === true || config.guestProtocolEnabled === true) {
+    return true;
+  }
+  const accounts = Array.isArray(config.accounts) ? config.accounts : [];
+  const enabledAccounts = accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
+  if (enabledAccounts.length === 0) {
+    return true;
+  }
+  // 仅当所有已配置账号均处于订阅失效 (403 Subscription Ended) 或明确欠费待授权时，自动激活游客协议
+  // 单纯的 429 限额瞬时冷却绝不误判为游客模式，保障池级熔断与 Retry-After 语义完整
+  const allAccountsEnded = enabledAccounts.every(acc => {
+    const stat = accountStats.get(acc.id) || {};
+    return Boolean(stat.isSubscriptionEnded || stat.lastStatus === 403 || (stat.isQuotaExhausted && stat.lastStatus === 402));
+  });
+  return allAccountsEnded;
+}
+
 function selectAccount(sessionId, excludeAccountIds = new Set()) {
   const now = Date.now();
   const accounts = Array.isArray(config.accounts) ? config.accounts : [];
   const available = accounts.filter(a => isAccountAvailable(a, now) && !excludeAccountIds.has(a.id));
 
   if (available.length === 0) {
+    if (isGuestModeActive()) {
+      return {
+        id: '__guest_protocol__',
+        name: 'OpenCode Go (游客协议·免登录)',
+        apiKey: '',
+        upstream: 'https://opencode.ai/inference/openai/v1',
+        isGuest: true,
+        enabled: true
+      };
+    }
     return null;
   }
 
@@ -1139,6 +1169,16 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
             /entitlementerror/i.test(body)
           ));
           if (isSubscriptionEnded) {
+            const targetAcc = (config.accounts || []).find(a => (a.apiKey || '').trim() === apiKey.trim());
+            if (targetAcc) {
+              const st = accountStats.get(targetAcc.id);
+              if (st) {
+                st.isSubscriptionEnded = true;
+                st.lastStatus = 403;
+                st.isQuotaExhausted = true;
+                st.lastError = '官方订阅失效: 支付方式需重新授权';
+              }
+            }
             safeResolve({
               success: false,
               statusCode: res.statusCode,
@@ -1436,7 +1476,15 @@ function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') 
     lowerText.includes('subscribe again')
   );
 
-  const isQuotaExhausted = statusCode === 402 || isSubscriptionEnded || (
+  const isFreeUsageLimit = (
+    (statusCode === 429 || statusCode === 403) && (
+      lowerText.includes('free usage limit') ||
+      lowerText.includes('freeusagelimiterror') ||
+      lowerText.includes('free models work in opencode')
+    )
+  );
+
+  const isQuotaExhausted = statusCode === 402 || isSubscriptionEnded || isFreeUsageLimit || (
     (statusCode === 429 || statusCode === 403 || statusCode === 401) && (
       lowerText.includes('insufficient_quota') ||
       lowerText.includes('quota_exceeded') ||
@@ -1468,18 +1516,16 @@ function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') 
   // on generic 403 Forbidden (WAF, permissions, IP blacklist) which should not trigger region fallback.
   // Bare keyword matches (any status code) are also accepted for non-standard upstream error wrapping.
   const isRegionBlocked = (
-    !isSubscriptionEnded && (
+    !isSubscriptionEnded && !isFreeUsageLimit && (
       (statusCode === 403 && !isQuotaExhausted && (
         lowerText.includes('unsupported_country_region_territory') ||
         lowerText.includes('territory not supported') ||
         lowerText.includes('not available in your country') ||
-        lowerText.includes('region') ||
-        lowerText.includes('geograph') ||
-        lowerText.includes('country') ||
-        lowerText.length === 0  // bare 403 with no body — likely CDN geo-block
+        lowerText.includes('regionerror') ||
+        (lowerText.includes('region') && !lowerText.includes('permission'))
       )) ||
-      // Catch region keywords in non-403 error wrappers (e.g. 400/200 with error body)
-      lowerText.includes('unsupported_country_region_territory')
+      lowerText.includes('unsupported_country_region_territory') ||
+      lowerText.includes('regionerror')
     )
   );
 
@@ -1537,6 +1583,7 @@ function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') 
     isInvalidApiKey,
     isQuotaExhausted,
     isSubscriptionEnded,
+    isFreeUsageLimit,
     isRateLimitedOrServiceUnavailable,
     isContextLengthExceeded,
     isRegionBlocked,
@@ -2546,7 +2593,24 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   }
 
   proxyHeaders['x-opencode-session'] = sessionId;
-  proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
+  if (account && account.isGuest) {
+    delete proxyHeaders['authorization'];
+    delete proxyHeaders['x-api-key'];
+    delete proxyHeaders['proxy-authorization'];
+    proxyHeaders['x-opencode-client'] = 'cli';
+    proxyHeaders['user-agent'] = 'opencode/1.2.0 (windows; x64)';
+    if (!proxyHeaders['x-opencode-session']) {
+      proxyHeaders['x-opencode-session'] = sessionId || ('guest-' + Date.now());
+    }
+    if (parsedBody && parsedBody.model && !codexAdapter.isFreeModel(parsedBody.model)) {
+      console.log(`[Guest Protocol] 游客协议拦截付费模型 "${parsedBody.model}"，自动安全转换为免费在役模型 "hy4-flash-free"`);
+      parsedBody.model = 'hy4-flash-free';
+      reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+      proxyHeaders['content-length'] = String(Buffer.byteLength(reqBody));
+    }
+  } else {
+    proxyHeaders['authorization'] = `Bearer ${account.apiKey.trim()}`;
+  }
   if (targetPath.includes('/messages')) {
     proxyHeaders['x-api-key'] = account.apiKey.trim();
     if (!proxyHeaders['anthropic-version']) {
@@ -8310,6 +8374,38 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
     return;
   }
 
+  // Intercept OpenAI-standard /v1/models & /models endpoint for client dynamic injection (Guest Protocol Free-Only)
+  if ((reqUrl.pathname === '/v1/models' || reqUrl.pathname === '/models') && req.method === 'GET') {
+    const clientAdapter = require('./client-adapter-manager');
+    const isGuest = isGuestModeActive();
+    const policy = isGuest ? 'guest' : (config.modelSourcePolicy || 'hybrid');
+    const models = clientAdapter.filterModelsByPolicy(policy, {
+      isGuest,
+      freeOnly: isGuest
+    });
+
+    const data = models.map(m => {
+      const slug = m.slug || m.id || m.name;
+      return {
+        id: slug,
+        object: 'model',
+        created: 1700000000,
+        owned_by: isGuest ? 'opencode-go-guest' : 'opencode-go',
+        permission: [],
+        root: slug,
+        parent: null
+      };
+    });
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'x-opencode-protocol': isGuest ? 'guest' : 'paid-pool'
+    });
+    res.end(JSON.stringify({ object: 'list', data }));
+    return;
+  }
+
   const chunks = [];
   let totalReqBytes = 0;
   const MAX_REQ_BYTES = 32 * 1024 * 1024; // 32MB safety ceiling to prevent heap allocation exhaustion
@@ -8561,6 +8657,7 @@ module.exports = {
   config,
   gracefulShutdown,
   classifyUpstreamError,
+  isGuestModeActive,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
   handleQuotaExhaustedFailover,

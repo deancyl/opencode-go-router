@@ -15,14 +15,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "极速轻量思考，适合简单编辑与快速命令" },
-        { "effort": "medium", "description": "均衡思考，兼顾质量与响应速度" },
-        { "effort": "high", "description": "深度思考，适合复杂逻辑与跨文件推导" },
-        { "effort": "xhigh", "description": "极限深度思考，最大深度求解棘手问题" }
+        {
+          "effort": "low",
+          "description": "极速轻量思考，适合简单编辑与快速命令"
+        },
+        {
+          "effort": "medium",
+          "description": "均衡思考，兼顾质量与响应速度"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考，适合复杂逻辑与跨文件推导"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限深度思考，最大深度求解棘手问题"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -39,14 +54,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "轻量思考模式" },
-        { "effort": "medium", "description": "标准工程思考模式" },
-        { "effort": "high", "description": "深度架构推导模式" },
-        { "effort": "xhigh", "description": "极限深度推演" }
+        {
+          "effort": "low",
+          "description": "轻量思考模式"
+        },
+        {
+          "effort": "medium",
+          "description": "标准工程思考模式"
+        },
+        {
+          "effort": "high",
+          "description": "深度架构推导模式"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限深度推演"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -63,14 +93,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量推理" },
-        { "effort": "medium", "description": "均衡推理" },
-        { "effort": "high", "description": "高深度推理" },
-        { "effort": "xhigh", "description": "超高深度推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量推理"
+        },
+        {
+          "effort": "medium",
+          "description": "均衡推理"
+        },
+        {
+          "effort": "high",
+          "description": "高深度推理"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高深度推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -87,14 +132,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量推理" },
-        { "effort": "medium", "description": "均衡推理" },
-        { "effort": "high", "description": "高深度推理" },
-        { "effort": "xhigh", "description": "极限推理深度" }
+        {
+          "effort": "low",
+          "description": "快速轻量推理"
+        },
+        {
+          "effort": "medium",
+          "description": "均衡推理"
+        },
+        {
+          "effort": "high",
+          "description": "高深度推理"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限推理深度"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -111,14 +171,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速视觉解析" },
-        { "effort": "medium", "description": "标准视觉推导" },
-        { "effort": "high", "description": "深度视觉理解与代码对应" },
-        { "effort": "xhigh", "description": "超高精度视觉推理" }
+        {
+          "effort": "low",
+          "description": "快速视觉解析"
+        },
+        {
+          "effort": "medium",
+          "description": "标准视觉推导"
+        },
+        {
+          "effort": "high",
+          "description": "深度视觉理解与代码对应"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高精度视觉推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -135,13 +210,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -158,13 +247,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -181,13 +284,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -204,13 +321,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -227,13 +358,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -250,13 +395,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速逻辑响应" },
-        { "effort": "medium", "description": "标准工程思考" },
-        { "effort": "high", "description": "深度推理与算法分析" },
-        { "effort": "xhigh", "description": "超强全维思考" }
+        {
+          "effort": "low",
+          "description": "快速逻辑响应"
+        },
+        {
+          "effort": "medium",
+          "description": "标准工程思考"
+        },
+        {
+          "effort": "high",
+          "description": "深度推理与算法分析"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超强全维思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -273,13 +432,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -296,13 +469,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -319,13 +506,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速对话与轻量工具调用" },
-        { "effort": "medium", "description": "平衡模式" },
-        { "effort": "high", "description": "深度逻辑链思考" },
-        { "effort": "xhigh", "description": "极高强度深度推理" }
+        {
+          "effort": "low",
+          "description": "快速对话与轻量工具调用"
+        },
+        {
+          "effort": "medium",
+          "description": "平衡模式"
+        },
+        {
+          "effort": "high",
+          "description": "深度逻辑链思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极高强度深度推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -342,13 +543,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -365,13 +580,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -388,13 +617,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -411,13 +654,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -434,13 +691,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -457,13 +728,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "极速" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "高思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "极速"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "高思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -480,13 +765,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "极速响应" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "高思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "极速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "高思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "free",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -503,13 +802,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -526,13 +839,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -549,13 +876,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": true,
       "is_official": true,
@@ -572,13 +913,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": true,
       "is_official": true,
@@ -595,13 +950,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "极速轻量" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "高思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "极速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "高思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": true,
       "is_official": true,
@@ -618,14 +987,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准分析" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "极限推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准分析"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": true,
       "is_official": true,
@@ -642,14 +1026,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准分析" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "极限推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准分析"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": true,
       "is_official": true,
@@ -666,13 +1065,28 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "极限思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -689,13 +1103,28 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "极速" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "高思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "极速"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "高思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -712,13 +1141,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -735,13 +1178,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -758,13 +1215,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -781,13 +1252,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -804,13 +1289,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "free",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -827,13 +1326,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -850,14 +1363,29 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速执行" },
-        { "effort": "medium", "description": "标准工程推导" },
-        { "effort": "high", "description": "高难度逻辑求解" },
-        { "effort": "xhigh", "description": "极限思考求解" }
+        {
+          "effort": "low",
+          "description": "快速执行"
+        },
+        {
+          "effort": "medium",
+          "description": "标准工程推导"
+        },
+        {
+          "effort": "high",
+          "description": "高难度逻辑求解"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限思考求解"
+        }
       ],
       "supports_parallel_tool_calls": true,
       "supports_image_detail_original": true,
-      "input_modalities": ["text", "image"],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
       "quota_tier": "flagship",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -874,13 +1402,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高推理" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高推理"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "free",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -897,13 +1439,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -920,13 +1476,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "标准" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -943,13 +1513,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速轻量" },
-        { "effort": "medium", "description": "常规平衡" },
-        { "effort": "high", "description": "深度推理" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速轻量"
+        },
+        {
+          "effort": "medium",
+          "description": "常规平衡"
+        },
+        {
+          "effort": "high",
+          "description": "深度推理"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "standard",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -966,13 +1550,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "speed",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -989,13 +1587,27 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "快速响应" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "快速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "free",
       "foreign_proxy_required": false,
       "is_official": true,
@@ -1012,13 +1624,188 @@
       "effective_context_window_percent": 95,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "极速响应" },
-        { "effort": "medium", "description": "常规" },
-        { "effort": "high", "description": "深度思考" },
-        { "effort": "xhigh", "description": "超高思考" }
+        {
+          "effort": "low",
+          "description": "极速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "超高思考"
+        }
       ],
       "supports_parallel_tool_calls": true,
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
+      "quota_tier": "free",
+      "foreign_proxy_required": false,
+      "is_official": true,
+      "priority": 670
+    },
+    {
+      "slug": "hy4-flash-free",
+      "name": "HY4-Flash-Free",
+      "display_name": "HY4-Flash-Free",
+      "vendor": "HY",
+      "description": "HY4 Flash 官方在役免费高速推理模型，免登录高可用。",
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "effective_context_window_percent": 95,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "快速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规思考"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        },
+        {
+          "effort": "xhigh",
+          "description": "极限推演"
+        }
+      ],
+      "supports_parallel_tool_calls": true,
+      "input_modalities": [
+        "text"
+      ],
+      "quota_tier": "free",
+      "foreign_proxy_required": false,
+      "is_official": true,
+      "priority": 700
+    },
+    {
+      "slug": "longcat-2.5-free",
+      "name": "LongCat-2.5-Free",
+      "display_name": "LongCat-2.5-Free",
+      "vendor": "LongCat",
+      "description": "LongCat 2.5 官方在役免费超长上下文模型。",
+      "context_window": 262144,
+      "max_context_window": 262144,
+      "effective_context_window_percent": 95,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "快速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规思考"
+        },
+        {
+          "effort": "high",
+          "description": "深度思考"
+        }
+      ],
+      "supports_parallel_tool_calls": true,
+      "input_modalities": [
+        "text"
+      ],
+      "quota_tier": "free",
+      "foreign_proxy_required": false,
+      "is_official": true,
+      "priority": 690
+    },
+    {
+      "slug": "mimo-v2.6-flash-free",
+      "name": "MiMo-V2.6-Flash-Free",
+      "display_name": "MiMo-V2.6-Flash-Free",
+      "vendor": "MiMo",
+      "description": "MiMo V2.6 Flash 官方在役免费轻量推理模型。",
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "effective_context_window_percent": 95,
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "快速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规"
+        }
+      ],
+      "supports_parallel_tool_calls": true,
+      "input_modalities": [
+        "text"
+      ],
+      "quota_tier": "free",
+      "foreign_proxy_required": false,
+      "is_official": true,
+      "priority": 685
+    },
+    {
+      "slug": "glm-5.3-flash-free",
+      "name": "GLM-5.3-Flash-Free",
+      "display_name": "GLM-5.3-Flash-Free",
+      "vendor": "Zhipu AI",
+      "description": "GLM 5.3 Flash 官方在役免费极速代码与对话模型。",
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "effective_context_window_percent": 95,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "极速响应"
+        },
+        {
+          "effort": "medium",
+          "description": "常规思考"
+        },
+        {
+          "effort": "high",
+          "description": "深度推演"
+        }
+      ],
+      "supports_parallel_tool_calls": true,
+      "input_modalities": [
+        "text"
+      ],
+      "quota_tier": "free",
+      "foreign_proxy_required": false,
+      "is_official": true,
+      "priority": 680
+    },
+    {
+      "slug": "big-pickle",
+      "name": "Big-Pickle",
+      "display_name": "Big-Pickle",
+      "vendor": "OpenCode",
+      "description": "OpenCode 官方在役免登录默认匿名大模型。",
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "effective_context_window_percent": 95,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "快速"
+        },
+        {
+          "effort": "medium",
+          "description": "标准"
+        }
+      ],
+      "supports_parallel_tool_calls": true,
+      "input_modalities": [
+        "text"
+      ],
       "quota_tier": "free",
       "foreign_proxy_required": false,
       "is_official": true,

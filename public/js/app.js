@@ -2631,6 +2631,11 @@ function updateMetricsUI() {
       if (!stat.hasKey || !stat.enabled) {
         badge.className = 'badge badge-disabled';
         badge.innerText = '未配置密钥/已禁用';
+      } else if (stat.isSubscriptionEnded || stat.lastStatus === 403) {
+        badge.className = 'badge badge-cooling';
+        badge.style.background = 'rgba(239, 68, 68, 0.2)';
+        badge.style.color = '#ef4444';
+        badge.innerText = '🔴 官方订阅失效 (需授权)';
       } else if (stat.circuitState === 'HALF_OPEN' || stat.status === 'half_open') {
         badge.className = 'badge badge-halfopen';
         badge.innerText = '🟡 半开探测中';
