@@ -1405,6 +1405,19 @@ function getBarClass(percent) {
 
 function buildQuotaContent(usage) {
   if (!usage) return '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding: 4px 0;">点击【测速】或【刷新】查询官方 5h、周、月配额</div>';
+  if (usage.mode === 'guest_free_tier') {
+    const rawNotice = usage.subscriptionNotice || '官方 Go 订阅已到期，需重新授权支付方式';
+    const safeNotice = (typeof escapeHtml === 'function' ? escapeHtml(rawNotice) : rawNotice).replace(/(https:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:var(--primary);text-decoration:underline;word-break:break-all;">$1</a>');
+    const modelsList = Array.isArray(usage.guestModels) ? usage.guestModels.join(' / ') : 'deepseek-v4.1-flash-free / mimo-v2.6-flash-free / big-pickle';
+    return '<div style="padding:8px 10px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:6px; margin-bottom:6px;">' +
+      '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">' +
+        '<span style="color:#10b981; font-weight:600; font-size:0.78rem;">🟢 已自动切换至游客免费模式 (免密钥可用)</span>' +
+        '<span class="badge badge-healthy" style="font-size:0.68rem;">Bearer public</span>' +
+      '</div>' +
+      '<div style="color:var(--text); font-size:0.72rem; line-height:1.4; margin-bottom:4px;">当前接管模型: <code style="color:#38bdf8;">' + modelsList + '</code></div>' +
+      '<div style="color:var(--muted); font-size:0.68rem; line-height:1.35; border-top:1px dashed rgba(255,255,255,0.1); padding-top:4px;">' + safeNotice + '</div>' +
+    '</div>';
+  }
 
   const rollingPct = Math.min(100, Math.max(0, (usage.rolling && usage.rolling.percent !== undefined) ? usage.rolling.percent : 0));
   const weeklyPct = Math.min(100, Math.max(0, (usage.weekly && usage.weekly.percent !== undefined) ? usage.weekly.percent : 0));
@@ -1671,69 +1684,42 @@ function scrollToElement(id) {
 }
 
 function updateWizardStatusBadges() {
-  const configuredAccounts = (currentConfig && currentConfig.accounts)
-    ? currentConfig.accounts.filter(a => a.apiKey && a.apiKey.trim() && a.enabled)
-    : [];
-  const isAccountSubEnded = (acc) => {
-    const st = (typeof liveStats !== 'undefined' && liveStats && liveStats[acc.id]) ? liveStats[acc.id] : null;
-    if (!st) return false;
-    return Boolean(st.isSubscriptionEnded || st.lastStatus === 403 || st.status === 'subscription_ended' || (st.isQuotaExhausted && st.lastStatus === 402));
-  };
-  const validAccounts = configuredAccounts.filter(a => !isAccountSubEnded(a));
-  const allConfiguredEnded = configuredAccounts.length > 0 && validAccounts.length === 0;
-
+  const validAccounts = (currentConfig && currentConfig.accounts) ? currentConfig.accounts.filter(a => a.apiKey && a.apiKey.trim() && a.enabled) : [];
+  const activePaidAccounts = validAccounts.filter(a => {
+    const st = (typeof liveStats === 'object' && liveStats) ? liveStats[a.id] : null;
+    return !st || (!st.isSubscriptionEnded && st.lastStatus !== 403);
+  });
+  const allConfiguredEnded = validAccounts.length > 0 && activePaidAccounts.length === 0;
   const accBadge = document.getElementById('accounts-status-badge');
   const wizAccBadge = document.getElementById('wizard-status-account');
   const wizAccDesc = document.getElementById('wizard-desc-account');
-  const navOverviewBadge = document.getElementById('nav-badge-overview');
-  const navAccountsBadge = document.getElementById('nav-badge-accounts');
-
-  if (accBadge && accBadge.style) { accBadge.style.background = ''; accBadge.style.color = ''; }
-  if (wizAccBadge && wizAccBadge.style) { wizAccBadge.style.background = ''; wizAccBadge.style.color = ''; }
-
-  if (validAccounts.length > 0) {
-    const ratioLabel = validAccounts.length < configuredAccounts.length
-      ? (validAccounts.length + '/' + configuredAccounts.length + ' 订阅有效')
-      : (validAccounts.length + ' 账号');
-    if (accBadge) {
-      accBadge.className = 'badge badge-healthy';
-      accBadge.innerText = '🟢 已就绪 (' + ratioLabel + ')';
-      accBadge.title = '当前账号池有 ' + validAccounts.length + ' 个有效订阅账号可用，自动故障转移已就绪';
-    }
-    if (wizAccBadge) {
-      wizAccBadge.className = 'badge badge-healthy';
-      wizAccBadge.innerText = '🟢 ' + validAccounts.length + ' 账号已就绪';
-      wizAccBadge.title = '订阅账号池健康就绪';
-    }
-    if (wizAccDesc) {
-      wizAccDesc.innerText = '已成功绑定 ' + validAccounts.length + ' 个可用订阅账号，支持秒级自动漂移与配额轮转';
-    }
-    if (navAccountsBadge) {
-      navAccountsBadge.innerText = '多账号';
-      if (navAccountsBadge.style) { navAccountsBadge.style.background = ''; navAccountsBadge.style.color = ''; navAccountsBadge.style.borderColor = ''; }
-    }
-  } else if (allConfiguredEnded) {
-    const guestLabel = '🟡 游客免费兜底 (0/' + configuredAccounts.length + ' 订阅有效)';
+  if (allConfiguredEnded) {
     if (accBadge) {
       accBadge.className = 'badge badge-halfopen';
-      accBadge.innerText = guestLabel;
-      accBadge.title = '当前已配置的 ' + configuredAccounts.length + ' 个订阅账号均已失效或需重新授权，网关已自动激活游客免费兜底模式（客户端仅注入与调度免费模型）';
+      accBadge.innerText = '🟡 游客免费兜底 (0/' + validAccounts.length + ' 订阅有效)';
+      accBadge.title = '已配置账号的官方订阅已到期需重新授权支付方式，网关当前已自动切换至免费游客模式兜底';
     }
     if (wizAccBadge) {
       wizAccBadge.className = 'badge badge-halfopen';
-      wizAccBadge.innerText = guestLabel;
-      wizAccBadge.title = '订阅账号均需重新授权，已自动切入游客免费兜底';
+      wizAccBadge.innerText = '🟡 游客免费模式 (待续订)';
+      wizAccBadge.title = '官方订阅需重新授权支付方式，当前由免费游客协议兜底';
     }
     if (wizAccDesc) {
-      wizAccDesc.innerText = '当前订阅账号均已失效/需授权，网关已自动激活游客协议（仅注入免费模型）；重新授权后点击【测速】秒级恢复全量付费模型';
+      wizAccDesc.innerText = '官方 Go 订阅待重新授权支付方式，当前已自动激活免费游客协议兜底（仅开放免费模型）';
     }
-    if (navAccountsBadge) {
-      navAccountsBadge.innerText = '需授权';
-      if (navAccountsBadge.style) {
-        navAccountsBadge.style.background = 'rgba(239, 68, 68, 0.16)';
-        navAccountsBadge.style.color = '#f87171';
-        navAccountsBadge.style.borderColor = 'rgba(239, 68, 68, 0.35)';
-      }
+  } else if (validAccounts.length > 0) {
+    if (accBadge) {
+      accBadge.className = 'badge badge-healthy';
+      accBadge.innerText = '🟢 已就绪 (' + activePaidAccounts.length + ' 账号)';
+      accBadge.title = '当前账号池有 ' + activePaidAccounts.length + ' 个有效订阅账号可用，自动故障转移已就绪';
+    }
+    if (wizAccBadge) {
+      wizAccBadge.className = 'badge badge-healthy';
+      wizAccBadge.innerText = '🟢 ' + activePaidAccounts.length + ' 账号已就绪';
+      wizAccBadge.title = '订阅账号池健康就绪';
+    }
+    if (wizAccDesc) {
+      wizAccDesc.innerText = '已成功绑定 ' + activePaidAccounts.length + ' 个可用订阅账号，支持秒级自动漂移与配额轮转';
     }
   } else {
     if (accBadge) {
@@ -1748,14 +1734,6 @@ function updateWizardStatusBadges() {
     }
     if (wizAccDesc) {
       wizAccDesc.innerText = '请在下方账号卡片中填入您的 API Key 订阅密钥即可立即开启负载均衡';
-    }
-    if (navAccountsBadge) {
-      navAccountsBadge.innerText = '待配置';
-      if (navAccountsBadge.style) {
-        navAccountsBadge.style.background = 'rgba(239, 68, 68, 0.16)';
-        navAccountsBadge.style.color = '#f87171';
-        navAccountsBadge.style.borderColor = 'rgba(239, 68, 68, 0.35)';
-      }
     }
   }
 
@@ -1811,34 +1789,14 @@ function updateWizardStatusBadges() {
   const accOverviewVal = document.getElementById('accounts-overview-val');
   const accOverviewSub = document.getElementById('accounts-overview-sub');
   if (accOverviewBadge) {
-    if (validAccounts.length > 0) {
-      accOverviewBadge.className = 'badge badge-healthy';
-      accOverviewBadge.innerText = '🟢 账号池可用';
-    } else if (allConfiguredEnded) {
-      accOverviewBadge.className = 'badge badge-halfopen';
-      accOverviewBadge.innerText = '🟡 游客免费兜底';
-    } else {
-      accOverviewBadge.className = 'badge badge-cooling';
-      accOverviewBadge.innerText = '🔴 待配置密钥';
-    }
+    accOverviewBadge.className = allConfiguredEnded ? 'badge badge-halfopen' : (validAccounts.length > 0 ? 'badge badge-healthy' : 'badge badge-cooling');
+    accOverviewBadge.innerText = allConfiguredEnded ? '🟡 游客免费兜底' : (validAccounts.length > 0 ? '🟢 账号池可用' : '🔴 待配置密钥');
   }
   if (accOverviewVal) {
-    if (validAccounts.length > 0) {
-      accOverviewVal.innerText = validAccounts.length + ' 个账号就绪';
-    } else if (allConfiguredEnded) {
-      accOverviewVal.innerText = '游客免费兜底 (0/' + configuredAccounts.length + ')';
-    } else {
-      accOverviewVal.innerText = '待配置密钥';
-    }
+    accOverviewVal.innerText = allConfiguredEnded ? '游客模式 (0/' + validAccounts.length + ' 有效)' : (validAccounts.length > 0 ? (activePaidAccounts.length + ' 个账号就绪') : '待配置密钥');
   }
   if (accOverviewSub) {
-    if (validAccounts.length > 0) {
-      accOverviewSub.innerText = '多账号 429 秒级自动漂移与配额轮转';
-    } else if (allConfiguredEnded) {
-      accOverviewSub.innerText = '订阅账号均已失效，网关自动切换免费模型兜底';
-    } else {
-      accOverviewSub.innerText = '请点击填入订阅 API Key 即可启动负载均衡';
-    }
+    accOverviewSub.innerText = validAccounts.length > 0 ? '多账号 429 秒级自动漂移与配额轮转' : '请点击填入订阅 API Key 即可启动负载均衡';
   }
   const codexOverviewVal = document.getElementById('codex-overview-val');
   if (codexOverviewVal) {
@@ -1855,17 +1813,13 @@ function updateWizardStatusBadges() {
     netBadge.title = '智能网关正在 ' + host + ':' + port + ' 正常监听，所有请求均受高可用与会话隔离保护';
   }
 
-  // Dynamically calculate and update Wizard Global Badge & Sidebar Overview Badge
+  // Dynamically calculate and update Wizard Global Badge
   const wizGlobalBadge = document.getElementById('wizard-global-badge');
   if (wizGlobalBadge) {
-    const hasActivePaid = validAccounts.length > 0;
+    const hasAccounts = validAccounts.length > 0;
     const isCompActive = isComp;
     const isCodexReady = codexBound;
-    if (allConfiguredEnded) {
-      wizGlobalBadge.className = 'badge badge-halfopen';
-      wizGlobalBadge.innerText = '🟡 游客免费兜底 (0/' + configuredAccounts.length + ' 订阅有效)';
-      wizGlobalBadge.title = '所有订阅账号均需重新授权，当前自动运行在游客免费模型兜底模式';
-    } else if (!hasActivePaid) {
+    if (!hasAccounts) {
       wizGlobalBadge.className = 'badge badge-cooling';
       wizGlobalBadge.innerText = '🔴 待配置密钥';
       wizGlobalBadge.title = '尚未配置任何有效的 API Key 密钥，请在下方填入订阅密钥';
@@ -1877,30 +1831,6 @@ function updateWizardStatusBadges() {
       wizGlobalBadge.className = 'badge badge-healthy';
       wizGlobalBadge.innerText = '🟢 黄金就绪 (开箱即用)';
       wizGlobalBadge.title = '所有核心组件均处于最佳工作状态，尽情使用！';
-    }
-  }
-  if (navOverviewBadge) {
-    if (allConfiguredEnded) {
-      navOverviewBadge.innerText = '游客兜底';
-      if (navOverviewBadge.style) {
-        navOverviewBadge.style.background = 'rgba(245, 158, 11, 0.18)';
-        navOverviewBadge.style.color = '#fbbf24';
-        navOverviewBadge.style.borderColor = 'rgba(245, 158, 11, 0.35)';
-      }
-    } else if (validAccounts.length === 0) {
-      navOverviewBadge.innerText = '待配置';
-      if (navOverviewBadge.style) {
-        navOverviewBadge.style.background = 'rgba(239, 68, 68, 0.16)';
-        navOverviewBadge.style.color = '#f87171';
-        navOverviewBadge.style.borderColor = 'rgba(239, 68, 68, 0.35)';
-      }
-    } else {
-      navOverviewBadge.innerText = '就绪';
-      if (navOverviewBadge.style) {
-        navOverviewBadge.style.background = '';
-        navOverviewBadge.style.color = '';
-        navOverviewBadge.style.borderColor = '';
-      }
     }
   }
 }
@@ -2201,15 +2131,10 @@ function renderAccounts() {
   currentConfig.accounts.forEach((acc, index) => {
     const stat = liveStats[acc.id] || {};
     let badgeClass = 'badge-disabled';
-    let badgeStyle = '';
     let statusText = '未配置密钥/已禁用';
     if (acc.enabled && acc.apiKey) {
       const cState = stat.circuitState || (stat.status === 'cooling_down' ? 'OPEN' : 'CLOSED');
-      if (stat.isSubscriptionEnded || stat.lastStatus === 403 || stat.status === 'subscription_ended') {
-        badgeClass = 'badge-cooling';
-        badgeStyle = ' style="background:rgba(239, 68, 68, 0.2);color:#ef4444;"';
-        statusText = '🔴 官方订阅失效 (需授权)';
-      } else if (cState === 'HALF_OPEN' || stat.status === 'half_open') {
+      if (cState === 'HALF_OPEN' || stat.status === 'half_open') {
         badgeClass = 'badge-halfopen';
         statusText = '🟡 半开探测中';
       } else if (cState === 'OPEN' || stat.status === 'cooling_down') {
@@ -2227,7 +2152,7 @@ function renderAccounts() {
     card.innerHTML = `
       <div class="acc-header">
         <input type="text" class="acc-title-input" value="${acc.name || '账号 ' + (index + 1)}" onchange="updateAccountField('${acc.id}', 'name', this.value)">
-        <span class="badge ${badgeClass}" id="badge-${acc.id}"${badgeStyle}>${statusText}</span>
+        <span class="badge ${badgeClass}" id="badge-${acc.id}">${statusText}</span>
       </div>
 
       <div class="form-group">
@@ -2741,10 +2666,10 @@ function updateMetricsUI() {
         badge.className = 'badge badge-disabled';
         badge.innerText = '未配置密钥/已禁用';
       } else if (stat.isSubscriptionEnded || stat.lastStatus === 403) {
-        badge.className = 'badge badge-cooling';
-        badge.style.background = 'rgba(239, 68, 68, 0.2)';
-        badge.style.color = '#ef4444';
-        badge.innerText = '🔴 官方订阅失效 (需授权)';
+        badge.className = 'badge badge-halfopen';
+        badge.style.background = 'rgba(16, 185, 129, 0.16)';
+        badge.style.color = '#10b981';
+        badge.innerText = '🟢 已切游客免费模式 (原订阅待续期)';
       } else if (stat.circuitState === 'HALF_OPEN' || stat.status === 'half_open') {
         badge.className = 'badge badge-halfopen';
         badge.innerText = '🟡 半开探测中';
@@ -2756,6 +2681,9 @@ function updateMetricsUI() {
         badge.innerText = '🟢 正常 (CLOSED)';
       }
     }
+  }
+  if (typeof updateWizardStatusBadges === 'function') {
+    updateWizardStatusBadges();
   }
 }
 
@@ -2851,6 +2779,7 @@ async function fetchSingleQuota(id, force = false) {
     if (data.success && data.usage) {
       accountQuotas[id] = data.usage;
       if (qBox) qBox.innerHTML = buildQuotaContent(data.usage);
+      if (data.isSubscriptionEnded && typeof fetchStatus === 'function') fetchStatus();
       if (qTime) {
         const now = new Date();
         const timeStr = String(now.getHours()).padStart(2, '0') + ':' +

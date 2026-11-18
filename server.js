@@ -878,6 +878,102 @@ function isAccountAvailable(acc, now = Date.now()) {
 }
 
 
+
+let _zenGuestCounter = 0;
+const _zenGuestSessionMap = new Map();
+const _ZEN_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+function mintOpencodeZenSessionId() {
+  _zenGuestCounter = (_zenGuestCounter + 1) & 0x3f; // 0..63 ensures inverted low 12 bits land in [0xfc0, 0xfff]
+  const raw = BigInt(Date.now()) * 4096n + BigInt(_zenGuestCounter);
+  const head = (~raw & 0xffffffffffffn).toString(16).padStart(12, "0");
+  let tail = "";
+  for (let i = 0; i < 14; i++) {
+    tail += _ZEN_BASE62[Math.floor(Math.random() * 62)];
+  }
+  return `ses_${head}${tail}`;
+}
+
+function getOrMintGuestSessionId(rawSessionId) {
+  if (typeof rawSessionId === "string" && /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(rawSessionId)) {
+    const low12 = parseInt(rawSessionId.slice(13, 16), 16);
+    if (low12 >= 0xfc0 && low12 <= 0xfff) return rawSessionId;
+  }
+  const key = rawSessionId || "default";
+  if (_zenGuestSessionMap.has(key)) return _zenGuestSessionMap.get(key);
+  if (_zenGuestSessionMap.size > 1000) _zenGuestSessionMap.clear();
+  const minted = mintOpencodeZenSessionId();
+  _zenGuestSessionMap.set(key, minted);
+  return minted;
+}
+
+const ZEN_PUBLIC_FREE_MODELS = new Set([
+  "deepseek-v4.1-flash-free",
+  "mimo-v2.6-flash-free",
+  "longcat-2.5-preview-free",
+  "cat-jam-free",
+  "big-pickle",
+  "nemotron-3.5-lightning-free",
+  "nemotron-3.5-super-vl-free",
+  "space-bunny-free"
+]);
+
+function mapModelForZenGuest(modelName) {
+  const clean = (modelName || "").replace(/^opencode(?:-go)?\//i, "").toLowerCase().trim();
+  if (ZEN_PUBLIC_FREE_MODELS.has(clean)) return clean;
+  if (clean === "hy4-flash-free" || clean === "deepseek-v4.1-flash" || clean === "deepseek-flash" || clean === "glm-5.3-flash" || clean === "glm-5.3-flash-free") {
+    return "deepseek-v4.1-flash-free";
+  }
+  if (clean === "longcat-2.5-free") return "longcat-2.5-preview-free";
+  if (clean === "mimo-v2.6-flash") return "mimo-v2.6-flash-free";
+  return "deepseek-v4.1-flash-free";
+}
+
+const ZEN_REQUIRED_TOOL_STUBS = [
+  { name: "bash", description: "Internal CLI shell stub (do not invoke; use primary workspace tools or reply directly)." },
+  { name: "read", description: "Internal CLI file read stub (do not invoke; use primary workspace tools or reply directly)." },
+  { name: "glob", description: "Internal CLI glob stub (do not invoke; use primary workspace tools or reply directly)." },
+  { name: "grep", description: "Internal CLI grep stub (do not invoke; use primary workspace tools or reply directly)." }
+];
+
+function ensureZenGuestToolsInChatPayload(payloadObj) {
+  if (!payloadObj || typeof payloadObj !== "object") return payloadObj;
+  const existingTools = Array.isArray(payloadObj.tools) ? [...payloadObj.tools] : [];
+  const existingNames = new Set(existingTools.map(t => (t && (t.function?.name || t.name || "")).toLowerCase()));
+  for (const stub of ZEN_REQUIRED_TOOL_STUBS) {
+    if (!existingNames.has(stub.name)) {
+      existingTools.push({
+        type: "function",
+        function: {
+          name: stub.name,
+          description: stub.description,
+          parameters: { type: "object", properties: {}, additionalProperties: false }
+        }
+      });
+    }
+  }
+  payloadObj.tools = existingTools;
+  return payloadObj;
+}
+
+let _lastGuestSyncTime = 0;
+function triggerGuestClientSyncIfNeeded() {
+  const now = Date.now();
+  if (now - _lastGuestSyncTime < 15000) return;
+  _lastGuestSyncTime = now;
+  try {
+    const clientAdapter = require("./client-adapter-manager");
+    clientAdapter.syncAllClients({
+      policy: "guest",
+      isGuest: true,
+      freeOnly: true,
+      routerPort: config.port,
+      preserveChoice: false
+    });
+    console.log("[Guest Protocol] 已自动将本地客户端 (Codex / OpenCode / OpenChamber) 同步切换至免费游客模式");
+  } catch (_) {}
+}
+
 function isGuestModeActive() {
   if (config.forceGuestMode === true || config.guestProtocolEnabled === true) {
     return true;
@@ -906,8 +1002,8 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
       return {
         id: '__guest_protocol__',
         name: 'OpenCode Go (游客协议·免登录)',
-        apiKey: '',
-        upstream: 'https://opencode.ai/inference/openai/v1',
+        apiKey: 'public',
+        upstream: 'https://opencode.ai/zen/v1',
         isGuest: true,
         enabled: true
       };
@@ -1144,6 +1240,7 @@ function testAccountConnection(upstream, apiKey) {
                 st.isQuotaExhausted = true;
                 st.lastStatus = 403;
                 st.lastError = "官方订阅失效: 支付方式需重新授权";
+                if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
               }
               safeResolve({
                 success: false,
@@ -1162,6 +1259,7 @@ function testAccountConnection(upstream, apiKey) {
                     st.isQuotaExhausted = true;
                     st.lastStatus = 403;
                     st.lastError = "官方订阅失效: 支付方式需重新授权";
+                if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
                   }
                   safeResolve({
                     success: false,
@@ -1307,13 +1405,24 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                 st.lastStatus = 403;
                 st.isQuotaExhausted = true;
                 st.lastError = '官方订阅失效: 支付方式需重新授权';
+                if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
               }
             }
+            const subNotice = `官方订阅失效: 支付方式需重新授权 (${upstreamErrorMsg || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`;
             safeResolve({
-              success: false,
-              statusCode: res.statusCode,
+              success: true,
+              statusCode: 200,
               isSubscriptionEnded: true,
-              error: `官方订阅失效: 支付方式需重新授权 (${upstreamErrorMsg || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`,
+              guestModeActive: true,
+              usage: {
+                mode: "guest_free_tier",
+                guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free", "cat-jam-free", "big-pickle"],
+                subscriptionNotice: subNotice,
+                rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
+                weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
+                monthly: { percent: 0, resetsAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() }
+              },
+              error: subNotice,
               fromCache: false
             });
             return;
@@ -1331,12 +1440,23 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     targetStatForQuota.isQuotaExhausted = true;
                     targetStatForQuota.lastStatus = 403;
                     targetStatForQuota.lastError = "官方订阅失效: 支付方式需重新授权";
+                    if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
                   }
+                  const subNotice = `官方订阅失效: 支付方式需重新授权 (${probeRes.message || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`;
                   safeResolve({
-                    success: false,
-                    statusCode: 403,
+                    success: true,
+                    statusCode: 200,
                     isSubscriptionEnded: true,
-                    error: `官方订阅失效: 支付方式需重新授权 (${probeRes.message || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`,
+                    guestModeActive: true,
+                    usage: {
+                      mode: "guest_free_tier",
+                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free", "cat-jam-free", "big-pickle"],
+                      subscriptionNotice: subNotice,
+                      rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
+                      weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
+                      monthly: { percent: 0, resetsAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() }
+                    },
+                    error: subNotice,
                     fromCache: false
                   });
                   return;
@@ -1356,13 +1476,33 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                 quotaCache.set(cacheKey, { timestamp: Date.now(), result });
                 safeResolve(result);
               } else {
-                safeResolve({
-                  success: false,
-                  statusCode: connRes?.statusCode || res.statusCode,
-                  isSubscriptionEnded: Boolean(connRes?.isSubscriptionEnded),
-                  error: connRes?.message || upstreamErrorMsg || `上游返回 HTTP ${res.statusCode}`,
-                  fromCache: false
-                });
+                if (connRes && connRes.isSubscriptionEnded) {
+                  const subNotice = connRes.message || `官方订阅失效: 支付方式需重新授权 (${upstreamErrorMsg || "请前往 https://opencode.ai/console/go 重新授权支付方式"})`;
+                  safeResolve({
+                    success: true,
+                    statusCode: 200,
+                    isSubscriptionEnded: true,
+                    guestModeActive: true,
+                    usage: {
+                      mode: "guest_free_tier",
+                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-preview-free", "cat-jam-free", "big-pickle"],
+                      subscriptionNotice: subNotice,
+                      rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
+                      weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
+                      monthly: { percent: 0, resetsAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() }
+                    },
+                    error: subNotice,
+                    fromCache: false
+                  });
+                } else {
+                  safeResolve({
+                    success: false,
+                    statusCode: connRes?.statusCode || res.statusCode,
+                    isSubscriptionEnded: false,
+                    error: connRes?.message || upstreamErrorMsg || `上游返回 HTTP ${res.statusCode}`,
+                    fromCache: false
+                  });
+                }
               }
             }).catch(() => {
               safeResolve({ success: false, statusCode: res.statusCode, error: upstreamErrorMsg || `上游返回 HTTP ${res.statusCode}`, fromCache: false });
@@ -1815,6 +1955,7 @@ function handleQuotaExhaustedFailover({
       stat.isSubscriptionEnded = true;
       stat.lastStatus = 403;
       stat.lastError = '官方订阅失效: 支付方式需重新授权';
+      if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
     }
   }
   recordCooldown(account.id, 3600000, (classified && classified.isSubscriptionEnded) ? 'Subscription Ended (Payment Auth Needed)' : 'Quota / Balance Exhausted');
@@ -2760,17 +2901,29 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
   proxyHeaders['x-opencode-session'] = sessionId;
   if (account && account.isGuest) {
-    delete proxyHeaders['authorization'];
+    const zenSesId = getOrMintGuestSessionId(sessionId);
     delete proxyHeaders['x-api-key'];
     delete proxyHeaders['proxy-authorization'];
+    delete proxyHeaders['x-opencode-request'];
+    delete proxyHeaders['http-referer'];
+    delete proxyHeaders['referer'];
+    proxyHeaders['authorization'] = 'Bearer public';
     proxyHeaders['x-opencode-client'] = 'cli';
-    proxyHeaders['user-agent'] = 'opencode/1.2.0 (windows; x64)';
-    if (!proxyHeaders['x-opencode-session']) {
-      proxyHeaders['x-opencode-session'] = sessionId || ('guest-' + Date.now());
-    }
-    if (parsedBody && parsedBody.model && !codexAdapter.isFreeModel(parsedBody.model)) {
-      console.log(`[Guest Protocol] 游客协议拦截付费模型 "${parsedBody.model}"，自动安全转换为免费在役模型 "hy4-flash-free"`);
-      parsedBody.model = 'hy4-flash-free';
+    proxyHeaders['x-opencode-project'] = 'global';
+    proxyHeaders['x-opencode-session'] = zenSesId;
+    proxyHeaders['x-opencode-session-id'] = zenSesId;
+    proxyHeaders['user-agent'] = 'opencode/2.0.28';
+    if (parsedBody && typeof parsedBody === 'object') {
+      const targetGuestModel = isLiveOpencodeGo
+        ? mapModelForZenGuest(parsedBody.model)
+        : (codexAdapter.isFreeModel(parsedBody.model) ? parsedBody.model : 'hy4-flash-free');
+      if (parsedBody.model !== targetGuestModel) {
+        console.log(`[Guest Protocol] 游客协议自动将模型 "${parsedBody.model}" 映射为免密钥可用模型 "${targetGuestModel}"`);
+        parsedBody.model = targetGuestModel;
+      }
+      if (isLiveOpencodeGo && targetPath.includes('/chat/completions')) {
+        ensureZenGuestToolsInChatPayload(parsedBody);
+      }
       reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
       proxyHeaders['content-length'] = String(Buffer.byteLength(reqBody));
     }
@@ -3513,27 +3666,39 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
   };
   const chatPayload = precomputedChatPayload || codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
-  if (account && account.isGuest && chatPayload && chatPayload.model && !codexAdapter.isFreeModel(chatPayload.model)) {
-    console.log(`[Guest Protocol] Codex 桥接拦截付费模型 "${chatPayload.model}"，自动安全转换为免费在役模型 "hy4-flash-free"`);
-    chatPayload.model = 'hy4-flash-free';
+  if (account && account.isGuest && chatPayload && typeof chatPayload === 'object') {
+    const targetGuestModel = isLiveOpencodeGo
+      ? mapModelForZenGuest(chatPayload.model)
+      : (codexAdapter.isFreeModel(chatPayload.model) ? chatPayload.model : 'hy4-flash-free');
+    if (chatPayload.model !== targetGuestModel) {
+      console.log(`[Guest Protocol] Codex 桥接自动将模型 "${chatPayload.model}" 映射为免密钥可用模型 "${targetGuestModel}"`);
+      chatPayload.model = targetGuestModel;
+    }
+    if (isLiveOpencodeGo) {
+      ensureZenGuestToolsInChatPayload(chatPayload);
+    }
   }
-  const reqModel = chatPayload.model || ((account && account.isGuest) ? 'hy4-flash-free' : 'deepseek-v4.1-flash');
+  const reqModel = chatPayload.model || ((account && account.isGuest) ? (isLiveOpencodeGo ? 'deepseek-v4.1-flash-free' : 'hy4-flash-free') : 'deepseek-v4.1-flash');
   const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
 
   const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
   const upstreamChatPath = upstreamPathname + '/chat/completions';
 
+  const zenSesId = (account && account.isGuest) ? getOrMintGuestSessionId(sessionId) : (sessionId || ('session-' + Date.now()));
   const proxyHeaders = {
     'content-type': 'application/json',
     'content-length': String(chatBody.length),
-    'x-opencode-session': sessionId || ('guest-' + Date.now()),
+    'x-opencode-session': zenSesId,
     'user-agent': (account && account.isGuest)
-      ? 'opencode/1.2.0 (windows; x64)'
+      ? 'opencode/2.0.28'
       : ((clientReq.headers['user-agent'] && !/python|curl|undici|node-fetch/i.test(clientReq.headers['user-agent'])) ? clientReq.headers['user-agent'] : 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)')
   };
   if (account && account.isGuest) {
+    proxyHeaders['authorization'] = 'Bearer public';
     proxyHeaders['x-opencode-client'] = 'cli';
+    proxyHeaders['x-opencode-project'] = 'global';
+    proxyHeaders['x-opencode-session-id'] = zenSesId;
   } else {
     proxyHeaders['authorization'] = `Bearer ${(account.apiKey || '').trim()}`;
   }
@@ -6414,11 +6579,7 @@ const server = http.createServer((req, res) => {
     const enabledAccounts = config.accounts.filter(a => a.enabled && a.apiKey && a.apiKey.trim());
     const healthyAccounts = enabledAccounts.filter(a => {
       const stat = accountStats.get(a.id);
-      if (!stat) return true;
-      if (stat.isSubscriptionEnded || stat.lastStatus === 403 || (stat.isQuotaExhausted && stat.lastStatus === 402)) {
-        return false;
-      }
-      return (stat.cooldownUntil || 0) <= now;
+      return !stat || (!stat.isSubscriptionEnded && !stat.isQuotaExhausted && (stat.cooldownUntil || 0) <= now);
     });
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -6430,8 +6591,7 @@ const server = http.createServer((req, res) => {
       version: CURRENT_ROUTER_VERSION,
       port: config.port,
       healthyAccounts: healthyAccounts.length,
-      totalAccounts: config.accounts.length,
-      guestModeActive: isGuestModeActive()
+      totalAccounts: config.accounts.length
     }));
     return;
   }
@@ -6452,10 +6612,8 @@ const server = http.createServer((req, res) => {
       const state = getCircuitState(acc.id, now);
       const isCooling = state === CIRCUIT_STATE.OPEN || (stat.cooldownUntil || 0) > now;
       const remainingCooldown = isCooling ? Math.max(0, Math.ceil(((stat.cooldownUntil || 0) - now) / 1000)) : 0;
-      const isSubEnded = Boolean(stat.isSubscriptionEnded || stat.lastStatus === 403 || (stat.isQuotaExhausted && stat.lastStatus === 402));
       let status = 'healthy';
       if (!acc.enabled || !acc.apiKey || !acc.apiKey.trim()) status = 'disabled';
-      else if (isSubEnded) status = 'subscription_ended';
       else if (isCooling) status = 'cooling_down';
       else if (state === CIRCUIT_STATE.HALF_OPEN) status = 'half_open';
 
@@ -6484,8 +6642,6 @@ const server = http.createServer((req, res) => {
       };
     });
 
-    const healthyCount = accountsData.filter(a => a.enabled && a.hasKey && a.status !== 'subscription_ended' && a.status !== 'cooling_down').length;
-
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*'
@@ -6502,8 +6658,6 @@ const server = http.createServer((req, res) => {
       chunkIdleTimeoutMs: config.chunkIdleTimeoutMs || 60000,
       circuitBreaker: config.circuitBreaker || DEFAULT_CIRCUIT_CONFIG,
       activeSessions: sessionMap.size,
-      healthyAccounts: healthyCount,
-      guestModeActive: isGuestModeActive(),
       accounts: accountsData
     }, null, 2));
     return;
@@ -8845,6 +8999,18 @@ function start(port = config.port, host = config.host, callback) {
     } catch (healErr) {
       console.warn('[OpenCode Go Router] autoHealOpencodePortDrift warning:', healErr.message);
     }
+    if (require.main === module && Array.isArray(config.accounts)) {
+      setTimeout(() => {
+        for (const acc of config.accounts) {
+          if (acc && acc.enabled && acc.apiKey && acc.apiKey.trim()) {
+            const up = (acc.upstream || config.upstream || "").trim();
+            if (up.includes("opencode.ai")) {
+              fetchAccountUsage(up, acc.apiKey.trim(), true).catch(() => {});
+            }
+          }
+        }
+      }, 300);
+    }
     if (typeof callback === 'function') callback();
   });
 }
@@ -8863,6 +9029,10 @@ module.exports = {
   gracefulShutdown,
   classifyUpstreamError,
   isGuestModeActive,
+  mintOpencodeZenSessionId,
+  getOrMintGuestSessionId,
+  mapModelForZenGuest,
+  ensureZenGuestToolsInChatPayload,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
   handleQuotaExhaustedFailover,
