@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 /**
  * OpenCode Go Multi-Subscription Smart Router & Load Balancer
  * Ultra-low overhead, zero external dependencies (Node.js native).
@@ -883,6 +884,34 @@ let _zenGuestCounter = 0;
 const _zenGuestSessionMap = new Map();
 const _ZEN_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+const ZEN_BORINGSSL_CIPHERS = [
+  "TLS_AES_128_GCM_SHA256",
+  "TLS_AES_256_GCM_SHA384",
+  "TLS_CHACHA20_POLY1305_SHA256",
+  "ECDHE-ECDSA-AES128-GCM-SHA256",
+  "ECDHE-RSA-AES128-GCM-SHA256",
+  "ECDHE-ECDSA-AES256-GCM-SHA384",
+  "ECDHE-RSA-AES256-GCM-SHA384",
+  "ECDHE-ECDSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-AES128-SHA",
+  "ECDHE-RSA-AES256-SHA",
+  "AES128-GCM-SHA256",
+  "AES256-GCM-SHA384",
+  "AES128-SHA",
+  "AES256-SHA"
+].join(":");
+
+const ZEN_GUEST_ENV_BLOCK = [
+  "Here is some useful information about the environment you are running in:",
+  "<env>",
+  "  Working directory: /workspace",
+  "  Workspace root folder: /workspace",
+  "  Is directory a git repo: yes",
+  `  Platform: ${process.platform === "win32" ? "win32" : (process.platform === "darwin" ? "darwin" : "linux")}`,
+  "</env>"
+].join("\n");
+
 function mintOpencodeZenSessionId() {
   _zenGuestCounter = (_zenGuestCounter + 1) & 0x3f; // 0..63 ensures inverted low 12 bits land in [0xfc0, 0xfff]
   const raw = BigInt(Date.now()) * 4096n + BigInt(_zenGuestCounter);
@@ -907,89 +936,230 @@ function getOrMintGuestSessionId(rawSessionId) {
   return minted;
 }
 
+function rotateGuestSessionId(rawSessionId) {
+  const key = rawSessionId || "default";
+  const minted = mintOpencodeZenSessionId();
+  _zenGuestSessionMap.set(key, minted);
+  return minted;
+}
+
+function getOrMintGuestProjectHash(zenSesId) {
+  return crypto.createHash("sha1").update(`opencode-project:${zenSesId || "global"}`).digest("hex");
+}
+
+function buildZenGuestHeaders(zenSesId) {
+  const ses = zenSesId || mintOpencodeZenSessionId();
+  const projHash = getOrMintGuestProjectHash(ses);
+  return {
+    "authorization": "Bearer public",
+    "user-agent": "opencode/latest/2.1.4/cli",
+    "x-opencode-client": "cli",
+    "x-opencode-project": projHash,
+    "x-opencode-session": ses,
+    "x-opencode-session-id": ses,
+    "x-session-affinity": ses,
+    "x-session-id": ses
+  };
+}
+
 const ZEN_PUBLIC_FREE_MODELS = new Set([
   "deepseek-v4.1-flash-free",
   "mimo-v2.6-flash-free",
-  "longcat-2.5-free",
   "big-pickle",
-  "hy4-flash-free",
+  "glm-5.3-flash-free",
+  "longcat-2.5-preview-free",
+  "longcat-2.5-free",
   "nemotron-3.5-lightning-free",
-  "nemotron-3.5-super-vl-free"
+  "nemotron-3.5-super-vl-free",
+  "nemotron-3-ultra-free",
+  "space-bunny-free"
 ]);
+
+const ZEN_GUEST_FALLBACK_CANDIDATES = [
+  { model: "deepseek-v4.1-flash-free", upstream: "https://opencode.ai/inference/openai/v1" },
+  { model: "mimo-v2.6-flash-free", upstream: "https://opencode.ai/inference/openai/v1" },
+  { model: "big-pickle", upstream: "https://opencode.ai/zen/v1" },
+  { model: "glm-5.3-flash-free", upstream: "https://opencode.ai/inference/openai/v1" },
+  { model: "longcat-2.5-preview-free", upstream: "https://opencode.ai/zen/v1" },
+  { model: "nemotron-3.5-lightning-free", upstream: "https://opencode.ai/inference/openai/v1" }
+];
 
 function mapModelForZenGuest(modelName) {
   const clean = (modelName || "").replace(/^opencode(?:-go)?\//i, "").toLowerCase().trim();
   if (ZEN_PUBLIC_FREE_MODELS.has(clean)) return clean;
-  if (clean === "longcat-2.5-preview-free") return "longcat-2.5-free";
   if (clean === "mimo-v2.6-flash") return "mimo-v2.6-flash-free";
-  if (clean === "cat-jam-free" || clean === "beam-free" || clean === "deepseek-v4.1-flash" || clean === "deepseek-flash" || clean === "glm-5.3-flash" || clean === "glm-5.3-flash-free") {
+  if (clean === "glm-5.3-flash") return "glm-5.3-flash-free";
+  if (clean === "hy4-flash-free" || clean === "cat-jam-free" || clean === "beam-free" || clean === "deepseek-v4.1-flash" || clean === "deepseek-flash") {
     return "deepseek-v4.1-flash-free";
   }
   return "deepseek-v4.1-flash-free";
 }
 
-function buildFreeUsageLimitNotice(modelName) {
-  const displayModel = modelName || "deepseek-v4.1-flash-free";
-  return [
-    `[智能网关提示] OpenCode Zen 免费游客通道返回 429 FreeUsageLimitError（模型：${displayModel}）。`,
-    "",
-    "原因说明：OpenCode Zen v2 免费模型仅向官方 OpenCode CLI 原生客户端开放（深度校验官方系统提示词 Preamble 与工具签名），且免费池当日限流锁至次日 00:00 UTC（北京时间 08:00）。为保护 Codex 原生改代码与命令执行能力，网关不会强行篡改您的 Codex 系统提示词。",
-    "",
-    "推荐快速恢复方案：",
-    "1. 【免费稳定兜底（推荐）】在网关 WebUI「订阅账号 2」填入任意兼容 OpenAI 的第三方免费 API Key（如硅基流动 SiliconFlow、Groq、Google AI Studio）及对应 Upstream，账号 1 订阅失效时将自动 0.1 秒无缝接管 Codex 编码任务；",
-    "2. 【恢复 OpenCode Go 订阅】前往 https://opencode.ai/console/go 重新授权支付方式，回到网关 WebUI 点击【测速】，即可秒级解除游客模式并恢复全量 44 款旗舰模型。"
-  ].join("\n");
-}
-
-function sendResponsesFreeLimitFastClose(clientRes, reqModel, reqId, isStream, sessionId = null) {
-  const notice = buildFreeUsageLimitNotice(reqModel);
-  if (isStream && typeof codexAdapter.dispatchResponsesStreamNotice === 'function') {
-    codexAdapter.dispatchResponsesStreamNotice(clientRes, reqModel, reqId, notice, sessionId);
-    return;
-  }
-  if (!clientRes || clientRes.writableEnded || clientRes.destroyed) return;
-  const respId = reqId || ('resp_notice_' + Date.now());
-  const msgId = 'msg_notice_' + Date.now();
-  const nowSec = Math.floor(Date.now() / 1000);
-  const payload = JSON.stringify({
-    id: respId,
-    object: 'response',
-    created_at: nowSec,
-    completed_at: nowSec,
-    status: 'completed',
-    model: reqModel || 'deepseek-v4.1-flash-free',
-    output: [{
-      id: msgId,
-      type: 'message',
-      status: 'completed',
-      role: 'assistant',
-      phase: 'final_answer',
-      content: [{ type: 'output_text', text: notice, annotations: [], logprobs: [] }]
-    }],
-    output_text: notice,
-    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
-  });
-  const buf = Buffer.from(payload, 'utf8');
-  if (!clientRes.headersSent) {
-    clientRes.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Content-Length': String(buf.length),
-      'Access-Control-Allow-Origin': '*'
-    });
-  }
-  clientRes.end(buf);
-}
-
 const ZEN_REQUIRED_TOOL_STUBS = [
-  { name: "bash", description: "Internal CLI shell stub (do not invoke; use primary workspace tools or reply directly)." },
-  { name: "read", description: "Internal CLI file read stub (do not invoke; use primary workspace tools or reply directly)." },
-  { name: "glob", description: "Internal CLI glob stub (do not invoke; use primary workspace tools or reply directly)." },
-  { name: "grep", description: "Internal CLI grep stub (do not invoke; use primary workspace tools or reply directly)." }
+  {
+    name: "bash",
+    description: "DEPRECATED / DO NOT CALL: Internal CLI shell compatibility anchor. Never invoke; use caller workspace tools or reply directly.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The command to execute" },
+        timeout: { type: "number", description: "Optional timeout in milliseconds" },
+        description: { type: "string", description: "Clear, concise description of what this command does in 5-10 words" }
+      },
+      required: ["command", "description"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "read",
+    description: "DEPRECATED / DO NOT CALL: Internal CLI file read compatibility anchor. Never invoke; use caller workspace tools or reply directly.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "The absolute path to the file to read" },
+        offset: { type: "number", description: "The line number to start reading from (0-based)" },
+        limit: { type: "number", description: "The number of lines to read (defaults to 2000)" }
+      },
+      required: ["filePath"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "edit",
+    description: "DEPRECATED / DO NOT CALL: Internal CLI edit compatibility anchor. Never invoke; use caller workspace tools or reply directly.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "The absolute path to the file to modify" },
+        oldString: { type: "string", description: "The text to replace" },
+        newString: { type: "string", description: "The text to replace it with" },
+        replaceAll: { type: "boolean", description: "Replace all occurrences of oldString (default false)" }
+      },
+      required: ["filePath", "oldString", "newString"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "write",
+    description: "DEPRECATED / DO NOT CALL: Internal CLI write compatibility anchor. Never invoke; use caller workspace tools or reply directly.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "The content to write to the file" },
+        filePath: { type: "string", description: "The absolute path to the file to write" }
+      },
+      required: ["content", "filePath"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "glob",
+    description: "DEPRECATED / DO NOT CALL: Internal CLI glob compatibility anchor. Never invoke; use caller workspace tools or reply directly.",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "The glob pattern to match files against" },
+        path: { type: "string", description: "The directory to search in" }
+      },
+      required: ["pattern"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "grep",
+    description: "DEPRECATED / DO NOT CALL: Internal CLI grep compatibility anchor. Never invoke; use caller workspace tools or reply directly.",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "The regex pattern to search for in file contents" },
+        path: { type: "string", description: "The directory to search in" },
+        include: { type: "string", description: "File pattern to include in the search" }
+      },
+      required: ["pattern"],
+      additionalProperties: false
+    }
+  }
 ];
+
+function hasZenEnvBlockInText(str) {
+  return typeof str === "string" && str.includes("<env>") && str.includes("Working directory:");
+}
 
 function ensureZenGuestToolsInChatPayload(payloadObj) {
   if (!payloadObj || typeof payloadObj !== "object") return payloadObj;
-  const existingTools = Array.isArray(payloadObj.tools) ? [...payloadObj.tools] : [];
+
+  // 1. Gate A: Inject OpenCode CLI <env> block into system/developer prompt or instructions without altering caller instructions
+  if (Array.isArray(payloadObj.messages)) {
+    let hasEnv = false;
+    let firstSysMsg = null;
+    for (const msg of payloadObj.messages) {
+      if (!msg || typeof msg !== "object") continue;
+      if (msg.role === "system" || msg.role === "developer") {
+        if (!firstSysMsg) firstSysMsg = msg;
+        if (typeof msg.content === "string" && hasZenEnvBlockInText(msg.content)) {
+          hasEnv = true;
+          break;
+        } else if (Array.isArray(msg.content) && msg.content.some(p => p && hasZenEnvBlockInText(p.text || p.content || ""))) {
+          hasEnv = true;
+          break;
+        }
+      }
+    }
+    if (!hasEnv) {
+      if (firstSysMsg) {
+        if (typeof firstSysMsg.content === "string") {
+          firstSysMsg.content = `${firstSysMsg.content}\n\n${ZEN_GUEST_ENV_BLOCK}`;
+        } else if (Array.isArray(firstSysMsg.content)) {
+          firstSysMsg.content.push({ type: "text", text: `\n\n${ZEN_GUEST_ENV_BLOCK}` });
+        } else {
+          firstSysMsg.content = ZEN_GUEST_ENV_BLOCK;
+        }
+      } else {
+        payloadObj.messages.unshift({ role: "system", content: ZEN_GUEST_ENV_BLOCK });
+      }
+    }
+  }
+
+  if (typeof payloadObj.instructions === "string") {
+    if (!hasZenEnvBlockInText(payloadObj.instructions)) {
+      payloadObj.instructions = `${payloadObj.instructions}\n\n${ZEN_GUEST_ENV_BLOCK}`;
+    }
+  } else if (Array.isArray(payloadObj.input) && !Array.isArray(payloadObj.messages)) {
+    const inputHasEnv = payloadObj.input.some(item => {
+      if (!item || typeof item !== "object") return false;
+      if (typeof item.content === "string" && hasZenEnvBlockInText(item.content)) return true;
+      if (Array.isArray(item.content)) {
+        return item.content.some(p => p && hasZenEnvBlockInText(p.text || p.content || ""));
+      }
+      return false;
+    });
+    if (!inputHasEnv) {
+      payloadObj.instructions = ZEN_GUEST_ENV_BLOCK;
+    }
+  }
+
+  // 2. Gate A2: Sanitize blocked tool name substring "run_code" -> "run_program" & attach OpenCode v2 tool manifest anchors
+  const rawTools = Array.isArray(payloadObj.tools) ? payloadObj.tools : [];
+  const existingTools = rawTools.map(t => {
+    if (!t || typeof t !== "object") return t;
+    if (t.function && typeof t.function.name === "string" && /run_code/i.test(t.function.name)) {
+      return {
+        ...t,
+        function: {
+          ...t.function,
+          name: t.function.name.replace(/run_code/gi, "run_program")
+        }
+      };
+    }
+    if (typeof t.name === "string" && /run_code/i.test(t.name)) {
+      return {
+        ...t,
+        name: t.name.replace(/run_code/gi, "run_program")
+      };
+    }
+    return t;
+  });
+
   const existingNames = new Set(existingTools.map(t => (t && (t.function?.name || t.name || "")).toLowerCase()));
   for (const stub of ZEN_REQUIRED_TOOL_STUBS) {
     if (!existingNames.has(stub.name)) {
@@ -998,17 +1168,152 @@ function ensureZenGuestToolsInChatPayload(payloadObj) {
         function: {
           name: stub.name,
           description: stub.description,
-          parameters: { type: "object", properties: {}, additionalProperties: false }
+          parameters: stub.parameters
         }
       });
     }
   }
   payloadObj.tools = existingTools;
+
+  if (payloadObj.stream === true && !payloadObj.stream_options) {
+    payloadObj.stream_options = { include_usage: true };
+  }
+
   return payloadObj;
+}
+
+// Built-in Bun BoringSSL TLS Sidecar Manager for Gate B TLS ClientHello parity
+let _zenBunSidecarProc = null;
+let _zenBunSidecarPort = 0;
+let _zenBunSidecarStarting = false;
+let _bunInstallAttempted = false;
+
+function findBunExecutable() {
+  const isWin = process.platform === "win32";
+  const binName = isWin ? "bun.exe" : "bun";
+  const candidates = [];
+  if (process.env.BUN_BIN) candidates.push(process.env.BUN_BIN);
+  if (process.env.BUN_INSTALL) candidates.push(path.join(process.env.BUN_INSTALL, "bin", binName));
+  candidates.push(path.join(os.homedir(), ".bun", "bin", binName));
+  if (process.env.USERPROFILE) candidates.push(path.join(process.env.USERPROFILE, ".bun", "bin", binName));
+  if (process.env.LOCALAPPDATA) candidates.push(path.join(process.env.LOCALAPPDATA, "bun", "bin", binName));
+  const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (const d of pathDirs) {
+    candidates.push(path.join(d, binName));
+  }
+  for (const c of candidates) {
+    try {
+      if (c && fs.existsSync(c) && fs.statSync(c).isFile()) return c;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function ensureZenBunSidecar() {
+  if (require.main !== module && !process.env.FORCE_ZEN_BUN_SIDECAR) return 0;
+  if (_zenBunSidecarPort > 0 && _zenBunSidecarProc && !_zenBunSidecarProc.killed) {
+    return _zenBunSidecarPort;
+  }
+  if (_zenBunSidecarStarting) return 0;
+  const sidecarScript = path.join(__dirname, "zen-bun-sidecar.mjs");
+  if (!fs.existsSync(sidecarScript)) return 0;
+  const bunBin = findBunExecutable();
+  if (!bunBin) {
+    if (!_bunInstallAttempted && !process.env.OPENCODE_ROUTER_DISABLE_BUN_AUTOINSTALL) {
+      _bunInstallAttempted = true;
+      const isLocalMock = config && config.upstream && (config.upstream.includes("127.0.0.1") || config.upstream.includes("localhost"));
+      if (!isLocalMock) {
+        console.log("[Zen TLS Sidecar] 未检测到 Bun 运行时，正在后台静默部署 Bun 以提供 OpenCode Zen 免费层 BoringSSL TLS 指纹对齐...");
+        try {
+          const installCmd = process.platform === "win32"
+            ? 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "irm https://bun.sh/install.ps1 | iex"'
+            : 'curl -fsSL https://bun.sh/install | bash';
+          const installer = spawn(installCmd, { shell: true, windowsHide: true, stdio: "ignore" });
+          installer.on("exit", (code) => {
+            if (code === 0) {
+              console.log("[Zen TLS Sidecar] Bun 运行时后台部署完成，正在启动 BoringSSL TLS 旁路...");
+              ensureZenBunSidecar();
+            }
+          });
+          installer.unref();
+        } catch (_) {}
+      }
+    }
+    return 0;
+  }
+
+  _zenBunSidecarStarting = true;
+  try {
+    const proc = spawn(bunBin, [sidecarScript], {
+      cwd: __dirname,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    _zenBunSidecarProc = proc;
+    let stdoutBuf = "";
+    proc.stdout.on("data", (chunk) => {
+      stdoutBuf += chunk.toString();
+      const m = stdoutBuf.match(/ZEN_BUN_SIDECAR_PORT=(\d+)/);
+      if (m && m[1]) {
+        _zenBunSidecarPort = parseInt(m[1], 10);
+        _zenBunSidecarStarting = false;
+        console.log(`[Zen TLS Sidecar] BoringSSL TLS 传输旁路已就绪 (127.0.0.1:${_zenBunSidecarPort})`);
+      }
+    });
+    proc.stderr.on("data", () => {});
+    proc.on("exit", () => {
+      _zenBunSidecarPort = 0;
+      _zenBunSidecarProc = null;
+      _zenBunSidecarStarting = false;
+    });
+    proc.on("error", () => {
+      _zenBunSidecarPort = 0;
+      _zenBunSidecarProc = null;
+      _zenBunSidecarStarting = false;
+    });
+    if (proc.unref) proc.unref();
+  } catch (_) {
+    _zenBunSidecarStarting = false;
+  }
+  return _zenBunSidecarPort;
+}
+
+function createUpstreamTransportRequest(proxyOptions, isHttps, isLiveZenGuest, effectiveProxyUrl = "") {
+  if (isLiveZenGuest) {
+    const sidecarPort = ensureZenBunSidecar();
+    if (sidecarPort > 0) {
+      const targetProto = proxyOptions.protocol || (isHttps ? "https:" : "http:");
+      const targetPortPart = (proxyOptions.port && proxyOptions.port !== 443 && proxyOptions.port !== 80) ? `:${proxyOptions.port}` : "";
+      const targetFullUrl = `${targetProto}//${proxyOptions.hostname}${targetPortPart}${proxyOptions.path}`;
+      const sidecarHeaders = {
+        ...(proxyOptions.headers || {}),
+        "x-zen-target-url": targetFullUrl
+      };
+      if (effectiveProxyUrl) {
+        sidecarHeaders["x-zen-proxy-url"] = effectiveProxyUrl;
+      }
+      return http.request({
+        protocol: "http:",
+        hostname: "127.0.0.1",
+        port: sidecarPort,
+        path: proxyOptions.path || "/v1/chat/completions",
+        method: proxyOptions.method || "POST",
+        headers: sidecarHeaders,
+        timeout: proxyOptions.timeout || 300000
+      });
+    }
+    if (isHttps) {
+      proxyOptions.ciphers = ZEN_BORINGSSL_CIPHERS;
+      proxyOptions.ecdhCurve = "X25519:P-256:P-384";
+    }
+  }
+  return (isHttps ? https : http).request(proxyOptions);
 }
 
 let _lastGuestSyncTime = 0;
 function triggerGuestClientSyncIfNeeded() {
+  if (require.main !== module) return;
+  if (config && config.upstream && (config.upstream.includes("127.0.0.1") || config.upstream.includes("localhost"))) return;
   const now = Date.now();
   if (now - _lastGuestSyncTime < 15000) return;
   _lastGuestSyncTime = now;
@@ -1050,6 +1355,8 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
 
   if (available.length === 0) {
     if (isGuestModeActive() && (!excludeAccountIds || !excludeAccountIds.has('__guest_protocol__'))) {
+      triggerGuestClientSyncIfNeeded();
+      ensureZenBunSidecar();
       return {
         id: '__guest_protocol__',
         name: 'OpenCode Go (游客协议·免登录)',
@@ -1467,7 +1774,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
               guestModeActive: true,
               usage: {
                 mode: "guest_free_tier",
-                guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-free", "big-pickle", "hy4-flash-free"],
+                guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "big-pickle", "glm-5.3-flash-free", "longcat-2.5-preview-free"],
                 subscriptionNotice: subNotice,
                 rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                 weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -1501,7 +1808,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     guestModeActive: true,
                     usage: {
                       mode: "guest_free_tier",
-                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-free", "big-pickle", "hy4-flash-free"],
+                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "big-pickle", "glm-5.3-flash-free", "longcat-2.5-preview-free"],
                       subscriptionNotice: subNotice,
                       rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                       weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -1536,7 +1843,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     guestModeActive: true,
                     usage: {
                       mode: "guest_free_tier",
-                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "longcat-2.5-free", "big-pickle", "hy4-flash-free"],
+                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "big-pickle", "glm-5.3-flash-free", "longcat-2.5-preview-free"],
                       subscriptionNotice: subNotice,
                       rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                       weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -2104,12 +2411,26 @@ function handleRateLimitFailover({
       return;
     }
 
-    const nextAccount = selectAccount(sessionId, triedAccountIds);
-    const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+    let nextAccount = selectAccount(sessionId, triedAccountIds);
+    const isLiveZenGuest = Boolean(account && account.isGuest && isOpenCodeLiveUpstream((account && account.upstream) || config.upstream));
+    const guestRetryIdx = (account && typeof account._guestRetryIndex === 'number') ? account._guestRetryIndex : 0;
+    if (!nextAccount && isLiveZenGuest && guestRetryIdx < ZEN_GUEST_FALLBACK_CANDIDATES.length) {
+      const cand = ZEN_GUEST_FALLBACK_CANDIDATES[guestRetryIdx];
+      rotateGuestSessionId(sessionId);
+      nextAccount = {
+        ...account,
+        upstream: cand.upstream,
+        _guestRetryIndex: guestRetryIdx + 1,
+        _preferredGuestModel: cand.model
+      };
+    }
+    const maxRetries = isLiveZenGuest
+      ? Math.max(6, ZEN_GUEST_FALLBACK_CANDIDATES.length + 1)
+      : Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
     if (nextAccount && attemptNumber <= maxRetries) {
       const stat = accountStats.get(account.id);
       if (stat) stat.failoverCount += 1;
-      console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
+      console.log(`[${protocolTag} Failover] Account "${account.name}" returned ${statusCode}. Switching to "${nextAccount.name}"${nextAccount._preferredGuestModel ? ' (Model: ' + nextAccount._preferredGuestModel + ')' : ''} (Attempt ${attemptNumber + 1})`);
       finishRequest();
       clientRes.removeListener('close', clientCloseHandler);
       if (clientErrorHandler || clientCloseHandler?.errorHandler) {
@@ -2958,21 +3279,18 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     delete proxyHeaders['x-opencode-request'];
     delete proxyHeaders['http-referer'];
     delete proxyHeaders['referer'];
-    proxyHeaders['authorization'] = 'Bearer public';
-    proxyHeaders['x-opencode-client'] = 'cli';
-    proxyHeaders['x-opencode-project'] = 'global';
-    proxyHeaders['x-opencode-session'] = zenSesId;
-    proxyHeaders['x-opencode-session-id'] = zenSesId;
-    proxyHeaders['user-agent'] = 'opencode/2.0.28';
+    Object.assign(proxyHeaders, buildZenGuestHeaders(zenSesId));
     if (parsedBody && typeof parsedBody === 'object') {
-      const targetGuestModel = isLiveOpencodeGo
-        ? mapModelForZenGuest(parsedBody.model)
-        : (codexAdapter.isFreeModel(parsedBody.model) ? parsedBody.model : 'hy4-flash-free');
+      const targetGuestModel = (account._preferredGuestModel && isLiveOpencodeGo)
+        ? account._preferredGuestModel
+        : (isLiveOpencodeGo
+          ? mapModelForZenGuest(parsedBody.model)
+          : (codexAdapter.isFreeModel(parsedBody.model) ? parsedBody.model : 'hy4-flash-free'));
       if (parsedBody.model !== targetGuestModel) {
         console.log(`[Guest Protocol] 游客协议自动将模型 "${parsedBody.model}" 映射为免密钥可用模型 "${targetGuestModel}"`);
         parsedBody.model = targetGuestModel;
       }
-      if (isLiveOpencodeGo && targetPath.includes('/chat/completions')) {
+      if (isLiveOpencodeGo && (targetPath.includes('/chat/completions') || targetPath.includes('/responses'))) {
         ensureZenGuestToolsInChatPayload(parsedBody);
       }
       reqBody = Buffer.from(JSON.stringify(parsedBody), 'utf8');
@@ -3012,7 +3330,8 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     }
   }
 
-  const proxyReq = transport.request(proxyOptions);
+  const isLiveZenGuestReq = Boolean(account && account.isGuest && isLiveOpencodeGo);
+  const proxyReq = createUpstreamTransportRequest(proxyOptions, isHttps, isLiveZenGuestReq, effectiveProxy ? effectiveProxy.url : '');
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
@@ -3146,11 +3465,6 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
         },
         errorFallbackFn: (errText) => {
-          const c = classifyUpstreamError(statusCode, errText);
-          if (c && c.isFreeUsageLimit && isResponsesReq) {
-            sendResponsesFreeLimitFastClose(clientRes, parsedBody?.model, parsedBody?.id, parsedBody?.stream !== false, sessionId);
-            return;
-          }
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -3721,11 +4035,16 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     model: typeof rawReqModel !== 'undefined' ? rawReqModel : undefined,
     _isRetryAttempt: Boolean(attemptNumber && attemptNumber > 1)
   };
-  const chatPayload = precomputedChatPayload || codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
+  const baseChatPayload = precomputedChatPayload || codexAdapter.convertResponsesToChatPayload(responsesBody, effectiveComp, sessionId);
+  const chatPayload = (precomputedChatPayload && account && account._preferredGuestModel)
+    ? { ...baseChatPayload, model: account._preferredGuestModel }
+    : baseChatPayload;
   if (account && account.isGuest && chatPayload && typeof chatPayload === 'object') {
-    const targetGuestModel = isLiveOpencodeGo
-      ? mapModelForZenGuest(chatPayload.model)
-      : (codexAdapter.isFreeModel(chatPayload.model) ? chatPayload.model : 'hy4-flash-free');
+    const targetGuestModel = (account._preferredGuestModel && isLiveOpencodeGo)
+      ? account._preferredGuestModel
+      : (isLiveOpencodeGo
+        ? mapModelForZenGuest(chatPayload.model)
+        : (codexAdapter.isFreeModel(chatPayload.model) ? chatPayload.model : 'hy4-flash-free'));
     if (chatPayload.model !== targetGuestModel) {
       console.log(`[Guest Protocol] Codex 桥接自动将模型 "${chatPayload.model}" 映射为免密钥可用模型 "${targetGuestModel}"`);
       chatPayload.model = targetGuestModel;
@@ -3745,16 +4064,14 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   const proxyHeaders = {
     'content-type': 'application/json',
     'content-length': String(chatBody.length),
+    'accept': isStream ? 'text/event-stream' : 'application/json',
     'x-opencode-session': zenSesId,
     'user-agent': (account && account.isGuest)
-      ? 'opencode/2.0.28'
+      ? 'opencode/latest/2.1.4/cli'
       : ((clientReq.headers['user-agent'] && !/python|curl|undici|node-fetch/i.test(clientReq.headers['user-agent'])) ? clientReq.headers['user-agent'] : 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)')
   };
   if (account && account.isGuest) {
-    proxyHeaders['authorization'] = 'Bearer public';
-    proxyHeaders['x-opencode-client'] = 'cli';
-    proxyHeaders['x-opencode-project'] = 'global';
-    proxyHeaders['x-opencode-session-id'] = zenSesId;
+    Object.assign(proxyHeaders, buildZenGuestHeaders(zenSesId));
   } else {
     proxyHeaders['authorization'] = `Bearer ${(account.apiKey || '').trim()}`;
   }
@@ -3777,7 +4094,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     }
   }
 
-  const proxyReq = transport.request(proxyOptions);
+  const isLiveZenGuestBridge = Boolean(account && account.isGuest && isLiveOpencodeGo);
+  const proxyReq = createUpstreamTransportRequest(proxyOptions, isHttps, isLiveZenGuestBridge, effectiveProxy ? effectiveProxy.url : '');
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
@@ -3911,11 +4229,6 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
           bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
         },
         errorFallbackFn: (errText) => {
-          const c = classifyUpstreamError(statusCode, errText);
-          if (c && c.isFreeUsageLimit) {
-            sendResponsesFreeLimitFastClose(clientRes, reqModel, responsesBody ? responsesBody.id : null, isStream, sessionId);
-            return;
-          }
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -4476,11 +4789,6 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
           bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
         },
         errorFallbackFn: (errText) => {
-          const c = classifyUpstreamError(statusCode, errText);
-          if (c && c.isFreeUsageLimit) {
-            sendResponsesFreeLimitFastClose(clientRes, reqModel, responsesBody ? responsesBody.id : null, isStream, sessionId);
-            return;
-          }
           sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
@@ -7865,21 +8173,24 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
     return;
   }
 
-  // Dynamic Official Models Sync API
-  if (reqUrl.pathname === '/balancer/api/models/sync') {
+  // Dynamic Official Models / Clients Sync API
+  if (reqUrl.pathname === '/balancer/api/models/sync' || reqUrl.pathname === '/balancer/api/clients/sync') {
     const handleSync = async (body = {}) => {
       const updater = require('./updater');
       const clientAdapter = require('./client-adapter-manager');
       const proxyInfo = getEffectiveProxyForRequest(null);
       const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
 
-      const policy = body.policy || config.modelSourcePolicy || 'hybrid';
-      const defaultModel = body.defaultModel || config.defaultModel || 'deepseek-v4.1-flash';
-      const favorites = body.favorites || config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3'];
+      const isGuest = Boolean(body.isGuest || body.freeOnly || body.policy === 'guest');
+      const policy = isGuest ? 'guest' : (body.policy || config.modelSourcePolicy || 'hybrid');
+      const defaultModel = isGuest ? 'deepseek-v4.1-flash-free' : (body.defaultModel || config.defaultModel || 'deepseek-v4.1-flash');
+      const favorites = isGuest
+        ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'glm-5.3-flash-free', 'big-pickle', 'longcat-2.5-free']
+        : (body.favorites || config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3']);
       const targetClients = Array.isArray(body.clients) ? body.clients : ['opencode', 'openchamber', 'codex'];
 
-      // 探测上游
-      const probeRes = await updater.fetchOfficialModels(config.accounts, config.upstream, 4000, {
+      // 探测上游 (游客模式下跳过付费端点探测)
+      const probeRes = isGuest ? { success: true, slugs: [] } : await updater.fetchOfficialModels(config.accounts, config.upstream, 4000, {
         returnDetails: true,
         agent: proxyAgent
       });
@@ -7891,7 +8202,9 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         favorites,
         probedModels: probeRes?.slugs || [],
         clients: targetClients,
-        preserveChoice: body.preserveChoice
+        preserveChoice: body.preserveChoice,
+        isGuest,
+        freeOnly: body.freeOnly
       });
 
       // 同步 Token 压缩率
@@ -9097,10 +9410,13 @@ module.exports = {
   isGuestModeActive,
   mintOpencodeZenSessionId,
   getOrMintGuestSessionId,
+  rotateGuestSessionId,
+  getOrMintGuestProjectHash,
+  buildZenGuestHeaders,
   mapModelForZenGuest,
   ensureZenGuestToolsInChatPayload,
-  buildFreeUsageLimitNotice,
-  sendResponsesFreeLimitFastClose,
+  findBunExecutable,
+  ensureZenBunSidecar,
   handleUpstreamGlitchAndFailover,
   handleInvalidApiKeyFailover,
   handleQuotaExhaustedFailover,

@@ -1359,19 +1359,18 @@ const GUEST_FREE_MODELS_CATALOG = [
     priority: 705
   },
   {
-    slug: 'hy4-flash-free',
-    name: 'HY4-Flash-Free',
-    display_name: 'HY4-Flash-Free',
-    vendor: 'HY',
-    description: 'HY4 Flash 官方在役免费高速推理模型。',
+    slug: 'glm-5.3-flash-free',
+    name: 'GLM-5.3-Flash-Free',
+    display_name: 'GLM-5.3-Flash-Free',
+    vendor: 'Zhipu AI',
+    description: 'GLM 5.3 Flash 官方在役免费高速代码与对话模型。',
     context_window: 131072,
     max_context_window: 131072,
     effective_context_window_percent: 95,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
       { effort: 'low', description: '快速响应' },
-      { effort: 'medium', description: '常规思考' },
-      { effort: 'high', description: '深度思考' }
+      { effort: 'medium', description: '常规思考' }
     ],
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
@@ -4305,157 +4304,6 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
 }
 
 /**
- * Dispatches a compliant completed Responses API SSE stream containing a clear assistant notice
- * (e.g. for deterministic 429 FreeUsageLimitError) so Codex renders the explanation immediately
- * and unlocks UI input without executing pointless 1-minute exponential retries.
- */
-function dispatchResponsesStreamNotice(clientRes, reqModel, reqId, noticeText, sessionId = null) {
-  if (!clientRes || clientRes.writableEnded || clientRes.destroyed) return;
-
-  const respId = reqId || ('resp_notice_' + Date.now());
-  const model = reqModel || 'deepseek-v4.1-flash-free';
-  const text = String(noticeText || '[智能网关提示：当前免费通道不可用，请检查配置。]');
-  const nowSec = Math.floor(Date.now() / 1000);
-
-  if (sessionId) {
-    recordResponseSession(respId, sessionId);
-  }
-
-  if (!clientRes.headersSent) {
-    clientRes.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'Access-Control-Allow-Origin': '*'
-    });
-  }
-
-  const sendEvent = (event, data) => {
-    if (clientRes.writableEnded || clientRes.destroyed) return;
-    try {
-      clientRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    } catch (_) {}
-  };
-
-  let seq = 0;
-  const msgId = 'msg_notice_' + Date.now();
-
-  sendEvent('response.created', {
-    type: 'response.created',
-    sequence_number: seq++,
-    response: {
-      id: respId,
-      object: 'response',
-      created_at: nowSec,
-      completed_at: null,
-      status: 'in_progress',
-      parallel_tool_calls: true,
-      model,
-      output: [],
-      tools: []
-    }
-  });
-
-  sendEvent('response.in_progress', {
-    type: 'response.in_progress',
-    sequence_number: seq++,
-    response: {
-      id: respId,
-      object: 'response',
-      created_at: nowSec,
-      completed_at: null,
-      status: 'in_progress',
-      model
-    }
-  });
-
-  sendEvent('response.output_item.added', {
-    type: 'response.output_item.added',
-    sequence_number: seq++,
-    output_index: 0,
-    item: {
-      id: msgId,
-      type: 'message',
-      status: 'in_progress',
-      role: 'assistant',
-      content: []
-    }
-  });
-
-  sendEvent('response.content_part.added', {
-    type: 'response.content_part.added',
-    sequence_number: seq++,
-    output_index: 0,
-    content_index: 0,
-    item_id: msgId,
-    part: { type: 'output_text', text: '', annotations: [], logprobs: [] }
-  });
-
-  sendEvent('response.output_text.delta', {
-    type: 'response.output_text.delta',
-    sequence_number: seq++,
-    item_id: msgId,
-    output_index: 0,
-    content_index: 0,
-    delta: text
-  });
-
-  sendEvent('response.output_text.done', {
-    type: 'response.output_text.done',
-    sequence_number: seq++,
-    item_id: msgId,
-    output_index: 0,
-    content_index: 0,
-    text
-  });
-
-  sendEvent('response.content_part.done', {
-    type: 'response.content_part.done',
-    sequence_number: seq++,
-    output_index: 0,
-    content_index: 0,
-    item_id: msgId,
-    part: { type: 'output_text', text, annotations: [], logprobs: [] }
-  });
-
-  const finalItem = {
-    id: msgId,
-    type: 'message',
-    status: 'completed',
-    role: 'assistant',
-    phase: 'final_answer',
-    content: [{ type: 'output_text', text, annotations: [], logprobs: [] }]
-  };
-
-  sendEvent('response.output_item.done', {
-    type: 'response.output_item.done',
-    sequence_number: seq++,
-    output_index: 0,
-    item: finalItem
-  });
-
-  sendEvent('response.completed', {
-    type: 'response.completed',
-    sequence_number: seq++,
-    response: {
-      id: respId,
-      object: 'response',
-      created_at: nowSec,
-      completed_at: Math.floor(Date.now() / 1000),
-      status: 'completed',
-      model,
-      output: [finalItem],
-      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
-    }
-  });
-
-  try {
-    clientRes.end();
-  } catch (_) {}
-}
-
-/**
  * Translates upstream non-streaming ChatCompletions JSON response to standard OpenAI Responses JSON response
  */
 function convertChatResponseToResponses(chatJson, reqModel, reqId) {
@@ -6416,7 +6264,7 @@ function bindCodexConfig(options = {}) {
       };
     });
     const newSlugs = new Set(enrichedOpencodeModels.map(m => m.slug));
-    const retainedModels = (options.isGuest ? [] : existingModels.filter(m => !newSlugs.has(m.slug))).map(m => {
+    const retainedModels = (options.isGuest ? [] : existingModels.filter(m => !newSlugs.has(m.slug) && !OPENCODE_GO_DEPRECATED_ALIASES[String(m.slug || '').toLowerCase()])).map(m => {
       if (!m.auto_compact_token_limit && m.context_window) {
         m.auto_compact_token_limit = Math.floor(m.context_window * 0.95);
       }
@@ -7918,7 +7766,6 @@ module.exports = {
   StreamDegenerationDetector,
   autoCorrectToolArgs,
   dispatchResponsesStreamError,
-  dispatchResponsesStreamNotice,
   findLatestCuaNodeExecutable,
   setComfyUIAdapter,
   getComfyUIAdapter,

@@ -609,7 +609,7 @@ function syncAllClients(options = {}) {
   const routerPort = options.routerPort || 4010;
   const defaultModel = isGuest ? 'deepseek-v4.1-flash-free' : (options.defaultModel || DEFAULT_MODEL);
   const favorites = isGuest
-    ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'longcat-2.5-free', 'big-pickle']
+    ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'glm-5.3-flash-free', 'big-pickle', 'longcat-2.5-free']
     : (options.favorites || DEFAULT_FAVORITES);
   const reasoningEffort = options.reasoningEffort || DEFAULT_REASONING_EFFORT;
   const targetClients = Array.isArray(options.clients) ? options.clients : ['opencode', 'openchamber', 'codex'];
