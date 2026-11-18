@@ -2745,7 +2745,9 @@ async function fetchSingleQuota(id, force = false) {
         qTime.innerText = timeStr + ' 更新' + (data.fromCache ? ' (缓存)' : '');
       }
     } else {
-      if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0;">查询失败: ' + (data.error || '未返回配额数据') + '</div>';
+      const rawErr = data.error || '未返回配额数据';
+      const renderedErr = (typeof escapeHtml === 'function' ? escapeHtml(rawErr) : rawErr).replace(/(https:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:var(--primary);text-decoration:underline;word-break:break-all;">$1</a>');
+      if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0; line-height:1.4;">' + (rawErr.startsWith('官方订阅失效') ? '' : '查询失败: ') + renderedErr + '</div>';
     }
   } catch (e) {
     if (qBox) qBox.innerHTML = '<div style="color:var(--danger); font-size:0.75rem; text-align:center; padding:4px 0;">网络异常: ' + e.message + '</div>';

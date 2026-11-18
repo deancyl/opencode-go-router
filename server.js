@@ -1125,7 +1125,30 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
               return;
             }
           }
-          // When live opencode.ai restricts direct /usage polling with HTTP 403/404 (Console session required),
+          let upstreamErrorMsg = '';
+          try {
+            if (body && typeof body === 'string' && body.trim().startsWith('{')) {
+              const errJson = JSON.parse(body);
+              upstreamErrorMsg = errJson.error?.message || errJson.message || '';
+            }
+          } catch (_) {}
+
+          // 1. Explicit Upstream Entitlement or Subscription Expiration
+          const isSubscriptionEnded = Boolean(upstreamErrorMsg && (
+            /subscription ended|payment method needs authorization|subscribe again|entitlementerror/i.test(upstreamErrorMsg) ||
+            /entitlementerror/i.test(body)
+          ));
+          if (isSubscriptionEnded) {
+            safeResolve({
+              success: false,
+              statusCode: res.statusCode,
+              error: `官方订阅失效: 支付方式需重新授权 (${upstreamErrorMsg})`,
+              fromCache: false
+            });
+            return;
+          }
+
+          // 2. When live opencode.ai restricts direct /usage polling with HTTP 403/404 (Console session required),
           // verify API key connectivity via /models and fall back to passive telemetry so UI never shows false HTTP 403
           if (parsed.hostname.includes('opencode.ai') && (res.statusCode === 403 || res.statusCode === 404 || res.statusCode === 405)) {
             testAccountConnection(upstream, apiKey).then((connRes) => {
@@ -1146,16 +1169,16 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                 safeResolve({
                   success: false,
                   statusCode: connRes?.statusCode || res.statusCode,
-                  error: connRes?.message || `上游返回 HTTP ${res.statusCode}`,
+                  error: upstreamErrorMsg || connRes?.message || `上游返回 HTTP ${res.statusCode}`,
                   fromCache: false
                 });
               }
             }).catch(() => {
-              safeResolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}`, fromCache: false });
+              safeResolve({ success: false, statusCode: res.statusCode, error: upstreamErrorMsg || `上游返回 HTTP ${res.statusCode}`, fromCache: false });
             });
             return;
           }
-          safeResolve({ success: false, statusCode: res.statusCode, error: `上游返回 HTTP ${res.statusCode}`, fromCache: false });
+          safeResolve({ success: false, statusCode: res.statusCode, error: upstreamErrorMsg || `上游返回 HTTP ${res.statusCode}`, fromCache: false });
         });
       });
       req.on('error', (err) => {
@@ -1405,8 +1428,15 @@ function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') 
     lowerText.includes('authentication failed')
   );
 
-  // 2b. Detect Account Quota / Balance Exhaustion (HTTP 402 or 429/403/401 with quota exceeded)
-  const isQuotaExhausted = statusCode === 402 || (
+  // 2b. Detect Account Quota / Balance / Subscription Exhaustion (HTTP 402 or 429/403/401 with quota/subscription)
+  const isSubscriptionEnded = (
+    lowerText.includes('subscription ended') ||
+    lowerText.includes('payment method needs authorization') ||
+    lowerText.includes('entitlementerror') ||
+    lowerText.includes('subscribe again')
+  );
+
+  const isQuotaExhausted = statusCode === 402 || isSubscriptionEnded || (
     (statusCode === 429 || statusCode === 403 || statusCode === 401) && (
       lowerText.includes('insufficient_quota') ||
       lowerText.includes('quota_exceeded') ||
@@ -1438,17 +1468,19 @@ function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') 
   // on generic 403 Forbidden (WAF, permissions, IP blacklist) which should not trigger region fallback.
   // Bare keyword matches (any status code) are also accepted for non-standard upstream error wrapping.
   const isRegionBlocked = (
-    (statusCode === 403 && !isQuotaExhausted && (
-      lowerText.includes('unsupported_country_region_territory') ||
-      lowerText.includes('territory not supported') ||
-      lowerText.includes('not available in your country') ||
-      lowerText.includes('region') ||
-      lowerText.includes('geograph') ||
-      lowerText.includes('country') ||
-      lowerText.length === 0  // bare 403 with no body — likely CDN geo-block
-    )) ||
-    // Catch region keywords in non-403 error wrappers (e.g. 400/200 with error body)
-    lowerText.includes('unsupported_country_region_territory')
+    !isSubscriptionEnded && (
+      (statusCode === 403 && !isQuotaExhausted && (
+        lowerText.includes('unsupported_country_region_territory') ||
+        lowerText.includes('territory not supported') ||
+        lowerText.includes('not available in your country') ||
+        lowerText.includes('region') ||
+        lowerText.includes('geograph') ||
+        lowerText.includes('country') ||
+        lowerText.length === 0  // bare 403 with no body — likely CDN geo-block
+      )) ||
+      // Catch region keywords in non-403 error wrappers (e.g. 400/200 with error body)
+      lowerText.includes('unsupported_country_region_territory')
+    )
   );
 
   // 6. Detect Protocol Incompatible
@@ -1504,6 +1536,7 @@ function classifyUpstreamError(statusCode, rawErrText = '', maybeThirdArg = '') 
     isUpstreamClusterGlitch: effectiveClusterGlitch,
     isInvalidApiKey,
     isQuotaExhausted,
+    isSubscriptionEnded,
     isRateLimitedOrServiceUnavailable,
     isContextLengthExceeded,
     isRegionBlocked,
@@ -8569,5 +8602,7 @@ module.exports = {
   isAccountAvailable,
   selectAccount,
   getCorsHeaders,
+  fetchAccountUsage,
+  buildLocalAccountUsageFallback,
   pluginManager
 };

@@ -42,7 +42,13 @@ assert.strictEqual(classified.isUpstreamClusterGlitch, false, 'Deterministic mod
 const classifiedPrivacy = serverModule.classifyUpstreamError(403, 'Specify "Global" under Regions in Settings › Privacy to use deepseek-v4.1-flash');
 assert.strictEqual(classifiedPrivacy.isModelUnsupported, true, 'Console privacy region block must trigger model fallback');
 assert.strictEqual(classifiedPrivacy.isUpstreamClusterGlitch, false);
-console.log('  [PASS] 3. classifyUpstreamError isolates model catalog & privacy errors from circuit breaker failure counter');
+
+const classifiedEntitlement = serverModule.classifyUpstreamError(403, '{"type":"error","error":{"type":"EntitlementError","message":"Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."}}');
+assert.strictEqual(classifiedEntitlement.isSubscriptionEnded, true, 'Must detect subscription ended error');
+assert.strictEqual(classifiedEntitlement.isQuotaExhausted, true, 'Subscription ended must be categorized under quota/balance exhausted');
+assert.strictEqual(classifiedEntitlement.isRegionBlocked, false, 'Must NOT confuse subscription payment authorization error with region blocked');
+assert.strictEqual(classifiedEntitlement.isUpstreamClusterGlitch, false);
+console.log('  [PASS] 3. classifyUpstreamError isolates model catalog, privacy & entitlement errors from circuit breaker failure counter');
 
 // 4. Verify harmonizeOpencodeConfig injects provider.opencode-go.api and migrates deprecated model choices
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-v314-test-'));

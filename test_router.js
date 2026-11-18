@@ -7679,7 +7679,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(fs.existsSync(sandboxTestPath), 'test_sandbox_install.ps1 must exist');
 
     // 4. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.2 Pro') || uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.14.1 Pro') || uiRes148.body.includes('v3.14.0 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148.body.includes('v3.8.2 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Windows Setup Engine, Sandbox Clean Install, Zero-Loss Config Merge & v3.8.2 Release verified');
 
@@ -7714,7 +7714,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(setupWinContent150.includes('$port -eq 4010 -and -not $NoShortcuts'), 'setup-windows.ps1 must isolate tray stop to port 4010 and non-NoShortcuts');
 
     // 5. Verify Web UI renders version badge
-    assert.ok(uiRes148.body.includes('v3.8.3 Pro') || uiRes148.body.includes('v3.9.0 Pro') || uiRes148.body.includes('v3.10.0 Pro') || uiRes148.body.includes('v3.10.1 Pro') || uiRes148.body.includes('v3.11.0 Pro') || uiRes148.body.includes('v3.12.0 Pro') || uiRes148.body.includes('v3.13.0 Pro') || uiRes148.body.includes('v3.13.1 Pro') || uiRes148.body.includes('v3.13.2 Pro') || uiRes148.body.includes('v3.13.3 Pro') || uiRes148.body.includes('v3.13.4 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes148.body.includes('v3.14.1 Pro') || uiRes148.body.includes('v3.14.0 Pro') || uiRes148.body.includes('v3.13.5 Pro') || uiRes148.body.includes('v3.8.3 Pro'), 'Web UI must render version badge');
 
     console.log('✓ Bounded LRU Session Shield, Memory Leak Elimination, Multi-instance Isolation & v3.8.3 Release verified');
 
@@ -7989,7 +7989,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(uiRes153.body.includes('cfg-proxy-models'), 'Web UI must contain cfg-proxy-models input');
     assert.ok(uiRes153.body.includes('cfg-allow-upgrade'), 'Web UI must contain cfg-allow-upgrade toggle');
     assert.ok(uiRes153.body.includes('cfg-allow-region-fallback'), 'Web UI must contain cfg-allow-region-fallback toggle');
-    assert.ok(uiRes153.body.includes('v3.9.0 Pro') || uiRes153.body.includes('v3.10.0 Pro') || uiRes153.body.includes('v3.10.1 Pro') || uiRes153.body.includes('v3.11.0 Pro') || uiRes153.body.includes('v3.12.0 Pro') || uiRes153.body.includes('v3.13.0 Pro') || uiRes153.body.includes('v3.13.1 Pro') || uiRes153.body.includes('v3.13.2 Pro') || uiRes153.body.includes('v3.13.3 Pro') || uiRes153.body.includes('v3.13.4 Pro') || uiRes153.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes153.body.includes('v3.14.1 Pro') || uiRes153.body.includes('v3.14.0 Pro') || uiRes153.body.includes('v3.9.0 Pro'), 'Web UI must render version badge');
 
     // 6. Verify package.json declares valid version
     const pkgJson153 = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
@@ -8119,7 +8119,7 @@ $ProgressPreference = 'SilentlyContinue'
 
     const uiRes154 = await request('/balancer/ui', { method: 'GET' });
     assert.strictEqual(uiRes154.statusCode, 200);
-    assert.ok(uiRes154.body.includes('v3.10.0 Pro') || uiRes154.body.includes('v3.10.1 Pro') || uiRes154.body.includes('v3.11.0 Pro') || uiRes154.body.includes('v3.12.0 Pro') || uiRes154.body.includes('v3.13.0 Pro') || uiRes154.body.includes('v3.13.1 Pro') || uiRes154.body.includes('v3.13.2 Pro') || uiRes154.body.includes('v3.13.3 Pro') || uiRes154.body.includes('v3.13.4 Pro') || uiRes154.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes154.body.includes('v3.14.1 Pro') || uiRes154.body.includes('v3.14.0 Pro') || uiRes154.body.includes('v3.10.0 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes154.body.includes('零重算零抖动'), 'Web UI must render honest Cache-Zone memo card text');
 
     console.log('✓ Rigorous Zero-Downgrade Code Preservation, Honest Metrics (Zero-Injection), Real Bilingual Tokens & Multi-turn KV Cache Protection verified');
@@ -8458,7 +8458,7 @@ $ProgressPreference = 'SilentlyContinue'
     assert.ok(codexAdapter.CODEX_ZHCN_TRANSLATE_SCRIPT.includes('审查代码变更'), 'CODEX_ZHCN_TRANSLATE_SCRIPT must include Review changes translation');
     const uiRes156 = await request('/balancer/ui', { method: 'GET' });
     assert.ok(uiRes156.body.includes('toggleAllCompModuleBodies()'), 'Web UI must include 1-click advanced switches collapse toggle');
-    assert.ok(uiRes156.body.includes('v3.11.0 Pro') || uiRes156.body.includes('v3.12.0 Pro') || uiRes156.body.includes('v3.13.0 Pro') || uiRes156.body.includes('v3.13.1 Pro') || uiRes156.body.includes('v3.13.2 Pro') || uiRes156.body.includes('v3.13.3 Pro') || uiRes156.body.includes('v3.13.4 Pro') || uiRes156.body.includes('v3.13.5 Pro') || uiRes148?.body?.includes('v3.14.0 Pro') || uiRes153?.body?.includes('v3.14.0 Pro') || uiRes154?.body?.includes('v3.14.0 Pro') || uiRes156?.body?.includes('v3.14.0 Pro'), 'Web UI must render version badge');
+    assert.ok(uiRes156.body.includes('v3.14.1 Pro') || uiRes156.body.includes('v3.14.0 Pro') || uiRes156.body.includes('v3.11.0 Pro'), 'Web UI must render version badge');
     assert.ok(uiRes156.body.includes('.comp-range-btn.active, .time-range-pill.active'), 'Web UI must style .time-range-pill.active buttons');
     assert.ok(uiRes156.body.includes("const overviewDocBadge = document.getElementById('doctor-overview-badge');"), 'runDoctorCheck must synchronize #doctor-overview-badge');
 
