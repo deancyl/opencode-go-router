@@ -1541,9 +1541,9 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
         return 'hy4-flash-free';
       }
       if (cleanReq === 'hy4-flash-free') {
-        return 'longcat-2.5-free';
+        return 'deepseek-v4.1-flash-free';
       }
-      if (cleanReq === 'longcat-2.5-free') {
+      if (cleanReq === 'deepseek-v4.1-flash-free') {
         return 'mimo-v2.6-flash-free';
       }
       if (cleanReq === 'mimo-v2.6-flash-free') {
@@ -1552,7 +1552,10 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
       if (cleanReq === 'glm-5.3-flash-free') {
         return 'big-pickle';
       }
-      return 'hy4-flash-free';
+      if (cleanReq === 'big-pickle') {
+        return 'longcat-2.5-free';
+      }
+      return 'deepseek-v4.1-flash-free';
     }
 
     if (reqTier === MODEL_TIERS.FLASH) {
@@ -1643,7 +1646,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     if (isHeterogeneousRule19) {
       return 'deepseek-v4-pro';
     }
-    return isFreeModel(cleanReq) ? 'hy4-flash-free' : 'deepseek-flash';
+    return isFreeModel(cleanReq) ? 'deepseek-v4.1-flash-free' : 'deepseek-flash';
   }
 
   // 2.3 Flagship tier: flagship to flagship candidates (Rule 19 Anti-Downgrade)
@@ -1669,7 +1672,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     return 'deepseek-v4-pro';
   }
 
-  return isFreeModel(cleanReq) ? 'hy4-flash-free' : 'deepseek-flash';
+  return isFreeModel(cleanReq) ? 'deepseek-v4.1-flash-free' : 'deepseek-flash';
 }
 
 /**

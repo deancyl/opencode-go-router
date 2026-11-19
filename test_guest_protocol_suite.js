@@ -149,6 +149,10 @@ try {
   assert.strictEqual(serverModule.isGuestModeActive(), true, 'Guest mode must activate when all accounts have isSubscriptionEnded=true');
   const selected = serverModule.selectAccount('sess-audit-guest');
   assert.ok(selected && selected.isGuest === true && selected.id === '__guest_protocol__', 'selectAccount must return __guest_protocol__ virtual account');
+  assert.strictEqual(serverModule.isOpenCodeLiveUpstream('https://opencode.ai/zen/v1'), true);
+  assert.strictEqual(serverModule.isOpenCodeLiveUpstream('http://127.0.0.1:4010'), false);
+  assert.strictEqual(serverModule.getEffectiveGuestUpstream('deepseek-v4.1-flash-free'), 'https://opencode.ai/inference/openai/v1');
+  assert.strictEqual(serverModule.getEffectiveGuestUpstream('big-pickle'), 'https://opencode.ai/zen/v1');
   console.log('  [PASS] 7. Automatic guest protocol failover on subscription expiration verified');
 } finally {
   serverModule.config.accounts = origAccounts;

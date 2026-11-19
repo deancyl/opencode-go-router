@@ -1361,7 +1361,7 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
         id: '__guest_protocol__',
         name: 'OpenCode Go (游客协议·免登录)',
         apiKey: 'public',
-        upstream: 'https://opencode.ai/zen/v1',
+        upstream: 'https://opencode.ai/inference/openai/v1',
         isGuest: true,
         enabled: true
       };
@@ -1430,6 +1430,21 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
 
 function recordCooldown(accountId, cooldownMs, reason) {
   recordAccountFailure(accountId, reason, null, true, cooldownMs);
+}
+
+function isOpenCodeLiveUpstream(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return false;
+  return urlStr.includes('opencode.ai');
+}
+
+function getEffectiveGuestUpstream(modelName, defaultUpstream = 'https://opencode.ai/inference/openai/v1') {
+  const clean = (modelName || '').replace(/^opencode(?:-go)?\//i, '').toLowerCase().trim();
+  const cand = ZEN_GUEST_FALLBACK_CANDIDATES.find(c => c.model === clean);
+  if (cand && cand.upstream) return cand.upstream;
+  if (clean.includes('pickle') || clean.includes('longcat')) {
+    return 'https://opencode.ai/zen/v1';
+  }
+  return defaultUpstream;
 }
 
 function normalizeUpstreamEndpoint(rawUpstream) {
@@ -3250,6 +3265,17 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
   }
+  if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+    if (primarySubAcc && primarySubAcc.id !== account.id) {
+      const pStat = accountStats.get(primarySubAcc.id);
+      if (pStat) {
+        pStat.activeRequests += 1;
+        pStat.totalRequests += 1;
+        pStat.lastUsedAt = Date.now();
+      }
+    }
+  }
 
   const proxyHeaders = { ...clientReq.headers };
   delete proxyHeaders['host'];
@@ -3285,7 +3311,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         ? account._preferredGuestModel
         : (isLiveOpencodeGo
           ? mapModelForZenGuest(parsedBody.model)
-          : (codexAdapter.isFreeModel(parsedBody.model) ? parsedBody.model : 'hy4-flash-free'));
+          : (codexAdapter.isFreeModel(parsedBody.model) ? parsedBody.model : 'deepseek-v4.1-flash-free'));
       if (parsedBody.model !== targetGuestModel) {
         console.log(`[Guest Protocol] 游客协议自动将模型 "${parsedBody.model}" 映射为免密钥可用模型 "${targetGuestModel}"`);
         parsedBody.model = targetGuestModel;
@@ -3311,10 +3337,18 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     delete proxyHeaders['anthropic-beta'];
   }
 
+  let effectiveTargetUpstream = effectiveUpstream;
+  if (account && account.isGuest && isLiveOpencodeGo) {
+    const guestTargetUpstream = getEffectiveGuestUpstream(parsedBody ? parsedBody.model : null, rawEffectiveUpstream);
+    effectiveTargetUpstream = normalizeUpstreamEndpoint(guestTargetUpstream);
+  }
+  const effectiveUpstreamUrl = new URL(effectiveTargetUpstream);
+  const isEffectiveHttps = effectiveUpstreamUrl.protocol === 'https:';
+
   const proxyOptions = {
-    protocol: upstreamUrl.protocol,
-    hostname: upstreamUrl.hostname,
-    port: upstreamUrl.port || (isHttps ? 443 : 80),
+    protocol: effectiveUpstreamUrl.protocol,
+    hostname: effectiveUpstreamUrl.hostname,
+    port: effectiveUpstreamUrl.port || (isEffectiveHttps ? 443 : 80),
     path: upstreamPath,
     method: clientReq.method,
     headers: proxyHeaders,
@@ -3393,6 +3427,15 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
         stat.activeRequests -= 1;
+      }
+      if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+        const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+        if (primarySubAcc && primarySubAcc.id !== account.id) {
+          const pStat = accountStats.get(primarySubAcc.id);
+          if (pStat && pStat.activeRequests > 0) {
+            pStat.activeRequests -= 1;
+          }
+        }
       }
       if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) {
         stat.halfOpenInFlight = false;
@@ -3980,6 +4023,28 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
   }
+  if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+    if (primarySubAcc && primarySubAcc.id !== account.id) {
+      const pStat = accountStats.get(primarySubAcc.id);
+      if (pStat) {
+        pStat.activeRequests += 1;
+        pStat.totalRequests += 1;
+        pStat.lastUsedAt = Date.now();
+      }
+    }
+  }
+  if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+    if (primarySubAcc && primarySubAcc.id !== account.id) {
+      const pStat = accountStats.get(primarySubAcc.id);
+      if (pStat) {
+        pStat.activeRequests += 1;
+        pStat.totalRequests += 1;
+        pStat.lastUsedAt = Date.now();
+      }
+    }
+  }
 
   const rawEffectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
   const isLiveOpencodeGo = Boolean(rawEffectiveUpstream && rawEffectiveUpstream.includes('opencode.ai'));
@@ -4044,7 +4109,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       ? account._preferredGuestModel
       : (isLiveOpencodeGo
         ? mapModelForZenGuest(chatPayload.model)
-        : (codexAdapter.isFreeModel(chatPayload.model) ? chatPayload.model : 'hy4-flash-free'));
+        : (codexAdapter.isFreeModel(chatPayload.model) ? chatPayload.model : 'deepseek-v4.1-flash-free'));
     if (chatPayload.model !== targetGuestModel) {
       console.log(`[Guest Protocol] Codex 桥接自动将模型 "${chatPayload.model}" 映射为免密钥可用模型 "${targetGuestModel}"`);
       chatPayload.model = targetGuestModel;
@@ -4053,11 +4118,18 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       ensureZenGuestToolsInChatPayload(chatPayload);
     }
   }
-  const reqModel = chatPayload.model || ((account && account.isGuest) ? (isLiveOpencodeGo ? 'deepseek-v4.1-flash-free' : 'hy4-flash-free') : 'deepseek-v4.1-flash');
+  const reqModel = chatPayload.model || ((account && account.isGuest) ? 'deepseek-v4.1-flash-free' : 'deepseek-v4.1-flash');
   const isStream = chatPayload.stream === true;
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
 
-  const upstreamPathname = upstreamUrl.pathname.replace(/\/+$/, '');
+  let effectiveTargetUpstream = effectiveUpstream;
+  if (account && account.isGuest && isLiveOpencodeGo) {
+    const guestTargetUpstream = getEffectiveGuestUpstream(chatPayload ? chatPayload.model : reqModel, rawEffectiveUpstream);
+    effectiveTargetUpstream = normalizeUpstreamEndpoint(guestTargetUpstream);
+  }
+  const effectiveUpstreamUrl = new URL(effectiveTargetUpstream);
+  const isEffectiveHttps = effectiveUpstreamUrl.protocol === 'https:';
+  const upstreamPathname = effectiveUpstreamUrl.pathname.replace(/\/+$/, '');
   const upstreamChatPath = upstreamPathname + '/chat/completions';
 
   const zenSesId = (account && account.isGuest) ? getOrMintGuestSessionId(sessionId) : (sessionId || ('session-' + Date.now()));
@@ -4077,9 +4149,9 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   }
 
   const proxyOptions = {
-    protocol: upstreamUrl.protocol,
-    hostname: upstreamUrl.hostname,
-    port: upstreamUrl.port || (isHttps ? 443 : 80),
+    protocol: effectiveUpstreamUrl.protocol,
+    hostname: effectiveUpstreamUrl.hostname,
+    port: effectiveUpstreamUrl.port || (isEffectiveHttps ? 443 : 80),
     path: upstreamChatPath,
     method: 'POST',
     headers: proxyHeaders,
@@ -4088,14 +4160,14 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
   const effectiveProxy = getEffectiveProxyForRequest(chatPayload.model);
   if (effectiveProxy) {
-    const agent = getProxyAgent(effectiveProxy.url, isHttps);
+    const agent = getProxyAgent(effectiveProxy.url, isEffectiveHttps);
     if (agent) {
       proxyOptions.agent = agent;
     }
   }
 
   const isLiveZenGuestBridge = Boolean(account && account.isGuest && isLiveOpencodeGo);
-  const proxyReq = createUpstreamTransportRequest(proxyOptions, isHttps, isLiveZenGuestBridge, effectiveProxy ? effectiveProxy.url : '');
+  const proxyReq = createUpstreamTransportRequest(proxyOptions, isEffectiveHttps, isLiveZenGuestBridge, effectiveProxy ? effectiveProxy.url : '');
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
@@ -4157,6 +4229,15 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
         stat.activeRequests -= 1;
+      }
+      if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+        const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+        if (primarySubAcc && primarySubAcc.id !== account.id) {
+          const pStat = accountStats.get(primarySubAcc.id);
+          if (pStat && pStat.activeRequests > 0) {
+            pStat.activeRequests -= 1;
+          }
+        }
       }
       if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) {
         stat.halfOpenInFlight = false;
@@ -4560,7 +4641,8 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
 function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, account, attemptNumber, triedAccountIds = new Set(), resolvedSessionId = null, precomputedAnthropicPayload = null) {
   if (account && account.isGuest) {
-    const guestBody = { ...(responsesBody || {}), model: 'hy4-flash-free' };
+    const guestModel = (responsesBody && responsesBody.model) ? mapModelForZenGuest(responsesBody.model) : 'deepseek-v4.1-flash-free';
+    const guestBody = { ...(responsesBody || {}), model: guestModel };
     bridgeResponsesToChatRequest(clientReq, clientRes, guestBody, account, attemptNumber, triedAccountIds, resolvedSessionId);
     return;
   }
@@ -4594,6 +4676,17 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     stat.activeRequests += 1;
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
+  }
+  if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+    if (primarySubAcc && primarySubAcc.id !== account.id) {
+      const pStat = accountStats.get(primarySubAcc.id);
+      if (pStat) {
+        pStat.activeRequests += 1;
+        pStat.totalRequests += 1;
+        pStat.lastUsedAt = Date.now();
+      }
+    }
   }
 
   // Pre-flight check & pruning for oversized responses payload (Rule 5 & Rule 33)
@@ -4717,6 +4810,15 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
         stat.activeRequests -= 1;
+      }
+      if (account && (account.isGuest || account.id === '__guest_protocol__')) {
+        const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
+        if (primarySubAcc && primarySubAcc.id !== account.id) {
+          const pStat = accountStats.get(primarySubAcc.id);
+          if (pStat && pStat.activeRequests > 0) {
+            pStat.activeRequests -= 1;
+          }
+        }
       }
       if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) {
         stat.halfOpenInFlight = false;
@@ -9407,6 +9509,8 @@ module.exports = {
   config,
   gracefulShutdown,
   classifyUpstreamError,
+  isOpenCodeLiveUpstream,
+  getEffectiveGuestUpstream,
   isGuestModeActive,
   mintOpencodeZenSessionId,
   getOrMintGuestSessionId,
