@@ -13,8 +13,8 @@ console.log('================================================================');
 
 // 1. Verify deprecated OpenCode Go model alias normalization
 assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('deepseek-flash'), 'deepseek-v4.1-flash');
-assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('cat-jam-free'), 'hy4-flash-free');
-assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('opencode-go/cat-jam-free'), 'opencode-go/hy4-flash-free');
+assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('cat-jam-free'), 'deepseek-v4.1-flash-free');
+assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('opencode-go/cat-jam-free'), 'opencode-go/deepseek-v4.1-flash-free');
 assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('minimax-m3.1-flash-free'), 'minimax-m3.1-flash');
 assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('crouton-alpha-free'), 'hy4-flash-free');
 assert.strictEqual(codexAdapter.normalizeOpencodeGoLiveModel('pulse-alpha-free'), 'hy4-flash-free');
@@ -25,7 +25,7 @@ console.log('  [PASS] 1. Deprecated OpenCode Go model aliases normalize cleanly'
 const errNotIncluded = '{"error":{"type":"server_error","message":"Model deepseek-flash isn\'t included in OpenCode Go. See the models it includes at https://opencode.ai/console/go."}}';
 const fb1 = codexAdapter.resolveCompatibleFallbackModel('cat-jam-free', errNotIncluded);
 assert.notStrictEqual(fb1, 'deepseek-flash', 'Must never return deprecated deepseek-flash');
-assert.strictEqual(fb1, 'hy4-flash-free', 'Free model cat-jam-free must fall back to active free model hy4-flash-free');
+assert.strictEqual(fb1, 'deepseek-v4.1-flash-free', 'Free model cat-jam-free must fall back to active free model deepseek-v4.1-flash-free');
 
 const fb2 = codexAdapter.resolveCompatibleFallbackModel('deepseek-v4.1-flash', 'Specify "Global" under Regions in Settings › Privacy on https://opencode.ai/console/go');
 assert.strictEqual(fb2, 'glm-5.3-flash', 'Region-restricted deepseek-v4.1-flash must fall back to non-restricted glm-5.3-flash');
@@ -84,7 +84,7 @@ codexAdapter.bindCodexConfig({
   preserveChoice: true
 });
 const updatedToml = fs.readFileSync(tomlPath, 'utf8');
-assert.ok(updatedToml.includes('model = "hy4-flash-free"'), 'Codex config.toml must heal deprecated cat-jam-free to hy4-flash-free');
+assert.ok(updatedToml.includes('model = "deepseek-v4.1-flash-free"'), 'Codex config.toml must heal deprecated cat-jam-free to deepseek-v4.1-flash-free');
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log('  [PASS] 5. bindCodexConfig heals deprecated model slugs in config.toml');
 

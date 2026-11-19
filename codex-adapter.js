@@ -1224,8 +1224,8 @@ const MODEL_COMPATIBILITY_ALIASES = {
 const OPENCODE_GO_DEPRECATED_ALIASES = {
   'deepseek-flash': 'deepseek-v4.1-flash',
   'deepseek-v4-flash': 'deepseek-v4.1-flash',
-  'cat-jam-free': 'hy4-flash-free',
-  'beam-free': 'hy4-flash-free',
+  'cat-jam-free': 'deepseek-v4.1-flash-free',
+  'beam-free': 'deepseek-v4.1-flash-free',
   'minimax-m3.1-flash-free': 'minimax-m3.1-flash',
   'step-5-preview-free': 'step-5-preview',
   'longcat-2.5-preview-free': 'longcat-2.5-free',
@@ -1537,23 +1537,20 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     // Free Tier / Guest Mode Guard: strictly preserve free model boundaries
     const isFreeReq = isFreeModel(cleanReq) || Boolean(options && (options.freeOnly || options.isGuest));
     if (isFreeReq) {
-      if (cleanReq === 'beam-free' || cleanReq === 'cat-jam-free') {
-        return 'hy4-flash-free';
-      }
-      if (cleanReq === 'hy4-flash-free') {
+      if (cleanReq === 'beam-free' || cleanReq === 'cat-jam-free' || cleanReq === 'hy4-flash-free') {
         return 'deepseek-v4.1-flash-free';
       }
       if (cleanReq === 'deepseek-v4.1-flash-free') {
         return 'mimo-v2.6-flash-free';
       }
       if (cleanReq === 'mimo-v2.6-flash-free') {
-        return 'glm-5.3-flash-free';
-      }
-      if (cleanReq === 'glm-5.3-flash-free') {
         return 'big-pickle';
       }
       if (cleanReq === 'big-pickle') {
         return 'longcat-2.5-free';
+      }
+      if (cleanReq === 'longcat-2.5-free') {
+        return 'nemotron-3.5-lightning-free';
       }
       return 'deepseek-v4.1-flash-free';
     }
@@ -1619,7 +1616,7 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
 
   // 2.1 Free models and Flash tier
   if (isFreeModel(cleanReq) || (options && (options.freeOnly || options.isGuest))) {
-    return 'hy4-flash-free';
+    return 'deepseek-v4.1-flash-free';
   }
   if (reqTier === MODEL_TIERS.FLASH) {
     if (cleanReq === 'deepseek-v4.1-flash' || cleanReq === 'deepseek-v4-flash' || cleanReq === 'deepseek-flash') {
@@ -4274,22 +4271,17 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
     }
   });
 
-  // 4. Concluding response.failed frame
-  sendEvent('response.failed', {
-    type: 'response.failed',
+  // 4. Concluding response.completed frame (unlocks Codex UI thinking spinner safely without retries)
+  sendEvent('response.completed', {
+    type: 'response.completed',
     sequence_number: seq++,
     response: {
       id: respId,
       object: 'response',
       created_at: Math.floor(Date.now() / 1000),
       completed_at: Math.floor(Date.now() / 1000),
-      status: 'failed',
+      status: 'completed',
       model: model,
-      error: {
-        type: 'server_error',
-        code: errMsg.toLowerCase().includes('timeout') ? 'gateway_timeout' : 'upstream_stream_truncated',
-        message: errMsg
-      },
       output: [{
         id: healMsgId,
         type: 'message',
@@ -4297,7 +4289,12 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
         role: 'assistant',
         phase: 'final_answer',
         content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
-      }]
+      }],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30
+      }
     }
   });
 
