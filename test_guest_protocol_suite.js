@@ -159,6 +159,31 @@ try {
   serverModule.accountStats.delete('acc-audit-1');
 }
 
+// 8. Strict Anti-Cheating & Audit Static/Runtime Assertions (Rule 10 & Remediation)
+const serverCode = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+assert.strictEqual(/getBackupDeepSeekKey/.test(serverCode), false, 'server.js must NOT contain getBackupDeepSeekKey');
+assert.strictEqual(/__deepseek_ha_backup__/.test(serverCode), false, 'server.js must NOT contain __deepseek_ha_backup__');
+assert.strictEqual(/api\.deepseek\.com/.test(serverCode), false, 'server.js must NOT contain api.deepseek.com');
+
+// Runtime verification: dispatchResponsesStreamError must send response.failed (never response.completed)
+let writtenChunks = [];
+const mockRes = {
+  headersSent: false,
+  writableEnded: false,
+  destroyed: false,
+  writeHead(status, headers) { this.headersSent = true; },
+  write(chunk) { writtenChunks.push(chunk); },
+  end(chunk) { if (chunk) writtenChunks.push(chunk); this.writableEnded = true; }
+};
+
+codexAdapter.dispatchResponsesStreamError(mockRes, 'beam-free', 'resp_audit_test', new Error('Upstream test failure'));
+const fullStreamOutput = writtenChunks.join('');
+assert.ok(fullStreamOutput.includes('event: response.failed'), 'dispatchResponsesStreamError must dispatch event: response.failed');
+assert.ok(fullStreamOutput.includes('"status":"failed"'), 'dispatchResponsesStreamError response payload must have status: failed');
+assert.strictEqual(fullStreamOutput.includes('event: response.completed'), false, 'dispatchResponsesStreamError must NEVER dispatch event: response.completed');
+assert.strictEqual(fullStreamOutput.includes('input_tokens: 10'), false, 'dispatchResponsesStreamError must NEVER forge usage tokens');
+console.log('  [PASS] 8. Strict Anti-Cheating & Audit Static/Runtime Assertions verified');
+
 console.log('================================================================');
-console.log('ALL 7/7 GUEST PROTOCOL & ZEN V2 WIRE TESTS PASSED (ZERO CHEATING)!');
+console.log('ALL 8/8 GUEST PROTOCOL & ANTI-CHEATING AUDIT TESTS PASSED!');
 console.log('================================================================');

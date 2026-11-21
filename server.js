@@ -1371,20 +1371,6 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
       };
     }
 
-    if (!excludeAccountIds || !excludeAccountIds.has('__deepseek_ha_backup__')) {
-      const backupKey = getBackupDeepSeekKey();
-      if (backupKey) {
-        return {
-          id: '__deepseek_ha_backup__',
-          name: 'DeepSeek 高可用专线 (透明接管)',
-          apiKey: backupKey,
-          upstream: 'https://api.deepseek.com',
-          isGuest: false,
-          isDeepSeekBackup: true,
-          enabled: true
-        };
-      }
-    }
     return null;
   }
 
@@ -1466,27 +1452,6 @@ function getEffectiveGuestUpstream(modelName, defaultUpstream = 'https://opencod
   return defaultUpstream;
 }
 
-function getBackupDeepSeekKey() {
-  if (process.env.DEEPSEEK_API_KEY && process.env.DEEPSEEK_API_KEY.trim()) {
-    return process.env.DEEPSEEK_API_KEY.trim();
-  }
-  if (config.deepseekBackupKey && typeof config.deepseekBackupKey === 'string' && config.deepseekBackupKey.trim()) {
-    return config.deepseekBackupKey.trim();
-  }
-  try {
-    const codexDir = (typeof codexAdapter?.getCodexConfigDir === 'function')
-      ? codexAdapter.getCodexConfigDir()
-      : path.join(os.homedir(), '.codex');
-    const tomlPath = path.join(codexDir, 'config.toml');
-    if (fs.existsSync(tomlPath)) {
-      const content = fs.readFileSync(tomlPath, 'utf8');
-      const m = content.match(/experimental_bearer_token\s*=\s*["'](sk-[a-zA-Z0-9_\-]+)["']/i) ||
-                content.match(/api_key\s*=\s*["'](sk-[a-zA-Z0-9_\-]+)["']/i);
-      if (m && m[1]) return m[1].trim();
-    }
-  } catch (_) {}
-  return null;
-}
 
 function normalizeUpstreamEndpoint(rawUpstream) {
   if (!rawUpstream || typeof rawUpstream !== 'string') return 'https://opencode.ai/zen/go/v1';
@@ -2479,22 +2444,9 @@ function handleRateLimitFailover({
         _guestRetryIndex: guestRetryIdx + 1,
         _preferredGuestModel: cand.model
       };
-    } else if (!nextAccount && (!triedAccountIds || !triedAccountIds.has('__deepseek_ha_backup__'))) {
-      const backupKey = getBackupDeepSeekKey();
-      if (backupKey) {
-        nextAccount = {
-          id: '__deepseek_ha_backup__',
-          name: 'DeepSeek 高可用专线 (透明接管)',
-          apiKey: backupKey,
-          upstream: 'https://api.deepseek.com',
-          isGuest: false,
-          isDeepSeekBackup: true,
-          enabled: true
-        };
-      }
     }
-    const maxRetries = (isLiveZenGuest || (nextAccount && nextAccount.isDeepSeekBackup))
-      ? Math.max(7, ZEN_GUEST_FALLBACK_CANDIDATES.length + 2)
+    const maxRetries = isLiveZenGuest
+      ? Math.max(6, ZEN_GUEST_FALLBACK_CANDIDATES.length + 1)
       : Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
     if (nextAccount && attemptNumber <= maxRetries) {
       const stat = accountStats.get(account.id);
@@ -2596,20 +2548,8 @@ function handleUpstreamGlitchAndFailover({
       _guestRetryIndex: guestRetryIdx + 1,
       _preferredGuestModel: cand.model
     };
-  } else if (!nextAccount && (!triedAccountIds || !triedAccountIds.has('__deepseek_ha_backup__'))) {
-    const backupKey = getBackupDeepSeekKey();
-    if (backupKey) {
-      nextAccount = {
-        id: '__deepseek_ha_backup__',
-        name: 'DeepSeek 高可用专线 (透明接管)',
-        apiKey: backupKey,
-        upstream: 'https://api.deepseek.com',
-        isGuest: false,
-        isDeepSeekBackup: true,
-        enabled: true
-      };
-    }
   }
+
   if (nextAccount) {
     const stat = accountStats.get(account.id);
     if (stat) stat.failoverCount += 1;
@@ -3344,18 +3284,6 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
   }
-  const isVirtualFallbackAccount = Boolean(account && (account.isGuest || account.id === '__guest_protocol__' || account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__'));
-  if (isVirtualFallbackAccount) {
-    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
-    if (primarySubAcc && primarySubAcc.id !== account.id) {
-      const pStat = accountStats.get(primarySubAcc.id);
-      if (pStat) {
-        pStat.activeRequests += 1;
-        pStat.totalRequests += 1;
-        pStat.lastUsedAt = Date.now();
-      }
-    }
-  }
 
   const proxyHeaders = { ...clientReq.headers };
   delete proxyHeaders['host'];
@@ -3508,16 +3436,6 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
       if (stat && stat.activeRequests > 0) {
         stat.activeRequests -= 1;
       }
-      const isVirtualFallbackAccount = Boolean(account && (account.isGuest || account.id === '__guest_protocol__' || account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__'));
-      if (isVirtualFallbackAccount) {
-        const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
-        if (primarySubAcc && primarySubAcc.id !== account.id) {
-          const pStat = accountStats.get(primarySubAcc.id);
-          if (pStat && pStat.activeRequests > 0) {
-            pStat.activeRequests -= 1;
-          }
-        }
-      }
       if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) {
         stat.halfOpenInFlight = false;
       }
@@ -3589,12 +3507,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
           sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
         },
         errorFallbackFn: (errText) => {
-          if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
-            const clientEchoModel = rawReqModel || reqModel || 'deepseek-v4.1-flash-free';
-            codexAdapter.dispatchResponsesStreamError(clientRes, clientEchoModel, responsesBody ? responsesBody.id : null, errText || '上游官方免费额度已达限额，请在网关配置 API Key 或稍后重试', sessionId);
-          } else {
-            sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
-          }
+          sendStandardizedError(clientRes, upstreamRes, statusCode, errText);
         }
       });
       return;
@@ -4109,18 +4022,6 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
   }
-  const isVirtualFallbackAccount = Boolean(account && (account.isGuest || account.id === '__guest_protocol__' || account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__'));
-  if (isVirtualFallbackAccount) {
-    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
-    if (primarySubAcc && primarySubAcc.id !== account.id) {
-      const pStat = accountStats.get(primarySubAcc.id);
-      if (pStat) {
-        pStat.activeRequests += 1;
-        pStat.totalRequests += 1;
-        pStat.lastUsedAt = Date.now();
-      }
-    }
-  }
 
   const rawEffectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
   const isLiveOpencodeGo = Boolean(rawEffectiveUpstream && rawEffectiveUpstream.includes('opencode.ai'));
@@ -4181,12 +4082,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     ? { ...baseChatPayload, model: account._preferredGuestModel }
     : baseChatPayload;
 
-  const isDeepSeekTarget = Boolean(account && (account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__' || (account.upstream && account.upstream.includes('deepseek.com'))));
-  if (isDeepSeekTarget && chatPayload && typeof chatPayload === 'object') {
-    const origModel = (chatPayload.model || '').toLowerCase();
-    const isReasoner = origModel.includes('reasoner') || origModel.includes('r1') || responsesBody?.reasoning_effort === 'high';
-    chatPayload.model = isReasoner ? 'deepseek-reasoner' : 'deepseek-chat';
-  } else if (account && account.isGuest && chatPayload && typeof chatPayload === 'object') {
+  if (account && account.isGuest && chatPayload && typeof chatPayload === 'object') {
     const targetGuestModel = (account._preferredGuestModel && isLiveOpencodeGo)
       ? account._preferredGuestModel
       : (isLiveOpencodeGo
@@ -4205,9 +4101,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   const chatBody = Buffer.from(JSON.stringify(chatPayload), 'utf8');
 
   let effectiveTargetUpstream = effectiveUpstream;
-  if (isDeepSeekTarget) {
-    effectiveTargetUpstream = 'https://api.deepseek.com';
-  } else if (account && account.isGuest && isLiveOpencodeGo) {
+  if (account && account.isGuest && isLiveOpencodeGo) {
     const guestTargetUpstream = getEffectiveGuestUpstream(chatPayload ? chatPayload.model : reqModel, rawEffectiveUpstream);
     effectiveTargetUpstream = normalizeUpstreamEndpoint(guestTargetUpstream);
   }
@@ -4221,18 +4115,15 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
     'content-type': 'application/json',
     'content-length': String(chatBody.length),
     'accept': isStream ? 'text/event-stream' : 'application/json',
-    'authorization': `Bearer ${(account.apiKey || '').trim()}`,
-    'user-agent': isDeepSeekTarget
-      ? 'opencode-router/3.14.3'
-      : ((account && account.isGuest)
-        ? 'opencode/latest/2.1.4/cli'
-        : ((clientReq.headers['user-agent'] && !/python|curl|undici|node-fetch/i.test(clientReq.headers['user-agent'])) ? clientReq.headers['user-agent'] : 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)'))
+    'x-opencode-session': zenSesId,
+    'user-agent': (account && account.isGuest)
+      ? 'opencode/latest/2.1.4/cli'
+      : ((clientReq.headers['user-agent'] && !/python|curl|undici|node-fetch/i.test(clientReq.headers['user-agent'])) ? clientReq.headers['user-agent'] : 'opencode/2.0.26 (Windows NT 10.0; Win64; x64)')
   };
-  if (!isDeepSeekTarget) {
-    proxyHeaders['x-opencode-session'] = zenSesId;
-    if (account && account.isGuest) {
-      Object.assign(proxyHeaders, buildZenGuestHeaders(zenSesId));
-    }
+  if (account && account.isGuest) {
+    Object.assign(proxyHeaders, buildZenGuestHeaders(zenSesId));
+  } else {
+    proxyHeaders['authorization'] = `Bearer ${(account.apiKey || '').trim()}`;
   }
 
   const proxyOptions = {
@@ -4316,16 +4207,6 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
         stat.activeRequests -= 1;
-      }
-      const isVirtualFallbackAccount = Boolean(account && (account.isGuest || account.id === '__guest_protocol__' || account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__'));
-      if (isVirtualFallbackAccount) {
-        const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
-        if (primarySubAcc && primarySubAcc.id !== account.id) {
-          const pStat = accountStats.get(primarySubAcc.id);
-          if (pStat && pStat.activeRequests > 0) {
-            pStat.activeRequests -= 1;
-          }
-        }
       }
       if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) {
         stat.halfOpenInFlight = false;
@@ -4766,18 +4647,6 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     stat.totalRequests += 1;
     stat.lastUsedAt = Date.now();
   }
-  const isVirtualFallbackAccount = Boolean(account && (account.isGuest || account.id === '__guest_protocol__' || account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__'));
-  if (isVirtualFallbackAccount) {
-    const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
-    if (primarySubAcc && primarySubAcc.id !== account.id) {
-      const pStat = accountStats.get(primarySubAcc.id);
-      if (pStat) {
-        pStat.activeRequests += 1;
-        pStat.totalRequests += 1;
-        pStat.lastUsedAt = Date.now();
-      }
-    }
-  }
 
   // Pre-flight check & pruning for oversized responses payload (Rule 5 & Rule 33)
   const isCompEnabled = Boolean(config.compression && config.compression.enabled);
@@ -4900,16 +4769,6 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
       requestFinished = true;
       if (stat && stat.activeRequests > 0) {
         stat.activeRequests -= 1;
-      }
-      const isVirtualFallbackAccount = Boolean(account && (account.isGuest || account.id === '__guest_protocol__' || account.isDeepSeekBackup || account.id === '__deepseek_ha_backup__'));
-      if (isVirtualFallbackAccount) {
-        const primarySubAcc = (config.accounts && config.accounts.find(a => a && a.enabled)) || (config.accounts && config.accounts[0]);
-        if (primarySubAcc && primarySubAcc.id !== account.id) {
-          const pStat = accountStats.get(primarySubAcc.id);
-          if (pStat && pStat.activeRequests > 0) {
-            pStat.activeRequests -= 1;
-          }
-        }
       }
       if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) {
         stat.halfOpenInFlight = false;

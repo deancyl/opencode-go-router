@@ -32,3 +32,4 @@ compression-stats.json
 compression-history.json
 .agents/
 artifacts/
+dev-logs/

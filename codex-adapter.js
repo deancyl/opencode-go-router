@@ -4271,17 +4271,22 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
     }
   });
 
-  // 4. Concluding response.completed frame (unlocks Codex UI thinking spinner safely without retries)
-  sendEvent('response.completed', {
-    type: 'response.completed',
+  // 4. Concluding response.failed frame
+  sendEvent('response.failed', {
+    type: 'response.failed',
     sequence_number: seq++,
     response: {
       id: respId,
       object: 'response',
       created_at: Math.floor(Date.now() / 1000),
       completed_at: Math.floor(Date.now() / 1000),
-      status: 'completed',
+      status: 'failed',
       model: model,
+      error: {
+        type: 'server_error',
+        code: errMsg.toLowerCase().includes('timeout') ? 'gateway_timeout' : 'upstream_stream_truncated',
+        message: errMsg
+      },
       output: [{
         id: healMsgId,
         type: 'message',
@@ -4289,12 +4294,7 @@ function dispatchResponsesStreamError(clientRes, reqModel, reqId, err, sessionId
         role: 'assistant',
         phase: 'final_answer',
         content: [{ type: 'output_text', text: healNotice, annotations: [], logprobs: [] }]
-      }],
-      usage: {
-        input_tokens: 10,
-        output_tokens: 20,
-        total_tokens: 30
-      }
+      }]
     }
   });
 
