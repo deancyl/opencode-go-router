@@ -5305,7 +5305,7 @@ async function runSystemDoctor(scope = 'all', options = {}) {
   }
 
   if (scope === 'codex') {
-    const codexStatus = codexAdapter.getCodexStatus(config.port);
+    const codexStatus = codexAdapter.getCodexStatus({ routerPort: config.port, isGuest: isGuestModeActive() });
     const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
     const localeCheck = codexStatus.localeCheck || codexAdapter.checkCodexLocaleAndEnvironment();
     const codexIssues = [];
@@ -5775,7 +5775,7 @@ if (Test-Path $appProfileDir) {
 
   // 8. Check OpenAI Codex CLI, processes, locale and binding
   try {
-    const codexStatus = codexAdapter.getCodexStatus(config.port);
+    const codexStatus = codexAdapter.getCodexStatus({ routerPort: config.port, isGuest: isGuestModeActive() });
     report.codex = codexStatus;
     const procHealth = codexStatus.processHealth || codexAdapter.checkCodexProcessHealth();
     report.codexProcessHealth = procHealth;
@@ -5956,7 +5956,7 @@ async function executeSystemRepair(options = {}) {
       }
 
       // 8.3 Auto-bind Codex CLI if installed and not yet bound or not hardened
-      const codexStatus = codexAdapter.getCodexStatus(config.port);
+      const codexStatus = codexAdapter.getCodexStatus({ routerPort: config.port, isGuest: isGuestModeActive() });
       if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
         const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
         const bindRes = codexAdapter.bindCodexConfig({
@@ -6316,7 +6316,7 @@ if (Test-Path $appProfileDir) {
       }
 
       // 8.3 Auto-bind Codex CLI if installed and not yet bound or not hardened
-      const codexStatus = codexAdapter.getCodexStatus(config.port);
+      const codexStatus = codexAdapter.getCodexStatus({ routerPort: config.port, isGuest: isGuestModeActive() });
       if (codexStatus.cliInstalled && (!codexStatus.isBound || !codexStatus.hasStreamIdleTimeout)) {
         const isRehardened = codexStatus.isBound && !codexStatus.hasStreamIdleTimeout;
         const bindRes = codexAdapter.bindCodexConfig({
@@ -7763,7 +7763,7 @@ const server = http.createServer((req, res) => {
   // Codex CLI Status API
   if (reqUrl.pathname === '/balancer/api/codex-status' && req.method === 'GET') {
     try {
-      const status = codexAdapter.getCodexStatus(config.port);
+      const status = codexAdapter.getCodexStatus({ routerPort: config.port, isGuest: isGuestModeActive() });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ success: true, status }));
     } catch (err) {
@@ -7782,15 +7782,18 @@ const server = http.createServer((req, res) => {
         if (buf.length > 0) {
           try { payload = JSON.parse(buf.toString('utf8')); } catch (e) {}
         }
-        const defaultModel = payload.defaultModel || 'deepseek-v4.1-flash';
+        const isGuest = isGuestModeActive();
+        const clientAdapter = require('./client-adapter-manager');
+        const defaultModel = isGuest 
+          ? 'deepseek-v4.1-flash-free' 
+          : ((payload.defaultModel === 'beam-free' || !payload.defaultModel) ? 'deepseek-v4.1-flash' : payload.defaultModel);
         const reasoningEffort = payload.reasoningEffort || 'high';
-        const result = codexAdapter.bindCodexConfig({
+        const result = clientAdapter.syncCodexConfig({
           codexDir: payload.codexDir,
           routerPort: config.port,
-          routerUrl: `http://127.0.0.1:${config.port}/v1`,
           defaultModel,
           reasoningEffort,
-          providerName: 'opencode-go'
+          isGuest
         });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({
@@ -8175,24 +8178,34 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
           lastModelsHubProbeTime = now;
         }
 
-        const policy = config.modelSourcePolicy || 'hybrid';
+        const isGuest = isGuestModeActive();
+        const policy = isGuest ? 'guest' : (config.modelSourcePolicy || 'hybrid');
         const officialModels = clientAdapter.loadOfficialModels();
         const probedSlugs = probeRes?.slugs || [];
         const activeModels = clientAdapter.filterModelsByPolicy(policy, {
           officialModels,
-          probedModels: probedSlugs
+          probedModels: probedSlugs,
+          isGuest,
+          freeOnly: isGuest
         });
 
-        const clientStatus = clientAdapter.getClientStatus({ routerPort: config.port });
+        const effectiveDefaultModel = isGuest 
+          ? 'deepseek-v4.1-flash-free' 
+          : ((config.defaultModel === 'beam-free' || !config.defaultModel) ? 'deepseek-v4.1-flash' : config.defaultModel);
+
+        const clientStatus = clientAdapter.getClientStatus({ routerPort: config.port, isGuest });
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({
           success: true,
+          isGuest,
           policy,
           modelsCount: activeModels.length,
           availablePolicies: clientAdapter.MODEL_SOURCE_POLICIES,
-          defaultModel: config.defaultModel || 'deepseek-v4.1-flash',
-          favoriteModels: config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3'],
+          defaultModel: effectiveDefaultModel,
+          favoriteModels: isGuest 
+            ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'glm-5.3-flash-free', 'big-pickle', 'longcat-2.5-free']
+            : (config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3']),
           upstreamStatus: {
             healthy: Boolean(probeRes && probeRes.success),
             probedCount: probedSlugs.length,

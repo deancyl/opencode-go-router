@@ -3170,17 +3170,31 @@ function renderCodexDiagnostics(doc) {
 
   // Update model dropdown if needed
   const sel = document.getElementById('codex-model-select');
-  if (sel && sel.options.length === 0 && Array.isArray(st.availableModels)) {
+  const availableSlugs = Array.isArray(st.availableModels) ? st.availableModels.map(m => m.slug).join(',') : '';
+  const currentSelectSlugs = sel ? Array.from(sel.options).map(o => o.value).join(',') : '';
+  if (sel && Array.isArray(st.availableModels) && (sel.options.length === 0 || currentSelectSlugs !== availableSlugs)) {
+    const curVal = sel.value || st.currentModel;
     sel.innerHTML = '';
     st.availableModels.forEach(function(m) {
       const opt = document.createElement('option');
       opt.value = m.slug;
       const isAnthropic = m.slug === 'claude-haiku-5-5';
       const tag = isAnthropic ? ' [Anthropic 协议桥]' : ' [智能双轨协议桥]';
-      opt.innerText = m.display_name + tag;
-      if (m.slug === (st.currentModel || 'deepseek-v4.1-flash')) opt.selected = true;
+      opt.innerText = (m.display_name || m.name) + tag;
+      if (m.slug === curVal || (!curVal && m.slug === (st.currentModel || (st.isGuest ? 'deepseek-v4.1-flash-free' : 'deepseek-v4.1-flash')))) {
+        opt.selected = true;
+      }
       sel.appendChild(opt);
     });
+  }
+
+  const codexLabel = document.querySelector('label[for="codex-model-select"]') || (sel && sel.previousElementSibling);
+  if (codexLabel && codexLabel.tagName === 'LABEL') {
+    if (st.isGuest) {
+      codexLabel.innerHTML = '首选生效模型 <span class="badge badge-healthy" style="font-size:0.75rem; margin-left:6px;">🟢 游客免费在役模型 (' + (st.availableModels ? st.availableModels.length : 5) + ' 款)</span>';
+    } else {
+      codexLabel.innerText = '首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)';
+    }
   }
 
   if (st.currentReasoningEffort && document.getElementById('codex-effort-select')) {
@@ -4333,12 +4347,13 @@ function renderModelHubUI(data) {
   const codexSelect = document.getElementById('codex-model-select');
   if (codexSelect && Array.isArray(data.models)) {
     const curCodexVal = codexSelect.value;
+    const targetModel = (curCodexVal && curCodexVal !== 'beam-free') ? curCodexVal : (data.defaultModel || 'deepseek-v4.1-flash-free');
     codexSelect.innerHTML = '';
     data.models.forEach(function(m) {
       const opt = document.createElement('option');
       opt.value = m.slug;
       opt.textContent = m.name + ' (' + m.slug + ')';
-      if (m.slug === curCodexVal) opt.selected = true;
+      if (m.slug === targetModel) opt.selected = true;
       codexSelect.appendChild(opt);
     });
   }
@@ -4392,7 +4407,10 @@ function renderHubModelTable(models) {
     const vendorBadge = '<span class="badge" style="font-size:0.7rem; background:rgba(255,255,255,0.06); color:#cbd5e1;">' + (m.vendor || 'Unknown') + '</span>';
     const ctxStr = m.context_window ? (Math.round(m.context_window / 1000) + 'k') : '-';
     const reasoningLevels = Array.isArray(m.supported_reasoning_levels) && m.supported_reasoning_levels.length > 0
-      ? m.supported_reasoning_levels.join('/')
+      ? m.supported_reasoning_levels.map(function(l) {
+          if (typeof l === 'object' && l) return l.effort || l.name || JSON.stringify(l);
+          return String(l);
+        }).join('/')
       : '<span style="color:var(--muted)">不支持</span>';
     const srcBadge = m.source === 'api_probed'
       ? '<span class="badge badge-healthy" style="font-size:0.68rem;">在线探活</span>'

@@ -6071,7 +6071,11 @@ function getCodexStatus(routerPortOrDir = 4010, codexDirOverride = null) {
     localeNotice: '已配置简体中文 (localeOverride = "zh-CN")。注意：Codex 桌面端 Web 界面内部汉化受制于官方该版本 Feature Gate (Statsig 72216192) 默认值冲突，官方放量或更新后将自动全面显示中文。',
     processHealth: checkCodexProcessHealth(),
     localeCheck,
-    availableModels: ((routerPortOrDir && typeof routerPortOrDir === 'object' && Array.isArray(routerPortOrDir.models) && routerPortOrDir.models.length > 0) ? routerPortOrDir.models : OPENCODE_GO_ALL_MODELS).map(m => ({
+    isGuest: Boolean(routerPortOrDir && typeof routerPortOrDir === 'object' && routerPortOrDir.isGuest),
+    availableModels: ((routerPortOrDir && typeof routerPortOrDir === 'object' && Array.isArray(routerPortOrDir.models) && routerPortOrDir.models.length > 0) 
+      ? routerPortOrDir.models 
+      : ((routerPortOrDir && typeof routerPortOrDir === 'object' && routerPortOrDir.isGuest) ? GUEST_FREE_MODELS_CATALOG : OPENCODE_GO_ALL_MODELS)
+    ).map(m => ({
       slug: m.slug,
       display_name: m.display_name || m.name,
       description: m.description,
