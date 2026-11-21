@@ -184,6 +184,62 @@ assert.strictEqual(fullStreamOutput.includes('event: response.completed'), false
 assert.strictEqual(fullStreamOutput.includes('input_tokens: 10'), false, 'dispatchResponsesStreamError must NEVER forge usage tokens');
 console.log('  [PASS] 8. Strict Anti-Cheating & Audit Static/Runtime Assertions verified');
 
+// 9. Verify 429 FreeUsageLimitError Anti-Scan & Long Retry-After Stripping (v3.14.3 Stability Fix)
+// 9a. Test sanitizeRetryAfterHeaders
+const rawHeadersLong = {
+  'content-type': 'application/json',
+  'cf-ray': 'a5e00ab9eac1fe1e-SIN',
+  'retry-after': '37848'
+};
+serverModule.sanitizeRetryAfterHeaders(rawHeadersLong, 30);
+assert.strictEqual(rawHeadersLong['retry-after'], undefined, 'Long Retry-After (>30s) must be stripped from response headers');
+
+const rawHeadersShort = {
+  'content-type': 'application/json',
+  'retry-after': '10'
+};
+serverModule.sanitizeRetryAfterHeaders(rawHeadersShort, 30);
+assert.strictEqual(rawHeadersShort['retry-after'], '10', 'Short Retry-After (<=30s) must be preserved');
+
+// 9b. Test sendStandardizedError preserves true 429 status but strips excessive Retry-After
+let sentStatus = null;
+let sentHeaders = null;
+let sentBody = null;
+const mockClientRes = {
+  headersSent: false,
+  writableEnded: false,
+  destroyed: false,
+  writeHead(status, headers) {
+    sentStatus = status;
+    sentHeaders = headers;
+    this.headersSent = true;
+  },
+  end(chunk) {
+    sentBody = chunk ? chunk.toString('utf8') : '';
+    this.writableEnded = true;
+  }
+};
+const mockUpstreamRes = {
+  headers: {
+    'content-type': 'application/json',
+    'retry-after': '37848',
+    'cf-ray': 'test-ray-SIN'
+  }
+};
+const rawUpstream429Json = JSON.stringify({
+  type: 'error',
+  error: {
+    type: 'FreeUsageLimitError',
+    message: 'Free usage limit reached. Free models work in OpenCode...'
+  }
+});
+
+serverModule.sendStandardizedError(mockClientRes, mockUpstreamRes, 429, rawUpstream429Json);
+assert.strictEqual(sentStatus, 429, 'Must preserve genuine HTTP 429 status code');
+assert.strictEqual(sentHeaders['retry-after'], undefined, 'Must NOT transmit excessive 37848s Retry-After header to Codex client');
+assert.ok(sentBody.includes('FreeUsageLimitError'), 'Must preserve upstream FreeUsageLimitError message');
+console.log('  [PASS] 9. Long Retry-After stripping & genuine 429 error transparency verified');
+
 console.log('================================================================');
-console.log('ALL 8/8 GUEST PROTOCOL & ANTI-CHEATING AUDIT TESTS PASSED!');
+console.log('ALL 9/9 GUEST PROTOCOL & ANTI-CHEATING AUDIT TESTS PASSED!');
 console.log('================================================================');

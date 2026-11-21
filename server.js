@@ -2073,6 +2073,31 @@ function autoHealOpencodePortDrift(customPath = null, targetPort = config.port) 
   }
 }
 
+function sanitizeRetryAfterHeaders(headers, maxAllowedSec = 30) {
+  if (!headers || typeof headers !== 'object') return headers;
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === 'retry-after') {
+      const rawVal = headers[k];
+      let delaySec = NaN;
+      const num = parseInt(rawVal, 10);
+      if (!isNaN(num)) {
+        delaySec = num;
+      } else {
+        const dt = new Date(rawVal).getTime();
+        if (!isNaN(dt)) {
+          delaySec = Math.max(0, Math.round((dt - Date.now()) / 1000));
+        }
+      }
+      // 当 Retry-After 超过阈值 (如 30 秒，指向次日重置或超长封控)，从透传响应头中安全剥离
+      // 避免 Codex Rust 内核 (codex_core::responses_retry) 将重试排期到数小时后导致前端 UI 假死永久转圈
+      if (isNaN(delaySec) || delaySec > maxAllowedSec) {
+        delete headers[k];
+      }
+    }
+  }
+  return headers;
+}
+
 function getCorsHeaders(upstreamHeaders = {}) {
   const headers = { ...upstreamHeaders };
   delete headers['connection'];
@@ -2085,6 +2110,7 @@ function getCorsHeaders(upstreamHeaders = {}) {
     headers['x-accel-buffering'] = 'no';
     headers['cache-control'] = 'no-cache';
   }
+  sanitizeRetryAfterHeaders(headers, 30);
   return headers;
 }
 
@@ -2097,6 +2123,7 @@ function sendStandardizedError(clientRes, upstreamRes, statusCode, rawErrText) {
     return;
   }
   const outHeaders = getCorsHeaders(upstreamRes ? upstreamRes.headers : {});
+  sanitizeRetryAfterHeaders(outHeaders, 30);
   outHeaders['content-type'] = 'application/json; charset=utf-8';
   delete outHeaders['transfer-encoding'];
   delete outHeaders['content-encoding'];
@@ -2434,8 +2461,18 @@ function handleRateLimitFailover({
 
     let nextAccount = selectAccount(sessionId, triedAccountIds);
     const isLiveZenGuest = Boolean(account && account.isGuest && isOpenCodeLiveUpstream((account && account.upstream) || config.upstream));
+    const isFreeLimitHit = Boolean(classified && (classified.isFreeUsageLimit || (classified.isQuotaExhausted && account && account.isGuest)));
     const guestRetryIdx = (account && typeof account._guestRetryIndex === 'number') ? account._guestRetryIndex : 0;
-    if (!nextAccount && isLiveZenGuest && guestRetryIdx < ZEN_GUEST_FALLBACK_CANDIDATES.length) {
+
+    // 当明确遭遇 FreeUsageLimitError 时 (说明当前公网出口的共享免费配额已达上限)，
+    // 立即终止同出口免费模型轮询扫池 (禁止 1 秒内 7 连发重试以防加剧限频并刷屏)。
+    // 若用户配置了其他健康独立的备用账号 (如合法的第三方 API Key 或本地模型)，则正常故障转移；若无，立即终止重试并返回真实状态。
+    if (isFreeLimitHit) {
+      console.warn(`[RateLimit] 上游返回 FreeUsageLimitError (公共免费池配额已达上限)，立即终止同出口免费模型轮询扫池，避免加剧限频。`);
+      if (nextAccount && nextAccount.isGuest) {
+        nextAccount = null;
+      }
+    } else if (!nextAccount && isLiveZenGuest && guestRetryIdx < ZEN_GUEST_FALLBACK_CANDIDATES.length) {
       const cand = ZEN_GUEST_FALLBACK_CANDIDATES[guestRetryIdx];
       rotateGuestSessionId(sessionId);
       nextAccount = {
@@ -2538,8 +2575,9 @@ function handleUpstreamGlitchAndFailover({
   recordAccountFailure(account.id, `Upstream Cluster Node Failure (${statusCode})`, statusCode, false);
   let nextAccount = selectAccount(sessionId, triedAccountIds);
   const isLiveZenGuest = Boolean(account && account.isGuest && isOpenCodeLiveUpstream((account && account.upstream) || config.upstream));
+  const isFreeLimitHit = Boolean(account && account.isGuest && (errText.includes('FreeUsageLimitError') || errText.includes('free usage limit')));
   const guestRetryIdx = (account && typeof account._guestRetryIndex === 'number') ? account._guestRetryIndex : 0;
-  if (!nextAccount && isLiveZenGuest && guestRetryIdx < ZEN_GUEST_FALLBACK_CANDIDATES.length) {
+  if (!nextAccount && isLiveZenGuest && !isFreeLimitHit && guestRetryIdx < ZEN_GUEST_FALLBACK_CANDIDATES.length) {
     const cand = ZEN_GUEST_FALLBACK_CANDIDATES[guestRetryIdx];
     rotateGuestSessionId(sessionId);
     nextAccount = {
@@ -9265,11 +9303,14 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
           };
         });
 
-        res.writeHead(429, {
+        const rateLimitHeaders = {
           'Content-Type': 'application/json; charset=utf-8',
-          'Retry-After': String(minCooldownSec),
           'Access-Control-Allow-Origin': '*'
-        });
+        };
+        if (minCooldownSec <= 30) {
+          rateLimitHeaders['Retry-After'] = String(minCooldownSec);
+        }
+        res.writeHead(429, rateLimitHeaders);
         res.end(JSON.stringify({
           error: {
             message: `All OpenCode Go accounts in pool are temporarily cooling down due to rate limits. Nearest account recovers in ${minCooldownSec}s.`,
@@ -9512,6 +9553,8 @@ module.exports = {
   isAccountAvailable,
   selectAccount,
   getCorsHeaders,
+  sanitizeRetryAfterHeaders,
+  sendStandardizedError,
   fetchAccountUsage,
   buildLocalAccountUsageFallback,
   pluginManager
