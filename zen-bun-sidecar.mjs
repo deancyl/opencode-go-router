@@ -29,7 +29,7 @@ const server = Bun.serve({
           runtime: 'bun',
           version: typeof Bun !== 'undefined' ? Bun.version : 'unknown'
         }),
-        { status: 200, headers: { ' content-type': 'application/json' } }
+        { status: 200, headers: { 'content-type': 'application/json' } }
       );
     }
 
@@ -68,10 +68,12 @@ const server = Bun.serve({
       method: req.method,
       headers: outHeaders,
       body: bodyBuf,
-      redirect: 'manual'
+      redirect: 'manual',
+      signal: req.signal
     };
     if (proxyUrl && proxyUrl.trim()) {
-      fetchOpts.proxy = proxyUrl.trim();
+      const trimmedProxy = proxyUrl.trim();
+      fetchOpts.proxy = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedProxy) ? trimmedProxy : `http://${trimmedProxy}`;
     }
 
     try {

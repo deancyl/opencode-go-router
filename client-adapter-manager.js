@@ -44,17 +44,29 @@ function parseJsonSafe(filePath, defaultVal = {}) {
     const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
     if (!raw.trim()) return defaultVal;
     return JSON.parse(stripJsonComments(raw));
-  } catch (_) {
+  } catch (err) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const corruptBackup = `${filePath}.corrupt.${Date.now()}.bak`;
+        fs.copyFileSync(filePath, corruptBackup);
+        console.warn(`[ClientAdapterManager] 检测到损坏 JSON，已保留备份至 ${corruptBackup}: ${err.message}`);
+      }
+    } catch (_) {}
     return defaultVal;
   }
 }
 
 /**
- * 原子写入文件 (UTF-8 No-BOM，防止写入中途崩溃)
+ * 原子写入文件 (UTF-8 No-BOM，防止写入中途崩溃，写入前保留 .bak 备份)
  */
 function writeJsonAtomic(filePath, data) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.copyFileSync(filePath, filePath + '.bak');
+    }
+  } catch (_) {}
   const content = JSON.stringify(data, null, 2);
   const tempPath = filePath + '.tmp.' + Date.now() + '.' + Math.random().toString(36).slice(2, 7);
   try {
@@ -63,8 +75,13 @@ function writeJsonAtomic(filePath, data) {
     return true;
   } catch (err) {
     try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (_) {}
-    fs.writeFileSync(filePath, content, 'utf8');
-    return true;
+    try {
+      fs.writeFileSync(filePath, content, 'utf8');
+      return true;
+    } catch (writeErr) {
+      console.warn(`[ClientAdapterManager] writeJsonAtomic 写入失败 (${filePath}): ${writeErr.message}`);
+      return false;
+    }
   }
 }
 
@@ -354,12 +371,35 @@ function getClientStatus(options = {}) {
 
   opencodeStatus.exists = opencodeStatus.detected;
   opencodeStatus.configured = opencodeStatus.isBound;
+  opencodeStatus.defaultModel = opencodeStatus.currentModel;
 
   openchamberStatus.exists = openchamberStatus.detected;
   openchamberStatus.configured = openchamberStatus.isBound;
+  openchamberStatus.configPath = (openchamberStatus.targetDirs && openchamberStatus.targetDirs[0])
+    ? path.join(openchamberStatus.targetDirs[0], 'preferences.json')
+    : path.join(stdChamberDir, 'preferences.json');
+  openchamberStatus.defaultModel = (openchamberStatus.recentModels && openchamberStatus.recentModels[0])
+    || (openchamberStatus.favoriteModels && openchamberStatus.favoriteModels[0])
+    || null;
+  openchamberStatus.modelCount = Math.max(
+    Array.isArray(openchamberStatus.favoriteModels) ? openchamberStatus.favoriteModels.length : 0,
+    Array.isArray(openchamberStatus.recentModels) ? openchamberStatus.recentModels.length : 0
+  );
 
   codexStatus.exists = codexStatus.detected;
   codexStatus.configured = codexStatus.isBound;
+  codexStatus.defaultModel = codexStatus.currentModel;
+  try {
+    const codexCatalogPath = path.join(path.dirname(codexStatus.configPath || path.join(homeDir, '.codex', 'config.toml')), 'opencode-go-catalog.json');
+    if (fs.existsSync(codexCatalogPath)) {
+      const cat = parseJsonSafe(codexCatalogPath, null);
+      codexStatus.modelCount = (cat && Array.isArray(cat.models)) ? cat.models.length : 0;
+    } else {
+      codexStatus.modelCount = codexStatus.currentModel ? 1 : 0;
+    }
+  } catch (_) {
+    codexStatus.modelCount = codexStatus.currentModel ? 1 : 0;
+  }
 
   const resObj = {
     routerPort,
@@ -412,7 +452,11 @@ function syncOpencodeConfig(options = {}) {
     strictModels: isGuest || policy === 'api_probed'
   });
 
-  messages.push(`✔ OpenCode 2.0 配置已成功同步 (共 ${harmRes.modelCount} 款模型，首选模型: ${harmRes.currentModel})`);
+  if (harmRes.success) {
+    messages.push(`✔ OpenCode 2.0 配置已成功同步 (共 ${harmRes.modelCount} 款模型，首选模型: ${harmRes.currentModel})`);
+  } else {
+    messages.push(`⚠ OpenCode 2.0 配置同步失败: ${harmRes.error || '未知错误'}`);
+  }
   return {
     success: harmRes.success,
     configPath,
@@ -579,7 +623,7 @@ function syncCodexConfig(options = {}) {
 
   const codex = require('./codex-adapter');
 
-  // 调用 codex-adapter.bindCodexConfig，传入策略过滤后的 models 与 preserveChoice
+  // 调用 codex-adapter.bindCodexConfig，传入策略过滤后的 models 与 preserveChoice / dryRun
   const bindRes = codex.bindCodexConfig({
     routerPort,
     defaultModel: defaultModelSlug,
@@ -587,6 +631,7 @@ function syncCodexConfig(options = {}) {
     codexDir,
     models,
     preserveChoice,
+    dryRun: Boolean(options.dryRun),
     isGuest
   });
 
@@ -608,8 +653,12 @@ function syncAllClients(options = {}) {
   const policy = isGuest ? 'guest' : (options.policy || DEFAULT_POLICY);
   const routerPort = options.routerPort || 4010;
   const defaultModel = isGuest ? 'deepseek-v4.1-flash-free' : (options.defaultModel || DEFAULT_MODEL);
+  const codexMod = require('./codex-adapter');
+  const activeGuestSlugs = Array.isArray(codexMod.GUEST_FREE_MODELS_CATALOG) && codexMod.GUEST_FREE_MODELS_CATALOG.length > 0
+    ? codexMod.GUEST_FREE_MODELS_CATALOG.map(m => m.slug)
+    : ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'big-pickle', 'nemotron-3.5-lightning-free', 'nemotron-3.5-super-vl-free'];
   const favorites = isGuest
-    ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'glm-5.3-flash-free', 'big-pickle', 'longcat-2.5-free']
+    ? activeGuestSlugs
     : (options.favorites || DEFAULT_FAVORITES);
   const reasoningEffort = options.reasoningEffort || DEFAULT_REASONING_EFFORT;
   const targetClients = Array.isArray(options.clients) ? options.clients : ['opencode', 'openchamber', 'codex'];
@@ -689,6 +738,11 @@ function syncAllClients(options = {}) {
       results.messages.push(`⚠ OpenAI Codex 同步失败: ${err.message}`);
     }
   }
+
+  const attemptedResults = targetClients
+    .map(c => results[c])
+    .filter(r => r !== null && r !== undefined);
+  results.success = attemptedResults.length > 0 && attemptedResults.every(r => r.success !== false);
 
   invalidateClientStatusCache();
   return results;

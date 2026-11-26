@@ -1177,14 +1177,24 @@ const NATIVE_RESPONSES_MODELS = new Set([
   'gpt-6-luna'
 ]);
 
-// Dynamic pool for models that triggered 404/405/501 or protocol unsupported on upstream /responses
+// Dynamic bounded pool for models that triggered 404/405/501 or protocol unsupported on upstream /responses
+const MAX_NATIVE_UNSUPPORTED_MODELS = 500;
 const nativeResponsesUnsupportedModels = new Set();
 
 function markNativeResponsesUnsupported(modelName) {
   if (!modelName || typeof modelName !== 'string') return;
   const clean = modelName.replace(/^opencode-go\//i, '').toLowerCase().trim();
-  nativeResponsesUnsupportedModels.add(clean);
-  nativeResponsesUnsupportedModels.add(modelName.toLowerCase().trim());
+  const raw = modelName.toLowerCase().trim();
+  for (const key of [clean, raw]) {
+    if (!key) continue;
+    if (nativeResponsesUnsupportedModels.has(key)) {
+      nativeResponsesUnsupportedModels.delete(key);
+    } else if (nativeResponsesUnsupportedModels.size >= MAX_NATIVE_UNSUPPORTED_MODELS) {
+      const oldest = nativeResponsesUnsupportedModels.values().next().value;
+      if (oldest !== undefined) nativeResponsesUnsupportedModels.delete(oldest);
+    }
+    nativeResponsesUnsupportedModels.add(key);
+  }
 }
 
 function clearNativeResponsesUnsupported() {
@@ -1316,13 +1326,34 @@ const GUEST_FREE_MODELS_CATALOG = [
     priority: 720
   },
   {
-    slug: 'longcat-2.5-free',
-    name: 'LongCat-2.5-Free',
-    display_name: 'LongCat-2.5-Free',
-    vendor: 'LongCat',
-    description: 'LongCat 2.5 官方在役免费超长上下文模型。',
-    context_window: 262144,
-    max_context_window: 262144,
+    slug: 'big-pickle',
+    name: 'Big-Pickle',
+    display_name: 'Big-Pickle',
+    vendor: 'OpenCode',
+    description: 'OpenCode 官方在役免登录推理与工具调用大模型 (200K 上下文)。',
+    context_window: 200000,
+    max_context_window: 200000,
+    effective_context_window_percent: 95,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'low', description: '快速' },
+      { effort: 'medium', description: '标准' }
+    ],
+    supports_parallel_tool_calls: true,
+    input_modalities: ['text'],
+    quota_tier: 'free',
+    foreign_proxy_required: false,
+    is_official: true,
+    priority: 710
+  },
+  {
+    slug: 'nemotron-3.5-lightning-free',
+    name: 'Nemotron-3.5-Lightning-Free',
+    display_name: 'Nemotron-3.5-Lightning-Free',
+    vendor: 'NVIDIA',
+    description: 'NVIDIA Nemotron 3.5 Lightning 官方在役免费高速推理模型。',
+    context_window: 131072,
+    max_context_window: 131072,
     effective_context_window_percent: 95,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
@@ -1335,45 +1366,25 @@ const GUEST_FREE_MODELS_CATALOG = [
     quota_tier: 'free',
     foreign_proxy_required: false,
     is_official: true,
-    priority: 710
-  },
-  {
-    slug: 'big-pickle',
-    name: 'Big-Pickle',
-    display_name: 'Big-Pickle',
-    vendor: 'OpenCode',
-    description: 'OpenCode 官方在役免登录默认匿名大模型。',
-    context_window: 131072,
-    max_context_window: 131072,
-    effective_context_window_percent: 95,
-    default_reasoning_level: 'medium',
-    supported_reasoning_levels: [
-      { effort: 'low', description: '快速' },
-      { effort: 'medium', description: '标准' }
-    ],
-    supports_parallel_tool_calls: true,
-    input_modalities: ['text'],
-    quota_tier: 'free',
-    foreign_proxy_required: false,
-    is_official: true,
     priority: 705
   },
   {
-    slug: 'glm-5.3-flash-free',
-    name: 'GLM-5.3-Flash-Free',
-    display_name: 'GLM-5.3-Flash-Free',
-    vendor: 'Zhipu AI',
-    description: 'GLM 5.3 Flash 官方在役免费高速代码与对话模型。',
+    slug: 'nemotron-3.5-super-vl-free',
+    name: 'Nemotron-3.5-Super-VL-Free',
+    display_name: 'Nemotron-3.5-Super-VL-Free',
+    vendor: 'NVIDIA',
+    description: 'NVIDIA Nemotron 3.5 Super VL 官方在役免费多模态与代码推理模型。',
     context_window: 131072,
     max_context_window: 131072,
     effective_context_window_percent: 95,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
       { effort: 'low', description: '快速响应' },
-      { effort: 'medium', description: '常规思考' }
+      { effort: 'medium', description: '常规思考' },
+      { effort: 'high', description: '深度思考' }
     ],
     supports_parallel_tool_calls: true,
-    input_modalities: ['text'],
+    input_modalities: ['text', 'image'],
     quota_tier: 'free',
     foreign_proxy_required: false,
     is_official: true,
@@ -1534,25 +1545,15 @@ function resolveCompatibleFallbackModel(reqModel, errText = '', options = {}) {
     if (allowUpgrade && (options.preferFlagship || options.reasoningEffort === 'xhigh' || options.reasoningEffort === 'high')) {
       return cleanReq === 'deepseek-v4-pro' ? 'kimi-k3.1-pro' : 'deepseek-v4-pro';
     }
-    // Free Tier / Guest Mode Guard: strictly preserve free model boundaries
+    // Free Tier / Guest Mode Guard: strictly preserve active free model boundaries
     const isFreeReq = isFreeModel(cleanReq) || Boolean(options && (options.freeOnly || options.isGuest));
     if (isFreeReq) {
-      if (cleanReq === 'beam-free' || cleanReq === 'cat-jam-free' || cleanReq === 'hy4-flash-free') {
-        return 'deepseek-v4.1-flash-free';
+      const activeFreeOrder = GUEST_FREE_MODELS_CATALOG.map(m => m.slug);
+      const curIdx = activeFreeOrder.indexOf(cleanReq);
+      if (curIdx >= 0 && curIdx < activeFreeOrder.length - 1) {
+        return activeFreeOrder[curIdx + 1];
       }
-      if (cleanReq === 'deepseek-v4.1-flash-free') {
-        return 'mimo-v2.6-flash-free';
-      }
-      if (cleanReq === 'mimo-v2.6-flash-free') {
-        return 'big-pickle';
-      }
-      if (cleanReq === 'big-pickle') {
-        return 'longcat-2.5-free';
-      }
-      if (cleanReq === 'longcat-2.5-free') {
-        return 'nemotron-3.5-lightning-free';
-      }
-      return 'deepseek-v4.1-flash-free';
+      return activeFreeOrder[0] || 'deepseek-v4.1-flash-free';
     }
 
     if (reqTier === MODEL_TIERS.FLASH) {
@@ -2105,8 +2106,8 @@ function pruneChatMessages(messages, maxTokens, sessionId = null, options = {}) 
 
     const isOversized = typeof msg.content === 'string' && msg.content.length > 2500;
     if (isOversized && (isTool || i < result.length - 1)) {
-      if (msg.role === 'user') {
-        // 100% user instruction exemption: do not fold user messages!
+      if (msg.role === 'user' || msg.role === 'system' || msg.role === 'developer') {
+        // 100% user/system/developer instruction exemption: do not fold instructions!
         continue;
       }
       const rawHead = safeUnicodeSlice(msg.content, 0, 800);
@@ -2931,23 +2932,47 @@ function convertResponsesToChatPayload(body, compressionOptions = null, sessionI
     const meta = OPENCODE_GO_ALL_MODELS.find(m => m.slug === model);
     const supportsReasoning = !meta || (Array.isArray(meta.supported_reasoning_levels) && meta.supported_reasoning_levels.length > 0);
     if (supportsReasoning) {
-      chatPayload.reasoning_effort = (eff === 'xhigh' || eff === 'max') ? 'high' : eff;
+      const effNorm = String(eff).trim().toLowerCase();
+      chatPayload.reasoning_effort = (effNorm === 'xhigh' || effNorm === 'max' || effNorm === 'ultra') ? 'high' : effNorm;
     }
   }
 
+  const isWinPlat = (v) => {
+    const s = String(v || '').toLowerCase().trim();
+    if (!s || s.includes('darwin') || s.includes('macos')) return false;
+    return /^win\b|win32|win64|windows/.test(s);
+  };
   const isWindowsHost = (process.platform === 'win32') ||
-    (typeof body === 'object' && body && (
-      String(body.platform || '').toLowerCase().includes('win') ||
-      String(body.targetPlatform || '').toLowerCase().includes('win')
-    ));
+    (typeof body === 'object' && body && (isWinPlat(body.platform) || isWinPlat(body.targetPlatform)));
 
   // Tools mapping
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     const rawTools = body.tools;
     const hasToolSearch = rawTools.some(isDeferredToolSearch);
 
-    chatPayload.tools = rawTools
-      .filter(t => !isDeferredToolSearch(t))
+    const expandedTools = [];
+    for (const t of rawTools) {
+      if (!t || isDeferredToolSearch(t)) continue;
+      if (t.type === 'namespace' && Array.isArray(t.tools) && t.tools.length > 0) {
+        const nsName = t.name || 'ns';
+        for (const sub of t.tools) {
+          if (!sub || isDeferredToolSearch(sub)) continue;
+          const subName = sub.function?.name || sub.name || 'tool';
+          const qualifiedName = (nsName && !subName.startsWith(`${nsName}__`) && !subName.startsWith(`${nsName}.`))
+            ? `${nsName}__${subName}`
+            : subName;
+          expandedTools.push({
+            ...sub,
+            name: qualifiedName,
+            ...(sub.function ? { function: { ...sub.function, name: qualifiedName } } : {})
+          });
+        }
+      } else {
+        expandedTools.push(t);
+      }
+    }
+
+    chatPayload.tools = expandedTools
       .map((t, idx) => {
       const toolName = t.function?.name || t.name || (t.type && t.type !== 'function' ? t.type : null) || `custom_tool_${idx}`;
       let description = t.function?.description || t.description || '';
@@ -3393,6 +3418,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           if (newUpstream && typeof newUpstream.destroy === 'function') newUpstream.destroy();
           return;
         }
+        upstreamEnded = false;
         currentUpstream = newUpstream;
         bindUpstream(newUpstream);
       },
@@ -3528,6 +3554,7 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
 
         let reasoningChunk = delta.reasoning || delta.reasoning_content;
         let textChunk = delta.content;
+        let shouldCloseReasoningAfterEmit = false;
 
         // Support models that stream <think>...</think> inside delta.content across arbitrary SSE chunk boundaries
         if (textChunk && !textStarted && !reasoningCompleted) {
@@ -3572,7 +3599,8 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               }
               textChunk = (pendingPrefixText ? pendingPrefixText : '') + after;
               pendingPrefixText = '';
-              closeReasoning();
+              // Defer closeReasoning() until immediately after reasoningChunk is emitted below so single-chunk <think>...</think> is never dropped
+              shouldCloseReasoningAfterEmit = true;
             } else {
               let matchLen = 0;
               for (let len = Math.min(7, thinkBuffer.length); len >= 1; len--) {
@@ -3629,6 +3657,9 @@ function bridgeResponsesStream(upstreamRes, clientRes, reqModel, reqId, onFinish
               delta: reasoningChunk
             });
           }
+        }
+        if (shouldCloseReasoningAfterEmit) {
+          closeReasoning();
         }
 
         // 2. Answer Text Stream
@@ -4313,17 +4344,21 @@ function convertChatResponseToResponses(chatJson, reqModel, reqId) {
   let content = msg.content || '';
   let reasoning = msg.reasoning_content || msg.reasoning || '';
   if (!reasoning && typeof content === 'string' && content.includes('<think>')) {
-    const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
-    if (thinkMatch) {
-      reasoning = thinkMatch[1].trim();
-      content = content.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim();
-    } else {
-      const unclosedMatch = content.match(/<think>([\s\S]*)$/);
-      if (unclosedMatch) {
-        reasoning = unclosedMatch[1].trim();
-        content = content.replace(/<think>[\s\S]*$/, '').trim();
-      }
+    const thinkBlocks = [];
+    const thinkGlobalRe = /<think>([\s\S]*?)<\/think>/g;
+    let m;
+    while ((m = thinkGlobalRe.exec(content)) !== null) {
+      if (m[1] && m[1].trim()) thinkBlocks.push(m[1].trim());
     }
+    const strippedClosed = content.replace(/<think>[\s\S]*?<\/think>/g, '');
+    const unclosedMatch = strippedClosed.match(/<think>([\s\S]*)$/);
+    if (unclosedMatch && unclosedMatch[1] && unclosedMatch[1].trim()) {
+      thinkBlocks.push(unclosedMatch[1].trim());
+    }
+    if (thinkBlocks.length > 0) {
+      reasoning = thinkBlocks.join('\n\n');
+    }
+    content = strippedClosed.replace(/<think>[\s\S]*$/, '').trim();
   }
   const output = [];
 
@@ -5093,6 +5128,7 @@ function bridgeAnthropicStream(upstreamRes, clientRes, reqModel, reqId, onFinish
           if (newUpstream && typeof newUpstream.destroy === 'function') newUpstream.destroy();
           return;
         }
+        upstreamEnded = false;
         currentUpstream = newUpstream;
         bindUpstream(newUpstream);
       },

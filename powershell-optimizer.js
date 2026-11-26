@@ -71,9 +71,19 @@ function detectPlatform(options = {}, req = null) {
 
   // 2. Client headers inspection
   if (req && req.headers) {
-    const clientOs = (req.headers['x-client-platform'] || req.headers['x-target-os'] || req.headers['x-platform'] || '').toLowerCase();
+    const clientOs = (req.headers['x-client-platform'] || req.headers['x-target-os'] || req.headers['x-platform'] || '').toLowerCase().trim();
     if (clientOs) {
-      const isWin = clientOs.includes('win');
+      const isDarwin = clientOs.includes('darwin') || clientOs.includes('macos') || clientOs === 'mac' || clientOs.includes('osx');
+      if (isDarwin) {
+        return {
+          isWindows: false,
+          isLinux: false,
+          platform: 'darwin',
+          mode: 'darwin',
+          reason: 'client_header'
+        };
+      }
+      const isWin = /^win\b|win32|win64|windows/.test(clientOs);
       const isLin = clientOs.includes('linux');
       if (isWin || isLin) {
         return {
@@ -113,6 +123,15 @@ function detectPlatform(options = {}, req = null) {
           platform: 'win32',
           mode: 'windows',
           reason: 'user_agent_windows'
+        };
+      }
+      if (ua.includes('macintosh') || ua.includes('mac os x') || ua.includes('darwin')) {
+        return {
+          isWindows: false,
+          isLinux: false,
+          platform: 'darwin',
+          mode: 'darwin',
+          reason: 'user_agent_darwin'
         };
       }
       if (ua.includes('linux') && !ua.includes('android')) {
@@ -549,19 +568,20 @@ function optimizeChatPayload(payload, options = {}, req = null) {
   if (!payload || typeof payload !== 'object' || !Array.isArray(payload.messages)) return payload;
   if (!isPowerShellOptimizerActive(options, req)) return payload;
 
-  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...(options.powershell || options.powershellOptimizer || options) };
+  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...((options.modules && options.modules.powershell) || options.powershell || options.powershellOptimizer || options) };
 
   try {
     const result = { ...payload };
     const guardText = generatePowerShellGuardDirective();
 
-    // 1. Inject prompt guard into system / developer instructions if present
+    // 1. Inject prompt guard into first system / developer instruction only (preserve all subsequent developer messages)
     if (cfg.injectPowerShellGuard !== false) {
-      let sysMsg = result.messages.find(m => m && (m.role === 'system' || m.role === 'developer'));
-      if (sysMsg && typeof sysMsg.content === 'string') {
-        if (!sysMsg.content.includes('[Windows PowerShell Execution & Escaping Guard]')) {
-          sysMsg = { ...sysMsg, content: sysMsg.content + '\n\n' + guardText };
-          result.messages = result.messages.map(m => (m && (m.role === 'system' || m.role === 'developer')) ? sysMsg : m);
+      const firstSysIdx = result.messages.findIndex(m => m && (m.role === 'system' || m.role === 'developer'));
+      if (firstSysIdx !== -1) {
+        const sysMsg = result.messages[firstSysIdx];
+        if (sysMsg && typeof sysMsg.content === 'string' && !sysMsg.content.includes('[Windows PowerShell Execution & Escaping Guard]')) {
+          const updatedSysMsg = { ...sysMsg, content: sysMsg.content + '\n\n' + guardText };
+          result.messages = result.messages.map((m, idx) => (idx === firstSysIdx ? updatedSysMsg : m));
         }
       }
     }
@@ -648,7 +668,7 @@ function optimizeResponsesPayload(payload, options = {}, req = null) {
   if (!payload || typeof payload !== 'object') return payload;
   if (!isPowerShellOptimizerActive(options, req)) return payload;
 
-  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...(options.powershell || options.powershellOptimizer || options) };
+  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...((options.modules && options.modules.powershell) || options.powershell || options.powershellOptimizer || options) };
 
   try {
     const result = { ...payload };
@@ -733,7 +753,7 @@ function optimizeAnthropicPayload(payload, options = {}, req = null) {
   if (!payload || typeof payload !== 'object') return payload;
   if (!isPowerShellOptimizerActive(options, req)) return payload;
 
-  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...(options.powershell || options.powershellOptimizer || options) };
+  const cfg = { ...DEFAULT_POWERSHELL_CONFIG, ...((options.modules && options.modules.powershell) || options.powershell || options.powershellOptimizer || options) };
 
   try {
     const result = { ...payload };

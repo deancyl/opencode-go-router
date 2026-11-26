@@ -1959,16 +1959,13 @@
               <div class="comp-sub-item">
                 <label class="switch-label">
                   <input type="checkbox" id="cfg-comp-clean-progress" checked onchange="handleSubOptionChange()">
-                  <span>终端进度条去噪 (
- 覆写抹除)</span>
+                  <span>终端进度条去噪 (\r 覆写抹除)</span>
                 </label>
                 <div class="info-tooltip-wrap">
                   <span class="info-icon">i</span>
                   <div class="info-tooltip-bubble">
                     <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">进度条去噪 (cleanProgressBars)</div>
-                    抹除回车符 (
-) 覆盖刷屏，仅保留最终完成状态，严格保全 Windows CRLF (
-) 换行结构。
+                    抹除回车符 (\r) 覆盖刷屏，仅保留最终完成状态，严格保全 Windows CRLF (\r\n) 换行结构。
                   </div>
                 </div>
               </div>
@@ -2263,7 +2260,7 @@
                   <span class="info-icon">i</span>
                   <div class="info-tooltip-bubble">
                     <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">末尾反斜杠自愈 (fixTrailingSlash)</div>
-                    自愈 Windows CRT CommandLineToArgvW 陷阱：自动将 &quot;C:dir&quot; 转换为 &quot;C:dir\&quot; 彻底防止闭合引号被吃掉。
+                    自愈 Windows CRT CommandLineToArgvW 陷阱：自动将 &quot;C:\dir\&quot; 转换为 &quot;C:\dir\\&quot; 彻底防止闭合引号被吃掉。
                   </div>
                 </div>
               </div>
@@ -2302,7 +2299,7 @@
                   <span class="info-icon">i</span>
                   <div class="info-tooltip-bubble">
                     <div style="font-weight:600; color:#38bdf8; margin-bottom:2px;">续行符修正 (fixLineContinuation)</div>
-                    将 Bash 风格的多行末尾续行反斜杠 () 转换为 PowerShell 原生反引号 (&#96;) 续行。
+                    将 Bash 风格的多行末尾续行反斜杠 (\) 转换为 PowerShell 原生反引号 (&#96;) 续行。
                   </div>
                 </div>
               </div>
@@ -2388,6 +2385,7 @@
                       <option value="hybrid">智能混合推荐 (hybrid) - 官方44款基准+上游动态对齐 (推荐)</option>
                       <option value="official_docs">官方基准 SSOT (official_docs) - 严格遵循官方 44 款完整模型</option>
                       <option value="api_probed">上游探测动态对齐 (api_probed) - 仅暴露当前上游探活在线模型</option>
+                      <option value="guest">游客免费模式 (guest) - 仅暴露官方免密活跃免费模型</option>
                     </select>
                   </div>
 
@@ -2399,8 +2397,8 @@
                       <select id="hub-default-model-select" class="form-control" style="flex:1; background:#121215; border-color:#27272a; font-size:0.85rem;">
                         <option value="deepseek-v4.1-flash">deepseek-v4.1-flash (深度求索极速旗舰)</option>
                         <option value="kimi-k3">kimi-k3 (月之暗面 Kimi K3)</option>
-                        <option value="claude-sonnet-4-6">claude-sonnet-4-6 (Anthropic 旗舰)</option>
-                        <option value="gpt-5.4">gpt-5.4 (OpenAI 旗舰)</option>
+                        <option value="claude-haiku-5-5">claude-haiku-5-5 (Anthropic 极速旗舰)</option>
+                        <option value="gpt-6-luna">gpt-6-luna (OpenAI 旗舰)</option>
                       </select>
                       <button class="btn btn-primary btn-sm" style="white-space:nowrap;" onclick="applyHubPolicyAndDefault()" title="保存策略与首选模型并持久化">💾 保存策略</button>
                     </div>
@@ -2676,7 +2674,7 @@
                       GitHub 工作流仓库地址 (Repo URL)
                     </label>
                     <div style="display:flex; gap:6px;">
-                      <input type="text" id="comfy-cfg-repo-url" class="form-control" placeholder="https://github.com/deancyl/comfyui-agent-workflows" value="https://github.com/deancyl/comfyui-agent-workflows" style="flex:1; background:#121215; border-color:#27272a; font-size:0.8rem; height:34px;">
+                      <input type="text" id="comfy-cfg-repo-url" class="form-control" placeholder="https://github.com/deancyl/comfyui-agent-workflows" value="https://github.com/deancyl/comfyui-agent-workflows" onchange="markConfigDirty()" style="flex:1; background:#121215; border-color:#27272a; font-size:0.8rem; height:34px;">
                       <button class="btn btn-secondary btn-sm" id="btn-comfy-sync-github" onclick="syncComfyWorkflowsFromGitHub()" style="white-space:nowrap; height:34px;" title="克隆或拉取 GitHub 远端仓库最新提交">📥 同步工作流</button>
                     </div>
                   </div>
@@ -2686,7 +2684,7 @@
                       本地 ComfyUI 根目录 (Target ComfyUI Directory)
                     </label>
                     <div style="display:flex; gap:6px;">
-                      <input type="text" id="comfy-cfg-local-dir" class="form-control" placeholder="如 C:Users...ComfyUI-Zluda" value="" style="flex:1; background:#121215; border-color:#27272a; font-size:0.8rem; height:34px;">
+                      <input type="text" id="comfy-cfg-local-dir" class="form-control" placeholder="如 C:\Users\...\ComfyUI-Zluda" value="" onchange="markConfigDirty()" style="flex:1; background:#121215; border-color:#27272a; font-size:0.8rem; height:34px;">
                       <button class="btn btn-secondary btn-sm" id="btn-comfy-detect-dirs" onclick="detectComfyLocalDirs()" style="white-space:nowrap; height:34px;" title="自动探测系统中的 ComfyUI-Zluda / Aki 目录">🔍 自动探测</button>
                       <button class="btn btn-primary btn-sm" id="btn-comfy-deploy-local" onclick="deployWorkflowsToLocalComfy()" style="white-space:nowrap; height:34px; font-weight:600;" title="一键复制 17 套双轨工作流、NSFW 反推节点与硬件补丁至本地 ComfyUI">⚡ 一键部署</button>
                     </div>
@@ -2712,7 +2710,7 @@
                   <label style="display:block; font-size:0.8rem; font-weight:600; color:#f4f4f5; margin-bottom:4px;">
                     ComfyUI 服务端地址 (Host URL)
                   </label>
-                  <input type="text" id="comfy-cfg-host" class="form-control" placeholder="http://127.0.0.1:8284" value="http://127.0.0.1:8284" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
+                  <input type="text" id="comfy-cfg-host" class="form-control" placeholder="http://127.0.0.1:8284" value="http://127.0.0.1:8284" onchange="markConfigDirty()" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
                   <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">支持 8284、8188 端口或远程局域网 IP</div>
                 </div>
 
@@ -2720,7 +2718,7 @@
                   <label style="display:block; font-size:0.8rem; font-weight:600; color:#f4f4f5; margin-bottom:4px;">
                     工作流存储目录 (Workflows Directory)
                   </label>
-                  <input type="text" id="comfy-cfg-dir" class="form-control" placeholder="留空则自动探测 scratch/comfyui-agent-workflows" value="" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
+                  <input type="text" id="comfy-cfg-dir" class="form-control" placeholder="留空则自动探测 scratch/comfyui-agent-workflows" value="" onchange="markConfigDirty()" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
                   <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">工作流库与 manifest 所在目录</div>
                 </div>
 
@@ -2728,7 +2726,7 @@
                   <label style="display:block; font-size:0.8rem; font-weight:600; color:#f4f4f5; margin-bottom:4px;">
                     采样超时 (秒)
                   </label>
-                  <input type="number" id="comfy-cfg-timeout" class="form-control" min="30" max="600" value="180" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
+                  <input type="number" id="comfy-cfg-timeout" class="form-control" min="30" max="600" value="180" onchange="markConfigDirty()" style="width:100%; box-sizing:border-box; background:#09090b; border-color:#27272a;">
                   <div style="font-size:0.73rem; color:var(--muted); margin-top:5px; line-height:1.4;">出图等待上限 (默认 180s)</div>
                 </div>
               </div>

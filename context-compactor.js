@@ -293,6 +293,14 @@ function normalizeCompressionOptions(input = {}) {
         const val = Number(m.headroom.maxStructuredItems);
         result.modules.headroom.maxStructuredItems = (!isNaN(val) && val > 0) ? val : 50;
       }
+      if (m.headroom.structuredHeadCount !== undefined) {
+        const val = Number(m.headroom.structuredHeadCount);
+        if (!isNaN(val) && val > 0) result.modules.headroom.structuredHeadCount = Math.floor(val);
+      }
+      if (m.headroom.structuredTailCount !== undefined) {
+        const val = Number(m.headroom.structuredTailCount);
+        if (!isNaN(val) && val > 0) result.modules.headroom.structuredTailCount = Math.floor(val);
+      }
       if (m.headroom.exemptMergeConflicts !== undefined) result.modules.headroom.exemptMergeConflicts = Boolean(m.headroom.exemptMergeConflicts);
       if (m.headroom.protectSourceDiffs !== undefined) result.modules.headroom.protectSourceDiffs = Boolean(m.headroom.protectSourceDiffs);
     }
@@ -458,6 +466,16 @@ function normalizeCompressionOptions(input = {}) {
   result.foldLockfiles = headroomActive ? result.modules.headroom.foldLockfiles : false;
   result.foldStructuredData = headroomActive ? result.modules.headroom.foldStructuredData : false;
   result.maxStructuredItems = result.modules.headroom.maxStructuredItems || 50;
+  if (result.modules.headroom.structuredHeadCount !== undefined) {
+    result.structuredHeadCount = result.modules.headroom.structuredHeadCount;
+  } else if (input.structuredHeadCount !== undefined && !isNaN(Number(input.structuredHeadCount)) && Number(input.structuredHeadCount) > 0) {
+    result.structuredHeadCount = Math.floor(Number(input.structuredHeadCount));
+  }
+  if (result.modules.headroom.structuredTailCount !== undefined) {
+    result.structuredTailCount = result.modules.headroom.structuredTailCount;
+  } else if (input.structuredTailCount !== undefined && !isNaN(Number(input.structuredTailCount)) && Number(input.structuredTailCount) > 0) {
+    result.structuredTailCount = Math.floor(Number(input.structuredTailCount));
+  }
   result.exemptMergeConflicts = result.modules.headroom.exemptMergeConflicts;
   result.protectSourceDiffs = result.modules.headroom.protectSourceDiffs;
 
@@ -1399,12 +1417,15 @@ function saveStatsToDisk() {
         const canonical = normalizeModelName(rawModelKey);
         if (canonical && canonical !== rawModelKey) {
           const target = compressionStats.byModel[canonical] || {
-            savedChars: 0, savedTokens: 0, savedCostUSD: 0, originalChars: 0, ratePer1M: getModelRate(canonical)
+            savedChars: 0, savedTokens: 0, savedCostUSD: 0, originalChars: 0,
+            consumedTokens: 0, consumedCostUSD: 0, ratePer1M: getModelRate(canonical)
           };
           target.savedChars += (data.savedChars || 0);
           target.savedTokens += (data.savedTokens || 0);
           target.savedCostUSD = Number((target.savedCostUSD + (data.savedCostUSD || 0)).toFixed(7));
           target.originalChars += (data.originalChars || 0);
+          target.consumedTokens = (Number(target.consumedTokens) || 0) + (Number(data.consumedTokens) || 0);
+          target.consumedCostUSD = Number(((Number(target.consumedCostUSD) || 0) + (Number(data.consumedCostUSD) || 0)).toFixed(7));
           compressionStats.byModel[canonical] = target;
           delete compressionStats.byModel[rawModelKey];
         }
@@ -1419,12 +1440,15 @@ function saveStatsToDisk() {
                 const canonical = normalizeModelName(rawModelKey);
                 if (canonical && canonical !== rawModelKey) {
                   const target = b.byModel[canonical] || {
-                    savedChars: 0, savedTokens: 0, savedCostUSD: 0, originalChars: 0, ratePer1M: getModelRate(canonical)
+                    savedChars: 0, savedTokens: 0, savedCostUSD: 0, originalChars: 0,
+                    consumedTokens: 0, consumedCostUSD: 0, ratePer1M: getModelRate(canonical)
                   };
                   target.savedChars += (data.savedChars || 0);
                   target.savedTokens += (data.savedTokens || 0);
                   target.savedCostUSD = Number((target.savedCostUSD + (data.savedCostUSD || 0)).toFixed(7));
                   target.originalChars += (data.originalChars || 0);
+                  target.consumedTokens = (Number(target.consumedTokens) || 0) + (Number(data.consumedTokens) || 0);
+                  target.consumedCostUSD = Number(((Number(target.consumedCostUSD) || 0) + (Number(data.consumedCostUSD) || 0)).toFixed(7));
                   b.byModel[canonical] = target;
                   delete b.byModel[rawModelKey];
                 }
@@ -1567,12 +1591,16 @@ function loadStatsFromDisk() {
               savedTokens: 0,
               savedCostUSD: 0,
               originalChars: 0,
+              consumedTokens: 0,
+              consumedCostUSD: 0,
               ratePer1M: typeof data.ratePer1M === 'number' && data.ratePer1M > 0 ? data.ratePer1M : getModelRate(cleanM)
             };
             existing.savedChars += Number(data.savedChars) || 0;
             existing.savedTokens += Number(data.savedTokens) || 0;
             existing.savedCostUSD = Number((existing.savedCostUSD + (Number(data.savedCostUSD) || 0)).toFixed(7));
             existing.originalChars += Number(data.originalChars) || 0;
+            existing.consumedTokens = (Number(existing.consumedTokens) || 0) + (Number(data.consumedTokens) || 0);
+            existing.consumedCostUSD = Number(((Number(existing.consumedCostUSD) || 0) + (Number(data.consumedCostUSD) || 0)).toFixed(7));
             loadedByModel[cleanM] = existing;
           }
         }
@@ -1584,6 +1612,8 @@ function loadStatsFromDisk() {
         totalSavedChars: Number(sourceStats.totalSavedChars) || 0,
         savedTokens: Number(sourceStats.savedTokens) || 0,
         savedCostUSD: Number(sourceStats.savedCostUSD) || 0,
+        consumedTokens: Number(sourceStats.consumedTokens) || 0,
+        consumedCostUSD: Number(sourceStats.consumedCostUSD) || 0,
         compressionRatio: Number(sourceStats.compressionRatio) || 0,
         byModel: loadedByModel,
         modules: {
@@ -1653,12 +1683,16 @@ function loadStatsFromDisk() {
                     savedTokens: 0,
                     savedCostUSD: 0,
                     originalChars: 0,
+                    consumedTokens: 0,
+                    consumedCostUSD: 0,
                     ratePer1M: getModelRate(cleanM)
                   };
                   cur.savedChars += Number(mData.savedChars) || 0;
                   cur.savedTokens += Number(mData.savedTokens) || 0;
                   cur.savedCostUSD = Number((cur.savedCostUSD + (Number(mData.savedCostUSD) || 0)).toFixed(7));
                   cur.originalChars += Number(mData.originalChars) || 0;
+                  cur.consumedTokens = (Number(cur.consumedTokens) || 0) + (Number(mData.consumedTokens) || 0);
+                  cur.consumedCostUSD = Number(((Number(cur.consumedCostUSD) || 0) + (Number(mData.consumedCostUSD) || 0)).toFixed(7));
                   coalescedBucketModels[cleanM] = cur;
                 }
                 b.byModel = coalescedBucketModels;
@@ -4287,6 +4321,15 @@ function getOptionsSignature(opts) {
     const enabled = opts[t.name] !== undefined ? Boolean(opts[t.name]) : t.enabledByDefault;
     return `${t.name}:${enabled ? 1 : 0}`;
   });
+  parts.push(
+    `maxItems:${opts.maxStructuredItems || 50}`,
+    `head:${opts.structuredHeadCount || ''}`,
+    `tail:${opts.structuredTailCount || ''}`,
+    `mc:${opts.exemptMergeConflicts !== false ? 1 : 0}`,
+    `diff:${opts.protectSourceDiffs !== false ? 1 : 0}`,
+    `psXml:${opts.cleanCliXmlNoise !== false ? 1 : 0}`,
+    `plat:${opts.targetPlatform || ''}`
+  );
   if (opts.customTestPassPatterns && (Array.isArray(opts.customTestPassPatterns) ? opts.customTestPassPatterns.length > 0 : Boolean(opts.customTestPassPatterns))) {
     try {
       parts.push(`custom:${JSON.stringify(opts.customTestPassPatterns)}`);
@@ -4828,6 +4871,9 @@ function compactText(text, options = {}, sessionId = null) {
           bucket.totalOriginalChars += origLen;
           bucket.totalCompressedChars += compLen;
           bucket.totalSavedChars += totalSaved;
+          bucket.savedTokens = (Number(bucket.savedTokens) || 0) + dynamicSavedTokens;
+          const bucketRate = modelName ? getModelRate(modelName) : DEFAULT_MODEL_RATE_PER_1M;
+          bucket.savedCostUSD = Number(((Number(bucket.savedCostUSD) || 0) + (dynamicSavedTokens / 1000000) * bucketRate).toFixed(7));
           if (rtkDelta > 0 && bucket.modules && bucket.modules.rtk) {
             bucket.modules.rtk.savedChars += rtkDelta;
             bucket.modules.rtk.savedTokens = (bucket.modules.rtk.savedTokens || 0) + rtkTokens;
@@ -5105,6 +5151,13 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                     recordSavings('headroom', rawArrStr.length - foldedStr.length, rawArrStr.length, modelName);
                   }
                         targetArray = JSON.parse(foldedStr);
+                        if (Array.isArray(targetArray)) {
+                          targetArray = targetArray.map(item => {
+                            if (item && typeof item === 'object' && typeof item.type === 'string') return item;
+                            if (typeof item === 'string') return { type: 'text', text: ensureSafeNonEmptyString(item) };
+                            try { return { type: 'text', text: JSON.stringify(item) }; } catch (_) { return { type: 'text', text: String(item) }; }
+                          });
+                        }
                         wasArrayFolded = true;
                       }
                     } catch (_) {}
@@ -5142,11 +5195,7 @@ function compactAnthropicPayload(payload, options = {}, sessionId = null) {
                   try {
                     const raw = JSON.stringify(val);
                     const compacted = compactText(raw, compOpts, sessionId);
-                    try {
-                      return { ...block, [targetField]: JSON.parse(compacted) };
-                    } catch (_) {
-                      return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
-                    }
+                    return { ...block, [targetField]: ensureSafeNonEmptyString(compacted) };
                   } catch (_) {
                     return block;
                   }

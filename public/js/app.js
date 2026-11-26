@@ -204,11 +204,13 @@ function initSidebarState() {
 
 function handleCompMasterToggle(checked) {
   updateCompCardsUI();
+  markConfigDirty();
   showToast(checked ? '✔ 上下文优化与 Token 压缩总开关已开启' : 'ℹ️ 上下文优化与 Token 压缩总开关已旁路关闭');
 }
 
 function toggleModuleEnabled(modName, enabled) {
   updateCompCardsUI();
+  markConfigDirty();
   showToast('✔ 模块 ' + modName + (enabled ? ' 已启用' : ' 已停用'));
 }
 
@@ -439,6 +441,7 @@ function applyPreset(presetName) {
 
   updateCompCardsUI();
   setPresetUI(presetName);
+  markConfigDirty();
 }
 
 function setCheck(id, val) {
@@ -808,8 +811,12 @@ function renderSingleChartViewport(cfg, series, range, stats, activeModels) {
 
       // 2) 实际使用柱 + 顶部虚线差额帽 (右柱)
       if (origVal > 0) {
-        const modelEntries = Object.entries(pt.byModel || {});
-        const color = modelEntries.length === 1 ? getModelColor(modelEntries[0][0], 0) : (modelEntries.length > 1 ? getModelColor(modelEntries[0][0], 0) : '#f59e0b');
+        const modelEntries = Object.entries(pt.byModel || {}).sort((a, b) => {
+          const valA = Number((a[1] && (a[1].consumedTokens || a[1].savedTokens)) || 0);
+          const valB = Number((b[1] && (b[1].consumedTokens || b[1].savedTokens)) || 0);
+          return valB - valA;
+        });
+        const color = modelEntries.length > 0 ? getModelColor(modelEntries[0][0], 0) : '#f59e0b';
 
         const origH = Math.max(2, (origVal / maxVal) * chartH);
         const cH = cVal > 0 ? Math.max(2, (cVal / maxVal) * chartH) : 0;
@@ -1462,7 +1469,7 @@ function apiHeaders(extra = {}) {
   const headers = { ...extra };
   let token = localStorage.getItem('opencode_router_token');
   if (!token) {
-    const match = document.cookie.match(/(?:^|;s*)router_auth=([^;]+)/);
+    const match = document.cookie.match(/(?:^|;\s*)router_auth=([^;]+)/);
     if (match) {
       try {
         token = decodeURIComponent(match[1]);
@@ -1529,16 +1536,20 @@ function clearPassword() {
 
 function markConfigDirty() {
   const saveBtn = document.getElementById('btn-save-config');
-  if (saveBtn && !saveBtn.classList.contains('btn-save-dirty')) {
-    saveBtn.classList.add('btn-save-dirty');
-    saveBtn.title = '您有未保存的配置更改，点击立即保存！';
+  if (saveBtn && saveBtn.classList && typeof saveBtn.classList.add === 'function') {
+    if (typeof saveBtn.classList.contains !== 'function' || !saveBtn.classList.contains('btn-save-dirty')) {
+      saveBtn.classList.add('btn-save-dirty');
+      saveBtn.title = '您有未保存的配置更改，点击立即保存！';
+    }
   }
 }
 
 function clearConfigDirty() {
   const saveBtn = document.getElementById('btn-save-config');
   if (saveBtn) {
-    saveBtn.classList.remove('btn-save-dirty');
+    if (saveBtn.classList && typeof saveBtn.classList.remove === 'function') {
+      saveBtn.classList.remove('btn-save-dirty');
+    }
     saveBtn.title = '保存当前所有配置';
   }
 }
@@ -1550,6 +1561,7 @@ function logoutAdmin() {
   location.reload();
 }
 
+let toastHideTimer = null;
 function showToast(msg, typeOrIsError = false) {
   const toast = document.getElementById('toast');
   if (!toast) return;
@@ -1558,7 +1570,11 @@ function showToast(msg, typeOrIsError = false) {
   toast.style.background = isError ? '#991b1b' : '#065f46';
   toast.style.borderColor = isError ? '#f87171' : '#34d399';
   toast.style.display = 'block';
-  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+  if (toastHideTimer) clearTimeout(toastHideTimer);
+  toastHideTimer = setTimeout(() => {
+    toast.style.display = 'none';
+    toastHideTimer = null;
+  }, 3000);
 }
 
 var compAdvancedCollapsed = false;
@@ -2093,13 +2109,17 @@ async function fetchConfig() {
 
 async function fetchStatus() {
   try {
-    const res = await fetch('/status');
+    const res = await fetch('/status', { headers: apiHeaders() });
+    if (res.status === 401) {
+      showToast('⚠️ 登录凭据已失效或需要重新鉴权，请刷新页面重新登录', true);
+      return;
+    }
     if (!res.ok) {
       handleConnectionFailure(new Error('HTTP ' + res.status));
       return;
     }
     const data = await res.json();
-    for (const acc of data.accounts) {
+    for (const acc of (data.accounts || [])) {
       liveStats[acc.id] = acc;
     }
     updateMetricsUI();
@@ -2128,13 +2148,28 @@ function renderAccounts() {
     return;
   }
 
+  const ACCOUNT_UPSTREAM_PRESETS = [
+    { label: '跟随全局默认 Upstream', value: '' },
+    { label: 'OpenCode Go 官方', value: 'https://opencode.ai/zen/go/v1' },
+    { label: 'DeepSeek 官方 (api.deepseek.com)', value: 'https://api.deepseek.com/v1' },
+    { label: 'OpenRouter (openrouter.ai)', value: 'https://openrouter.ai/api/v1' },
+    { label: 'NVIDIA NIM (integrate.api.nvidia.com)', value: 'https://integrate.api.nvidia.com/v1' },
+    { label: '硅基流动 (api.siliconflow.cn)', value: 'https://api.siliconflow.cn/v1' },
+    { label: '本地 Ollama (127.0.0.1:11434)', value: 'http://127.0.0.1:11434/v1' }
+  ];
+
   currentConfig.accounts.forEach((acc, index) => {
     const stat = liveStats[acc.id] || {};
     let badgeClass = 'badge-disabled';
     let statusText = '未配置密钥/已禁用';
+    let badgeExtraStyle = '';
     if (acc.enabled && acc.apiKey) {
       const cState = stat.circuitState || (stat.status === 'cooling_down' ? 'OPEN' : 'CLOSED');
-      if (cState === 'HALF_OPEN' || stat.status === 'half_open') {
+      if (stat.isSubscriptionEnded || stat.lastStatus === 403) {
+        badgeClass = 'badge-halfopen';
+        badgeExtraStyle = ' style="background:rgba(16, 185, 129, 0.16); color:#10b981;"';
+        statusText = '🟢 已切游客免费模式 (原订阅待续期)';
+      } else if (cState === 'HALF_OPEN' || stat.status === 'half_open') {
         badgeClass = 'badge-halfopen';
         statusText = '🟡 半开探测中';
       } else if (cState === 'OPEN' || stat.status === 'cooling_down') {
@@ -2146,60 +2181,87 @@ function renderAccounts() {
       }
     }
 
+    const safeId = escapeHtml(acc.id || '');
+    const safeJsId = String(acc.id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const safeName = escapeHtml(acc.name || ('账号 ' + (index + 1)));
+    const safeKey = escapeHtml(acc.apiKey || '');
+    const safeUpstream = escapeHtml(acc.upstream || '');
+    const matchedPreset = ACCOUNT_UPSTREAM_PRESETS.some(p => p.value === (acc.upstream || '').trim());
+    const presetOptionsHtml = ACCOUNT_UPSTREAM_PRESETS.map(p =>
+      `<option value="${escapeHtml(p.value)}" ${p.value === (acc.upstream || '').trim() ? 'selected' : ''}>${escapeHtml(p.label)}</option>`
+    ).join('') + (!matchedPreset && acc.upstream ? `<option value="__custom__" selected>自定义端点</option>` : '');
+
     const card = document.createElement('div');
     card.className = 'account-card';
     card.id = 'acc-card-' + acc.id;
     card.innerHTML = `
       <div class="acc-header">
-        <input type="text" class="acc-title-input" value="${acc.name || '账号 ' + (index + 1)}" onchange="updateAccountField('${acc.id}', 'name', this.value)">
-        <span class="badge ${badgeClass}" id="badge-${acc.id}">${statusText}</span>
+        <input type="text" class="acc-title-input" value="${safeName}" onchange="updateAccountField('${safeJsId}', 'name', this.value)">
+        <span class="badge ${badgeClass}" id="badge-${safeId}"${badgeExtraStyle}>${statusText}</span>
       </div>
 
       <div class="form-group">
         <label>API Key (密钥)</label>
         <div class="input-wrapper">
-          <input type="password" id="key-input-${acc.id}" class="form-control" placeholder="输入订阅密钥..." value="${acc.apiKey || ''}" onchange="updateAccountField('${acc.id}', 'apiKey', this.value)">
-          <button type="button" class="toggle-eye" onclick="toggleEye('${acc.id}')">👁️</button>
+          <input type="password" id="key-input-${safeId}" class="form-control" placeholder="输入订阅密钥..." value="${safeKey}" onchange="updateAccountField('${safeJsId}', 'apiKey', this.value)">
+          <button type="button" class="toggle-eye" onclick="toggleEye('${safeJsId}')">👁️</button>
         </div>
-        <div class="test-result-box" id="test-res-${acc.id}"></div>
+        <div class="test-result-box" id="test-res-${safeId}"></div>
       </div>
 
-      <div class="quota-box" id="quota-box-${acc.id}">
+      <div class="form-group" style="margin-top:8px;">
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+          <span>独立上游端点 (Custom Upstream · 可选)</span>
+          <select class="form-control" style="width:auto; height:24px; padding:0 6px; font-size:0.72rem; background:#121215; border-color:#27272a;" onchange="applyAccountUpstreamPreset('${safeJsId}', this.value)">
+            ${presetOptionsHtml}
+          </select>
+        </label>
+        <input type="text" id="upstream-input-${safeId}" class="form-control" placeholder="留空则跟随全局 Upstream（支持独立接入 DeepSeek / OpenRouter / Ollama 等）" value="${safeUpstream}" onchange="updateAccountField('${safeJsId}', 'upstream', this.value.trim())">
+      </div>
+
+      <div class="quota-box" id="quota-box-${safeId}">
         <div class="quota-header">
           <div style="display:flex; align-items:center;">
             <span>📊 官方限额 (Usage Quota)</span>
-            <span id="quota-updated-${acc.id}" class="quota-time-tag"></span>
+            <span id="quota-updated-${safeId}" class="quota-time-tag"></span>
           </div>
-          <button type="button" id="quota-btn-${acc.id}" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="fetchSingleQuota('${acc.id}', true)">🔄 刷新</button>
+          <button type="button" id="quota-btn-${safeId}" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:0.75rem;" onclick="fetchSingleQuota('${safeJsId}', true)">🔄 刷新</button>
         </div>
-        <div id="quota-content-${acc.id}">
+        <div id="quota-content-${safeId}">
           ${accountQuotas[acc.id] ? buildQuotaContent(accountQuotas[acc.id]) : '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding: 4px 0;">点击【测速】或【刷新】查询官方 5h、周、月配额</div>'}
         </div>
       </div>
 
       <div class="acc-metrics">
-        <div class="metric-item"><span class="metric-label">活跃请求:</span><span class="metric-val" id="m-act-${acc.id}">${stat.activeRequests || 0}</span></div>
-        <div class="metric-item"><span class="metric-label">总请求数:</span><span class="metric-val" id="m-tot-${acc.id}">${stat.totalRequests || 0}</span></div>
-        <div class="metric-item"><span class="metric-label">平均 TTFT:</span><span class="metric-val" id="m-ttft-${acc.id}">${stat.avgTtftMs ? stat.avgTtftMs + 'ms' : (stat.lastTtftMs ? stat.lastTtftMs + 'ms' : '--')}</span></div>
-        <div class="metric-item"><span class="metric-label">连续失败:</span><span class="metric-val" id="m-fail-${acc.id}">${stat.consecutiveFailures || 0}</span></div>
-        <div class="metric-item"><span class="metric-label">429 限频:</span><span class="metric-val" id="m-429-${acc.id}">${stat.rateLimitCount || 0}</span></div>
-        <div class="metric-item"><span class="metric-label">故障转移:</span><span class="metric-val" id="m-flv-${acc.id}">${stat.failoverCount || 0}</span></div>
+        <div class="metric-item"><span class="metric-label">活跃请求:</span><span class="metric-val" id="m-act-${safeId}">${stat.activeRequests || 0}</span></div>
+        <div class="metric-item"><span class="metric-label">总请求数:</span><span class="metric-val" id="m-tot-${safeId}">${stat.totalRequests || 0}</span></div>
+        <div class="metric-item"><span class="metric-label">平均 TTFT:</span><span class="metric-val" id="m-ttft-${safeId}">${stat.avgTtftMs ? stat.avgTtftMs + 'ms' : (stat.lastTtftMs ? stat.lastTtftMs + 'ms' : '--')}</span></div>
+        <div class="metric-item"><span class="metric-label">连续失败:</span><span class="metric-val" id="m-fail-${safeId}">${stat.consecutiveFailures || 0}</span></div>
+        <div class="metric-item"><span class="metric-label">429 限频:</span><span class="metric-val" id="m-429-${safeId}">${stat.rateLimitCount || 0}</span></div>
+        <div class="metric-item"><span class="metric-label">故障转移:</span><span class="metric-val" id="m-flv-${safeId}">${stat.failoverCount || 0}</span></div>
       </div>
 
       <div class="acc-actions">
         <label class="switch-label">
-          <input type="checkbox" ${acc.enabled ? 'checked' : ''} onchange="updateAccountField('${acc.id}', 'enabled', this.checked)">
+          <input type="checkbox" ${acc.enabled ? 'checked' : ''} onchange="updateAccountField('${safeJsId}', 'enabled', this.checked)">
           <span>启用此账号</span>
         </label>
         <div>
-          <button class="btn btn-secondary btn-sm" onclick="resetSingleCooldown('${acc.id}')">🔄 解除冷却</button>
-          <button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="testSingleAccount('${acc.id}')">⚡ 测速</button>
-          ${currentConfig.accounts.length > 1 ? `<button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="deleteAccount('${acc.id}')">🗑️ 删除</button>` : ''}
+          <button class="btn btn-secondary btn-sm" onclick="resetSingleCooldown('${safeJsId}')">🔄 解除冷却</button>
+          <button class="btn btn-secondary btn-sm" id="test-btn-${safeId}" style="margin-left:4px;" onclick="testSingleAccount('${safeJsId}')">⚡ 测速</button>
+          ${currentConfig.accounts.length > 1 ? `<button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="deleteAccount('${safeJsId}')">🗑️ 删除</button>` : ''}
         </div>
       </div>
     `;
     container.appendChild(card);
   });
+}
+
+function applyAccountUpstreamPreset(id, presetUrl) {
+  if (presetUrl === '__custom__') return;
+  const input = document.getElementById('upstream-input-' + id);
+  if (input) input.value = presetUrl;
+  updateAccountField(id, 'upstream', presetUrl);
 }
 
 function toggleEye(id) {
@@ -2245,12 +2307,18 @@ function deleteAccount(id) {
 
 async function testSingleAccount(id) {
   const resBox = document.getElementById('test-res-' + id);
+  const testBtn = document.getElementById('test-btn-' + id);
   const acc = currentConfig.accounts.find(a => a.id === id);
-  const upstream = document.getElementById('cfg-upstream').value;
+  const globalUpstream = document.getElementById('cfg-upstream') ? document.getElementById('cfg-upstream').value.trim() : '';
+  const upstream = (acc && typeof acc.upstream === 'string' && acc.upstream.trim()) ? acc.upstream.trim() : globalUpstream;
   if (!acc || !acc.apiKey.trim()) {
     resBox.className = 'test-result-box test-fail';
     resBox.innerText = '❌ 请先输入 API Key 再进行测试';
     return;
+  }
+  if (testBtn) {
+    testBtn.disabled = true;
+    testBtn.innerText = '⏳ 测速中...';
   }
   resBox.className = 'test-result-box';
   resBox.innerText = '⏳ 正在向端点发送测试请求...';
@@ -2272,6 +2340,11 @@ async function testSingleAccount(id) {
   } catch (e) {
     resBox.className = 'test-result-box test-fail';
     resBox.innerText = '❌ 请求异常: ' + e.message;
+  } finally {
+    if (testBtn) {
+      testBtn.disabled = false;
+      testBtn.innerText = '⚡ 测速';
+    }
   }
   fetchSingleQuota(id);
 }
@@ -2358,7 +2431,7 @@ async function runDoctorCheck(scope = 'system') {
         html += `
           <div class="issue-item ${cls}">
             <div>
-              <strong>${iss.title}</strong>: <span style="color:var(--muted);">${iss.desc}</span>
+              <strong>${escapeHtml(iss.title || '')}</strong>: <span style="color:var(--muted);">${escapeHtml(iss.desc || '')}</span>
             </div>
           </div>
         `;
@@ -2408,7 +2481,7 @@ async function runDoctorCheck(scope = 'system') {
     }
     box.innerHTML = html;
   } catch (e) {
-    box.innerHTML = '<span style="color:var(--danger)">自检失败: ' + e.message + '</span>';
+    box.innerHTML = '<span style="color:var(--danger)">自检失败: ' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 
@@ -2454,16 +2527,20 @@ async function runRepair(scope = 'system') {
     const res = await fetch('/balancer/api/repair?scope=' + encodeURIComponent(scope), { method: 'POST', headers: apiHeaders() });
     const data = await res.json();
     let html = '<div style="margin-bottom:6px;"><strong>' + (scope === 'all' ? '全量自愈' : '系统修复') + '执行结果：</strong></div>';
-    data.results.forEach(r => {
-      const color = r.success ? 'var(--success)' : 'var(--danger)';
-      html += `<div style="padding:4px 0; color:${color}">${r.success ? '✔' : '❌'} [${r.item}]: ${r.message}</div>`;
-    });
+    if (Array.isArray(data.results)) {
+      data.results.forEach(r => {
+        const color = r.success ? 'var(--success)' : 'var(--danger)';
+        html += `<div style="padding:4px 0; color:${color}">${r.success ? '✔' : '❌'} [${escapeHtml(r.item || '')}]: ${escapeHtml(r.message || '')}</div>`;
+      });
+    } else if (data && data.error) {
+      html += `<div style="padding:4px 0; color:var(--danger)">❌ ${escapeHtml(data.error)}</div>`;
+    }
     box.innerHTML = html;
     showToast((scope === 'all' ? '全量自愈' : '系统修复') + '流程执行完毕！');
     fetchStatus();
     await runDoctorCheck(scope === 'all' ? 'all' : 'system');
   } catch (e) {
-    box.innerHTML = '<span style="color:var(--danger)">修复执行异常: ' + e.message + '</span>';
+    box.innerHTML = '<span style="color:var(--danger)">修复执行异常: ' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 
@@ -2475,10 +2552,22 @@ async function saveConfig() {
   }
   const upstream = document.getElementById('cfg-upstream').value.trim();
   const host = document.getElementById('cfg-host').value.trim();
-  const port = parseInt(document.getElementById('cfg-port').value, 10) || 4010;
+  const rawPort = parseInt(document.getElementById('cfg-port').value, 10);
+  if (isNaN(rawPort) || rawPort < 1 || rawPort > 65535) {
+    showToast('❌ 监听端口必须为 1 ~ 65535 之间的整数', true);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerText = '💾 保存配置'; }
+    return;
+  }
+  if (upstream && !/^https?:\/\//i.test(upstream)) {
+    showToast('❌ 上游地址必须以 http:// 或 https:// 开头', true);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerText = '💾 保存配置'; }
+    return;
+  }
+  const port = rawPort;
   const uiPassword = document.getElementById('cfg-uipassword').value.trim();
-  const cooldownSec = parseInt(document.getElementById('cfg-cooldown').value) || 60;
-  const retries = parseInt(document.getElementById('cfg-retries').value) || 2;
+  const cooldownSec = parseInt(document.getElementById('cfg-cooldown').value, 10) || 60;
+  const rawRetries = parseInt(document.getElementById('cfg-retries').value, 10);
+  const retries = (!isNaN(rawRetries) && rawRetries >= 0) ? rawRetries : 2;
   const affinity = document.getElementById('cfg-affinity').checked;
   const compEnabled = document.getElementById('cfg-comp-enabled') ? document.getElementById('cfg-comp-enabled').checked : true;
   const rtkEnabled = document.getElementById('cfg-module-rtk-enabled') ? document.getElementById('cfg-module-rtk-enabled').checked : true;
@@ -2577,6 +2666,7 @@ async function saveConfig() {
     fixTrailingSlash: (compEnabled && psEnabled) ? compPsTrailingSlash : false,
     fixAndOperator: (compEnabled && psEnabled) ? compPsAndOperator : false,
     fixLineContinuation: (compEnabled && psEnabled) ? compPsLineContinuation : false,
+    fixSubexpressionEscaping: (compEnabled && psEnabled) ? compPsSubexpression : false,
     injectPowerShellGuard: (compEnabled && psEnabled) ? compPsGuardDirective : false
   };
 
@@ -2584,7 +2674,7 @@ async function saveConfig() {
   const proxyUrl = document.getElementById('cfg-proxy-url') ? document.getElementById('cfg-proxy-url').value.trim() : '';
   const proxyScope = document.getElementById('cfg-proxy-scope') ? document.getElementById('cfg-proxy-scope').value : 'all';
   const proxyModelsStr = document.getElementById('cfg-proxy-models') ? document.getElementById('cfg-proxy-models').value.trim() : '';
-  const proxyModels = proxyModelsStr ? proxyModelsStr.split(/[,，s]+/).map(s => s.trim()).filter(Boolean) : ['gpt-5.6-luna', 'gpt-6-luna', 'claude-haiku-5-5'];
+  const proxyModels = proxyModelsStr ? proxyModelsStr.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean) : ['gpt-5.6-luna', 'gpt-6-luna', 'claude-haiku-5-5'];
 
   const allowModelAutoUpgrade = document.getElementById('cfg-allow-upgrade') ? document.getElementById('cfg-allow-upgrade').checked : false;
   const allowRegionFallback = document.getElementById('cfg-allow-region-fallback') ? document.getElementById('cfg-allow-region-fallback').checked : false;
@@ -2756,7 +2846,8 @@ async function fetchSingleQuota(id, force = false) {
   const qBtn = document.getElementById('quota-btn-' + id);
   const qTime = document.getElementById('quota-updated-' + id);
   const acc = currentConfig ? currentConfig.accounts.find(a => a.id === id) : null;
-  const upstream = document.getElementById('cfg-upstream') ? document.getElementById('cfg-upstream').value : '';
+  const globalUpstream = document.getElementById('cfg-upstream') ? document.getElementById('cfg-upstream').value.trim() : '';
+  const upstream = (acc && typeof acc.upstream === 'string' && acc.upstream.trim()) ? acc.upstream.trim() : globalUpstream;
   if (!acc || !acc.apiKey.trim()) {
     if (qBox) qBox.innerHTML = '<div style="color:var(--muted); font-size:0.75rem; text-align:center; padding:4px 0;">请先输入 API Key 密钥</div>';
     return;
@@ -3193,7 +3284,7 @@ function renderCodexDiagnostics(doc) {
     if (st.isGuest) {
       codexLabel.innerHTML = '首选生效模型 <span class="badge badge-healthy" style="font-size:0.75rem; margin-left:6px;">🟢 游客免费在役模型 (' + (st.availableModels ? st.availableModels.length : 5) + ' 款)</span>';
     } else {
-      codexLabel.innerText = '首选生效模型 (38 款全量模型，非原生 Responses 自动协议桥转换)';
+      codexLabel.innerText = '首选生效模型 (44 款全量模型，非原生 Responses 自动协议桥转换)';
     }
   }
 
@@ -3245,11 +3336,14 @@ async function loadCodexStatus() {
   await runCodexDoctorCheck();
 }
 
+let isBindingCodex = false;
 async function bindCodex() {
+  if (isBindingCodex) return;
+  isBindingCodex = true;
   const model = (document.getElementById('codex-model-select') && document.getElementById('codex-model-select').value) || 'deepseek-v4.1-flash';
   const effort = (document.getElementById('codex-effort-select') && document.getElementById('codex-effort-select').value) || 'high';
   const box = document.getElementById('codex-status-content');
-  if (box) box.innerHTML = '<span style="color:var(--muted)">正在执行原子配置备份并接入 OpenCode Go 38 款模型目录与网关...</span>';
+  if (box) box.innerHTML = '<span style="color:var(--muted)">正在执行原子配置备份并接入 OpenCode Go 44 款模型目录与网关...</span>';
   try {
     const res = await fetch('/balancer/api/bind-codex', {
       method: 'POST',
@@ -3260,7 +3354,7 @@ async function bindCodex() {
     if (data.success) {
       showToast('🎉 Codex 一键接入成功！建议重启客户端以立即加载新配置。');
       await loadCodexStatus();
-      if (confirm('🎉 Codex 已成功接入 4010 本地网关！\n\n是否立即平滑重启 Codex 客户端以立即加载最新配置与 38 款模型？')) {
+      if (confirm('🎉 Codex 已成功接入 4010 本地网关！\n\n是否立即平滑重启 Codex 客户端以立即加载最新配置与 44 款模型？')) {
         restartCodexClient();
       }
     } else {
@@ -3270,6 +3364,8 @@ async function bindCodex() {
   } catch (e) {
     showToast('接入请求异常: ' + e.message, true);
     await loadCodexStatus();
+  } finally {
+    isBindingCodex = false;
   }
 }
 
@@ -4296,7 +4392,12 @@ function renderModelHubUI(data) {
 
   if (policyBadge) {
     policyBadge.className = 'badge badge-healthy';
-    const pNames = { hybrid: '智能混合推荐 (hybrid)', official_docs: '官方基准 SSOT (official_docs)', api_probed: '上游探测 (api_probed)' };
+    const pNames = {
+      hybrid: '智能混合推荐 (hybrid)',
+      official_docs: '官方基准 SSOT (official_docs)',
+      api_probed: '上游探测 (api_probed)',
+      guest: '游客免费模式 (guest)'
+    };
     policyBadge.innerText = '策略: ' + (pNames[data.policy] || data.policy);
   }
   if (policySelect) policySelect.value = data.policy || 'hybrid';
@@ -4325,20 +4426,20 @@ function renderModelHubUI(data) {
   if (upstreamDetail) {
     let diagMsg = '';
     if (data.upstreamStatus && data.upstreamStatus.diagnostic && data.upstreamStatus.diagnostic.suggestion) {
-      diagMsg = ' 💡 ' + data.upstreamStatus.diagnostic.suggestion;
+      diagMsg = ' 💡 ' + escapeHtml(data.upstreamStatus.diagnostic.suggestion);
     }
     upstreamDetail.innerHTML = '<strong>数据信源状态：</strong>官方基准表 <strong>' + data.counts.officialCount + '</strong> 款，上游探活 <strong>' + data.counts.probedCount + '</strong> 款，当前策略激活 <strong>' + data.counts.activeCount + '</strong> 款。' + diagMsg;
   }
 
   // Populate default model dropdown
   if (defaultModelSelect && Array.isArray(data.models)) {
-    const currentVal = defaultModelSelect.value || data.defaultModel;
+    const preferredDefault = data.defaultModel || defaultModelSelect.value;
     defaultModelSelect.innerHTML = '';
     data.models.forEach(function(m) {
       const opt = document.createElement('option');
       opt.value = m.slug;
       opt.textContent = m.name + ' (' + m.slug + ')';
-      if (m.slug === currentVal || m.slug === data.defaultModel) opt.selected = true;
+      if (m.slug === preferredDefault) opt.selected = true;
       defaultModelSelect.appendChild(opt);
     });
   }
@@ -4346,7 +4447,8 @@ function renderModelHubUI(data) {
   // Populate codex select as well if exists
   const codexSelect = document.getElementById('codex-model-select');
   if (codexSelect && Array.isArray(data.models)) {
-    const curCodexVal = codexSelect.value;
+    const liveCodexModel = (data.clients && data.clients.codex && data.clients.codex.currentModel) || (codexStatusData && codexStatusData.codex && codexStatusData.codex.currentModel);
+    const curCodexVal = liveCodexModel || codexSelect.value;
     const targetModel = (curCodexVal && curCodexVal !== 'beam-free') ? curCodexVal : (data.defaultModel || 'deepseek-v4.1-flash-free');
     codexSelect.innerHTML = '';
     data.models.forEach(function(m) {
@@ -4404,20 +4506,25 @@ function renderHubModelTable(models) {
   }
   let html = '';
   models.forEach(function(m) {
-    const vendorBadge = '<span class="badge" style="font-size:0.7rem; background:rgba(255,255,255,0.06); color:#cbd5e1;">' + (m.vendor || 'Unknown') + '</span>';
+    const safeVendor = escapeHtml(m.vendor || 'Unknown');
+    const safeSlug = escapeHtml(m.slug || '');
+    const safeName = escapeHtml(m.name || '');
+    const vendorBadge = '<span class="badge" style="font-size:0.7rem; background:rgba(255,255,255,0.06); color:#cbd5e1;">' + safeVendor + '</span>';
     const ctxStr = m.context_window ? (Math.round(m.context_window / 1000) + 'k') : '-';
     const reasoningLevels = Array.isArray(m.supported_reasoning_levels) && m.supported_reasoning_levels.length > 0
-      ? m.supported_reasoning_levels.map(function(l) {
+      ? escapeHtml(m.supported_reasoning_levels.map(function(l) {
           if (typeof l === 'object' && l) return l.effort || l.name || JSON.stringify(l);
           return String(l);
-        }).join('/')
+        }).join('/'))
       : '<span style="color:var(--muted)">不支持</span>';
     const srcBadge = m.source === 'api_probed'
       ? '<span class="badge badge-healthy" style="font-size:0.68rem;">在线探活</span>'
-      : '<span class="badge" style="font-size:0.68rem; background:rgba(2,132,199,0.18); color:#38bdf8; border:1px solid rgba(2,132,199,0.3);">官方基准</span>';
+      : (m.source === 'guest_free_only'
+          ? '<span class="badge badge-healthy" style="font-size:0.68rem;">免密免费</span>'
+          : '<span class="badge" style="font-size:0.68rem; background:rgba(2,132,199,0.18); color:#38bdf8; border:1px solid rgba(2,132,199,0.3);">官方基准</span>');
 
-    html += '<tr data-slug="' + m.slug + '" data-vendor="' + (m.vendor || '').toLowerCase() + '" data-name="' + (m.name || '').toLowerCase() + '">' +
-      '<td><div style="font-weight:600; color:#f1f5f9;">' + m.name + '</div><div style="font-family:monospace; color:#38bdf8; font-size:0.72rem;">' + m.slug + '</div></td>' +
+    html += '<tr data-slug="' + safeSlug + '" data-vendor="' + safeVendor.toLowerCase() + '" data-name="' + safeName.toLowerCase() + '">' +
+      '<td><div style="font-weight:600; color:#f1f5f9;">' + safeName + '</div><div style="font-family:monospace; color:#38bdf8; font-size:0.72rem;">' + safeSlug + '</div></td>' +
       '<td>' + vendorBadge + '</td>' +
       '<td style="font-family:monospace; color:#cbd5e1;">' + ctxStr + '</td>' +
       '<td style="font-size:0.72rem; color:#a1a1aa;">' + reasoningLevels + '</td>' +
@@ -4541,14 +4648,15 @@ async function checkOmoPluginStatus(manual = false) {
     const doc = await res.json();
     const omoInteg = doc.omoIntegrity;
 
-    if (omoInteg && omoInteg.healthy) {
+    if (omoInteg && omoInteg.installed && omoInteg.healthy) {
       if (badge) {
         badge.className = 'badge badge-healthy';
         badge.innerText = '🟢 v2 安全兼容';
       }
       if (details) {
+        const tCount = (omoInteg.targetsCount !== undefined ? omoInteg.targetsCount : omoInteg.targets) || 0;
         details.innerHTML = '<span style="color:var(--success)">✔ 插件完整且已注入安全目录包装器，无 Effect-TS 死锁标记。</span><br>' +
-          '<span style="color:var(--muted)">已探测目标文件: ' + (omoInteg.targets || 0) + ' 处</span>';
+          '<span style="color:var(--muted)">已探测目标文件: ' + tCount + ' 处</span>';
       }
     } else if (omoInteg && (omoInteg.hasDeadlockEffect || omoInteg.hasMissingWrapper)) {
       if (badge) {
@@ -4574,7 +4682,7 @@ async function checkOmoPluginStatus(manual = false) {
     }
     if (manual) showToast('OMO 状态体检完成');
   } catch (e) {
-    if (details) details.innerHTML = '<span style="color:var(--danger)">体检异常: ' + e.message + '</span>';
+    if (details) details.innerHTML = '<span style="color:var(--danger)">体检异常: ' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 

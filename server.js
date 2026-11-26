@@ -50,7 +50,7 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_FILE = process.env.OPENCODE_ROUTER_CONFIG || path.join(__dirname, 'config.json');
 
-let CURRENT_ROUTER_VERSION = '3.14.3';
+let CURRENT_ROUTER_VERSION = '3.14.4';
 try {
   const pkgData = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
   if (pkgData && pkgData.version) CURRENT_ROUTER_VERSION = pkgData.version;
@@ -592,8 +592,54 @@ const DEFAULT_CIRCUIT_CONFIG = {
 };
 
 const accountStats = new Map();
+const GUEST_STATE_FILE = path.join(__dirname, 'guest-runtime-state.json');
+
+function getAccountKeyHash(apiKey) {
+  const clean = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (!clean) return '';
+  return crypto.createHash('sha256').update(clean).digest('hex').slice(0, 12);
+}
+
+function loadGuestRuntimeState() {
+  if (process.env.OPENCODE_TEST_MODE === '1') return { endedAccounts: {} };
+  try {
+    if (!fs.existsSync(GUEST_STATE_FILE)) return { endedAccounts: {} };
+    const parsed = JSON.parse(fs.readFileSync(GUEST_STATE_FILE, 'utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.endedAccounts && typeof parsed.endedAccounts === 'object') {
+      return parsed;
+    }
+  } catch (_) {}
+  return { endedAccounts: {} };
+}
+
+function saveGuestRuntimeState(stateObj) {
+  if (process.env.OPENCODE_TEST_MODE === '1') return;
+  try {
+    writeFileSyncAtomic(GUEST_STATE_FILE, JSON.stringify(stateObj || { endedAccounts: {} }, null, 2), 'utf8');
+  } catch (_) {}
+}
+
+function persistAccountEndedFlag(accountId, isEnded) {
+  if (!accountId || accountId === '__guest_protocol__') return;
+  const state = loadGuestRuntimeState();
+  const acc = Array.isArray(config.accounts) ? config.accounts.find(a => a && a.id === accountId) : null;
+  if (isEnded) {
+    state.endedAccounts[accountId] = {
+      keyHash: acc ? getAccountKeyHash(acc.apiKey) : '',
+      endedAt: Date.now()
+    };
+  } else {
+    delete state.endedAccounts[accountId];
+  }
+  saveGuestRuntimeState(state);
+}
+
 function syncAccountStats() {
+  const persistedGuestState = loadGuestRuntimeState();
   for (const acc of config.accounts) {
+    const keyHash = getAccountKeyHash(acc.apiKey);
+    const persisted = persistedGuestState.endedAccounts && persistedGuestState.endedAccounts[acc.id];
+    const isPersistedEnded = Boolean(persisted && persisted.keyHash && persisted.keyHash === keyHash);
     if (!accountStats.has(acc.id)) {
       accountStats.set(acc.id, {
         id: acc.id,
@@ -604,7 +650,10 @@ function syncAccountStats() {
         failoverCount: 0,
         cooldownUntil: 0,
         lastUsedAt: null,
-        lastError: null,
+        lastError: isPersistedEnded ? '官方订阅失效: 支付方式需重新授权' : null,
+        lastStatus: isPersistedEnded ? 403 : null,
+        isSubscriptionEnded: isPersistedEnded,
+        isQuotaExhausted: isPersistedEnded,
         // Circuit Breaker State Machine
         circuitState: CIRCUIT_STATE.CLOSED,
         consecutiveFailures: 0,
@@ -620,12 +669,19 @@ function syncAccountStats() {
     } else {
       const stat = accountStats.get(acc.id);
       stat.name = acc.name;
+      if (persisted && persisted.keyHash && persisted.keyHash !== keyHash) {
+        // Key changed by user: immediately clear stale subscription-ended state
+        stat.isSubscriptionEnded = false;
+        stat.isQuotaExhausted = false;
+        if (stat.lastStatus === 403) stat.lastStatus = null;
+        persistAccountEndedFlag(acc.id, false);
+      }
     }
   }
   // Remove deleted accounts from stats
   const currentIds = new Set(config.accounts.map(a => a.id));
   for (const id of accountStats.keys()) {
-    if (!currentIds.has(id)) {
+    if (id !== '__guest_protocol__' && !currentIds.has(id)) {
       accountStats.delete(id);
     }
   }
@@ -678,9 +734,19 @@ function recordAccountSuccess(accountId, ttftMs = null) {
   stat.lastStatus = 200;
   stat.lastError = null;
   if (wasEnded) {
+    persistAccountEndedFlag(accountId, false);
+    _guestSyncedCycleSignature = null;
     try {
-      const clientAdapter = require("./client-adapter-manager");
-      clientAdapter.syncAllClients({ policy: config.modelSourcePolicy || "hybrid", routerPort: config.port, preserveChoice: true });
+      const boundClients = getBoundClientsForAutoSync();
+      if (boundClients.length > 0) {
+        const clientAdapter = require("./client-adapter-manager");
+        clientAdapter.syncAllClients({
+          policy: config.modelSourcePolicy || "hybrid",
+          routerPort: config.port,
+          clients: boundClients,
+          preserveChoice: true
+        });
+      }
     } catch (_) {}
   }
   if (stat.circuitState === CIRCUIT_STATE.HALF_OPEN || stat.circuitState === CIRCUIT_STATE.OPEN || (stat.cooldownUntil && stat.cooldownUntil > 0)) {
@@ -709,8 +775,10 @@ function recordAccountFailure(accountId, reason, statusCode = null, isRateLimit 
     stat.consecutiveFailures = (stat.consecutiveFailures || 0) + 1;
     stat.circuitState = CIRCUIT_STATE.OPEN;
     stat.openCount = (stat.openCount || 0) + 1;
-    const cooldown = calculateJitteredBackoff(circuitConf.baseCooldownMs, stat.consecutiveFailures, circuitConf.maxCooldownMs);
-    stat.cooldownUntil = Date.now() + cooldown;
+    const jitteredCooldown = calculateJitteredBackoff(circuitConf.baseCooldownMs, stat.consecutiveFailures, circuitConf.maxCooldownMs);
+    const explicitDur = Number(explicitCooldownMs);
+    const cooldown = (Number.isFinite(explicitDur) && explicitDur > 0) ? Math.max(jitteredCooldown, explicitDur) : jitteredCooldown;
+    stat.cooldownUntil = Math.max(stat.cooldownUntil || 0, Date.now() + cooldown);
     console.warn(`[Circuit Breaker] Account "${stat.name}" probe FAILED (${errDesc}). Circuit re-opened until ${new Date(stat.cooldownUntil).toLocaleTimeString()} (+${Math.round(cooldown / 1000)}s)`);
     return;
   }
@@ -962,37 +1030,36 @@ function buildZenGuestHeaders(zenSesId) {
   };
 }
 
+function getActiveGuestModelSlugs() {
+  if (codexAdapter && Array.isArray(codexAdapter.GUEST_FREE_MODELS_CATALOG) && codexAdapter.GUEST_FREE_MODELS_CATALOG.length > 0) {
+    return codexAdapter.GUEST_FREE_MODELS_CATALOG.map(m => m.slug);
+  }
+  return [
+    "deepseek-v4.1-flash-free",
+    "mimo-v2.6-flash-free",
+    "big-pickle",
+    "nemotron-3.5-lightning-free",
+    "nemotron-3.5-super-vl-free"
+  ];
+}
+
 const ZEN_PUBLIC_FREE_MODELS = new Set([
-  "deepseek-v4.1-flash-free",
-  "mimo-v2.6-flash-free",
-  "big-pickle",
-  "glm-5.3-flash-free",
-  "longcat-2.5-preview-free",
-  "longcat-2.5-free",
-  "nemotron-3.5-lightning-free",
-  "nemotron-3.5-super-vl-free",
+  ...getActiveGuestModelSlugs(),
   "nemotron-3-ultra-free",
   "space-bunny-free"
 ]);
 
-const ZEN_GUEST_FALLBACK_CANDIDATES = [
-  { model: "deepseek-v4.1-flash-free", upstream: "https://opencode.ai/inference/openai/v1" },
-  { model: "mimo-v2.6-flash-free", upstream: "https://opencode.ai/inference/openai/v1" },
-  { model: "big-pickle", upstream: "https://opencode.ai/zen/v1" },
-  { model: "longcat-2.5-free", upstream: "https://opencode.ai/zen/v1" },
-  { model: "nemotron-3.5-lightning-free", upstream: "https://opencode.ai/inference/openai/v1" },
-  { model: "nemotron-3.5-super-vl-free", upstream: "https://opencode.ai/inference/openai/v1" }
-];
+const ZEN_GUEST_FALLBACK_CANDIDATES = getActiveGuestModelSlugs().map(model => ({
+  model,
+  upstream: "https://opencode.ai/inference/openai/v1"
+}));
 
 function mapModelForZenGuest(modelName) {
   const clean = (modelName || "").replace(/^opencode(?:-go)?\//i, "").toLowerCase().trim();
   if (ZEN_PUBLIC_FREE_MODELS.has(clean)) return clean;
   if (clean === "mimo-v2.6-flash") return "mimo-v2.6-flash-free";
-  if (clean === "glm-5.3-flash") return "glm-5.3-flash-free";
-  if (clean === "hy4-flash-free" || clean === "cat-jam-free" || clean === "beam-free" || clean === "deepseek-v4.1-flash" || clean === "deepseek-flash") {
-    return "deepseek-v4.1-flash-free";
-  }
-  return "deepseek-v4.1-flash-free";
+  // Retired / unavailable free slugs (longcat-2.5-*, glm-5.3-flash-free, hy4-flash-free, cat-jam-free, beam-free) -> active primary free model
+  return getActiveGuestModelSlugs()[0] || "deepseek-v4.1-flash-free";
 }
 
 const ZEN_REQUIRED_TOOL_STUBS = [
@@ -1310,28 +1377,56 @@ function createUpstreamTransportRequest(proxyOptions, isHttps, isLiveZenGuest, e
   return (isHttps ? https : http).request(proxyOptions);
 }
 
-let _lastGuestSyncTime = 0;
-function triggerGuestClientSyncIfNeeded() {
-  if (require.main !== module) return;
-  if (config && config.upstream && (config.upstream.includes("127.0.0.1") || config.upstream.includes("localhost"))) return;
-  const now = Date.now();
-  if (now - _lastGuestSyncTime < 15000) return;
-  _lastGuestSyncTime = now;
+let _guestSyncedCycleSignature = null;
+
+function getBoundClientsForAutoSync(clientAdapterOverride = null) {
   try {
-    const clientAdapter = require("./client-adapter-manager");
+    const clientAdapter = clientAdapterOverride || require("./client-adapter-manager");
+    const st = clientAdapter.getClientStatus({ routerPort: config.port, forceRefresh: true });
+    const bound = [];
+    if (st && st.opencode && st.opencode.isBound) bound.push('opencode');
+    if (st && st.openchamber && st.openchamber.isBound) bound.push('openchamber');
+    if (st && st.codex && st.codex.isBound) bound.push('codex');
+    return bound;
+  } catch (_) {
+    return [];
+  }
+}
+
+function triggerGuestClientSyncIfNeeded(options = {}) {
+  const forceInTest = Boolean(options && options.forceInTest);
+  if (!forceInTest && require.main !== module) return { synced: false, reason: 'not_main' };
+  if (!forceInTest && config && config.upstream && (config.upstream.includes("127.0.0.1") || config.upstream.includes("localhost"))) {
+    return { synced: false, reason: 'local_mock_upstream' };
+  }
+  const boundClients = getBoundClientsForAutoSync(options.clientAdapter);
+  if (boundClients.length === 0) {
+    return { synced: false, reason: 'no_bound_clients', boundClients: [] };
+  }
+  const cycleSig = `guest:${config.port}:${boundClients.join(',')}:${getActiveGuestModelSlugs().join(',')}`;
+  if (!forceInTest && _guestSyncedCycleSignature === cycleSig) {
+    return { synced: false, reason: 'already_synced_in_cycle', boundClients };
+  }
+  _guestSyncedCycleSignature = cycleSig;
+  try {
+    const clientAdapter = options.clientAdapter || require("./client-adapter-manager");
     clientAdapter.syncAllClients({
       policy: "guest",
       isGuest: true,
       freeOnly: true,
       routerPort: config.port,
+      clients: boundClients,
       preserveChoice: false
     });
-    console.log("[Guest Protocol] 已自动将本地客户端 (Codex / OpenCode / OpenChamber) 同步切换至免费游客模式");
-  } catch (_) {}
+    console.log(`[Guest Protocol] 已自动将已绑定网关的本地客户端 (${boundClients.join(' / ')}) 同步切换至免费游客模式`);
+    return { synced: true, boundClients };
+  } catch (err) {
+    return { synced: false, reason: err.message, boundClients };
+  }
 }
 
 function isGuestModeActive() {
-  if (config.forceGuestMode === true || config.guestProtocolEnabled === true) {
+  if (config.forceGuestMode === true || config.guestProtocolEnabled === true || config.modelSourcePolicy === 'guest') {
     return true;
   }
   const accounts = Array.isArray(config.accounts) ? config.accounts : [];
@@ -1359,6 +1454,30 @@ function selectAccount(sessionId, excludeAccountIds = new Set()) {
     const isGuestCooling = guestStat && (guestStat.cooldownUntil || 0) > now;
 
     if (isGuestAvailable && !isGuestCooling) {
+      if (!accountStats.has('__guest_protocol__')) {
+        accountStats.set('__guest_protocol__', {
+          id: '__guest_protocol__',
+          name: 'OpenCode Go (游客协议·免登录)',
+          enabled: true,
+          cooldownUntil: 0,
+          activeRequests: 0,
+          totalRequests: 0,
+          rateLimitCount: 0,
+          failoverCount: 0,
+          lastUsedAt: null,
+          lastError: null,
+          lastStatus: null,
+          circuitState: CIRCUIT_STATE.CLOSED,
+          consecutiveFailures: 0,
+          consecutiveSuccesses: 0,
+          halfOpenInFlight: false,
+          halfOpenProbeStartTime: 0,
+          openCount: 0,
+          avgTtftMs: null,
+          lastTtftMs: null,
+          isGuest: true
+        });
+      }
       triggerGuestClientSyncIfNeeded();
       ensureZenBunSidecar();
       return {
@@ -1446,10 +1565,7 @@ function getEffectiveGuestUpstream(modelName, defaultUpstream = 'https://opencod
   const clean = (modelName || '').replace(/^opencode(?:-go)?\//i, '').toLowerCase().trim();
   const cand = ZEN_GUEST_FALLBACK_CANDIDATES.find(c => c.model === clean);
   if (cand && cand.upstream) return cand.upstream;
-  if (clean.includes('pickle') || clean.includes('longcat')) {
-    return 'https://opencode.ai/zen/v1';
-  }
-  return defaultUpstream;
+  return 'https://opencode.ai/inference/openai/v1';
 }
 
 
@@ -1619,6 +1735,7 @@ function testAccountConnection(upstream, apiKey) {
                 st.isQuotaExhausted = true;
                 st.lastStatus = 403;
                 st.lastError = "官方订阅失效: 支付方式需重新授权";
+                persistAccountEndedFlag(targetAcc.id, true);
                 if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
               }
               safeResolve({
@@ -1638,7 +1755,8 @@ function testAccountConnection(upstream, apiKey) {
                     st.isQuotaExhausted = true;
                     st.lastStatus = 403;
                     st.lastError = "官方订阅失效: 支付方式需重新授权";
-                if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
+                    persistAccountEndedFlag(targetAcc.id, true);
+                    if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
                   }
                   safeResolve({
                     success: false,
@@ -1784,6 +1902,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                 st.lastStatus = 403;
                 st.isQuotaExhausted = true;
                 st.lastError = '官方订阅失效: 支付方式需重新授权';
+                persistAccountEndedFlag(targetAcc.id, true);
                 if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
               }
             }
@@ -1795,7 +1914,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
               guestModeActive: true,
               usage: {
                 mode: "guest_free_tier",
-                guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "big-pickle", "glm-5.3-flash-free", "longcat-2.5-preview-free"],
+                guestModels: getActiveGuestModelSlugs(),
                 subscriptionNotice: subNotice,
                 rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                 weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -1819,6 +1938,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     targetStatForQuota.isQuotaExhausted = true;
                     targetStatForQuota.lastStatus = 403;
                     targetStatForQuota.lastError = "官方订阅失效: 支付方式需重新授权";
+                    persistAccountEndedFlag(targetStatForQuota.id, true);
                     if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
                   }
                   const subNotice = `官方订阅失效: 支付方式需重新授权 (${probeRes.message || "Your OpenCode Go subscription ended because its payment method needs authorization. Subscribe again at https://opencode.ai/console/go."})`;
@@ -1829,7 +1949,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     guestModeActive: true,
                     usage: {
                       mode: "guest_free_tier",
-                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "big-pickle", "glm-5.3-flash-free", "longcat-2.5-preview-free"],
+                      guestModels: getActiveGuestModelSlugs(),
                       subscriptionNotice: subNotice,
                       rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                       weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -1864,7 +1984,7 @@ function fetchAccountUsage(upstream, apiKey, force = false) {
                     guestModeActive: true,
                     usage: {
                       mode: "guest_free_tier",
-                      guestModels: ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free", "big-pickle", "glm-5.3-flash-free", "longcat-2.5-preview-free"],
+                      guestModels: getActiveGuestModelSlugs(),
                       subscriptionNotice: subNotice,
                       rolling: { percent: 0, resetsAt: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
                       weekly: { percent: 0, resetsAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() },
@@ -2116,7 +2236,30 @@ function getCorsHeaders(upstreamHeaders = {}) {
 
 function sendStandardizedError(clientRes, upstreamRes, statusCode, rawErrText) {
   if (clientRes.writableEnded || clientRes.destroyed) return;
-  const formattedText = codexAdapter.formatUpstreamErrorResponse(rawErrText, statusCode);
+  let effectiveErrText = rawErrText;
+  if (statusCode === 429 && typeof rawErrText === 'string' && /FreeUsageLimitError|free usage limit/i.test(rawErrText)) {
+    const rawRetryAfter = upstreamRes && upstreamRes.headers ? upstreamRes.headers['retry-after'] : null;
+    const retrySec = rawRetryAfter ? parseInt(String(rawRetryAfter), 10) : NaN;
+    let resetHint = '';
+    if (!isNaN(retrySec) && retrySec > 0) {
+      resetHint = retrySec >= 3600
+        ? `（预计约 ${(retrySec / 3600).toFixed(1)} 小时后重置）`
+        : `（预计约 ${Math.ceil(retrySec / 60)} 分钟后重置）`;
+    }
+    const cnHint = ` 【网关提示】OpenCode 公共免费池当前出口配额已达上限${resetHint}；建议续订 OpenCode Go 或在控制台账号卡片配置独立上游账号（如 DeepSeek 官方 / OpenRouter / 硅基流动 / 本地 Ollama）实现无缝接管。`;
+    try {
+      const parsed = JSON.parse(rawErrText);
+      if (parsed && parsed.error && typeof parsed.error.message === 'string') {
+        parsed.error.message += cnHint;
+        effectiveErrText = JSON.stringify(parsed);
+      } else {
+        effectiveErrText = rawErrText + cnHint;
+      }
+    } catch (_) {
+      effectiveErrText = rawErrText + cnHint;
+    }
+  }
+  const formattedText = codexAdapter.formatUpstreamErrorResponse(effectiveErrText, statusCode);
   const errorBuf = Buffer.from(formattedText, 'utf8');
   if (clientRes.headersSent) {
     if (!clientRes.writableEnded) clientRes.end(errorBuf);
@@ -2361,6 +2504,7 @@ function handleQuotaExhaustedFailover({
       stat.isSubscriptionEnded = true;
       stat.lastStatus = 403;
       stat.lastError = '官方订阅失效: 支付方式需重新授权';
+      persistAccountEndedFlag(account.id, true);
       if (isGuestModeActive()) triggerGuestClientSyncIfNeeded();
     }
   }
@@ -3388,14 +3532,29 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
     const guestTargetUpstream = getEffectiveGuestUpstream(parsedBody ? parsedBody.model : null, rawEffectiveUpstream);
     effectiveTargetUpstream = normalizeUpstreamEndpoint(guestTargetUpstream);
   }
-  const effectiveUpstreamUrl = new URL(effectiveTargetUpstream);
+  let effectiveUpstreamUrl;
+  try {
+    effectiveUpstreamUrl = new URL(effectiveTargetUpstream);
+  } catch (urlErr) {
+    if (stat && stat.activeRequests > 0) stat.activeRequests -= 1;
+    if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) stat.halfOpenInFlight = false;
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({ error: { message: `Invalid upstream URL: ${urlErr.message}`, type: 'gateway_config_error' } }));
+    }
+    return;
+  }
   const isEffectiveHttps = effectiveUpstreamUrl.protocol === 'https:';
+  const effectiveUpstreamPathname = effectiveUpstreamUrl.pathname.replace(/\/+$/, '');
+  const effectiveUpstreamPath = (effectiveTargetUpstream !== effectiveUpstream)
+    ? (effectiveUpstreamPathname + (targetPath.startsWith('/') ? targetPath : '/' + targetPath))
+    : upstreamPath;
 
   const proxyOptions = {
     protocol: effectiveUpstreamUrl.protocol,
     hostname: effectiveUpstreamUrl.hostname,
     port: effectiveUpstreamUrl.port || (isEffectiveHttps ? 443 : 80),
-    path: upstreamPath,
+    path: effectiveUpstreamPath,
     method: clientReq.method,
     headers: proxyHeaders,
     timeout: 300000 // 5 minutes timeout for long generation
@@ -3404,14 +3563,25 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
   const reqModelName = (parsedBody && parsedBody.model) || null;
   const effectiveProxy = getEffectiveProxyForRequest(reqModelName);
   if (effectiveProxy) {
-    const agent = getProxyAgent(effectiveProxy.url, isHttps);
+    const agent = getProxyAgent(effectiveProxy.url, isEffectiveHttps);
     if (agent) {
       proxyOptions.agent = agent;
     }
   }
 
   const isLiveZenGuestReq = Boolean(account && account.isGuest && isLiveOpencodeGo);
-  const proxyReq = createUpstreamTransportRequest(proxyOptions, isHttps, isLiveZenGuestReq, effectiveProxy ? effectiveProxy.url : '');
+  let proxyReq;
+  try {
+    proxyReq = createUpstreamTransportRequest(proxyOptions, isEffectiveHttps, isLiveZenGuestReq, effectiveProxy ? effectiveProxy.url : '');
+  } catch (transportErr) {
+    if (stat && stat.activeRequests > 0) stat.activeRequests -= 1;
+    if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) stat.halfOpenInFlight = false;
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({ error: { message: `Upstream transport init failed: ${transportErr.message}`, type: 'upstream_connection_error' } }));
+    }
+    return;
+  }
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
@@ -3455,7 +3625,7 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
 
     if (!clientRes.headersSent) {
       const nextAccount = selectAccount(sessionId, triedAccountIds);
-      const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+      const maxRetries = Math.max(config.maxFailoverRetries ?? 2, (config.accounts ? config.accounts.length : 1));
       if (nextAccount && attemptNumber <= maxRetries) {
         console.log(`[TTFT Failover] In-flight switching from "${account.name}" to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
         finishRequest();
@@ -3464,6 +3634,24 @@ function sendProxyRequest(clientReq, clientRes, reqBody, account, attemptNumber,
         sendProxyRequest(clientReq, clientRes, reqBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, parsedBody);
         return;
       }
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+      if (!clientRes.writableEnded && !clientRes.destroyed) {
+        try {
+          clientRes.writeHead(504, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          clientRes.end(JSON.stringify({
+            error: {
+              message: `Gateway Timeout: 上游节点 "${account.name}" 首字响应超过 ${effectiveTtftTimeout}ms 且无可用备用节点`,
+              type: 'ttft_timeout',
+              code: 'gateway_timeout'
+            }
+          }));
+        } catch (_) {}
+      }
+    } else {
+      finishRequest();
+      try { if (!clientRes.writableEnded && !clientRes.destroyed) clientRes.end(); } catch (_) {}
     }
   }, effectiveTtftTimeout);
 
@@ -4183,7 +4371,18 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
   }
 
   const isLiveZenGuestBridge = Boolean(account && account.isGuest && isLiveOpencodeGo);
-  const proxyReq = createUpstreamTransportRequest(proxyOptions, isEffectiveHttps, isLiveZenGuestBridge, effectiveProxy ? effectiveProxy.url : '');
+  let proxyReq;
+  try {
+    proxyReq = createUpstreamTransportRequest(proxyOptions, isEffectiveHttps, isLiveZenGuestBridge, effectiveProxy ? effectiveProxy.url : '');
+  } catch (transportErr) {
+    if (stat && stat.activeRequests > 0) stat.activeRequests -= 1;
+    if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) stat.halfOpenInFlight = false;
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({ error: { message: `Bridge transport init failed: ${transportErr.message}`, type: 'upstream_connection_error' } }));
+    }
+    return;
+  }
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
@@ -4227,7 +4426,7 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
 
     if (!clientRes.headersSent) {
       const nextAccount = selectAccount(sessionId, triedAccountIds);
-      const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+      const maxRetries = Math.max(config.maxFailoverRetries ?? 2, (config.accounts ? config.accounts.length : 1));
       if (nextAccount && attemptNumber <= maxRetries) {
         console.log(`[TTFT Failover] In-flight switching from "${account.name}" to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
         finishRequest();
@@ -4236,6 +4435,28 @@ function bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, accou
         bridgeResponsesToChatRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, chatPayload);
         return;
       }
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+      if (!clientRes.writableEnded && !clientRes.destroyed) {
+        if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, `上游节点 "${account.name}" 首字响应超时 (${effectiveTtftTimeout}ms) 且无可用备用节点`, 'ttft_timeout');
+        } else {
+          try {
+            clientRes.writeHead(504, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+            clientRes.end(JSON.stringify({
+              error: {
+                message: `Gateway Timeout: 上游节点 "${account.name}" 首字响应超过 ${effectiveTtftTimeout}ms 且无可用备用节点`,
+                type: 'ttft_timeout',
+                code: 'gateway_timeout'
+              }
+            }));
+          } catch (_) {}
+        }
+      }
+    } else {
+      finishRequest();
+      try { if (!clientRes.writableEnded && !clientRes.destroyed) clientRes.end(); } catch (_) {}
     }
   }, effectiveTtftTimeout);
 
@@ -4654,8 +4875,19 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     bridgeResponsesToChatRequest(clientReq, clientRes, guestBody, account, attemptNumber, triedAccountIds, resolvedSessionId);
     return;
   }
-  const effectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
-  const upstreamUrl = new URL(effectiveUpstream);
+  const rawEffectiveUpstream = (account && typeof account.upstream === 'string' && account.upstream.trim()) ? account.upstream.trim() : config.upstream;
+  const isLiveOpencodeGo = Boolean(rawEffectiveUpstream && rawEffectiveUpstream.includes('opencode.ai'));
+  const effectiveUpstream = isLiveOpencodeGo ? normalizeUpstreamEndpoint(rawEffectiveUpstream) : rawEffectiveUpstream;
+  let upstreamUrl;
+  try {
+    upstreamUrl = new URL(effectiveUpstream);
+  } catch (urlErr) {
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({ error: { message: `Invalid Anthropic upstream URL: ${urlErr.message}`, type: 'gateway_config_error' } }));
+    }
+    return;
+  }
   const isHttps = upstreamUrl.protocol === 'https:';
   const transport = isHttps ? https : http;
 
@@ -4745,7 +4977,18 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
     }
   }
 
-  const proxyReq = transport.request(proxyOptions);
+  let proxyReq;
+  try {
+    proxyReq = transport.request(proxyOptions);
+  } catch (transportErr) {
+    if (stat && stat.activeRequests > 0) stat.activeRequests -= 1;
+    if (stat && stat.halfOpenInFlight && stat.activeRequests <= 0) stat.halfOpenInFlight = false;
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      clientRes.end(JSON.stringify({ error: { message: `Anthropic transport init failed: ${transportErr.message}`, type: 'upstream_connection_error' } }));
+    }
+    return;
+  }
   let responded = false;
   let requestFinished = false;
   let clientAborted = false;
@@ -4789,7 +5032,7 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
 
     if (!clientRes.headersSent) {
       const nextAccount = selectAccount(sessionId, triedAccountIds);
-      const maxRetries = Math.max(config.maxFailoverRetries || 2, (config.accounts ? config.accounts.length : 1));
+      const maxRetries = Math.max(config.maxFailoverRetries ?? 2, (config.accounts ? config.accounts.length : 1));
       if (nextAccount && attemptNumber <= maxRetries) {
         console.log(`[TTFT Failover] In-flight switching from "${account.name}" to "${nextAccount.name}" (Attempt ${attemptNumber + 1})`);
         finishRequest();
@@ -4798,6 +5041,28 @@ function bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, 
         bridgeResponsesToAnthropicRequest(clientReq, clientRes, responsesBody, nextAccount, attemptNumber + 1, triedAccountIds, sessionId, anthropicPayload);
         return;
       }
+      finishRequest();
+      clientRes.removeListener('close', clientCloseHandler);
+      if (clientErrorHandler) clientRes.removeListener('error', clientErrorHandler);
+      if (!clientRes.writableEnded && !clientRes.destroyed) {
+        if (isStream && typeof codexAdapter.dispatchResponsesStreamError === 'function') {
+          codexAdapter.dispatchResponsesStreamError(clientRes, reqModel, `Anthropic 上游节点 "${account.name}" 首字响应超时 (${effectiveTtftTimeout}ms) 且无可用备用节点`, 'ttft_timeout');
+        } else {
+          try {
+            clientRes.writeHead(504, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+            clientRes.end(JSON.stringify({
+              error: {
+                message: `Gateway Timeout: 上游节点 "${account.name}" 首字响应超过 ${effectiveTtftTimeout}ms 且无可用备用节点`,
+                type: 'ttft_timeout',
+                code: 'gateway_timeout'
+              }
+            }));
+          } catch (_) {}
+        }
+      }
+    } else {
+      finishRequest();
+      try { if (!clientRes.writableEnded && !clientRes.destroyed) clientRes.end(); } catch (_) {}
     }
   }, effectiveTtftTimeout);
 
@@ -5912,6 +6177,50 @@ if (Test-Path $appProfileDir) {
 async function executeSystemRepair(options = {}) {
   const scope = options.scope || 'all';
 
+  // OMO 插件 v2 专项自愈分支
+  if (scope === 'omo') {
+    const results = [];
+    try {
+      const updater = require('./updater');
+      const omoPatchRes = updater.patchOmoPluginV2();
+      if (omoPatchRes.patchedCount > 0) {
+        results.push({
+          item: 'OMO Plugin v2 Patch',
+          success: true,
+          message: `已为 ${omoPatchRes.patchedCount} 处 OMO 插件注入 OpenCode v2 安全目录包装器并清除 Effect-TS 死锁标记`
+        });
+      } else {
+        results.push({
+          item: 'OMO Plugin v2 Patch',
+          success: true,
+          message: `已就绪：本地 ${omoPatchRes.targets || 0} 处 OMO 插件均已具备安全目录包装器且无死锁标记`
+        });
+      }
+    } catch (e) {
+      results.push({ item: 'OMO Plugin v2 Patch', success: false, message: '修补 OMO 插件异常: ' + e.message });
+    }
+    return results;
+  }
+
+  // OMO 配置文件专项自愈分支
+  if (scope === 'omo-config') {
+    const results = [];
+    const omoDir = path.join(os.homedir(), '.omo');
+    const omoPath = path.join(omoDir, 'omo.jsonc');
+    try {
+      if (!fs.existsSync(omoDir)) fs.mkdirSync(omoDir, { recursive: true });
+      if (!fs.existsSync(omoPath)) {
+        fs.writeFileSync(omoPath, JSON.stringify(DEFAULT_OMO_CONFIG, null, 2), 'utf8');
+        results.push({ item: 'OMO Config', success: true, message: '已生成标准 ~/.omo/omo.jsonc（默认使用 kimi-k3/qwen3.7 避开区域限制）' });
+      } else {
+        results.push({ item: 'OMO Config', success: true, message: '已就绪：~/.omo/omo.jsonc 已存在且完整' });
+      }
+    } catch (e) {
+      results.push({ item: 'OMO Config', success: false, message: '修复 ~/.omo/omo.jsonc 失败: ' + e.message });
+    }
+    return results;
+  }
+
   // Compression 专项自愈与防降智修复分支
   if (scope === 'compression') {
     const results = [];
@@ -6008,7 +6317,7 @@ async function executeSystemRepair(options = {}) {
     // 动态嗅探拉取官方最新模型（若在线），离线则自动使用 38 款基准字典兜底
     let officialModels = options.officialModels || null;
     if (!officialModels) {
-      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim());
+      const validAccount = config.accounts.find(a => a.enabled && a.apiKey && a.apiKey.trim() && (!a.upstream || !a.upstream.trim() || isOpenCodeLiveUpstream(a.upstream)));
       if (validAccount) {
         try {
           const proxyInfo = getEffectiveProxyForRequest(null);
@@ -6514,8 +6823,13 @@ function isAuthorized(req) {
   // Administrative endpoints (/balancer/*) STILL strictly require uiPassword on loopback!
   // Remote/LAN callers to /v1/* or /balancer/* STILL strictly require uiPassword/apiKey (Rule 28)!
   const reqUrlStr = (req && req.url) || '';
-  if (isLoopback && (reqUrlStr.startsWith('/v1/') || reqUrlStr === '/v1')) {
-    return true;
+  if (isLoopback && reqUrlStr && !/(?:^|[\\/])\.\.(?:[\\/]|$)|%2e%2e/i.test(reqUrlStr)) {
+    try {
+      const normPath = new URL(reqUrlStr, 'http://localhost').pathname;
+      if (normPath === '/v1' || normPath.startsWith('/v1/')) {
+        return true;
+      }
+    } catch (_) {}
   }
 
   // 1. Authorization header: Bearer <pwd_or_b64_or_key> or Basic <base64>
@@ -6542,8 +6856,10 @@ function isAuthorized(req) {
   const cookieHeader = req.headers['cookie'] || '';
   const match = cookieHeader.match(/router_auth=([^;]+)/);
   if (match) {
-    const val = decodeURIComponent(match[1]).trim();
-    if (val === expected || val === expectedB64) return true;
+    try {
+      const val = decodeURIComponent(match[1]).trim();
+      if (val === expected || val === expectedB64) return true;
+    } catch (_) {}
   }
 
   // 4. Query param: ?auth=<pwd_or_b64>
@@ -6963,11 +7279,16 @@ function readInternalBody(req, res, maxBytes = MAX_INTERNAL_PAYLOAD) {
         chunks.length = 0;
         if (!res.headersSent) {
           try {
-            res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-            res.end(JSON.stringify({ success: false, error: 'Payload Too Large: 管理接口请求体超过 4MB 上限', type: 'payload_too_large' }));
-          } catch (_) {}
+            res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Connection': 'close' });
+            res.end(JSON.stringify({ success: false, error: 'Payload Too Large: 管理接口请求体超过 4MB 上限', type: 'payload_too_large' }), () => {
+              try { req.destroy(); } catch (_) {}
+            });
+          } catch (_) {
+            try { req.destroy(); } catch (__) {}
+          }
+        } else {
+          try { req.destroy(); } catch (_) {}
         }
-        try { req.destroy(); } catch (_) {}
         done(null);
         return;
       }
@@ -7001,6 +7322,10 @@ function readInternalBody(req, res, maxBytes = MAX_INTERNAL_PAYLOAD) {
   });
 }
 
+let modelsHubProbeCache = null;
+let lastModelsHubProbeTime = 0;
+const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
+
 // HTTP Server
 const server = http.createServer((req, res) => {
   req.on('error', (err) => {
@@ -7012,7 +7337,16 @@ const server = http.createServer((req, res) => {
     }
   });
 
-  const u9568 = new URL(req.url || '/', 'http://localhost');
+  let u9568;
+  try {
+    u9568 = new URL(req.url || '/', 'http://localhost');
+  } catch (urlErr) {
+    if (!res.headersSent) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: { message: 'Malformed request URL', type: 'invalid_request_error' } }));
+    }
+    return;
+  }
   const reqUrl = { pathname: u9568.pathname, query: Object.fromEntries(u9568.searchParams.entries()), searchParams: u9568.searchParams, search: u9568.search };
 
   // Global CORS preflight (OPTIONS)
@@ -7068,6 +7402,10 @@ const server = http.createServer((req, res) => {
         'Access-Control-Allow-Origin': '*'
       });
       res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入访问密码' }));
+      return;
+    } else if (!config.uiPassword && !isLoopbackRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: false, error: 'Forbidden: 未配置管理密码时禁止局域网远程读取状态' }));
       return;
     }
     const now = Date.now();
@@ -7132,6 +7470,10 @@ const server = http.createServer((req, res) => {
     if (config.uiPassword && !isAuthorized(req)) {
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ success: false, error: 'Unauthorized: 请输入管理员访问密码' }));
+      return;
+    } else if (!config.uiPassword && !isLoopbackRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: false, error: 'Forbidden: 未配置管理密码时禁止局域网远程访问熔断状态' }));
       return;
     }
     const now = Date.now();
@@ -7345,7 +7687,11 @@ const server = http.createServer((req, res) => {
           ...config,
           upstream: newUpstream,
           defaultCooldownMs: payload.defaultCooldownMs !== undefined ? (Number(payload.defaultCooldownMs) || config.defaultCooldownMs) : config.defaultCooldownMs,
-          maxFailoverRetries: payload.maxFailoverRetries !== undefined ? (Number(payload.maxFailoverRetries) || config.maxFailoverRetries) : config.maxFailoverRetries,
+          maxFailoverRetries: (() => {
+            if (payload.maxFailoverRetries === undefined) return config.maxFailoverRetries;
+            const parsedRetries = Number(payload.maxFailoverRetries);
+            return (Number.isFinite(parsedRetries) && parsedRetries >= 0) ? Math.floor(parsedRetries) : config.maxFailoverRetries;
+          })(),
           sessionAffinityEnabled: payload.sessionAffinityEnabled !== undefined ? Boolean(payload.sessionAffinityEnabled) : config.sessionAffinityEnabled,
           allowModelAutoUpgrade: payload.allowModelAutoUpgrade !== undefined ? Boolean(payload.allowModelAutoUpgrade) : Boolean(config.allowModelAutoUpgrade),
           allowRegionFallback: payload.allowRegionFallback !== undefined ? Boolean(payload.allowRegionFallback) : Boolean(config.allowRegionFallback),
@@ -7542,6 +7888,8 @@ const server = http.createServer((req, res) => {
 
         writeFileSyncAtomic(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
         config = newConfig;
+        modelsHubProbeCache = null;
+        lastModelsHubProbeTime = 0;
         syncAccountStats();
         clearProxyAgentCache();
         codexAdapter.configureAdapter(config);
@@ -7670,6 +8018,16 @@ const server = http.createServer((req, res) => {
       try {
         const payload = JSON.parse(buf.toString('utf8'));
         const targetUpstream = (payload.upstream || config.upstream).trim();
+        try {
+          const parsedTarget = new URL(targetUpstream);
+          if (parsedTarget.protocol !== 'http:' && parsedTarget.protocol !== 'https:') {
+            throw new Error('仅支持 http:// 或 https:// 协议');
+          }
+        } catch (upErr) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, message: `非法的 Upstream 地址: ${upErr.message}` }));
+          return;
+        }
         const apiKey = (payload.apiKey || '').trim();
 
         if (!apiKey) {
@@ -7712,6 +8070,16 @@ const server = http.createServer((req, res) => {
           apiKey = matchedAcc.apiKey.trim();
         }
         const targetUpstream = (payload.upstream || (matchedAcc && matchedAcc.upstream) || config.upstream).trim();
+        try {
+          const parsedTarget = new URL(targetUpstream);
+          if (parsedTarget.protocol !== 'http:' && parsedTarget.protocol !== 'https:') {
+            throw new Error('仅支持 http:// 或 https:// 协议');
+          }
+        } catch (upErr) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ success: false, message: `非法的 Upstream 地址: ${upErr.message}` }));
+          return;
+        }
 
         if (!apiKey) {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
@@ -7980,7 +8348,8 @@ $ghost
             const { fileURLToPath } = require('url');
             filePath = fileURLToPath(filePath);
           } catch (e) {
-            filePath = decodeURIComponent(filePath.replace(/^file:\/\/\/?/, process.platform === 'win32' ? '' : '/'));
+            const stripped = filePath.replace(/^file:\/\/\/?/, process.platform === 'win32' ? '' : '/');
+            try { filePath = decodeURIComponent(stripped); } catch (_) { filePath = stripped; }
           }
         } else if (/%[0-9A-Fa-f]{2}/.test(filePath)) {
           try {
@@ -8150,10 +8519,6 @@ $ghost
     return;
   }
 
-let modelsHubProbeCache = null;
-let lastModelsHubProbeTime = 0;
-const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
-
   // Models Hub API: 获取模型调度中心全量元数据、上游深度诊断与多端状态 (GET)
   if (reqUrl.pathname === '/balancer/api/models/hub' && req.method === 'GET') {
     (async () => {
@@ -8170,7 +8535,8 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
         if (!forceProbe && modelsHubProbeCache && (now - lastModelsHubProbeTime < MODELS_HUB_PROBE_TTL_MS)) {
           probeRes = modelsHubProbeCache;
         } else {
-          probeRes = await updater.fetchOfficialModels(config.accounts, config.upstream, 3500, {
+          const openCodeAccounts = (Array.isArray(config.accounts) ? config.accounts : []).filter(a => !a.upstream || !a.upstream.trim() || isOpenCodeLiveUpstream(a.upstream));
+          probeRes = await updater.fetchOfficialModels(openCodeAccounts, config.upstream, 3500, {
             returnDetails: true,
             agent: proxyAgent
           });
@@ -8204,7 +8570,7 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
           availablePolicies: clientAdapter.MODEL_SOURCE_POLICIES,
           defaultModel: effectiveDefaultModel,
           favoriteModels: isGuest 
-            ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'glm-5.3-flash-free', 'big-pickle', 'longcat-2.5-free']
+            ? getActiveGuestModelSlugs()
             : (config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3']),
           upstreamStatus: {
             healthy: Boolean(probeRes && probeRes.success),
@@ -8231,6 +8597,7 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
   // Models Policy API: 切换模型获取源策略 (POST)
   if ((reqUrl.pathname === '/balancer/api/models/policy' || reqUrl.pathname === '/balancer/api/models/source-policy') && req.method === 'POST') {
     readInternalBody(req, res).then((buf) => {
+      if (!buf) return;
       try {
         const rawBody = buf ? buf.toString('utf8') : '';
         const body = rawBody ? JSON.parse(rawBody) : {};
@@ -8284,16 +8651,19 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
       const proxyInfo = getEffectiveProxyForRequest(null);
       const proxyAgent = proxyInfo ? getProxyAgent(proxyInfo.url, new URL(config.upstream).protocol === 'https:') : null;
 
-      const isGuest = Boolean(body.isGuest || body.freeOnly || body.policy === 'guest');
+      const isGuest = body.isGuest !== undefined
+        ? Boolean(body.isGuest)
+        : (Boolean(body.freeOnly || body.policy === 'guest') || (!body.policy && isGuestModeActive()));
       const policy = isGuest ? 'guest' : (body.policy || config.modelSourcePolicy || 'hybrid');
       const defaultModel = isGuest ? 'deepseek-v4.1-flash-free' : (body.defaultModel || config.defaultModel || 'deepseek-v4.1-flash');
       const favorites = isGuest
-        ? ['deepseek-v4.1-flash-free', 'mimo-v2.6-flash-free', 'glm-5.3-flash-free', 'big-pickle', 'longcat-2.5-free']
+        ? getActiveGuestModelSlugs()
         : (body.favorites || config.favoriteModels || ['deepseek-v4.1-flash', 'kimi-k3']);
       const targetClients = Array.isArray(body.clients) ? body.clients : ['opencode', 'openchamber', 'codex'];
 
-      // 探测上游 (游客模式下跳过付费端点探测)
-      const probeRes = isGuest ? { success: true, slugs: [] } : await updater.fetchOfficialModels(config.accounts, config.upstream, 4000, {
+      // 探测上游 (游客模式下跳过付费端点探测；多账号隔离：不把第三方自定义 Upstream 密钥发往 opencode.ai)
+      const openCodeAccounts = (Array.isArray(config.accounts) ? config.accounts : []).filter(a => !a.upstream || !a.upstream.trim() || isOpenCodeLiveUpstream(a.upstream));
+      const probeRes = isGuest ? { success: true, slugs: [] } : await updater.fetchOfficialModels(openCodeAccounts, config.upstream, 4000, {
         returnDetails: true,
         agent: proxyAgent
       });
@@ -8340,6 +8710,7 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
 
     if (req.method === 'POST') {
       readInternalBody(req, res).then(async (buf) => {
+        if (!buf) return;
         try {
           const rawBody = buf ? buf.toString('utf8') : '';
           const body = rawBody ? JSON.parse(rawBody) : {};
@@ -8450,9 +8821,21 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ error: { message: 'Unauthorized: 请提供有效的访问密码或 API Key', type: 'authentication_error', code: 401 } }));
       return;
+    } else if (!config.uiPassword && !isLoopbackRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: { message: 'Forbidden: 未配置管理密码时禁止局域网远程访问生成资产', type: 'forbidden', code: 403 } }));
+      return;
     }
     const rawFilename = reqUrl.pathname.slice('/artifacts/images/'.length);
-    const safeFilename = path.basename(decodeURIComponent(rawFilename));
+    let decodedFilename;
+    try {
+      decodedFilename = decodeURIComponent(rawFilename);
+    } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Bad Request: Malformed filename encoding' }));
+      return;
+    }
+    const safeFilename = path.basename(decodedFilename);
     const targetFilePath = path.join(__dirname, 'artifacts', 'images', safeFilename);
     const safeBaseDir = path.join(__dirname, 'artifacts', 'images');
 
@@ -8973,6 +9356,10 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ error: { message: 'Unauthorized: 请提供有效的访问密码或 API Key', type: 'authentication_error', code: 401 } }));
       return;
+    } else if (!config.uiPassword && !isLoopbackRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: { message: 'Forbidden: 未配置访问密码时禁止局域网远程调用生图算力接口', type: 'forbidden', code: 403 } }));
+      return;
     }
     readInternalBody(req, res).then(async buf => {
       if (!buf) return;
@@ -9080,6 +9467,10 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
     if (config.uiPassword && !isAuthorized(req)) {
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ error: { message: 'Unauthorized: 请提供有效的访问密码或 API Key', type: 'authentication_error', code: 401 } }));
+      return;
+    } else if (!config.uiPassword && !isLoopbackRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: { message: 'Forbidden: 未配置访问密码时禁止局域网远程调用反推算力接口', type: 'forbidden', code: 403 } }));
       return;
     }
     readInternalBody(req, res).then(async buf => {
@@ -9276,11 +9667,16 @@ const MODELS_HUB_PROBE_TTL_MS = 10000; // 10s TTL (Rule 7 Anti-Throttling)
       chunks.length = 0;
       if (!res.headersSent) {
         try {
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Payload Too Large: request body exceeded 32MB ceiling', type: 'payload_too_large' } }));
-        } catch (_) {}
+          res.writeHead(413, { 'Content-Type': 'application/json', 'Connection': 'close' });
+          res.end(JSON.stringify({ error: { message: 'Payload Too Large: request body exceeded 32MB ceiling', type: 'payload_too_large' } }), () => {
+            try { req.destroy(); } catch (_) {}
+          });
+        } catch (_) {
+          try { req.destroy(); } catch (__) {}
+        }
+      } else {
+        try { req.destroy(); } catch (_) {}
       }
-      try { req.destroy(); } catch (_) {}
       return;
     }
     chunks.push(chunk);
@@ -9515,7 +9911,11 @@ module.exports = {
   classifyUpstreamError,
   isOpenCodeLiveUpstream,
   getEffectiveGuestUpstream,
+  getActiveGuestModelSlugs,
   isGuestModeActive,
+  getBoundClientsForAutoSync,
+  triggerGuestClientSyncIfNeeded,
+  persistAccountEndedFlag,
   mintOpencodeZenSessionId,
   getOrMintGuestSessionId,
   rotateGuestSessionId,

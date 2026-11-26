@@ -34,9 +34,10 @@ for (const m of guestModels) {
 }
 const guestSlugs = guestModels.map(m => m.slug);
 assert.strictEqual(guestSlugs[0], 'deepseek-v4.1-flash-free', 'Default guest free model must be deepseek-v4.1-flash-free');
-assert.ok(guestSlugs.includes('mimo-v2.6-flash-free') && guestSlugs.includes('glm-5.3-flash-free') && guestSlugs.includes('big-pickle'), 'Must include active Zen free models');
-assert.ok(!guestSlugs.includes('cat-jam-free') && !guestSlugs.includes('beam-free') && !guestSlugs.includes('hy4-flash-free'), 'Must NOT include retired cat-jam-free, beam-free, or hy4-flash-free in guest catalog');
-console.log(`  [PASS] 2. Guest policy filter returned ${guestModels.length} active free-only models`);
+assert.ok(guestSlugs.includes('mimo-v2.6-flash-free') && guestSlugs.includes('big-pickle') && guestSlugs.includes('nemotron-3.5-lightning-free'), 'Must include live verified Zen free models');
+assert.ok(!guestSlugs.includes('cat-jam-free') && !guestSlugs.includes('beam-free') && !guestSlugs.includes('hy4-flash-free') && !guestSlugs.includes('longcat-2.5-free') && !guestSlugs.includes('glm-5.3-flash-free'), 'Must NOT include retired/unavailable models in guest catalog');
+assert.deepStrictEqual(serverModule.getActiveGuestModelSlugs(), guestSlugs, 'server.js guestModels SSOT must match GUEST_FREE_MODELS_CATALOG 100%');
+console.log(`  [PASS] 2. Guest policy filter returned ${guestModels.length} active free-only models (SSOT parity verified)`);
 
 // 3. Verify Guest Mode Fallback Chain Never Escalates to Paid Models
 const fb1 = codexAdapter.resolveCompatibleFallbackModel('cat-jam-free', 'model_not_found', { isGuest: true });
@@ -74,7 +75,9 @@ console.log('  [PASS] 4. Zen v2 wire headers, ses_ bitmask [0xfc0, 0xfff], SHA1 
 assert.strictEqual(serverModule.mapModelForZenGuest('hy4-flash-free'), 'deepseek-v4.1-flash-free');
 assert.strictEqual(serverModule.mapModelForZenGuest('beam-free'), 'deepseek-v4.1-flash-free');
 assert.strictEqual(serverModule.mapModelForZenGuest('cat-jam-free'), 'deepseek-v4.1-flash-free');
-assert.strictEqual(serverModule.mapModelForZenGuest('longcat-2.5-preview-free'), 'longcat-2.5-preview-free');
+assert.strictEqual(serverModule.mapModelForZenGuest('longcat-2.5-preview-free'), 'deepseek-v4.1-flash-free');
+assert.strictEqual(serverModule.mapModelForZenGuest('longcat-2.5-free'), 'deepseek-v4.1-flash-free');
+assert.strictEqual(serverModule.mapModelForZenGuest('glm-5.3-flash-free'), 'deepseek-v4.1-flash-free');
 assert.strictEqual(serverModule.mapModelForZenGuest('big-pickle'), 'big-pickle');
 
 const codexSystemPrompt = 'You are Codex, an AI coding agent with shell_command and apply_patch.';
@@ -152,7 +155,7 @@ try {
   assert.strictEqual(serverModule.isOpenCodeLiveUpstream('https://opencode.ai/zen/v1'), true);
   assert.strictEqual(serverModule.isOpenCodeLiveUpstream('http://127.0.0.1:4010'), false);
   assert.strictEqual(serverModule.getEffectiveGuestUpstream('deepseek-v4.1-flash-free'), 'https://opencode.ai/inference/openai/v1');
-  assert.strictEqual(serverModule.getEffectiveGuestUpstream('big-pickle'), 'https://opencode.ai/zen/v1');
+  assert.strictEqual(serverModule.getEffectiveGuestUpstream('big-pickle'), 'https://opencode.ai/inference/openai/v1');
   console.log('  [PASS] 7. Automatic guest protocol failover on subscription expiration verified');
 } finally {
   serverModule.config.accounts = origAccounts;
@@ -238,8 +241,37 @@ serverModule.sendStandardizedError(mockClientRes, mockUpstreamRes, 429, rawUpstr
 assert.strictEqual(sentStatus, 429, 'Must preserve genuine HTTP 429 status code');
 assert.strictEqual(sentHeaders['retry-after'], undefined, 'Must NOT transmit excessive 37848s Retry-After header to Codex client');
 assert.ok(sentBody.includes('FreeUsageLimitError'), 'Must preserve upstream FreeUsageLimitError message');
-console.log('  [PASS] 9. Long Retry-After stripping & genuine 429 error transparency verified');
+assert.ok(sentBody.includes('预计约 10.5 小时后重置') && sentBody.includes('独立上游账号'), 'Must include clear Chinese cooldown reset hint and independent upstream guidance');
+console.log('  [PASS] 9. Long Retry-After stripping, genuine 429 transparency & Chinese cooldown guidance verified');
+
+// 10. Verify Cold-Start modelSourcePolicy='guest' & Unbound Codex Immunity in triggerGuestClientSyncIfNeeded
+const origPolicy = serverModule.config.modelSourcePolicy;
+try {
+  serverModule.config.modelSourcePolicy = 'guest';
+  assert.strictEqual(serverModule.isGuestModeActive(), true, 'Cold-start modelSourcePolicy=guest must activate guest mode immediately');
+
+  let syncedClientsArg = null;
+  const mockAdapter = {
+    getClientStatus() {
+      return {
+        opencode: { isBound: true },
+        openchamber: { isBound: false },
+        codex: { isBound: false } // Codex points to official DeepSeek, NOT 4010
+      };
+    },
+    syncAllClients(opts) {
+      syncedClientsArg = opts.clients;
+      return { success: true };
+    }
+  };
+  const syncRes = serverModule.triggerGuestClientSyncIfNeeded({ forceInTest: true, clientAdapter: mockAdapter });
+  assert.strictEqual(syncRes.synced, true);
+  assert.deepStrictEqual(syncedClientsArg, ['opencode'], 'Must ONLY sync already-bound clients and NEVER overwrite unbound Codex');
+  console.log('  [PASS] 10. Cold-start guest policy activation & unbound Codex protection verified');
+} finally {
+  serverModule.config.modelSourcePolicy = origPolicy;
+}
 
 console.log('================================================================');
-console.log('ALL 9/9 GUEST PROTOCOL & ANTI-CHEATING AUDIT TESTS PASSED!');
+console.log('ALL 10/10 GUEST PROTOCOL & ANTI-CHEATING AUDIT TESTS PASSED!');
 console.log('================================================================');
